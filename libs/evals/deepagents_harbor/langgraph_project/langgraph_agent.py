@@ -20,12 +20,16 @@ from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
+from langchain_core.messages import HumanMessage, ToolMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import BaseMessage
     from langchain_core.tools import BaseTool
+
+    from deepagents_evals.routing.turns import RoutingTurn
 
 logger = logging.getLogger(__name__)
 
@@ -616,6 +620,26 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
     )
 
 
+def _tau3_turn(messages: Sequence[BaseMessage]) -> RoutingTurn | None:
+    """Expose simulator replies as user turns to the router without changing agent history."""
+    from deepagents_evals.routing.turns import (  # noqa: PLC0415  # Only routed graphs need this package.
+        RoutingTurn,
+    )
+
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if (
+            isinstance(message, ToolMessage)
+            and message.name in {"start_conversation", "send_message_to_user"}
+            and message.status == "success"
+        ):
+            return RoutingTurn(
+                key=message.id or message.tool_call_id,
+                messages=[*messages[:index], HumanMessage(content=message.content)],
+            )
+    return None
+
+
 async def make_routed_graph(config: dict[str, object] | None = None) -> object:
     """Create the bare graph on the model-routing ladder instead of `configurable.model`.
 
@@ -637,9 +661,16 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
         load_gateway_key,
     )
     from deepagents_evals.routing.middleware import LadderRoutingMiddleware  # noqa: PLC0415
+    from deepagents_evals.routing.turns import read_human_turn  # noqa: PLC0415
 
     configurable = _configurable(config)
     routing = load_config()
+    tools = await _mcp_tools(configurable)
+    turn_reader = (
+        _tau3_turn
+        if {"start_conversation", "send_message_to_user"} <= {tool.name for tool in tools}
+        else read_human_turn
+    )
     return create_deep_agent(
         model=routing.anchor,
         backend=LocalShellBackend(
@@ -648,7 +679,7 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
             env={name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ},
             virtual_mode=False,
         ),
-        tools=await _mcp_tools(configurable) or None,
+        tools=tools or None,
         skills=_skills(configurable),
         middleware=[
             LadderRoutingMiddleware(
@@ -659,6 +690,7 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
                     base_url=GATEWAY_OPENAI_URL,
                 ),
                 granularity=routing.granularity,
+                turn_reader=turn_reader,
             )
         ],
     )

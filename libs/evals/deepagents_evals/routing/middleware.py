@@ -30,13 +30,15 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 from langchain_core.messages.ai import (
     UsageMetadata,  # noqa: TC002  # resolved at runtime in `RouterState`
 )
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_openai.decisions import Level, Score
 from langgraph.types import Command
+
+from deepagents_evals.routing.turns import RoutingTurn, TurnReader, read_human_turn
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -75,6 +77,9 @@ class RouterState(AgentState):
     turn: NotRequired[Annotated[int, PrivateStateAttr]]
     """Routing decisions made so far."""
 
+    last_turn_id: NotRequired[Annotated[str, PrivateStateAttr]]
+    """The user turn last assessed, excluding bootstrap calls."""
+
     cache_expires_at: NotRequired[Annotated[list[float], PrivateStateAttr]]
     """When each rung's cached prefix expires; 0.0 is cold."""
 
@@ -107,6 +112,7 @@ class LadderRoutingMiddleware(AgentMiddleware[RouterState, None, ResponseT]):
         *,
         decision_model: OpenAIDecisions,
         granularity: Granularity = "per_turn",
+        turn_reader: TurnReader = read_human_turn,
     ) -> None:
         """Initialize the router.
 
@@ -114,6 +120,7 @@ class LadderRoutingMiddleware(AgentMiddleware[RouterState, None, ResponseT]):
             models: The ladder, cheapest first; the list index is the rung.
             decision_model: Decisions API model for the difficulty estimate.
             granularity: Route once per thread or at the start of every turn.
+            turn_reader: Identify user turns and provide their context for routing.
 
         Raises:
             ValueError: If `models` is empty.
@@ -129,39 +136,42 @@ class LadderRoutingMiddleware(AgentMiddleware[RouterState, None, ResponseT]):
         # Relative cost heuristic: ladder position scaled by context window.
         self.weights = [(rung + 1) * (window or base) / base for rung, window in enumerate(windows)]
         self.granularity = granularity
+        self._turn_reader = turn_reader
         self._decisions = decision_model
 
-    def before_agent(
+    def before_model(
         self,
         state: RouterState,
         runtime: Runtime[None],  # noqa: ARG002  # Required middleware hook signature.
     ) -> dict[str, Any] | None:
         """Pick this turn's rung when the granularity calls for it."""
-        if not self._routes(state):
-            return None
-        started, request = time.perf_counter(), self._request(state)
+        turn = self._pending_turn(state)
+        if turn is None:
+            return self._bootstrap(state)
+        started, request = time.perf_counter(), self._request(turn)
         try:
             response = self._decisions.invoke(request) if request else None
         except openai.OpenAIError:
             logger.warning("Decisions API call failed; routing falls back", exc_info=True)
             response = None
-        return self._decide(state, response, started)
+        return self._decide(state, response, started, turn.key)
 
-    async def abefore_agent(
+    async def abefore_model(
         self,
         state: RouterState,
         runtime: Runtime[None],  # noqa: ARG002  # Required middleware hook signature.
     ) -> dict[str, Any] | None:
         """Pick this turn's rung when the granularity calls for it (async version)."""
-        if not self._routes(state):
-            return None
-        started, request = time.perf_counter(), self._request(state)
+        turn = self._pending_turn(state)
+        if turn is None:
+            return self._bootstrap(state)
+        started, request = time.perf_counter(), self._request(turn)
         try:
             response = await self._decisions.ainvoke(request) if request else None
         except openai.OpenAIError:
             logger.warning("Decisions API call failed; routing falls back", exc_info=True)
             response = None
-        return self._decide(state, response, started)
+        return self._decide(state, response, started, turn.key)
 
     def wrap_model_call(
         self,
@@ -181,17 +191,25 @@ class LadderRoutingMiddleware(AgentMiddleware[RouterState, None, ResponseT]):
         started = time.time()
         return self._observed(request, await handler(self._routed(request)), started)
 
-    def _routes(self, state: RouterState) -> bool:
-        return self.granularity == "per_turn" or "current_tier" not in state
+    def _pending_turn(self, state: RouterState) -> RoutingTurn | None:
+        last = state.get("last_turn_id")
+        if self.granularity == "per_thread" and last is not None:
+            return None
+        turn = self._turn_reader(state["messages"])
+        return turn if turn is not None and turn.key != last else None
 
-    def _request(self, state: RouterState) -> DecisionRequest | None:
-        """A `Score` question over the latest user message, which goes in as data, not instructions."""
-        human = next((m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), None)
-        if human is None or len(self.models) == 1:  # `Score` needs two levels
+    def _bootstrap(self, state: RouterState) -> dict[str, Any] | None:
+        if "current_tier" in state:
+            return None
+        return {"current_tier": len(self.models) - 1, "turn": 0}
+
+    def _request(self, turn: RoutingTurn) -> DecisionRequest | None:
+        """Assess the user turn and its context as data, not instructions."""
+        if len(self.models) == 1:  # `Score` needs two levels
             return None
         levels: list[str | Level] = [Level(label=name) for name in self.names]
         return {
-            "input": [human],
+            "input": list(turn.messages),
             "questions": {_QUESTION: Score(instructions=_INSTRUCTIONS, levels=levels)},
         }
 
@@ -200,6 +218,7 @@ class LadderRoutingMiddleware(AgentMiddleware[RouterState, None, ResponseT]):
         state: RouterState,
         response: DecisionResponse | None,
         started: float,
+        turn_id: str,
     ) -> dict[str, Any]:
         """The cheapest rung by expected cost, or a fallback without an estimate; ties stay put."""
         current = state.get("current_tier")
@@ -221,13 +240,19 @@ class LadderRoutingMiddleware(AgentMiddleware[RouterState, None, ResponseT]):
         turn = state.get("turn", 0) + 1
         record = {
             "turn": turn,
+            "turn_id": turn_id,
             "granularity": self.granularity,
             "from_tier": current,
             "to_tier": rung,
             **evidence,
             "router_latency_s": time.perf_counter() - started,
         }
-        return {"current_tier": rung, "turn": turn, "decision_log": [record]}
+        return {
+            "current_tier": rung,
+            "turn": turn,
+            "last_turn_id": turn_id,
+            "decision_log": [record],
+        }
 
     def _expected_costs(self, state: RouterState, probabilities: list[float]) -> list[float]:
         """cost(t) at each rung's cache state, plus P(a stronger rung was needed) * C_fail."""
@@ -267,6 +292,7 @@ class LadderRoutingMiddleware(AgentMiddleware[RouterState, None, ResponseT]):
             **(model.metadata or {}),
             "routing_tier": self.names[state["current_tier"]],
             "routing_turn": state["turn"],
+            "routing_turn_id": state.get("last_turn_id"),
             "routing_granularity": self.granularity,
         }
         return request.override(model=model.model_copy(update={"metadata": metadata}))

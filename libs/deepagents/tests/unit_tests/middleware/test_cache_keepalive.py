@@ -7,6 +7,7 @@ import threading
 import time
 from typing import Any
 
+import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse, ToolCallRequest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -14,7 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables.config import ensure_config
 from langgraph.constants import TAG_NOSTREAM
 
-from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
+from deepagents.middleware import AnthropicCacheKeepaliveMiddleware, CachePricing
 
 INTERVAL = 0.05
 
@@ -28,9 +29,10 @@ def _request(*, anthropic: bool = True) -> ModelRequest:
     return ModelRequest(model=model, messages=[HumanMessage("hi")], state={"messages": []}, model_settings={"cache_control": {"type": "ephemeral"}})
 
 
-def _response(*ids: str) -> ModelResponse:
+def _response(*ids: str, prompt_tokens: int | None = None) -> ModelResponse:
     calls = [{"id": i, "name": "slow", "args": {}} for i in ids]
-    return ModelResponse(result=[AIMessage(content="", tool_calls=calls)])
+    usage = None if prompt_tokens is None else {"input_tokens": prompt_tokens, "output_tokens": 10, "total_tokens": prompt_tokens + 10}
+    return ModelResponse(result=[AIMessage(content="", tool_calls=calls, usage_metadata=usage)])
 
 
 def _tool_request(tool_call_id: str) -> ToolCallRequest:
@@ -40,16 +42,19 @@ def _tool_request(tool_call_id: str) -> ToolCallRequest:
 class _Recorder:
     """Model handler that records ping requests after the first (real) call."""
 
-    def __init__(self, *, fail_pings: bool = False) -> None:
+    def __init__(self, *, fail_pings: bool = False, prompt_tokens: int | None = None) -> None:
         self.calls: list[ModelRequest] = []
         self.fail_pings = fail_pings
+        self.prompt_tokens = prompt_tokens
 
     def respond(self, request: ModelRequest, ids: tuple[str, ...]) -> ModelResponse:
         self.calls.append(request)
         if len(self.calls) > 1 and self.fail_pings:
             msg = "ping rejected"
             raise RuntimeError(msg)
-        return _response(*ids) if len(self.calls) == 1 else ModelResponse(result=[AIMessage(content="")])
+        if len(self.calls) == 1:
+            return _response(*ids, prompt_tokens=self.prompt_tokens)
+        return ModelResponse(result=[AIMessage(content="")])
 
     @property
     def pings(self) -> list[ModelRequest]:
@@ -108,6 +113,42 @@ async def test_failed_ping_stops_pinging_and_tool_still_returns() -> None:
     recorder = _Recorder(fail_pings=True)
     result = await _arun(mw, recorder, tool_seconds=INTERVAL * 4)
     assert result.content == "done"
+    assert len(recorder.pings) == 1
+
+
+OPUS_PRICING = CachePricing(cache_read=0.20, cache_write=5.0)
+
+
+def test_expected_savings_is_miss_cost_minus_ping_cost() -> None:
+    # 50k tokens: a miss costs 50k * ($5 - $0.20) / 1M = $0.24, a ping 50k * $0.20 / 1M = $0.01.
+    assert OPUS_PRICING.expected_savings(50_000) == pytest.approx(0.23)
+
+
+async def test_pricing_skips_pings_for_a_small_prompt() -> None:
+    mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL, pricing=OPUS_PRICING)
+    recorder = _Recorder(prompt_tokens=5_000)  # saves about $0.02 per ping, under $0.05
+    await _arun(mw, recorder, tool_seconds=INTERVAL * 3)
+    assert recorder.pings == []
+
+
+async def test_pricing_keeps_pings_for_a_large_prompt() -> None:
+    mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL, pricing=OPUS_PRICING)
+    recorder = _Recorder(prompt_tokens=50_000)
+    await _arun(mw, recorder, tool_seconds=INTERVAL * 1.5)
+    assert len(recorder.pings) == 1
+
+
+async def test_pricing_pings_when_prompt_size_is_unknown() -> None:
+    mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL, pricing=OPUS_PRICING)
+    recorder = _Recorder()
+    await _arun(mw, recorder, tool_seconds=INTERVAL * 1.5)
+    assert len(recorder.pings) == 1
+
+
+async def test_min_expected_savings_sets_the_threshold() -> None:
+    mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL, pricing=OPUS_PRICING, min_expected_savings=0.01)
+    recorder = _Recorder(prompt_tokens=5_000)
+    await _arun(mw, recorder, tool_seconds=INTERVAL * 1.5)
     assert len(recorder.pings) == 1
 
 

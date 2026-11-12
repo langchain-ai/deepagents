@@ -2815,6 +2815,47 @@ class TestExecuteTaskTextualAutoModeClassifier:
         assert "Offloading" in statuses
         assert statuses[-1] == "Thinking"
 
+    async def test_nostream_summarization_start_event_shows_feedback(self) -> None:
+        """A `nostream` summary streams no chunks, only a custom start event."""
+        mounted: list[object] = []
+        statuses: list[str | None] = []
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            ((), "custom", {"type": "summarization_started"}),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.AssistantMessage",
+            side_effect=self.FakeAssistantMessage,
+        ):
+            await execute_task_textual(
+                user_input="edit the file",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=_session_state(approval_mode=ApprovalMode.AUTO),
+                adapter=adapter,
+            )
+
+        assert sum(isinstance(w, SummarizationMessage) for w in mounted) == 1
+        assert "Offloading" in statuses
+        assert statuses[-1] == "Thinking"
+
 
 _READS_PER_EDIT = 2
 """How many times a tracked edit reads the file: pre-image, then read-back."""

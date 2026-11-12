@@ -2823,6 +2823,10 @@ def build_stream_config(
     metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
     key (see above), so it is safe to stamp trace-wide.
 
+    Also records `dcode_idle_compaction` and `dcode_idle_compaction_tokens` from
+    the resolved history setting so traces can be filtered by whether idle
+    compaction is configured, independently of whether it actually runs.
+
     Also records `dcode_term_program` from `TERM_PROGRAM` when that is non-empty
     after stripping, so traces are groupable by launch environment (e.g.
     "iTerm.app", "vscode", "Apple_Terminal"). Blank values are treated as unset
@@ -2878,6 +2882,16 @@ def build_stream_config(
     # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
     if auto_approve:
         metadata["dcode_auto_approve"] = True
+
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    idle_option = get_option("history.idle_compaction_tokens")
+    idle_threshold = get_config_resolver().get(idle_option).value if idle_option else 0
+    metadata["dcode_idle_compaction"] = (
+        isinstance(idle_threshold, int) and idle_threshold > 0
+    )
+    metadata["dcode_idle_compaction_tokens"] = idle_threshold
 
     if skill_name:
         metadata["ls_skill_name"] = skill_name
@@ -4682,6 +4696,24 @@ def is_openai_prompt_cache_key_enabled() -> bool:
     from deepagents_code.configuration.resolver import get_config_resolver
 
     option = get_option("models.openai_prompt_cache_key")
+    if option is None:
+        return True
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
+
+
+def is_git_attribution_enabled() -> bool:
+    """Return whether traces may be labeled with the checkout the agent changed.
+
+    Resolves the `tracing.git_attribution` option from env/`config.toml`,
+    defaulting to enabled. When disabled, the agent omits `GitTraceMiddleware`,
+    so no git inspection subprocesses run around tool calls.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option("tracing.git_attribution")
     if option is None:
         return True
     resolved = get_config_resolver().get(option)

@@ -17425,6 +17425,45 @@ class TestDeferredActions:
 
             assert len(app._deferred_actions) == 0
 
+    @pytest.mark.parametrize(
+        ("owned", "spawned", "hint"),
+        [
+            (True, False, "/model"),
+            (True, True, "/restart"),
+            (False, False, "remote server"),
+        ],
+    )
+    async def test_startup_timeout_offers_recovery(
+        self, owned: bool, spawned: bool, hint: str
+    ) -> None:
+        from deepagents_code.client.launch.server import ServerStartupTimeoutError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {} if owned else None
+            app._server_proc = MagicMock() if spawned else None
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(
+                    error=ServerStartupTimeoutError(
+                        "Server did not become healthy within 60s "
+                        "(last error: Server disconnected without sending a response.)"
+                    )
+                )
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert widget is not None
+            text = str(widget._content)
+            assert "Server startup timed out" in text
+            assert "Debug Console" in text
+            assert hint in text
+            assert ("/restart" in text) is spawned
+            assert ("remote server" in text) is not owned
+            assert "RuntimeError" not in text
+            assert "Server disconnected" not in text
+
     async def test_server_failure_truncated_headline_notes_debug_rerun(self) -> None:
         """A clipped headline appends a re-run hint when no debug log is active.
 

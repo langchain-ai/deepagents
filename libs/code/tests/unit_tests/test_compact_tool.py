@@ -466,6 +466,41 @@ class TestCLICompactionMiddleware:
         assert event["file_path"] == "/conversation_history/thread.md"
         assert isinstance(event["summary_message"], HumanMessage)
 
+    async def test_operation_path_anchors_prior_cutoff_and_records_its_id(
+        self,
+    ) -> None:
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 2
+        summarization._compute_state_cutoff.return_value = 2
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        messages = [
+            HumanMessage("b", id="b"),
+            HumanMessage("c", id="c"),
+            HumanMessage("d", id="d"),
+        ]
+        # "a" was removed after this event was written, so "b" moved to index 0.
+        prior = {
+            "cutoff_index": 1,
+            "cutoff_message_id": "b",
+            "summary_message": None,
+            "file_path": None,
+        }
+
+        result = await middleware.arun_forced_compaction_update(
+            cast("Any", {"messages": messages, "_summarization_event": prior}),
+            runtime,
+        )
+
+        assert result is not None
+        anchored = {**prior, "cutoff_index": 0}
+        summarization._apply_event_to_messages.assert_called_once_with(
+            messages, anchored
+        )
+        summarization._compute_state_cutoff.assert_called_once_with(anchored, 2)
+        assert result["_summarization_event"]["cutoff_message_id"] == "d"
+
     async def test_operation_path_threads_and_persists_the_session_id(self) -> None:
         """`/offload` must reuse and re-commit the SDK's archive-file id.
 

@@ -1470,9 +1470,25 @@ class TestMaxTurns:
             {"role": "system", "content": "Replacement context"}
         ]
 
+    @pytest.mark.parametrize(
+        "summary_chunk",
+        [
+            (
+                (),
+                "messages",
+                (
+                    AIMessage(id="summary", content="summary"),
+                    {"lc_source": "summarization"},
+                ),
+            ),
+            ((), "custom", {"type": "summarization_started"}),
+        ],
+        ids=["streamed-summary", "nostream-start-event"],
+    )
     async def test_compact_session_start_uses_active_model_before_continuation(
         self,
         lifecycle_runtime: MagicMock,
+        summary_chunk: tuple[object, ...],
     ) -> None:
         runtime = lifecycle_runtime
         runtime.configured_events.return_value = frozenset(
@@ -1485,14 +1501,7 @@ class TestMaxTurns:
             ]
         )
         chunks = [
-            (
-                (),
-                "messages",
-                (
-                    AIMessage(id="summary", content="summary"),
-                    {"lc_source": "summarization"},
-                ),
-            ),
+            summary_chunk,
             (
                 (),
                 "messages",

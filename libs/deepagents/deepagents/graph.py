@@ -40,19 +40,19 @@ from deepagents._models import resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import _lc_version
 from deepagents.backends import StateBackend
-from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.protocol import BackendConsumer, BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
-from deepagents.middleware._prompt_caching import _CachingMiddleware, append_prompt_caching_middleware
+from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    _FORK_INSTRUCTIONS_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
@@ -213,6 +213,13 @@ def _passed_skills_sources(middleware: Sequence[AgentMiddleware[Any, Any, Any]])
     return next((m.sources for m in middleware if isinstance(m, SkillsMiddleware) and m.name == "SkillsMiddleware"), None)
 
 
+def _bind_backend(middleware: Sequence[AgentMiddleware[Any, Any, Any]], backend: BackendProtocol) -> None:
+    """Give `backend` to each middleware that asks for the agent's backend."""
+    for m in middleware:
+        if isinstance(m, BackendConsumer):
+            m.bind_backend(backend)
+
+
 def _apply_custom_middleware(
     base: list[AgentMiddleware[Any, Any, Any]],
     custom: Sequence[AgentMiddleware[Any, Any, Any]],
@@ -229,8 +236,6 @@ def _apply_custom_middleware(
     """
     if not custom:
         return list(base)
-    for caching in (m for m in base if isinstance(m, _CachingMiddleware)):
-        caching.exclude({m.name for m in custom})
     current_names = {m.name for m in base}
     replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
     to_append: list[AgentMiddleware[Any, Any, Any]] = []
@@ -406,8 +411,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             - Harness profile `extra_middleware` (if any)
             - [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware] (if `skills` is provided)
-            - `CachingMiddleware` (lazily delegates to Anthropic, Bedrock, or Fireworks
-                prompt caching for the actual request model; no-ops for other models)
+            - [`AnthropicPromptCachingMiddleware`][langchain_anthropic.middleware.AnthropicPromptCachingMiddleware] (unconditional; no-ops for
+                non-Anthropic models)
+            - [`BedrockPromptCachingMiddleware`](https://reference.langchain.com/python/langchain-aws/middleware/prompt_caching/BedrockPromptCachingMiddleware)
+                when `langchain-aws` is installed (no-ops for non-Bedrock models)
+            - [`FireworksPromptCachingMiddleware`](https://reference.langchain.com/python/integrations/langchain_fireworks/middleware/prompt_caching/FireworksPromptCachingMiddleware)
+                when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
             - [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
@@ -438,6 +447,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
             on the active harness profile and pass no synchronous
             subagents via `subagents=`. Async subagents are unaffected.
+
+            Middleware with a `bind_backend` method, such as one implementing
+            [`BackendConsumer`][deepagents.backends.protocol.BackendConsumer],
+            receive `backend` before the agent is built. So does a declarative
+            subagent's own middleware.
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -668,6 +682,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
 
     backend = backend if backend is not None else StateBackend()
+    _bind_backend(middleware or (), backend)
 
     base_prompt = _apply_profile_prompt(_profile, "")
     if system_prompt is None:
@@ -773,6 +788,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 # `create_agent` rejects two middleware sharing a name, so a spec
                 # entry replaces the inherited one in place rather than adding to it.
                 subagent_custom_middleware = list({m.name: m for m in [*middleware, *subagent_custom_middleware]}.values())
+            _bind_backend(subagent_custom_middleware, backend)
             subagent_middleware = _apply_custom_middleware(
                 subagent_middleware,
                 subagent_custom_middleware,
@@ -815,14 +831,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "middleware": subagent_middleware,
             }
             if is_forked:
-                # The parent's prompt is the fork's base; the fork's own is an addendum.
-                fork_addendum = spec.get("system_prompt")
-                if not fork_addendum:
-                    processed["system_prompt"] = final_system_prompt
-                elif isinstance(final_system_prompt, SystemMessage):
-                    processed["system_prompt"] = append_to_system_message(final_system_prompt, fork_addendum)
-                else:
-                    processed["system_prompt"] = f"{final_system_prompt}\n\n{fork_addendum}" if final_system_prompt else fork_addendum
+                # Keep the parent's system prompt byte-identical so the fork reuses
+                # the parent's cached prefix; its own prompt rides with the task.
+                processed["system_prompt"] = final_system_prompt
+                if fork_instructions := spec.get("system_prompt"):
+                    processed[_FORK_INSTRUCTIONS_KEY] = fork_instructions
             else:
                 processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:
@@ -865,7 +878,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
         # Inherit only middleware that overrides a default GP slot (including excluded
         # ones) without carrying over middleware that's specific to the main agent.
-        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index or m.name in _CachingMiddleware.provider_names]
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,

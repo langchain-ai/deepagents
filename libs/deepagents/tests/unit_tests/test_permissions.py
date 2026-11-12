@@ -1863,12 +1863,29 @@ class TestResolvedPathPermissions:
         assert "key.txt" not in str(result)
         assert "TOPSECRET" not in str(result)
 
-    def test_results_resolving_to_denied_target_filtered(self, tmp_path):
+    @pytest.mark.parametrize("denied_path", ["/secrets/**", "/secrets/", "/secrets"])
+    @pytest.mark.parametrize("prefix", ["", "/disk"])
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_results_resolving_to_denied_target_filtered(self, tmp_path, denied_path: str, prefix: str, *, use_async: bool) -> None:
         backend = self._backend(tmp_path)
-        listing = str(_invoke_with_permissions(self._tool(backend, "ls"), {"path": "/work"}, list(self._DENY_READ), backend=backend))
+        if prefix:
+            backend = CompositeBackend(default=StateBackend(), routes={f"{prefix}/": backend})
+        rules = [FilesystemPermission(operations=["read"], paths=[prefix + denied_path, f"{prefix}/secrets/key.txt"], mode="deny")]
+        invoke = _ainvoke_with_permissions if use_async else _invoke_with_permissions
+        result = invoke(self._tool(backend, "ls"), {"path": f"{prefix}/work"}, rules, backend=backend)
+        listing = str(await result if use_async else result)
+        assert f"{prefix}/work/notes.txt" in listing
+        assert f"{prefix}/work/alias.txt" not in listing
+        assert f"{prefix}/work/link" not in listing
+        assert f"{prefix}/secrets" not in listing
+
+    def test_results_denied_by_alias_path_filtered(self, tmp_path) -> None:
+        backend = self._backend(tmp_path)
+        rules = [FilesystemPermission(operations=["read"], paths=["/work/link/", "/work/alias.txt"], mode="deny")]
+        listing = str(_invoke_with_permissions(self._tool(backend, "ls"), {"path": "/work"}, rules, backend=backend))
         assert "/work/notes.txt" in listing
-        assert "/work/alias.txt" not in listing
         assert "/work/link" not in listing
+        assert "/work/alias.txt" not in listing
 
     def test_symlink_into_allowed_directory_allowed(self, tmp_path):
         backend = self._backend(tmp_path)

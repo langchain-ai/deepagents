@@ -192,6 +192,54 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
         be.read("/../a.txt")
 
 
+@pytest.mark.parametrize("is_dir", [False, True])
+def test_ls_virtual_mode_preserves_symlink_names_and_filters_escapes(tmp_path: Path, *, is_dir: bool) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "target"
+    outside = tmp_path / "outside"
+    for path in (target, outside):
+        if is_dir:
+            path.mkdir()
+        else:
+            path.write_text("hello\n")
+    try:
+        (root / "alias").symlink_to("target", target_is_directory=is_dir)
+        (root / "escape").symlink_to(outside, target_is_directory=is_dir)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support symlinks")
+
+    result = FilesystemBackend(root_dir=root, virtual_mode=True).ls("/")
+
+    assert result.error is None
+    assert result.entries is not None
+    suffix = "/" if is_dir else ""
+    assert sorted(entry["path"] for entry in result.entries) == [f"/alias{suffix}", f"/target{suffix}"]
+    assert all(entry["is_dir"] == is_dir for entry in result.entries)
+
+
+@pytest.mark.parametrize("operation", ["glob", "grep"])
+def test_search_virtual_mode_preserves_symlink_names_and_filters_escapes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "target.txt").write_text("hello\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("hello secret\n")
+    try:
+        (root / "alias.txt").symlink_to("target.txt")
+        (root / "escape.txt").symlink_to(outside)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support symlinks")
+    backend = FilesystemBackend(root_dir=root, virtual_mode=True)
+    monkeypatch.setattr(backend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+
+    result = backend.glob("*.txt") if operation == "glob" else backend.grep("hello")
+
+    assert result.error is None
+    assert result.matches is not None
+    assert sorted(match["path"] for match in result.matches) == ["/alias.txt", "/target.txt"]
+
+
 def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
     root = tmp_path
 
@@ -760,6 +808,17 @@ def test_filesystem_download_directory_as_file(tmp_path: Path):
     assert responses[0].path == "/mydir"
     assert responses[0].content is None
     assert responses[0].error == "is_directory"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
+@pytest.mark.timeout(10)
+def test_filesystem_download_fifo_fails_without_waiting_for_a_writer(tmp_path: Path):
+    os.mkfifo(tmp_path / "pipe")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    [response] = be.download_files(["/pipe"])
+
+    assert (response.content, response.error) == (None, "file_not_found")
 
 
 @pytest.mark.parametrize(

@@ -1,20 +1,28 @@
 ---
-type: observability architecture
-title: dcode Turn Trace and Git Attribution
-description: Best-effort dcode observability that detects changed Git checkouts around tool calls and retrospectively attributes them to completed LangSmith runs for one user turn.
-tags: [dcode, observability, tracing, langsmith, git, middleware]
+type: observability mechanism
+title: Trace Attribution
+description: How dcode uses bounded Git checkout evidence to label the traced work of one agent turn without affecting tool execution. Covers middleware installation, per-turn baselines, privacy limits, failure backoff, and retrospective LangSmith metadata updates.
+tags: [dcode, observability, tracing, langsmith, git, privacy]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
+    at: 2026-11-11T08:04:08.950Z
 sources:
+  - id: openwiki-source-b1a0880848a5075f2c358358
+    resource: repo://libs/code/deepagents_code/_env_vars.py
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
+    resource: repo://libs/code/deepagents_code/config_manifest.py
+  - id: openwiki-source-7f6b98925b5f1ba065df3a04
+    resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-4861406487e57b1f6364b723
     resource: repo://libs/code/deepagents_code/git_evidence.py
   - id: openwiki-source-4c023d2e012063c0083af48c
     resource: repo://libs/code/deepagents_code/git_trace.py
   - id: openwiki-source-a06e5baf378313adf2af1619
     resource: repo://libs/code/deepagents_code/turn_trace.py
+  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
+    resource: repo://libs/code/tests/unit_tests/test_agent.py
   - id: openwiki-source-120b035685e3b6ef392bc52e
     resource: repo://libs/code/tests/unit_tests/test_git_evidence.py
   - id: openwiki-source-8d8895b61321bf752c322cd7
@@ -23,91 +31,81 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_git_trace.py
   - id: openwiki-source-d8ac92b7d01d6c8ed92689c6
     resource: repo://libs/code/tests/unit_tests/test_turn_trace.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 ---
 
-# dcode Turn Trace and Git Attribution
+# Trace Attribution
 
-`GitTraceMiddleware` is a **best-effort attribution path**, not a source of agent behavior or an authorization mechanism. It observes Git checkout changes made while a dcode agent or its subagents run, then adds repository attribution to LangSmith metadata after the turn's runs have completed. It does not alter the tool result, graph state, agent response, or recorded input/output/error payloads. A missing trace, unsupported backend, failed inspection, or failed telemetry transport simply leaves attribution absent.
+`GitTraceMiddleware` is optional observability, not an execution or authorization control. Around eligible tool calls, it observes Git state in the tool's actual backend, attributes only changes made during the current turn, and retrospectively adds checkout metadata to that turn's completed LangSmith runs. It neither grants filesystem or shell access nor changes a tool's output, graph state, exception, or cancellation behavior.
 
-The middleware is installed first in both the main agent and dcode-created subagent middleware stacks. Its checkout root is the effective working directory for local backends, or the default working directory for a configured sandbox. See [Run a dcode Session](../workflows/run-dcode-session.md) for runtime setup, [Permissions and HITL](permissions-hitl.md) for execution authorization, and [Security and Trust Boundaries](../operations/security.md) for the separate backend trust boundary.
+## Installation and configuration
 
-## End-to-end flow
+`create_cli_agent` creates one `GitTraceMiddleware` and places it first in the main middleware stack and in each dcode-created subagent stack. The middleware closes over the execution backend. Its working directory is the sandbox default when a sandbox is selected, otherwise the effective local cwd. Its `TracePolicy` omits middleware input payload processing.
+
+Attribution is enabled by default through `tracing.git_attribution`. Set `DEEPAGENTS_CODE_GIT_ATTRIBUTION` to a falsy value, including an empty value, or set `[tracing].git_attribution = false` to omit the middleware entirely. This is the strongest operational opt-out: no Git inspection is started around tools. It is appropriate for privacy-sensitive or very large workspaces.
+
+## Tool-call lifecycle
 
 ```mermaid
 sequenceDiagram
-    participant Graph as Agent graph
+    participant Agent as agent graph
     participant Middleware as GitTraceMiddleware
-    participant Evidence as Git evidence probe
-    participant Backend as Execution backend
+    participant Probe as Git evidence probe
+    participant Backend as execution backend
     participant Trace as TurnTrace
     participant LangSmith as LangSmith
 
-    Graph->>Middleware: before agent
-    Middleware->>Trace: capture scoped thread and turn roots
-    Graph->>Middleware: potentially mutating tool call
-    Middleware->>Evidence: snapshot before
-    Evidence->>Backend: bounded read-only Git inspection
-    Middleware->>Graph: invoke unchanged tool handler
-    Graph-->>Middleware: unchanged tool result
-    Middleware->>Evidence: snapshot after
-    Evidence->>Trace: retain changed checkout targets
-    Graph->>Middleware: after agent
-    Middleware->>Trace: derive attribution metadata
-    Trace->>LangSmith: patch completed runs only
-    Note over Middleware,LangSmith: Probe and patch errors are swallowed as optional telemetry
-    Note over Graph: Tool and graph errors still propagate normally
+    Agent->>Middleware: eligible tool call
+    Middleware->>Probe: establish or reuse baseline
+    Probe->>Backend: bounded read-only inspection
+    Middleware->>Agent: invoke original handler
+    Agent-->>Middleware: result or raised error
+    Middleware->>Probe: snapshot after successful result
+    Probe->>Backend: bounded read-only inspection
+    Middleware->>Trace: retain changed checkout targets
+    Agent->>Middleware: after agent
+    Middleware->>Trace: merge attribution metadata
+    Trace->>LangSmith: patch completed scoped runs
+    Note over Middleware,LangSmith: Probe and update failures remain non-fatal
 ```
 
-*Potentially mutating tools are bracketed by checkout observations; only successful observations can later update completed runs belonging to the same thread and turn.*
+*The middleware brackets candidate mutations with evidence collection and performs a best-effort metadata update only after agent completion.*
 
-The middleware does not probe known read-only filesystem tools (`read_file`, `ls`, `glob`, `grep`), tools explicitly marked `readOnlyHint` unless also marked destructive, or unrelated tools such as `write_todos` and `ask_user`. It observes tools with `destructiveHint`, the known shell/write/delegation names (`execute`, `write_file`, `edit_file`, `apply_patch`, `js`, `task`), and otherwise tools whose arguments include a string `file_path`, `path`, `cwd`, or `command`. This heuristic deliberately favors attributing possible checkout work over attempting to infer actual mutation from a tool's name alone.
+### Eligibility and non-interference
 
-When tracing is unavailable or the runnable config lacks string `thread_id` and `turn_id` metadata, the middleware bypasses probes and calls the handler directly. A throwing or cancelled handler likewise propagates without an after snapshot: observability never masks or delays the original execution outcome.
+The middleware does not inspect known read-only tools (`read_file`, `ls`, `glob`, and `grep`) or a tool with `readOnlyHint` unless that tool also declares `destructiveHint`. A destructive hint, or the known write/shell/delegation names `execute`, `write_file`, `edit_file`, `apply_patch`, `js`, and `task`, makes a call eligible. Other calls are eligible only when they carry a string `file_path`, `path`, `cwd`, or `command` argument. This is a cost and coverage heuristic, not proof that a tool writes.
 
-## Checkout evidence: bounded and non-content
+A probe requires an active, scoped LangSmith turn with nonempty string `thread_id` and `turn_id`. Without one, the middleware calls the original handler directly. Handler errors and cancellation propagate unchanged; because there is no successful result, no after snapshot runs. Probe, backend-resolution, observation-retention, and trace-update exceptions are caught and logged at debug level. The asynchronous probe has an additional ten-second enclosing wait. Thus optional telemetry cannot turn a successful tool call into a failure or hide its failure.
 
-A `GitSnapshot` records the discovered checkout root, parsed repository identity, branch, commit, and a fingerprint. Repository identity is parsed from `origin`; URL credentials are removed before metadata parsing. The fingerprint hashes porcelain-v2 status plus non-content filesystem metadata for modified and untracked paths (path bytes, mode, size, and timestamps). It can therefore distinguish a later edit from dirt that was already present, and sees commits, branch switches, and new checkouts without copying file content into tracing metadata.
+### Per-turn baselines and concurrency
 
-Candidate paths begin with the configured working directory and may include `cwd`, `file_path`, and `path` arguments. For a command, shell-like tokenization additionally recognizes absolute tokens and paths after `cd` or `-C`. Invalid or suspicious values are discarded, as are memory and conversation-history paths. Discovery looks for Git roots in the candidates and a shallow bounded directory walk, skipping hidden directories, `node_modules`, `vendor`, and `__pycache__`; it stops at 16 repositories and 64 directories.
+The middleware retains up to 64 recent threads, replacing a thread's `_Turn` when its `turn_id` changes. Each turn holds a trace, path coverage, a newest-known baseline per checkout root, ordered targets, and a probe sequence protected by a lock. For a path not already covered or contained in a known local checkout, a pre-call observation establishes a baseline. Every eligible successful call is then followed by an observation. The after snapshot is compared with the newest older snapshot for that root, rather than merely the immediately preceding tool call.
 
-The implementation performs only bounded read-only Git commands. Each invocation clears inherited `GIT_*` variables, disables optional Git locks, fsmonitor, and untracked caching, disables terminal prompting, has a two-second subprocess timeout, and accepts no more than 256,000 bytes. It rejects a dirty-path list over 4,096 paths. For a `FilesystemBackend`, probing is local and resolves requested paths through the backend; virtual mode does not inspect roots outside its configured cwd. For sandbox-protocol backends, a self-contained Python probe runs through bounded backend execution with a ten-second timeout and validates the returned JSON, exit status, and truncation flag. Other backends, or sandbox implementations that cannot accept a timeout, provide no usable evidence.
+This design avoids crediting dirt that existed before observation. A checkout first encountered only after a call becomes a baseline rather than an attributed target. It also avoids needless pre-probes for paths already covered; only a non-virtual local filesystem can safely infer containment in a known checkout, so sandbox and virtual backends probe more conservatively. Sequence numbers preserve first observed target order, while probe numbers prevent a late concurrent snapshot from overwriting newer evidence.
 
-`changed_snapshots` compares snapshots by checkout root and treats a checkout as changed if it is newly discovered or its branch, commit, or fingerprint differs. Consequently, unchanged pre-existing dirt is not attributed, whereas edits, commits, branch changes, and newly created checkouts are.
+Repeated evidence failures cool down probing for 30 seconds, then 60 seconds, and so on. A success resets the failure count. After three ordinary failures, or immediately for `NotImplementedError` such as an unsupported backend, the middleware disables probing for its session and emits one informational log explaining the configuration opt-out. Tool handling continues in all cases.
 
-## From evidence to turn attribution
+## Bounded evidence and privacy boundary
 
-Each active `GitTraceMiddleware` keeps an LRU map of at most 64 threads. A thread entry is replaced when its `turn_id` changes and has its own lock and monotonic observation order. Successful before/after pairs contribute only changed snapshots that have recognized repository metadata. Targets are de-duplicated by `(repository name, branch)`, retaining the first observed occurrence and rendering them in tool-observation order.
+A `GitSnapshot` contains a checkout root, parsed repository identity, branch, commit, and an opaque fingerprint. The fingerprint hashes porcelain-v2 status records together with filesystem metadata for changed paths—mode, size, mtime, and ctime—not file contents. Origin URLs are normalized to remove credentials before repository metadata is parsed. This still exposes observability-sensitive information: inspected local roots, repository/provider names, branches, commits, and whether work changed.
 
-At `after_agent`, the middleware updates the captured turn with:
+Candidate paths start with the trace cwd and selected `cwd`, `file_path`, and `path` arguments. For `command`, shell-like tokenization recognizes absolute tokens and paths following `cd` or `-C`. The collector rejects empty, overlong, or metacharacter-bearing values and excludes memory and conversation-history paths. It examines at most 32 candidate values, discovers checkouts with shallow walking, skips hidden directories and common heavy directories, and returns at most 16 repository roots.
 
-- `ls_git_repo` and `ls_repo_provider` from the first changed target;
-- `ls_git_branch` when that branch is nonempty and not detached `HEAD`; and
-- `open_swe_git_targets`, an ordered list of every attributed `{repo, branch}` target.
+For a local `FilesystemBackend`, paths are resolved through the backend and virtual mode cannot inspect outside the backend cwd. Other non-sandbox backends are unsupported. For a sandbox protocol backend, the middleware supplies a self-contained bounded probe command only when the backend supports a timeout, executes it with a ten-second timeout, and validates the returned JSON, exit status, truncation flag, row shape, and repository bound. Unknown, malformed, truncated, or unsupported inspection is failure—not evidence of an empty workspace.
 
-The update removes `ls_git_repo`, `ls_git_branch`, and `ls_repo_provider` first when no checkout work was observed, preventing stale attribution from carrying into a read-only turn. It intentionally does not overwrite unrelated metadata, including other Git fields a caller supplied.
+The local probe invokes literal Git arguments without a shell, strips inherited `GIT_*` variables, disables optional locks and terminal prompts, disables the repository's `core.fsmonitor` executable hook, discards stderr, limits each invocation to two seconds and 256 KiB, and rejects more than 4,096 dirty paths. These controls bound cost and prevent the evidence read from invoking configured fsmonitor code; they do not make Git metadata non-sensitive.
 
-## Scoped retrospective LangSmith updates
+## From changes to trace metadata
 
-`capture_turn` finds the current `LangChainTracer` root from runnable callbacks, but walks upward only while the enclosing parents have the same `thread_id` and `turn_id`. It refuses disabled tracing, absent clients, unscoped configs, and disabled roots. Captured roots are stored by thread and turn in a separate 128-thread LRU map; repeated invocations for an approval/resume cycle join the same `TurnTrace`, allowing sibling invocation roots to be patched together.
+`changed_snapshots` compares snapshots by checkout root. A root newly found after the baseline, or an existing root whose branch, commit, or fingerprint changed, is attributed. Consequently edits, commits, branch switches, linked worktrees, and new checkouts can be recognized, while unchanged preexisting dirt is excluded. Only snapshots with parseable repository metadata become targets.
 
-`TurnTrace.update` traverses every captured root and its child runs. For each run, it merges metadata in memory but calls LangSmith `update_run` only after the run has an `end_time`. The patch includes the existing timing, trace identity, ordering, session, and address information, but does not resend inputs, outputs, errors, events, tags, or attachments. Replica-enabled runs are remapped and patched per replica group so their destinations and authorization remain correct. Individual update failures are debug-logged and do not stop traversal.
+Targets are de-duplicated by repository name and branch and ordered by their first attributed call. On completion, the first target supplies `ls_git_repo`, `ls_repo_provider`, and—unless detached—`ls_git_branch`; the complete ordered set becomes `open_swe_git_targets`. If no work was attributed, the middleware explicitly removes the three `ls_*` first-target fields, preventing stale checkout labels while preserving unrelated trace metadata.
 
-This scope is important for both correctness and privacy: a trace outside the current turn is not backfilled, active runs are not ended by telemetry, and the feature changes metadata rather than trace payloads. For thread and resume semantics more generally, see [State Persistence](state-persistence.md); for session-level trace and spend operations, see [Cost and Sessions](../operations/cost-and-sessions.md).
+`capture_turn` finds the current `LangChainTracer` root and walks upward only while parent `thread_id` and `turn_id` agree. Its thread-bounded cache combines sibling roots from an approval/resume cycle. `TurnTrace.update` visits each captured root and descendant, merges metadata in memory, and sends metadata-only updates only for completed runs. It retains the run's trace, order, session, and address routing fields, and does not resend inputs, outputs, errors, events, tags, or attachments. Replica runs are updated through their replica groups. Failures updating one run are debug logged and do not stop traversal; active runs are never ended simply to add attribution.
 
-## Operating and changing the feature
+## Focused verification
 
-There is no user-facing switch or trace payload configuration specific to Git attribution. It is created during agent assembly and activates only when LangSmith tracing supplies a live, turn-scoped root. Operators should treat its absence as normal under disabled tracing, unscoped invocations, non-Git workspaces, unsupported backends, inspection limits, or telemetry failures—not as evidence that no work occurred.
-
-The feature neither grants filesystem/shell access nor validates a repository's trust. Git probing runs in the same backend environment as the tool, and the backend and HITL policy remain the controls that determine what code can execute. The probe avoids file contents and credential-bearing remote URLs, but repository names, providers, branches, checkout roots during local inspection, and change presence remain observability-sensitive data; configure tracing and backend access accordingly.
-
-Extensions that introduce a new tool should provide accurate `readOnlyHint` and `destructiveHint` metadata when possible. Otherwise a path- or command-bearing tool can be observed conservatively. Do not make the probe path a prerequisite for a tool handler, and preserve the current failure boundary: broad exceptions around capture, probes, recording, and trace reconciliation must remain non-fatal.
-
-## Focused regression coverage
-
-The unit tests exercise real temporary checkouts for local and sandbox-style backends: credential stripping, pre-existing dirt exclusion, edits and commits, branch/worktree behavior, multiple and newly created repositories, path candidates outside the default workspace, virtual filesystem routing, and invalid/truncated sandbox results. Middleware tests cover ordering across two repositories, a fresh turn with no changes, disabled tracing, read-only exclusion, and error/cancellation propagation.
-
-Integration-style unit tests build real LangGraph/LangSmith tracer trees to verify approval-resume sibling roots, root/LLM/tool/nested run patching, turn isolation, metadata preservation, active-run safety, replica delivery, and optional probe/update failures that leave the agent result and side effects intact. Run the focused set through the package Makefile:
+The focused tests exercise both direct evidence collection and the middleware lifecycle:
 
 ```bash
 make -C libs/code test TEST_FILE=tests/unit_tests/test_git_evidence.py
@@ -116,4 +114,4 @@ make -C libs/code test TEST_FILE=tests/unit_tests/test_git_trace_integration.py
 make -C libs/code test TEST_FILE=tests/unit_tests/test_turn_trace.py
 ```
 
-See the repository-wide [Testing Guide](../testing/testing-guide.md) for test-command conventions.
+They cover credentials removal, preexisting dirt, edits, commits, branch changes, linked worktrees, sandbox response validation, fsmonitor suppression, read-only exclusion, cancellation and handler-error propagation, baseline reuse, nested checkout attribution, cooldown and session disablement, approval/resume sibling backfill, next-turn isolation, active-run safety, replica routing, and telemetry failures that leave real tool output and checkout side effects intact.

@@ -12,8 +12,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from deepagents.middleware._prompt_caching import _CachingMiddleware
-
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentMiddleware
 
@@ -100,22 +98,6 @@ def _raise_on_name_collisions(
     raise ValueError(msg)
 
 
-def _exclude_caching_providers(
-    middleware: AgentMiddleware[Any, Any, Any],
-    entries: set[type[AgentMiddleware[Any, Any, Any]] | str],
-    matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] | None,
-    matched_names: set[str] | None,
-) -> None:
-    """Record exclusions of delegates inside the single caching dispatcher."""
-    if not isinstance(middleware, _CachingMiddleware):
-        return
-    matched = middleware.exclude(entries)
-    if matched_classes is not None:
-        matched_classes.update(entry for entry in matched if isinstance(entry, type))
-    if matched_names is not None:
-        matched_names.update(entry for entry in matched if isinstance(entry, str))
-
-
 def _apply_excluded_middleware(
     stack: list[AgentMiddleware[Any, Any, Any]],
     profile: HarnessProfile,
@@ -178,7 +160,6 @@ def _apply_excluded_middleware(
             if matched_names is not None:
                 matched_names.add(mw_name)
             continue
-        _exclude_caching_providers(mw, set(excluded), matched_classes, matched_names)
         filtered.append(mw)
 
     _raise_on_name_collisions(name_matched_types)

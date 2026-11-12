@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -242,7 +243,7 @@ class FilesystemBackend(BackendProtocol):
         return "/" if posix == "." else f"/{posix}"
 
     def _to_virtual_path(self, path: Path) -> str:
-        """Convert a filesystem path to a virtual path relative to cwd.
+        """Validate resolved-target containment, then format the original path relative to cwd.
 
         Args:
             path: Filesystem path to convert.
@@ -257,7 +258,8 @@ class FilesystemBackend(BackendProtocol):
             RuntimeError: If `Path.resolve()` detects a symlink loop on
                 Python <=3.12 (wraps the underlying `OSError(ELOOP)`).
         """
-        return "/" + path.resolve().relative_to(self.cwd).as_posix()
+        _ = path.resolve().relative_to(self.cwd)
+        return "/" + path.relative_to(self.cwd).as_posix()
 
     def _display_path(self, path: Path) -> str:
         """Render a path for agent-visible messages without leaking the real root.
@@ -1497,6 +1499,9 @@ class FilesystemBackend(BackendProtocol):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the filesystem.
 
+        A path that is not a regular file, such as a FIFO or a device, fails
+        with `file_not_found`, as `read` reports it.
+
         Args:
             paths: List of file paths to download.
 
@@ -1510,10 +1515,14 @@ class FilesystemBackend(BackendProtocol):
                 if resolved_path.is_dir():
                     responses.append(FileDownloadResponse(path=path, content=None, error=IS_DIRECTORY))
                     continue
-                # Use flags to optionally prevent symlink following if
-                # supported by the OS
-                fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                # `O_NOFOLLOW` refuses symlinks where the OS supports it, and
+                # `O_NONBLOCK` keeps opening a FIFO from waiting for a writer.
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                fd = os.open(resolved_path, flags)
                 with os.fdopen(fd, "rb") as f:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        responses.append(FileDownloadResponse(path=path, content=None, error=FILE_NOT_FOUND))
+                        continue
                     content = f.read()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:

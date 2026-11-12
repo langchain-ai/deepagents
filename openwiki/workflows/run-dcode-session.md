@@ -1,11 +1,11 @@
 ---
 type: operator workflow guide
 title: Run a dcode Session
-description: Run dcode through its interactive, headless, or ACP surface, with the local runtime handoff, server-authoritative workspace binding, safe resume, streaming, cancellation, and shutdown behavior.
-tags: [dcode, cli, sessions, workspace, server-lifecycle, headless, acp]
+description: Choose dcode's ACP, interactive, or headless execution surface and operate headless sessions with safe approval, streaming, interruption, resume, statistics, and shutdown behavior.
+tags: [dcode, cli, sessions, headless, acp, server-lifecycle]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
+    at: 2026-11-11T08:04:08.950Z
 sources:
   - id: openwiki-source-526a6c8ea414f4f02ee9c4a9
     resource: repo://libs/code/deepagents_code/_run_queue_wakeup.py
@@ -33,14 +33,18 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_headless_resume.py
   - id: openwiki-source-367158c802f149f08ef8801f
     resource: repo://libs/code/tests/unit_tests/test_main_args.py
+  - id: openwiki-source-d86dd82872da8545a6c8d896
+    resource: repo://libs/code/tests/unit_tests/test_non_interactive.py
   - id: openwiki-source-439d3e6c6f1b62e6d282df3f
     resource: repo://libs/code/tests/unit_tests/test_remote_client.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+  - id: openwiki-source-0c1ad33c13d023a3467dbca9
+    resource: repo://libs/code/tests/unit_tests/test_startup_fast_paths.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 ---
 
 # Run a dcode Session
 
-`dcode` has three execution surfaces: the interactive Textual UI, a single-task headless run, and ACP. Interactive and headless execution start an app-owned loopback LangGraph server and use `RemoteAgent` to access its `agent` graph; ACP takes an early in-process protocol path instead. The server, rather than the client, is authoritative for durable thread-to-workspace binding and runtime selection. See [code agent architecture](../architecture/code-agent.md), [configuration layering](../concepts/config-layering.md), [permissions and HITL](../concepts/permissions-hitl.md), [state persistence](../concepts/state-persistence.md), and [ACP](../integrations/acp.md).
+`dcode` offers three execution surfaces: the interactive Textual UI, a one-task headless run, and ACP. Interactive and headless execution use an app-owned loopback LangGraph server through `RemoteAgent`; ACP dispatches earlier to its protocol server. The server, rather than the client, authorizes a thread's durable workspace and selected runtime. See [code agent architecture](../architecture/code-agent.md), [runtime behavior](../architecture/runtime-behavior.md), [configuration layering](../concepts/config-layering.md), [ACP](../integrations/acp.md), and [cost and sessions](../operations/cost-and-sessions.md).
 
 ## Choose the execution surface
 
@@ -58,110 +62,123 @@ git diff | dcode --stdin --skill code-review -q
 dcode --acp
 ```
 
-`cli_main` parses and resolves policy before root-mode dispatch. `--acp` is selected **before** stdin is read; it checks ACP-specific approval semantics and then runs the ACP server. For non-ACP invocations, `apply_stdin_pipe` finalizes the prompt and a nonempty `non_interactive_message` chooses `run_non_interactive`; otherwise the Textual path is used.
+Before dispatch, the CLI parses `--model-params` and `--profile-override`, resolves the summarization model once, and determines retry settings for the provider that will build the selected model. dcode owns the retry budget: provider retry parameters passed through `--model-params` are overridden, so use `--max-retries` or `[retries].max_retries` instead.
+
+ACP is selected **before** stdin is processed. It resolves approval mode, requires a prior interactive acknowledgement for YOLO, accepts `--auto-classifier-model` only for Auto mode, and rejects the `--no-mcp` plus `--mcp-config` combination. For non-ACP session launches, stdin normalization determines the surface: a final nonempty `non_interactive_message` runs headless; otherwise dcode opens the TUI.
 
 ```mermaid
 flowchart TD
-    Args["Parse arguments and apply managed policy"] --> ACPChoice{"ACP requested"}
-    ACPChoice -->|yes| ACP["Run in-process ACP server"]
-    ACPChoice -->|no| Pipe["Normalize piped stdin"]
-    Pipe --> HeadlessChoice{"Headless message present"}
-    HeadlessChoice -->|yes| Headless["Run one headless task"]
-    HeadlessChoice -->|no| TUI["Launch Textual UI"]
+    Parse["Parse session arguments and resolve models retries and profile"] --> ACPChoice{"ACP requested"}
+    ACPChoice -->|yes| ACPCheck["Validate approval and MCP options"]
+    ACPCheck --> ACPRun["Run ACP server"]
+    ACPChoice -->|no| Normalize["Normalize stdin for session launch"]
+    Normalize --> HeadlessChoice{"Headless message present"}
+    HeadlessChoice -->|yes| HeadlessRun["Run one headless task"]
+    HeadlessChoice -->|no| TUIRun["Launch Textual UI"]
 ```
 
-*ACP bypasses stdin-based surface selection; stdin normalization distinguishes headless and interactive non-ACP launches.*
+*ACP bypasses stdin-based mode selection; stdin only decides between the non-ACP surfaces.*
 
-Operational implications:
+### Session-only argument rules
 
-- Headless-only controls such as `--max-turns`, `--timeout`, `--quiet`, `--no-stream`, and rubric options are rejected when no headless message is present. `--auto-classifier-model` is interactive-only; `--auto-approve` and `--yolo` are warned about and ignored in headless mode.
-- `--no-mcp` and `--mcp-config` are mutually exclusive. An explicit MCP configuration is preflight-validated before spawning the server.
-- Treat project configuration as executable authority. Project MCP can start processes, hooks can run commands, and extensions can execute Python. Headless project hooks require explicit `--trust-project-hooks`; project MCP and extensions have separate trust controls. A sandbox does not itself grant those trusts.
-- In headless mode, shell access is controlled by `--shell-allow-list`: no list disables shell tools; a list gates shell commands while other tools are approved; `all` enables unrestricted shell access and approval. `-q` keeps agent response text on stdout and routes diagnostics to stderr.
+- `--max-turns`, `--timeout`, `--quiet`, `--no-stream`, and rubric options require a headless message. `--goal` is interactive-only and cannot be combined with an initial message or skill.
+- `--auto-classifier-model` is rejected for headless runs and sandboxed interactive runs. An explicit `--auto-approve` or `--yolo` in headless mode is warned about and ignored.
+- `--no-mcp` and `--mcp-config` are mutually exclusive. An explicit MCP configuration is preflight-validated before local-server spawn.
+- Help-only and completion invocations use lightweight paths; session launches initialize credentials only after argument parsing and the bare-help fast path.
 
-## Start and hand off the local runtime
+## Local runtime startup and workspace handoff
 
-The TUI and headless runner call `start_server_and_get_agent` (headless through `server_session`). It captures project context, derives `ServerConfig`, creates an owned temporary runtime directory, scaffolds the `agent` graph, and spawns a loopback server. The manager waits for both HTTP health and `GET /assistants/agent/graph`; the latter makes lazy graph-factory failures visible before the client receives an agent. It then configures `RemoteAgent` with the current directory and a session workspace-policy claim.
+The TUI and headless runner enter `start_server_and_get_agent`—headless via `server_session`. It captures the project context, validates MCP input, derives `ServerConfig`, scaffolds an owned temporary runtime directory, and launches a loopback `langgraph dev` subprocess. The manager waits for HTTP health and then `GET /assistants/agent/graph`; the graph request forces lazy construction so credential, provider, sandbox, and marked startup failures occur before an agent is handed to the caller.
+
+Once both gates succeed, the manager creates `RemoteAgent` and assigns the cwd, workspace-policy claim, and fingerprint. On every streamed turn, `RemoteAgent` binds or verifies the thread through the workspace route, sends the returned descriptor as run context, and uses thread-ownership headers while removing an incompatible configurable owner value. The server canonicalizes the directory, refuses client assertions of project workspace policy, durably binds a new thread, builds or validates the selected runtime before replying, and returns workspace conflicts as HTTP 409.
 
 ```mermaid
 sequenceDiagram
     participant Client as TUI or headless client
     participant Manager as Server manager
-    participant Process as ServerProcess
-    participant Runtime as Local runtime
+    participant Process as Server process
     participant Remote as RemoteAgent
+    participant Runtime as Local runtime
     participant Graph as Agent graph
     Client->>Manager: start with resolved configuration
-    Manager->>Process: scaffold and spawn loopback server
-    Process->>Runtime: wait for health
+    Manager->>Process: scaffold and spawn loopback runtime
+    Process->>Runtime: health check
     Process->>Runtime: verify agent graph
-    Manager->>Remote: set workspace and policy claim
+    Manager->>Remote: set workspace claim and fingerprint
     Client->>Remote: stream turn with thread ID
-    Remote->>Runtime: bind or verify workspace
+    Remote->>Runtime: bind or validate workspace
     Runtime->>Graph: select workspace runtime
-    Graph-->>Remote: stream messages updates and custom events
-    Remote-->>Client: normalized events
+    Graph-->>Remote: messages updates and custom events
+    Remote-->>Client: normalized stream events
 ```
 
-*The client only receives the remote graph after health and `agent` graph readiness; execution subsequently carries a server-validated workspace descriptor.*
+*The graph is not exposed to a session client until both health and graph readiness succeed, and runtime selection is server-validated.*
 
-Startup is cancellation-safe at two layers. `ServerProcess.start()` serializes lifecycle work and reaps a child when spawning, its post-spawn gate, or health checking fails or is cancelled. `start_server_and_get_agent` also stops a process that was started but not handed off—for example when graph readiness, `RemoteAgent` construction, or workspace setup fails. `PrespawnedServer` permits the UI to overlap spawning with first paint, but an unadopted prespawn is cancelled and reaped. `server_session` owns the normal headless teardown.
+Startup cleanup is cancellation-safe. `ServerProcess.start()` serializes lifecycle work and reaps a child if spawning, its post-spawn gate, or health checking fails or is cancelled. If graph readiness or workspace setup fails after startup, `start_server_and_get_agent` stops the unhanded server. `PrespawnedServer` may overlap child spawning with TUI first paint, but cancellation reaps an unadopted prespawn.
 
-The local runtime’s lifespan prebuilds the cached server runtime while clients poll for health. It also conditionally patches compatible in-memory run scheduling so inserting a run wakes a waiting consumer; the upstream polling fallback remains when that private API shape is unavailable. Runtime construction snapshots workspace environment outside the event loop and pins compatible tracing settings for the process lifetime.
+The server child environment pins the chosen profile and prevents persistent or scoped overrides from replacing the profile, inherited `PYTHONPATH`, or LangSmith carrier values. This preserves a consistent server configuration while keeping unsafe interpreter-path injection out of server startup.
 
-## Bind a workspace before executing
+## Headless policy, stream loop, and statistics
 
-A `RemoteAgent` cannot stream a thread until it has an explicit workspace. On first use it sends the configured cwd, session claim, and claim fingerprint to `/dcode/threads/{thread_id}/workspace`, then caches the returned descriptor by thread. Workspace switching updates the active cwd and cache only after the request succeeds; validation-only switches do not mutate client state.
+A headless run is deliberately non-interactive. Its actual approval behavior is derived from `--shell-allow-list`, not the ignored `--auto-approve` or `--yolo` flags:
 
-The server canonicalizes the cwd and resolves project policy itself. Clients may claim only session-scoped policy and a matching fingerprint; project-scoped fields cannot be client-claimed. The server persists or verifies the binding, registers thread metadata, and constructs the selected runtime before returning success. A conflict is reported as HTTP 409, optionally with safe diagnostics.
+- no allow-list disables shell access and auto-approves other tools;
+- `recommended` or a concrete list enables shell access but interrupts only shell calls for allow-list enforcement;
+- `all` enables unrestricted shell access and auto-approves all tools.
 
-Each graph execution requires both a nonempty thread ID and workspace context. The server compares that context with the durable binding, rejects identity or access-policy drift, and selects a runtime cached by workspace identity plus runtime fingerprint. Thus a permitted runtime-only change such as a model change can rebuild the runtime without discarding thread history, whereas changed approval, trust, tool, sandbox, or project policy fails closed. A process-wide sandbox cannot be shared by different workspaces, and incompatible LangSmith tracing settings also require separate server processes.
+Permission-request hooks override the middleware shortcuts so gated calls reach those hooks. Project hooks are not trusted by default—even persisted interactive trust does not carry into a headless invocation—and require `--trust-project-hooks`.
 
-## Run, resume, and recover a headless turn
-
-Headless execution creates or selects its thread before launching the local runtime. A fresh run gets a new ID. `-r <id>` never falls back to a new thread: it verifies the thread exists and passes resume-age policy, rejects a mismatched or unavailable persisted cwd, optionally adopts the saved agent and model, and reserves the thread before server startup. An explicit `-M` prevents saved-model adoption. If saved-model resolution fails, the run warns and continues with the launch model; a workspace conflict instead fails the resume.
-
-`--startup-cmd` runs after valid thread selection and before agent startup. It is local shell work, not model context: output follows normal console routing, launch failures, timeouts, and nonzero exits warn without aborting, and cancellation terminates and reaps the command process.
-
-The runner builds a one-turn stream configuration, starts `server_session`, reads model metadata, and streams `messages`, `updates`, and `custom` events with subgraphs. It renders response text incrementally by default, handles tool/HITL events, and keeps a request ledger across interrupt-resume passes so replayed chunks do not double-count usage. Headless mode cannot interactively approve untrusted skills: it returns a denial to the server.
-
-Cancellation and recovery must respect remote execution. `RemoteAgent.acancel_active_runs()` best-effort cancels pending and running runs. If a recovery state write receives HTTP 409 because the server still considers the thread busy, the client cancels active runs with bounded waits and retries the write once. Ownership headers and server-side tokens fence stale writers, preventing an exited or replaced client from mutating the thread.
-
-## Shutdown and restart behavior
-
-`ServerProcess` serializes start, stop, and restart. Stop is idempotent and advances a terminal stop generation; a restart checks that generation after its old process is stopped, so terminal stop wins over a racing restart.
+`--quiet` routes status, headers, tool notices, HITL decisions, and errors to stderr so response text remains usable on stdout; it still emits the thread identifier for later resume. Normal streaming writes response chunks immediately. `--no-stream` buffers response text until completion, while reasoning stays on stderr and is not folded into the final response. In a non-quiet session, the runner records invocation statistics and, when enabled, prints a usage table with wall-clock duration; a completed background LangSmith thread-link lookup can also be shown without delaying completion.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Prepared: scaffold runtime
-    Prepared --> Spawning: spawn child
-    Spawning --> Healthy: health and graph ready
-    Spawning --> Cleaning: failure or cancellation
-    Healthy --> Restarting: restart requested
-    Restarting --> Spawning: old child stopped
-    Healthy --> Cleaning: session exit or terminal stop
-    Cleaning --> Stopped: remove owned resources
-    Restarting --> Stopped: terminal stop wins
-    Stopped --> [*]
+flowchart TD
+    Begin["Select or resume thread"] --> Policy["Resolve shell allow list and hooks"]
+    Policy --> Session["Start server session and stream initial turn"]
+    Session --> Event["Receive messages updates or custom events"]
+    Event --> Output{"Text event"}
+    Output -->|yes stream| WriteNow["Write response chunk to stdout"]
+    Output -->|yes no stream| Buffer["Buffer response text"]
+    Output -->|no| Interrupt{"HITL interrupt"}
+    WriteNow --> Interrupt
+    Buffer --> Interrupt
+    Interrupt -->|no| Finish["Flush buffered text and report stats"]
+    Interrupt -->|yes within turn budget| Decide["Apply hooks and shell decision"]
+    Decide --> Resume["Resume stream with decisions"]
+    Resume --> Event
+    Interrupt -->|budget exhausted| Limit["Return exit code 124"]
 ```
 
-*Serialized lifecycle control ensures a cancelled start is reaped and prevents a restart from recreating a terminally stopped server.*
+*Headless streaming sends text incrementally unless `--no-stream` is selected; interrupts resume the same run only while the total-turn budget permits it.*
 
-On POSIX, the server bootstrap uses an owner pipe and a dedicated process group. EOF before dispatch suppresses launch; EOF after dispatch causes termination and eventual escalation. Normal shutdown targets the dedicated group with `SIGTERM`, waits, then escalates to `SIGKILL`; it avoids signaling dcode’s own group. Windows attempts Ctrl+Break and then root-process termination, so descendant cleanup is necessarily weaker and possible orphan risks are logged.
+The initial stream counts as turn 1 and each HITL resume consumes another turn. If `--max-turns` is omitted, an internal safety default bounds the loop. The runner checks the limit before another resume, returns exit code 124 when it is exhausted, and asks the operator to adjust the task or shell allow-list. It streams `messages`, `updates`, and `custom` events with subgraphs, reconciles tool lifecycle events, and keeps a request ledger so replayed chunks do not double-count usage. On cancellation or error it ends the hook session, drains pending hook tasks without replacing the selected exit code, and releases a resumed thread's ownership lease.
+
+`--startup-cmd` is local pre-agent shell work, not prompt context. Its output follows normal console routing; launch failure, a 60-second timeout, and nonzero exit warn but do not abort the task. Cancellation terminates and reaps it.
+
+## Resume and failure handling
+
+Headless execution chooses its thread before server startup. A new invocation generates a new ID. `-r <id>` never degrades to a new thread: it verifies existence and resume-age policy, rejects a mismatched or unavailable persisted directory, and reserves the existing thread before startup. It may adopt the saved agent and—unless `-M` was supplied—the saved model. If the saved model cannot be resolved, it warns and continues with the launch model; a workspace conflict remains fatal.
+
+Remote cancellation is best effort for active runs. When a recovery-state write conflicts because the server still sees the thread as busy, the client cancels pending and running runs with bounded waits and retries that write once.
+
+At local-server startup, the lifespan can patch a compatible in-memory run scheduler to wake on insertion and begins building the cached runtime while the client waits for health. Shutdown cancels that prebuild, shuts down extensions, and performs a bounded best-effort LangSmith trace flush. Workspace runtimes snapshot workspace environment and pin compatible tracing settings; thread leases and ownership tokens fence stale checkpoint writers.
+
+## Stop and diagnose safely
+
+`ServerProcess` serializes asynchronous start and restart actions, while a state lock protects synchronous teardown. Terminal `stop()` is idempotent and increments a stop generation. A restart captures that generation before stopping its old child; if a terminal stop wins the race, the replacement spawn is cancelled rather than recreating the server.
+
+On POSIX, bootstrap uses a parent-death pipe and a dedicated process group. EOF before dispatch suppresses launch; EOF after dispatch triggers termination. Normal shutdown signals only that group with `SIGTERM`, waits, then escalates to `SIGKILL`, and refuses to signal dcode's own group. Windows attempts Ctrl+Break and finally terminates the root process, so descendants may survive and are reported. Debug mode preserves and announces server logs after terminal restoration; ordinary teardown removes them.
 
 ## Focused validation
 
-Run these focused unit tests from `libs/code` when changing this workflow:
+Run focused tests from `libs/code` when modifying this workflow:
 
 ```bash
-make test TEST_FILE=tests/unit_tests/test_main.py
-make test TEST_FILE=tests/unit_tests/test_main_args.py
-make test TEST_FILE=tests/unit_tests/test_headless_resume.py
+make test TEST_FILE=tests/unit_tests/test_startup_fast_paths.py
 make test TEST_FILE=tests/unit_tests/test_non_interactive.py
+make test TEST_FILE=tests/unit_tests/test_headless_resume.py
+make test TEST_FILE=tests/unit_tests/test_main_args.py
 make test TEST_FILE=tests/unit_tests/test_remote_client.py
 make test TEST_FILE=tests/unit_tests/test_server_manager.py
-make test TEST_FILE=tests/unit_tests/test_server_graph.py
-make test TEST_FILE=tests/unit_tests/test_server.py
 ```
 
-Cover ACP-before-stdin dispatch, piped stdin routing, headless-only argument rejection, and MCP preflight. For resume changes, cover missing/aged threads, cwd conflict, model adoption, and the invariant that failure never creates a replacement thread. For remote changes, cover workspace caching and rejection, ownership-header handoff, cancelling pending/running runs, and the single retry after a state-update conflict. For lifecycle changes, cover graph readiness after health, cancellation during startup, cleanup after failed handoff, owner-pipe behavior, and terminal-stop-versus-restart races.
+Protect mode routing before stdin processing, headless-only argument errors, shell allow-list policy, quiet/no-stream routing, hook trust, HITL turn accounting, and exit code 124. For startup changes, cover health plus graph readiness and cancellation cleanup. For resumes and workspace work, cover no-fallback resume behavior, ownership reservation, server-side workspace claims, 409 conflicts, cancellation, and the single recovery-write retry.

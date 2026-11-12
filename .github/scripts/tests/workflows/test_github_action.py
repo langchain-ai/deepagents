@@ -68,15 +68,17 @@ def _run_dcode_body() -> str:
 
 
 def _root_parser_flags() -> set[str]:
+    """Collect the root parser's `--` flags from the CLI parser builder."""
     tree = ast.parse(MAIN_PATH.read_text())
-    parse_args = next(
+    # `build_parser` registers the arguments; `parse_args` only parses them.
+    build_parser = next(
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "parse_args"
+        if isinstance(node, ast.FunctionDef) and node.name == "build_parser"
     )
     flags: set[str] = set()
 
-    for node in ast.walk(parse_args):
+    for node in ast.walk(build_parser):
         if not isinstance(node, ast.Call):
             continue
         if (

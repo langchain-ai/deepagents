@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.goal_state_notice import (
+    anchor_summarization_event,
     build_goal_state_notice,
     goal_state_notice_info,
 )
@@ -288,3 +289,45 @@ async def test_notice_defers_for_incomplete_tool_result_batch(
     ):
         assert await app._ensure_goal_state_notice()
     updater.aupdate_state.assert_awaited_once()
+
+
+def test_anchor_summarization_event_follows_id_after_removal() -> None:
+    messages = [
+        HumanMessage("a", id="a"),
+        HumanMessage("c", id="c"),
+        HumanMessage("d", id="d"),
+    ]
+    event = {"cutoff_index": 3, "cutoff_message_id": "d", "created_at_index": 4}
+
+    anchored = anchor_summarization_event(event, messages)
+
+    assert anchored == {
+        "cutoff_index": 2,
+        "cutoff_message_id": "d",
+        "created_at_index": 3,
+    }
+    assert event["cutoff_index"] == 3
+
+
+def test_anchor_summarization_event_reads_serialized_messages() -> None:
+    event = {"cutoff_index": 2, "cutoff_message_id": "c"}
+
+    anchored = anchor_summarization_event(event, [{"id": "a"}, {"id": "c"}])
+
+    assert anchored["cutoff_index"] == 1
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        None,
+        {"cutoff_index": 1},
+        {"cutoff_index": 1, "cutoff_message_id": "gone"},
+        {"cutoff_index": 1, "cutoff_message_id": "b"},
+        {"cutoff_index": True, "cutoff_message_id": "b"},
+    ],
+)
+def test_anchor_summarization_event_leaves_unresolvable_events(event: object) -> None:
+    messages = [HumanMessage("a", id="a"), HumanMessage("b", id="b")]
+
+    assert anchor_summarization_event(event, messages) is event

@@ -1,138 +1,176 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused, package-owned regression routes for Deep Agents context recovery, subagent refusal handling, filesystem and adapter boundaries, and CI workflow contracts. Use fake models and local fixtures to assert observable state, result, and failure behavior.
-tags: [testing, deepagents, context-management, subagents, ci, lockfiles, filesystem, mcp]
+description: Focused test routes and behavioral invariants for SDK graph and filesystem changes, dcode headless execution and observability, QuickJS filesystem integration, Talon delegation, and the root GitHub Action.
+tags: [testing, deepagents, dcode, quickjs, talon, github-actions]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
+    at: 2026-11-11T08:04:08.950Z
 sources:
-  - id: openwiki-source-75ab344a500d6a7392581a42
-    resource: repo://.github/scripts/tests/workflows/test_ci_workflow.py
-  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
-    resource: repo://.github/workflows/check_lockfiles.yml
-  - id: openwiki-source-8037e2358a2c4f9b2c722a11
-    resource: repo://AGENTS.md
+  - id: openwiki-source-b1423dca16677f7643488f74
+    resource: repo://.github/scripts/tests/workflows/test_github_action.py
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
-  - id: openwiki-source-d3c832989def55cb99198f1d
-    resource: repo://libs/code/tests/unit_tests/test_compact_tool.py
-  - id: openwiki-source-e4a7bc21d51c04aa0c75f854
-    resource: repo://libs/code/tests/unit_tests/test_output_truncation.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-a1c23c211325ea69f28f8ca0
+    resource: repo://libs/code/tests/unit_tests/test_cost_tracking.py
+  - id: openwiki-source-8d8895b61321bf752c322cd7
+    resource: repo://libs/code/tests/unit_tests/test_git_trace_integration.py
+  - id: openwiki-source-d86dd82872da8545a6c8d896
+    resource: repo://libs/code/tests/unit_tests/test_non_interactive.py
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-7b8607fdda73d9d47ee17387
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
-  - id: openwiki-source-69c260914d2dd18b60ad5900
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
-  - id: openwiki-source-6228ff9cf1d681a771797121
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
-  - id: openwiki-source-8e7076889e81540fe4fcb8c5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
-  - id: openwiki-source-10e4084b6aa57e5cc82620b3
-    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-  - id: openwiki-source-917b61d56e652536ba962f3a
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-49fbcc45434b619b68220bf9
-    resource: repo://libs/Makefile
-  - id: openwiki-source-ba53b2ab73965694b2510a58
-    resource: repo://libs/talon/Makefile
-  - id: openwiki-source-fed7e97e2aca85ebfae626d9
-    resource: repo://libs/talon/tests/unit_tests/test_mcp_adapter.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+  - id: openwiki-source-224af38a099019bb2a44f0a7
+    resource: repo://libs/partners/quickjs/Makefile
+  - id: openwiki-source-1192610625477956a086526a
+    resource: repo://libs/partners/quickjs/tests/unit_tests/test_fs.py
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 ---
 
 # Testing Guide
 
-Start at the package and boundary that own the changed behavior, then widen only when the change crosses that boundary. Tests are network-free in `tests/unit_tests/` and networked in `tests/integration_tests/`; write deterministic assertions about observable behavior rather than helper calls or incidental ordering. Unaccepted pytest warnings fail the suite. See [Context Management](../concepts/context-management.md), [Subagents and Skills](../concepts/subagents-skills.md), [Runtime Behavior](../architecture/runtime-behavior.md), and [Development](../operations/development.md) for the corresponding runtime and contributor contracts.
+Run the narrowest owning suite from its package before expanding scope. These suites use real graphs, temporary repositories, state/filesystem backends, and shell subprocesses where the contract is at an integration boundary; use mocks only to make timing, provider, and external-service outcomes deterministic. For environment setup and the repository-wide workflow, see [Development](../operations/development.md). For the runtime models behind the focused areas, see [Trace Attribution](../concepts/trace-attribution.md), [Talon Scheduling](../concepts/talon-scheduling.md), and [Sandbox Partners](../integrations/sandbox-partners.md).
 
-## Run the owning target
+## Focused routes
 
-Use a package Makefile target so the dependency group, coverage, parallelism, socket policy, and timeout stay aligned with CI.
+Run the package target after `uv sync --all-groups`. The package Makefiles are the authority for flags: core SDK and dcode unit routes use xdist, coverage, and socket disabling except Unix sockets; their integration routes select `tests/integration_tests/` and apply a 30-second timeout. QuickJS similarly disables sockets for unit tests. The repository convention is that unexpected warnings fail tests, so do not paper over a new warning with a broad filter.
 
 ```bash
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_compaction_recovery.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_summarization_middleware.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_end_to_end.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_subagent_refusal.py
-python -m pytest .github/scripts/tests/workflows/test_ci_workflow.py
-make -C libs hygiene
+make -C libs/code test TEST_FILE=tests/unit_tests/test_cost_tracking.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_git_trace_integration.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_non_interactive.py
+make -C libs/deepagents test TEST_FILE=tests/unit_tests/backends/test_filesystem_backend.py
+make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_graph.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_fs.py
+make -C libs/talon test TEST_FILE=tests/unit_tests/test_background.py
+uv run --group test pytest .github/scripts/tests/workflows/test_github_action.py
 ```
 
-`libs/code` and `libs/deepagents` default to unit tests, use xdist, and disable network sockets except Unix sockets. Their integration targets select `tests/integration_tests/` and apply a 30-second timeout. Talon first runs its Node bridge tests, then runs pytest with sockets disabled and a 10-second timeout. Run the focused route first and the package lint target before widening to the package suite.
+Use a direct `uv run --group test pytest …` invocation only when isolating a node or parametrization. Follow a successful focused route with the owning package's `make lint`.
 
-## Context compaction and overflow recovery
+## Deep Agents SDK: graph assembly and filesystem boundaries
 
-`SummarizationMiddleware` reduces the model-facing request while retaining raw conversation state and records a `_summarization_event` only when it has actually summarized history. `test_summarization_middleware.py` is the focused route for normal and chained event semantics; `test_compaction_recovery.py` protects the limit calculation and retry path. Use its deterministic counter, fake model, and mock backend rather than a provider.
+### Graph construction
+
+`libs/deepagents/tests/unit_tests/test_graph.py` protects `create_deep_agent` composition rather than merely checking that a graph compiles. When changing a harness profile, middleware ordering, or a default subagent, assert the observable compiled graph: version metadata includes the editable-install marker when appropriate while retaining the LangSmith integration marker; profile lookup prefers exact model candidates while inheriting provider defaults; and description overrides copy supported tools rather than mutate caller-owned dictionaries or `BaseTool` objects.
+
+The most consequential graph checks cover propagation across the main agent and subagents:
+
+- A harness profile can change filesystem and task descriptions, configure or remove the default `general-purpose` subagent, and still leave the `task` tool when an explicit synchronous subagent requires it.
+- Provider-specific prompt-caching middleware belongs to both the main graph and eligible subagents. An unavailable optional Bedrock module is omitted, but unrelated import failures must still surface.
+- Required middleware cannot be silently excluded or duplicated. User middleware is applied at its documented extension point, and private state/schema isolation prevents a subagent's internal fields from leaking into the parent.
+- Backend factories are bound at graph construction; test an actual invocation whenever changing state/backend binding rather than relying only on constructor arguments.
+
+### Filesystem backend
+
+`libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py` is the focused route for the concrete local backend in virtual and native path modes. Its essential safety contract is containment: virtual listings and searches preserve in-root symlink names but suppress symlinks that resolve outside the root; traversal is rejected; and symlink loops become structured errors instead of hangs.
+
+A filesystem change should preserve the interface behavior across operations:
+
+- `ls` is one directory deep, directory paths carry a trailing slash, and virtual paths are rooted at `/`. An omitted glob search path means the backend root; hidden paths require an explicit dot pattern.
+- Text reads expose line-window metadata (`total_lines`, inclusive source line bounds, and `next_offset`); negative offsets start at the first line, a non-positive text limit is an empty successful window, and an offset beyond EOF is an error. Empty text has its special empty-content response, while binary data is not line-sliced.
+- Non-UTF-8 text is an error result rather than an exception. Video—including `.mkv`—is binary and is size-checked before loading; large tool results are written beneath `large_tool_results` and replaced in the tool response with a retrievable path.
+- Upload/download report per-path outcomes, including partial failures. Literal grep, glob deadlines and truncation, Python fallback, and ripgrep failure paths must preserve partial-result/error semantics instead of presenting a failed search as an empty one.
+
+## dcode: headless lifecycle, cost ownership, and trace attribution
+
+### Non-interactive execution
+
+`libs/code/tests/unit_tests/test_non_interactive.py` exercises the headless client from argument plumbing through stream processing and teardown. Treat it as the change detector for command-line automation, not as a TUI test. It verifies that server startup receives the selected sandbox, owned sandbox ID, snapshot name, profile overrides, and filesystem-tool policy. Permission hooks override a headless YOLO server bypass so the client can make the hook decision while retaining the requested approval-mode context.
 
 ```mermaid
 flowchart TD
-    Request["model request"] --> Budget{"fits effective input budget"}
-    Budget -->|"yes"| Send["send request"]
-    Budget -->|"no"| Clip["clip or offload reducible content"]
-    Send -->|"context overflow"| Recover["reduce request once"]
-    Recover --> Retry["retry model request"]
-    Retry -->|"still overflow"| Terminal["raise terminal context overflow"]
-    Retry -->|"success"| Persist["return updated messages and event if summarized"]
-    Send -->|"success"| Persist
+    Input["headless inputs"] --> Start["start server and agent"]
+    Start --> Stream["stream agent events"]
+    Stream --> Stats["deduplicate usage and update stats"]
+    Stream --> Hitl["resolve tool approval"]
+    Hitl --> Finish["end session and teardown"]
+    Stats --> Finish
 ```
 
-*The recovery route distinguishes a reduced retry from resending an unchanged request and makes repeated overflow terminal.*
+*The headless tests cover forwarding into server startup, stream-side accounting, approval decisions, and bounded cleanup.*
 
-When modifying cutoff, budgets, clipping, or recovery, preserve these regression cases in both synchronous and asynchronous invocation:
+Shell approval is deliberately conservative: without an allow-list `execute` is rejected; every pipe segment must be allowed; shell substitutions and dangerous forms are rejected even if the leading command is allowed; and only `SHELL_ALLOW_ALL` approves arbitrary commands. Keep tests for quiet/no-stream output, startup commands, hooks, retries, iteration limits, standard-stream encoding, and resume separate from policy tests—these are different failure boundaries.
 
-- Chained summaries use raw-state coordinates: each event records a cutoff index and cutoff message ID. The next compaction resolves the prior boundary by message ID when earlier messages have disappeared, but falls back to the stored index for legacy or stale IDs. Verify that each new archive contains only the newly evicted range and that the retained suffix starts at the recorded boundary.
-- A request must fit the effective input budget before it reaches the model. Include system text, tool schemas, and reserved output tokens in cases where those inputs leave no reducible message budget; such a request raises `ContextOverflowError` without calling the provider. An unknown agent limit must not borrow the summarizer model's limit.
-- A provider-shaped context-limit failure and `ContextOverflowError` get one smaller retry. A second overflow becomes a terminal `ContextOverflowError` that retains the original provider error as its cause. An unrelated 400-style bad request must propagate untouched and must not offload or retry.
-- When no summary cutoff is available, recovery must either reduce the request through clipping or stop after the first failure; it must never resend identical input. A successful no-cutoff recovery persists clipped replacement messages, keeps tool-call/result pairing, and does not invent `_summarization_event` state.
-- Large tool-result regressions belong in `test_end_to_end.py`: `read_file` results are replaced with a smaller, offset-guided representation while original files remain intact; generic `ls` and user-tool results are offloaded under `/large_tool_results/` and replaced with pointers. Assert final agent completion and persisted backend state, not a private clip helper.
+Usage events and message chunks can report the same request under different IDs. The headless statistics tests require the pair to count once and classify delegated (`tools:task`) usage as subagent work. This protects displayed totals from stream ordering and duplicate delivery.
 
-The manual `compact_conversation` seam has separate state rules. An ineligible or zero-cutoff request is a correlated no-op tool result. Successful compaction records raw-state cutoff arithmetic, summary content, and an optional archive path. Summary or escaping-offload errors return an error `ToolMessage` without changing the summarization event. dcode compaction tests additionally protect selected-model budget calculation, deferred archive mutation, and fail-closed archive reads.
+### Cost tracking
 
-## Refusals: main-agent exception, delegated task result
+`libs/code/tests/unit_tests/test_cost_tracking.py` is the cost-accounting route. It tests both price resolution and graph ownership: pricing may include input/output, cache read/creation, and reasoning categories, but the absence of detailed usage must remain distinguishable from a reported zero. Local price overrides are a fallback after upstream lookup fails; once upstream learns a model, upstream pricing wins.
 
-`create_deep_agent` places `ModelRefusalMiddleware` at the main stack tail, so a caller's `ModelFallbackMiddleware` can handle refusal first. Thus the default top-level behavior is a `ModelRefusalError`; a harness profile can explicitly exclude that middleware. This is intentionally different from the task boundary: `SubAgentMiddleware` catches refusal and structured-output validation errors caused by a refusal, formats a notice with available category and explanation, and returns it to the parent as the task result. The parent can continue its turn.
+The session recorder is process-wide in production, so tests install a fresh context-variable recorder. Preserve its boundaries: completed model calls are correlated to a thread and checkpoint namespace, drained once into graph state/events, and must not leak between concurrent threads, executor workers, or discarded/cancelled work. Test parent/subagent transfers, deduplication by message/invocation identity, late corrections, and summarization separately from arithmetic. The graph-level assertions ensure cumulative cost survives checkpoints and that a subagent's cost is transferred to the parent rather than counted twice.
 
-Use `libs/deepagents/tests/unit_tests/test_subagent_refusal.py` for changes in either policy or result formatting. Parameterize sync and async execution and cover:
+### Git trace backfill
 
-- Anthropic refusal blocks with category and explanation, bare refusal metadata, and OpenAI refusal content; test both a raw refused response and a child that raises through `ModelRefusalMiddleware`.
-- A structured-output child refusal, declarative and compiled subagents, and the async final-content formatting path.
-- Plain dictionary messages, which are not treated as a refusal, and a refusal error without a structured block, whose error message supplies the explanation.
-- The parent transcript: the `task` result is the notice and the parent produces its scripted final answer. Do not assert that a subagent exception escaped the parent.
+`libs/code/tests/unit_tests/test_git_trace_integration.py` runs a real temporary Git checkout through an agent and a LangChain tracer. It establishes retrospective attribution: after a tool changes the observed repository/branch, `GitTraceMiddleware` backfills the runs in that matching turn—including runs created before approval/resume—without overwriting caller-supplied `git_repo`, `git_branch`, unrelated metadata, attribution identity, or another enclosing turn.
 
-## CI and lockfile workflow contracts
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Middleware
+    participant Checkout
+    participant Tracer
+    Agent->>Middleware: invoke turn
+    Middleware->>Checkout: probe before and after work
+    Agent->>Checkout: tool changes branch and file
+    Middleware->>Tracer: backfill matching turn metadata
+    Middleware-->>Agent: preserve agent result on observation failure
+```
 
-`.github/scripts/tests/workflows/test_ci_workflow.py` is deliberately more than YAML grepping. It loads workflow YAML, normalizes the YAML 1.1 `on` key, evaluates the subset of GitHub Actions conditions used by ripgrep installation, and executes high-risk shell bodies against stub binaries. Use it when editing `ci.yml`, `_test.yml`, `release.yml`, `ripgrep_timeout_comment.yml`, or the reusable lockfile workflow.
+*Trace tests require observed Git metadata to be applied only to the matching completed turn, while Git probing and telemetry remain optional.*
 
-The `check_lockfiles.yml` reusable workflow has read-only contents permission, a five-minute Ubuntu job, a credential-less checkout, and cache-disabled uv setup. It runs the all-package lockfile checker, then—except on push—runs the same changed-file hygiene target available locally as `make -C libs hygiene`. Its tests execute the concatenated workflow commands with stubbed `python3` and `make`: a lockfile failure prevents hygiene from running, while either validation failure fails the job.
+Run both synchronous and asynchronous variants when changing hooks or callback propagation. Probe and telemetry failure must not change the real agent output; a failed initial probe must not attach invented attribution, and later turns must not inherit prior turn's observed Git metadata.
 
-For CI changes, test behavior rather than string presence:
+## QuickJS filesystem adapter
 
-- Confirm the main CI job invokes `./.github/workflows/check_lockfiles.yml` unconditionally and includes `check-lockfiles` in the final success gate. Exercise the gate for each inherited result so the lockfile check cannot silently stop blocking merges.
-- Keep lockfile checking wired to `check_lockfiles_pre_commit.py`; `libs/Makefile` owns the package enumeration and `uv lock --check` loop. Keep hygiene hook selection centralized in that Makefile rather than duplicating it in workflow YAML.
-- For conditional or privileged paths, run the real `run:` body with stubs. The ripgrep tests prove strict and soft branches are mutually exclusive, timeout/bypass polarity is correct, and only a usable install promises `DEEPAGENTS_RIPGREP_EXPECTED=1` to filesystem tests. The CI gate test also ensures a pull-request gate script is preferred from a credential-less trusted base checkout rather than executed from PR-authored code.
+`libs/partners/quickjs/tests/unit_tests/test_fs.py` tests `CodeInterpreterMiddleware` against actual Deep Agents backends. It is the integration route when adding an `fs` method, mapping an error, or changing host-to-JavaScript marshaling. Test both `invoke` and `ainvoke` where supported.
 
-## Other established focused boundaries
+The JavaScript surface is deliberately asynchronous: `fs.readFile`, `writeFile`, `readdir`, `access`, and `rm` operate on `StateBackend`, `FilesystemBackend`, and `CompositeBackend` routes, so writes/deletes must reach the selected backend while unrelated paths remain on the default backend. Node-like failures are observable API: missing paths are `ENOENT`, file/directory mismatches distinguish `EISDIR`, `ENOTDIR`, and `ERR_FS_EISDIR`, invalid encoding is reported, and `rm({force: true})` permits a missing target.
 
-Keep these routes when work touches their contracts:
+Containment and failure isolation matter here too. Dot-dot paths can normalize inside the backend root but cannot escape it; unsupported argument shapes are refused with Node-style invalid-argument errors; a backend exception rejects only that filesystem call; oversized or overly deep marshaled results terminate only that `eval`, allowing a later evaluation to run. Filesystem calls participate in the PTC call budget, and filesystem contents must not appear in callback trace outputs. If no backend is configured, neither the `fs` object nor its prompt section is exposed.
 
-- `libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py` uses `tmp_path` to test virtual-root traversal rejection, root-scoped globbing and dotfile behavior, deterministic listing, paginated text reads, literal grep in ripgrep and Python fallback paths, and containment through symlinks. If CI promised ripgrep, its absence fails rather than skips.
-- `libs/deepagents/tests/unit_tests/test_subagents.py` verifies that async remote specifications expose async task tools while synchronous children expose `task`, that final child output is correlated by task call ID, and that private state stays isolated while explicitly public state can propagate. Test parallel results by ID, not completion order.
-- `libs/talon/tests/unit_tests/test_mcp_adapter.py` uses an in-process FastMCP server and a local stdio process to validate tool prefixing, argument normalization, schema preservation, error correlation, authorization cleanup, elicitation/approval behavior, reload during invocation, and child-process cleanup without a remote service.
-- `libs/code/tests/unit_tests/test_output_truncation.py` separates provider stop-reason classification from graph behavior: empty truncation becomes a serialized model error without an assistant checkpoint, while subagent partial and empty truncations become correlated parent tool results and allow the parent to continue in fork and isolated modes.
+## Talon: background and scheduled delegation
+
+Use `libs/talon/tests/unit_tests/test_background.py` for the ownership and delivery state machine. A chat `task` delegation detaches into a distinct child thread so the parent can answer later messages. Completed results remain owner-scoped until the owning model consumes them; acknowledgement removes them, while a failed/cancelled turn preserves unprocessed results and host delivery failure requeues only the IDs acknowledged by that reply. `/stop` and `/new` cancel only that conversation's jobs and discard its completed results.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: chat delegation
+    Running --> Finished: worker result
+    Running --> Cancelled: owner stop or new
+    Finished --> PendingDelivery
+    PendingDelivery --> Acknowledged: model consumes result
+    Acknowledged --> PendingDelivery: host cannot deliver reply
+    Acknowledged --> [*]: reply delivered
+    Cancelled --> [*]
+```
+
+*Background result state is owned by a conversation and is acknowledged by model consumption, then reconciled with host delivery.*
+
+Capacity is global, shared across conversations, and comes from `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS` (default `4`); zero, negative, fractional, and nonnumeric values fail runtime construction. Inspection and cancellation cannot disclose or operate on another owner's task. Workers inherit the necessary history/cron context but clear the authorization handler, and failures/timeouts return generic result text without tool arguments or credentials. A cancellation arriving after completion leaves the result available.
+
+Scheduled turns follow a different path: they invoke subagents inline, create no background job, consume no chat capacity, and use a separate bounded inline fan-out limit. Inline timeout/failure becomes an error `ToolMessage`, not an exception that restarts the graph. Remote `start_async_task` streams its final result inline in a scheduled turn because that turn cannot later resolve a returned task ID; answer extraction removes encrypted reasoning and bounds result length in both modes.
+
+## Root GitHub Action wrapper
+
+` .github/scripts/tests/workflows/test_github_action.py` (run it with the command above; the leading space is not part of the path) validates `action.yml` as executable shell, not only YAML. It parses the action and dcode CLI parser to detect input/flag drift, then runs the real `Run dcode` body in Bash with `uvx` and `timeout` stubs. Keep the action's non-interactive boundary explicit: it must forward only supported dcode options and must not expose or forward interactive `auto_approve`.
+
+The setup slice checks the input grammar and command assembly: prompt is mandatory; timeout and max-turns are positive integers while max-retries is non-negative; boolean and interpreter inputs are tri-state-aware; stdin and skill are mutually exclusive; optional values are omitted when empty; and JSON model parameters must be an object. Leading-zero numeric input is accepted and must be handled as base 10 when converted to a timeout duration.
+
+The full-body harness protects operational behavior: the action captures the agent exit status through its output pipeline, writes that value to `$GITHUB_OUTPUT`, and exits with the same code. In stdin mode, a producer `SIGPIPE` caused by an early-exiting agent must not replace the agent's successful exit code. Extend this real-shell harness when changing quoting, command construction, timeout arithmetic, or output capture.
 
 ## Completion checklist
 
-1. Run the smallest owner route with fake models, mock backends, `tmp_path`, or stub binaries; avoid network services.
-2. For context changes, assert send/retry count, request reduction, tool-pair integrity, event persistence or intentional absence, and terminal failure semantics in sync and async paths.
-3. For delegated failures, assert the parent-visible task result and continuation, separately from the main-agent exception or fallback policy.
-4. For workflow changes, execute shell and gate behavior under controlled failures; preserve the local command that CI delegates to.
-5. Run the relevant package lint and do not suppress a warning without a narrowly scoped, accepted reason.
+1. Run the focused route for every boundary changed, then the package `lint` target.
+2. For SDK graph/filesystem work, exercise the compiled graph or real temporary filesystem, including containment and error-result behavior.
+3. For dcode headless changes, cover server argument forwarding, approval policy, duplicate usage correlation, and teardown; for cost/trace changes, cover identity, isolation, and failure-tolerant attribution.
+4. For QuickJS, assert JavaScript-visible values and errors against each backend route, not Python helper internals.
+5. For Talon, test owner scope, acknowledgement/requeue behavior, shared capacity, and the scheduled inline path separately.
+6. For the Action, execute the `Run dcode` shell body with stubs; parser/YAML inspection alone cannot validate shell exit and pipeline behavior.

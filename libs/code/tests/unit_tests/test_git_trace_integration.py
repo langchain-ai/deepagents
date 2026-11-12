@@ -212,6 +212,7 @@ async def test_optional_observation_failure_preserves_real_agent_output(
             return result
 
         monkeypatch.setattr(git_trace, "aprobe_git", probe)
+        monkeypatch.setattr(git_trace, "_COOLDOWN_SECONDS", 0.0)
     elif failure == "probe":
         monkeypatch.setattr(
             git_trace,

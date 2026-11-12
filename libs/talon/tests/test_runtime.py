@@ -14,13 +14,16 @@ import httpx
 import pytest
 from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langsmith import tracing_context
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
+from deepagents_talon.background import _Job
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -1448,3 +1451,125 @@ async def test_recovery_trace_has_named_root_and_conversation_metadata(monkeypat
     assert roots[0]["extra"]["metadata"]["conversation_id"] == "chat"
     state = await graph.aget_state({"configurable": {"thread_id": "chat"}})
     assert state.values["messages"][-1].content.startswith("[SYSTEM] Task interrupted")
+
+
+@pytest.mark.parametrize("recovery_reply", ["Research is complete.", ""])
+@pytest.mark.parametrize("max_continuations", [0, 2])
+async def test_runtime_empty_reply_recovers_status_with_bounded_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_reply: str,
+    max_continuations: int,
+) -> None:
+    class EmptyGraph(RecordingGraph):
+        async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append((payload, config))
+            return {"messages": [AIMessage(content=recovery_reply if len(self.calls) > 1 else "")]}
+
+    graph = EmptyGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        max_continuations=max_continuations,
+    )
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest(conversation_id="chat", text="Research this"))
+        assert result.text == recovery_reply
+        assert len(graph.calls) == (2 if recovery_reply else max_continuations + 2)
+        for payload, _config in graph.calls[1:]:
+            prompt = payload["messages"][-1]["content"]
+            assert "operator" in prompt
+            assert "Do not" in prompt
+            assert "poll" in prompt
+            assert "wait" in prompt
+            assert "automatically" in prompt
+            assert "exhaust" not in prompt
+            assert "out of actions" not in prompt
+    finally:
+        await runtime.stop()
+
+
+async def test_runtime_empty_reply_after_delegation_returns_status_without_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ToolModel(FakeMessagesListChatModel):
+        def bind_tools(self, _tools: object, **_kwargs: Any) -> ToolModel:
+            return self
+
+    async def child(_state: object) -> dict[str, list[AIMessage]]:
+        await asyncio.Event().wait()
+        return {"messages": [AIMessage(content="Research complete")]}
+
+    model = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "id": "launch",
+                        "args": {"subagent_type": "researcher", "description": "Research this"},
+                    }
+                ],
+            ),
+            AIMessage(content=""),
+            AIMessage(content="Unexpected extra model call"),
+        ]
+    )
+    monkeypatch.setattr("deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: model)
+    runtime = DeepAgentRuntime(
+        model="test:parent",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        subagents=[
+            {"name": "researcher", "description": "Research", "runnable": RunnableLambda(child)}
+        ],
+    )
+    snapshot = runtime.approval_store.ensure()
+    runtime.approval_store.update(dict.fromkeys(snapshot.approvals, False), snapshot.revision)
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest(conversation_id="chat", text="Research this"))
+        assert (
+            result.text
+            == "Background work is running: researcher. Results will arrive automatically."
+        )
+        assert model.i == 2
+        assert runtime.background.running_names("chat") == ["researcher"]
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize(
+    ("owner", "status"), [("other", "running"), ("chat", "finished"), ("chat", "cancelling")]
+)
+async def test_runtime_empty_reply_does_not_acknowledge_ineligible_background_work(
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str,
+    status: str,
+) -> None:
+    class EmptyGraph(RecordingGraph):
+        async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append((payload, config))
+            return {
+                "messages": [AIMessage(content="" if len(self.calls) == 1 else "No new status.")]
+            }
+
+    graph = EmptyGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(model="test:model", include_web_tools=False, skills=(), memory=())
+    worker = asyncio.create_task(asyncio.Event().wait()) if status != "finished" else None
+    runtime.background._jobs["job"] = _Job(
+        owner, "researcher", worker=worker, cancelled=status == "cancelling"
+    )
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest(conversation_id="chat", text="Status?"))
+        assert result.text == "No new status."
+        assert len(graph.calls) == 2
+    finally:
+        await runtime.stop()

@@ -281,6 +281,14 @@ class BackgroundSubagents(AgentMiddleware):
         """Return threads with running work or unprocessed results."""
         return {job.owner for job in self._jobs.values() if not job.cancelled and not job.notified}
 
+    def running_names(self, owner: str) -> list[str]:
+        """Return names of running workers owned by this conversation."""
+        return [
+            job.name
+            for job in self._jobs.values()
+            if job.owner == owner and job.status == "running"
+        ]
+
     async def awrap_model_call(
         self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
     ) -> ModelResponse:

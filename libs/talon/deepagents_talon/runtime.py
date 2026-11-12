@@ -235,13 +235,15 @@ _RETRYABLE_MESSAGE_MARKERS = (
     "try again later",
 )
 
-_CONTINUATION_NUDGE = (
-    "Your action budget was exhausted mid-task. Continue working and complete the task. "
-    "If you have already finished, provide your final answer now."
+_STATUS_NUDGE = (
+    "Your last reply contained no text. Give the operator a brief status of what you "
+    "found or started. Do not continue independent work or call tools. Background "
+    "results arrive automatically; do not poll or wait for them."
 )
 _FORCE_SUMMARY_PROMPT = (
-    "You ran out of actions. Provide a concise summary of everything you have "
-    "accomplished so far. Do not call any more tools."
+    "Provide a brief operator-facing summary of what you found or started so far. "
+    "Do not call tools, continue working, poll workers, or wait for background results; "
+    "they arrive automatically."
 )
 _CRON_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable for scheduled runs; skipped the gated tool call."
@@ -335,7 +337,7 @@ class DeepAgentRuntime:
         recursion_limit: Per-invocation graph recursion limit.
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
-        max_continuations: Number of continuation nudges after empty responses.
+        max_continuations: Number of status recovery nudges after empty responses.
         env: Environment values for model, path, and backend settings.
             `DEEPAGENTS_TALON_VERBOSITY` selects silent (1, default), sparse (2), or
             unrestricted (3) interim updates. Defaults to `os.environ`.
@@ -1114,14 +1116,20 @@ class DeepAgentRuntime:
         if text:
             return text
 
+        if running := self.background.running_names(request.conversation_id):
+            return (
+                f"Background work is running: {', '.join(running)}. "
+                "Results will arrive automatically."
+            )
+
         for attempt in range(self.max_continuations):
             logger.warning(
-                "Agent returned no text for conversation %s; sending continuation nudge %d/%d",
+                "Agent returned no text for conversation %s; sending status recovery nudge %d/%d",
                 request.conversation_id,
                 attempt + 1,
                 self.max_continuations,
             )
-            state = await self._invoke_until_unblocked(_CONTINUATION_NUDGE, request, activity)
+            state = await self._invoke_until_unblocked(_STATUS_NUDGE, request, activity)
             text = _last_text(state)
             if text:
                 return text

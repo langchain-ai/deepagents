@@ -20,8 +20,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain>=1.4.10,<2.0.0",
-    "langchain-core>=1.7.7,<2.0.0",
+    "langchain>=1.5.0,<2.0.0",
+    "langchain-core>=1.8.0,<2.0.0",
     "langchain-anthropic>=1.7.10,<2.0.0",
     "langchain-google-genai>=4.4.3,<5.0.0",
     "langsmith>=0.14.17",
@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-aws = ["langchain-aws>=1.9.2,<2.0.0"]
+aws = ["langchain-aws>=1.9.3,<2.0.0"]
 quickjs = ["langchain-quickjs>=0.3.12"]
 video = ["av>=18.0.0", "pillow>=12.3.0"]
 
@@ -60,7 +60,7 @@ test = [
   "langchain-tests>=1.1.9",
   "langchain-openai>=1.7.4,<2.0.0",
   # The `aws` extra, so payload tests can drive real langchain-aws chat models.
-  "langchain-aws>=1.9.2,<2.0.0",
+  "langchain-aws>=1.9.3,<2.0.0",
   "twine",
   "build",
   # Lazy-imported at runtime so the core package does

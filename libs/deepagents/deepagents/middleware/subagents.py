@@ -495,13 +495,17 @@ _TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})
 
 
 class TaskToolSchema(BaseModel):
-    """Input schema for the `task` tool."""
+    """Input schema for `task`, with description-only calls kept for compatibility."""
 
-    description: str = Field(
+    description: str = Field(description="A short title for the task. Put the complete instructions in `prompt`.")
+
+    prompt: str | None = Field(
+        default=None,
+        min_length=1,
         description=(
-            "A detailed description of the task for the subagent to perform autonomously. "
-            "Include all necessary context and specify the expected output format."
-        )
+            "Complete instructions for the subagent to perform autonomously, including all necessary context and the expected output format. "
+            "If omitted, `description` is used for backward compatibility."
+        ),
     )
 
     subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
@@ -512,7 +516,7 @@ class TaskToolSchema(BaseModel):
         """Refuse keys the schema does not define.
 
         Models sometimes put the real instructions under an invented key (e.g.
-        `prompt`) and leave a short label in `description`. Ignoring the extra key
+        `context`) and leave a short label in `description`. Ignoring the extra key
         dispatched the subagent with the label alone and reported success; a
         validation error goes back to the model as a tool error naming the key.
 
@@ -526,7 +530,7 @@ class TaskToolSchema(BaseModel):
                 # LangGraph filters out errors without a field location.
                 errors: list[InitErrorDetails] = []
                 for key in unknown:
-                    msg = f"Unexpected argument {key!r}; put all instructions for the subagent in `description`."
+                    msg = f"Unexpected argument {key!r}; put all instructions for the subagent in `prompt`."
                     errors.append({"type": "value_error", "loc": (key,), "input": arguments[key], "ctx": {"error": ValueError(msg)}})
                 raise ValidationError.from_exception_data(cls.__name__, errors)
         return data
@@ -538,6 +542,7 @@ Available agent types and the tools they have access to:
 {available_agents}
 
 Specify subagent_type to select the agent. Usage notes:
+- Put a short title in `description` and the complete task instructions in `prompt`.
 - Launch multiple agents concurrently when their tasks are independent, using a single message with multiple tool calls.
 - Each invocation is stateless by default: the agent sees only the prompt you give it and returns a single final report. Put full detail in the prompt and state exactly what it should return — unless an agent type below says it inherits your conversation instead.
 - The agent's report is not shown to the user; relay a summary yourself.
@@ -884,6 +889,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        prompt: str | None = None,
     ) -> str | Command:
         if runtime.state.get(_FORKED_CONTEXT_KEY):
             return _FORK_RECURSION_REFUSAL
@@ -895,7 +902,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
-            description,
+            prompt if prompt is not None else description,
             runtime,
         )
         # The parent's callbacks, tags and configurable reach the subagent
@@ -924,6 +931,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        prompt: str | None = None,
     ) -> str | Command:
         if runtime.state.get(_FORKED_CONTEXT_KEY):
             return _FORK_RECURSION_REFUSAL
@@ -935,7 +944,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
-            description,
+            prompt if prompt is not None else description,
             runtime,
         )
         # The parent's callbacks, tags and configurable reach the subagent

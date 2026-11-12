@@ -3233,7 +3233,58 @@ class TestSubAgents:
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
 
     @pytest.mark.parametrize("use_async", [False, True])
-    @pytest.mark.parametrize("unknown_args", [{"prompt": "the real instructions"}, {"prompt": "instructions", "context": "details"}])
+    @pytest.mark.parametrize("forked", [False, True])
+    @pytest.mark.parametrize("legacy", [False, True])
+    async def test_task_dispatches_full_instructions(self, *, use_async: bool, forked: bool, legacy: bool) -> None:
+        """A task forwards `prompt`, while description-only calls remain supported."""
+        instructions = "List every table in the requested knowledge space.\nReturn database names, table names, and key fields."
+        arguments = {
+            "description": instructions if legacy else "Find available tables",
+            "subagent_type": "worker",
+        }
+        if not legacy:
+            arguments["prompt"] = instructions
+        subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="Worker done.")]))
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "task", "args": arguments, "id": "call_worker", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=parent_model,
+            subagents=[
+                SubAgent(
+                    name="worker",
+                    description="Finds available tables.",
+                    model=subagent_model,
+                    mode="fork" if forked else "isolated",
+                )
+            ],
+        )
+
+        inputs = {"messages": [HumanMessage(content="Find the tables in my knowledge space.")]}
+        result = await agent.ainvoke(inputs) if use_async else agent.invoke(inputs)
+
+        tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "success"
+        assert tool_messages[0].content == "Worker done."
+        assert len(subagent_model.call_history) == 1
+        messages = [msg for msg in subagent_model.call_history[0]["messages"] if isinstance(msg, HumanMessage)]
+        if forked:
+            assert inputs["messages"][0] in messages
+            assert messages[-1].content.endswith(instructions)
+        else:
+            assert [msg.content for msg in messages] == [instructions]
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    @pytest.mark.parametrize("unknown_args", [{"context": "the real instructions"}, {"instructions": "instructions", "context": "details"}])
     async def test_task_call_with_unknown_key_returns_tool_error_without_dispatching(self, *, use_async: bool, unknown_args: dict[str, str]) -> None:
         """A `task` call carrying an invented key must not dispatch the label alone.
 
@@ -3252,6 +3303,7 @@ class TestSubAgents:
                                 "name": "task",
                                 "args": {
                                     "description": "short label",
+                                    "prompt": "Find the available tables.",
                                     "subagent_type": "general-purpose",
                                     **unknown_args,
                                 },
@@ -3287,17 +3339,23 @@ class TestSubAgents:
         assert tool_messages[0].status == "error"
         for key in unknown_args:
             assert f"Unexpected argument {key!r}" in tool_messages[0].content
-        assert "put all instructions for the subagent in `description`" in tool_messages[0].content
-        assert "Should not run." not in tool_messages[0].content
+        assert "put all instructions for the subagent in `prompt`" in tool_messages[0].content
+        assert not subagent_model.call_history
 
     def test_task_tool_schema_rejects_unknown_keys_and_allows_runtime(self) -> None:
-        with pytest.raises(ValidationError, match="prompt"):
-            TaskToolSchema.model_validate({"description": "label", "subagent_type": "worker", "prompt": "instructions"})
+        with pytest.raises(ValidationError, match="context"):
+            TaskToolSchema.model_validate({"description": "label", "subagent_type": "worker", "context": "instructions"})
 
         # The tool node validates after injecting `runtime`, which is not a schema field.
         parsed = TaskToolSchema.model_validate({"description": "do it", "subagent_type": "worker", "runtime": object()})
-        assert parsed.model_dump() == {"description": "do it", "subagent_type": "worker"}
+        assert parsed.model_dump() == {"description": "do it", "prompt": None, "subagent_type": "worker"}
         assert "additionalProperties" not in TaskToolSchema.model_json_schema()
+
+    @pytest.mark.parametrize("prompt", ["", 123, ["instructions"]])
+    def test_task_tool_schema_rejects_invalid_prompt(self, prompt: object) -> None:
+        """An invalid explicit prompt must not fall back to dispatching the title."""
+        with pytest.raises(ValidationError, match="prompt"):
+            TaskToolSchema.model_validate({"description": "label", "prompt": prompt, "subagent_type": "worker"})
 
     def test_general_purpose_subagent_override(self) -> None:
         """Test that a general-purpose subagent spec overrides the default."""

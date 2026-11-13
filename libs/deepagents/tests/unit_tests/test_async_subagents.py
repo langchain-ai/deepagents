@@ -1544,6 +1544,16 @@ class _TeamContext:
     team: str
 
 
+class TestRunStreaming:
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_subagent_on_this_deployment_streams_tokens_and_subgraphs_to_an_app_that_joins(self, mock_get_client: MagicMock) -> None:
+        kwargs = (await _alaunch(mock_get_client)).runs.create.call_args.kwargs
+
+        assert "messages-tuple" in kwargs["stream_mode"]
+        assert kwargs["stream_subgraphs"] is True
+        assert kwargs["stream_resumable"] is True
+
+
 class TestForwardedContext:
     @pytest.mark.parametrize("context", [{"team": "eng"}, _TeamContext(team="eng")], ids=["dict", "dataclass"])
     @patch("deepagents.middleware.async_subagents.get_client")
@@ -1804,6 +1814,15 @@ class TestTaskNotifications:
         await _finish(server)
 
         assert _woken_event(server)["status"] == "success"
+
+    async def test_notification_run_streams_tokens_to_an_app_showing_the_lead(self) -> None:
+        server = _FakeServer()
+
+        await _finish(server)
+
+        (wake,) = server.wakes()
+        assert "messages-tuple" in wake["stream_mode"]
+        assert wake["stream_resumable"] is True
 
     async def test_lead_on_another_deployment_is_left_to_its_own_checks(self) -> None:
         server = _FakeServer({"lead_thread": _MISSING})

@@ -10,14 +10,35 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from deepagents_talon.__main__ import (
     _channel_log_level,
+    _channels,
     _configure_logging,
     _run_host,
 )
+from deepagents_talon.channels import IMessageChannel
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+@pytest.mark.parametrize("enabled_by", ["flag", "env"])
+def test_imessage_channel_selection(tmp_path, enabled_by) -> None:
+    env = {"DEEPAGENTS_TALON_IMESSAGE_OPERATOR_ID": "+14155551212"}
+    if enabled_by == "env":
+        env["DEEPAGENTS_TALON_IMESSAGE_ENABLED"] = "true"
+    config = TalonConfig.from_env(env, base_home=tmp_path)
+
+    channels = _channels(config, imessage=enabled_by == "flag")
+
+    assert len(channels) == 1
+    assert isinstance(channels[0], IMessageChannel)
+    assert channels[0].config.exposure.operator_ids == frozenset({"+14155551212"})
+
+
+def test_imessage_disabled_by_default(tmp_path) -> None:
+    config = TalonConfig.from_env({}, base_home=tmp_path)
+    assert _channels(config) == ()
 
 
 async def test_run_host_hands_sandbox_to_runtime(tmp_path, monkeypatch) -> None:

@@ -12,12 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from deepagents import (
-    GeneralPurposeSubagentProfile,
-    HarnessProfile,
-    create_deep_agent,
-    register_harness_profile,
-)
+from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
@@ -42,12 +37,6 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # to precisely the same specs. Matching case-insensitively here would re-bump
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
-
-# Run gpt-6.1-sol without the `task` tool.
-register_harness_profile(
-    "openai:gpt-6.1-sol",
-    HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
-)
 
 # Bounds on the gated `web_search` tool (see `_web_search_tool`).
 _WEB_SEARCH_MAX_RESULTS = 10

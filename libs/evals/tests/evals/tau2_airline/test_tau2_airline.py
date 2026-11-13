@@ -30,8 +30,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
 from langsmith.run_helpers import get_current_run_tree
 
-from deepagents_evals.routing.config import GATEWAY_OPENAI_URL, load_config, load_gateway_key
-from deepagents_evals.routing.middleware import LadderRoutingMiddleware
+from deepagents_evals.routing.middleware import (
+    GATEWAY_OPENAI_URL,
+    LadderRoutingMiddleware,
+    load_config,
+    load_gateway_key,
+)
 from tests.evals.tau2_airline.domain import (
     create_airline_tools,
     load_db,

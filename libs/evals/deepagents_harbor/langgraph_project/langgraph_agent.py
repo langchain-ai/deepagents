@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
     from langchain_core.tools import BaseTool
 
-    from deepagents_evals.routing.turns import RoutingTurn
+    from deepagents_evals.routing.middleware import RoutingTurn
 
 logger = logging.getLogger(__name__)
 
@@ -622,7 +622,7 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
 
 def _tau3_turn(messages: Sequence[BaseMessage]) -> RoutingTurn | None:
     """Expose simulator replies as user turns to the router without changing agent history."""
-    from deepagents_evals.routing.turns import (  # noqa: PLC0415  # Only routed graphs need this package.
+    from deepagents_evals.routing.middleware import (  # noqa: PLC0415  # Only routed graphs need this package.
         RoutingTurn,
     )
 
@@ -653,12 +653,12 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
     """
     # Only this graph needs the staged routing package.
-    from deepagents_evals.routing.config import (  # noqa: PLC0415  # Only routed graphs need this package.
+    from deepagents_evals.routing.middleware import (  # noqa: PLC0415  # Only routed graphs need this package.
+        LadderRoutingMiddleware,
         load_config,
+        make_decisions,
+        read_human_turn,
     )
-    from deepagents_evals.routing.decisions import make_decisions  # noqa: PLC0415
-    from deepagents_evals.routing.middleware import LadderRoutingMiddleware  # noqa: PLC0415
-    from deepagents_evals.routing.turns import read_human_turn  # noqa: PLC0415
 
     configurable = _configurable(config)
     routing = load_config()

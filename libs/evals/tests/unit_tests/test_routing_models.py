@@ -2,7 +2,7 @@
 
 import pytest
 
-from deepagents_evals.routing.models import ModelPricing
+from deepagents_evals.routing.middleware import ModelPricing
 
 
 def test_distinct_input_output_and_cache_prices() -> None:

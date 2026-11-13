@@ -16,9 +16,16 @@ state with `agent.get_state(config).values`.
 
 from __future__ import annotations
 
+import json
 import logging
 import operator
+import os
+import re
 import time
+from dataclasses import dataclass, field
+from functools import partial
+from math import isfinite
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, TypedDict, cast
 
 import openai
@@ -34,24 +41,30 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain_core.messages import AIMessage
+from langchain.agents.structured_output import AutoStrategy, ProviderStrategy, ToolStrategy
+from langchain.chat_models import init_chat_model
+from langchain_core.load.dump import dumpd
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.ai import (
     UsageMetadata,  # noqa: TC002  # resolved at runtime in `RouterState`
 )
 from langchain_core.messages.utils import count_tokens_approximately
-from langchain_openai.decisions import Level, Score
+from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_openai.decisions import (
+    DecisionRequest,
+    DecisionResponse,
+    Level,
+    OpenAIDecisions,
+    Score,
+)
 from langgraph.types import Command
 
-from deepagents_evals.routing.eligibility import ineligible_reasons, request_tokens
-from deepagents_evals.routing.models import ModelDetails
-from deepagents_evals.routing.turns import RoutingTurn, TurnReader, read_human_turn
-
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.runnables import Runnable
-    from langchain_openai.decisions import DecisionRequest, DecisionResponse
+    from langchain_core.messages import BaseMessage
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -59,6 +72,7 @@ logger = logging.getLogger(__name__)
 Granularity = Literal["per_thread", "per_turn"]
 
 _DECISION_PRICE: Final = 0.10  # OpenAI USD per million input tokens.
+_JEV_URL: Final = "https://gateway.smith.langchain.com/typesafe/v1"
 _JEV_PRICE: Final = 0.042  # Jev USD per million input tokens; output is free.
 _FAIL_COST_SCALE: Final = 2.0
 _DEFAULT_OUTPUT_TOKENS: Final = 1000
@@ -98,6 +112,360 @@ _CACHE_KEYS: Final = (
     "ephemeral_5m_input_tokens",
     "ephemeral_1h_input_tokens",
 )
+
+
+GATEWAY_ANTHROPIC_URL = "https://gateway.smith.langchain.com/anthropic"
+GATEWAY_OPENAI_URL = "https://gateway.smith.langchain.com/openai/v1"
+
+DEFAULT_CONFIG = Path(__file__).with_name("default_routing.json")
+CONFIG_ENV = "ROUTING_CONFIG"
+"""Env var holding a routing config as JSON, to run another ladder without editing the packaged default."""
+
+GATEWAY_URLS = {"anthropic": GATEWAY_ANTHROPIC_URL, "openai": GATEWAY_OPENAI_URL}
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelPricing:
+    """USD per million tokens for the candidate's configured service tier.
+
+    Args:
+        input: Uncached input price.
+        output: Output price, including billed reasoning tokens.
+        cache_read: Cached input price; omitted means the input price applies.
+        cache_write: Cache creation price; omitted means the input price applies.
+        long_context_threshold: Input length above which surcharges apply.
+        long_context_input_multiplier: Surcharge on all input and cache prices.
+        long_context_output_multiplier: Surcharge on the output price.
+    """
+
+    input: float
+    output: float
+    cache_read: float | None = None
+    cache_write: float | None = None
+    long_context_threshold: int | None = None
+    long_context_input_multiplier: float = 1.0
+    long_context_output_multiplier: float = 1.0
+
+    def __post_init__(self) -> None:
+        """Reject prices that cannot be compared meaningfully."""
+        prices = (self.input, self.output, self.cache_read, self.cache_write)
+        multipliers = (self.long_context_input_multiplier, self.long_context_output_multiplier)
+        if any(p is not None and (not isfinite(p) or p < 0) for p in prices):
+            msg = "Model prices must be finite, nonnegative USD per million tokens."
+            raise ValueError(msg)
+        if any(not isfinite(m) or m <= 0 for m in multipliers):
+            msg = "Long-context price multipliers must be finite and positive."
+            raise ValueError(msg)
+        if self.long_context_threshold is not None and self.long_context_threshold <= 0:
+            msg = "long_context_threshold must be positive."
+            raise ValueError(msg)
+
+    def estimate(self, prefix: int, delta: int, output: int, *, warm: bool) -> float:
+        """Estimate a call using the router's existing cached-prefix accounting.
+
+        Args:
+            prefix: Previously measured prompt tokens.
+            delta: Estimated new prompt tokens.
+            output: Estimated billed output tokens.
+            warm: Whether the candidate's cached prefix is still warm.
+
+        Returns:
+            Estimated call cost in USD.
+        """
+        read = self.input if self.cache_read is None else self.cache_read
+        write = self.input if self.cache_write is None else self.cache_write
+        input_cost = prefix * read + delta * write if warm else (prefix + delta) * write
+        output_cost = output * self.output
+        if self.long_context_threshold is not None and prefix + delta > self.long_context_threshold:
+            input_cost *= self.long_context_input_multiplier
+            output_cost *= self.long_context_output_multiplier
+        return (input_cost + output_cost) * 1e-6
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelDetails:
+    """Candidate metadata that does not change the model-independent assessment.
+
+    Args:
+        description: Human-readable description of this configured candidate.
+        pricing: Token prices. Missing prices trigger an explicit routing fallback.
+    """
+
+    description: str = ""
+    pricing: ModelPricing | None = None
+
+
+def load_gateway_key() -> str:
+    """Remove stray characters from `LC_GATEWAY_KEY` and check its format.
+
+    Returns:
+        A personal or service key containing only ASCII letters, digits, underscores, and hyphens.
+
+    Raises:
+        KeyError: If `LC_GATEWAY_KEY` is not set.
+        ValueError: If the cleaned value does not match a LangSmith personal or service key.
+    """
+    key = re.sub(r"[^A-Za-z0-9_-]", "", os.environ["LC_GATEWAY_KEY"])
+    if not re.fullmatch(r"lsv2_(?:pt|sk)_[A-Za-z0-9_-]+", key):
+        msg = "LC_GATEWAY_KEY must match a LangSmith personal or service key after cleanup (lsv2_pt_... or lsv2_sk_...)."
+        raise ValueError(msg)
+    return key
+
+
+@dataclass(frozen=True)
+class RoutingConfig:
+    """The models one routing run uses.
+
+    Args:
+        anchor: The model passed to `create_deep_agent`; serves unrouted calls (summaries, subagents).
+        models: Candidate models in stable index order, independent of price or suitability.
+        decision_model: Jev or OpenAI model used to estimate difficulty.
+        granularity: Route once per thread or at the start of every turn.
+        difficulty_limits: Optional per-rung ceilings on the 0-4 task difficulty scale.
+        model_details: Descriptions and USD token prices corresponding to `models`.
+    """
+
+    anchor: BaseChatModel
+    models: list[BaseChatModel]
+    decision_model: str
+    granularity: Granularity = "per_turn"
+    difficulty_limits: list[float] | None = field(default=None, kw_only=True)
+    model_details: list[ModelDetails] | None = field(default=None, kw_only=True)
+
+
+def _gateway_model(spec: Mapping[str, Any]) -> BaseChatModel:
+    """A config entry's `model` (`provider:model`) reached through the gateway, built with its `model_kwargs`.
+
+    Settings such as effort stay on the instance to preserve each rung's cached prefix.
+
+    Raises:
+        ValueError: If the provider has no gateway route.
+    """
+    model = spec["model"]
+    provider = model.partition(":")[0]
+    if provider not in GATEWAY_URLS:
+        msg = f"no gateway route for provider {provider!r} in {model!r}; expected one of {sorted(GATEWAY_URLS)}"
+        raise ValueError(msg)
+    return init_chat_model(
+        model,
+        base_url=GATEWAY_URLS[provider],
+        api_key=load_gateway_key(),
+        **spec.get("model_kwargs", {}),
+        **({"profile": spec["capabilities"]} if "capabilities" in spec else {}),
+    )
+
+
+def load_config() -> RoutingConfig:
+    """Read `ROUTING_CONFIG`, falling back to the packaged default.
+
+    Raises:
+        ValueError: If a rung's context window is smaller than the anchor's, which summarization
+            budgets against.
+    """
+    raw = json.loads(os.environ.get(CONFIG_ENV) or DEFAULT_CONFIG.read_text())
+    specified = ["max_difficulty" in spec for spec in raw["models"]]
+    if any(specified) and not all(specified):
+        msg = "Set max_difficulty for every model or omit it for all models."
+        raise ValueError(msg)
+    anchor = _gateway_model(raw["anchor"])
+    models = [_gateway_model(spec) for spec in raw["models"]]
+    window = (anchor.profile or {}).get("max_input_tokens") or 0
+    small = [
+        spec["model"]
+        for spec, model in zip(raw["models"], models, strict=True)
+        if (model.profile or {}).get("max_input_tokens", window) < window
+    ]
+    if small:
+        msg = f"rungs {small} have a smaller context window than the anchor; summarization would overflow them"
+        raise ValueError(msg)
+    return RoutingConfig(
+        anchor=anchor,
+        models=models,
+        decision_model=raw["decision_model"],
+        granularity=raw.get("granularity", "per_turn"),
+        difficulty_limits=[spec["max_difficulty"] for spec in raw["models"]]
+        if any("max_difficulty" in spec for spec in raw["models"])
+        else None,
+        model_details=[
+            ModelDetails(
+                description=spec.get("description", ""),
+                pricing=ModelPricing(**spec["pricing"]) if "pricing" in spec else None,
+            )
+            for spec in raw["models"]
+        ],
+    )
+
+
+@dataclass(frozen=True)
+class RoutingTurn:
+    """A user turn's stable key and the conversation available when it arrived.
+
+    Args:
+        key: Identifies the turn across model calls and checkpoint restores.
+        messages: Context to assess, ending with the latest user request.
+    """
+
+    key: str
+    messages: Sequence[BaseMessage]
+
+
+type TurnReader = Callable[[Sequence[BaseMessage]], RoutingTurn | None]
+
+
+def read_human_turn(messages: Sequence[BaseMessage]) -> RoutingTurn | None:
+    """Read the latest human turn, using its position if no message ID was assigned.
+
+    Args:
+        messages: The agent's conversation history.
+
+    Returns:
+        The latest human turn and its preceding context, or no turn yet.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, HumanMessage):
+            return RoutingTurn(message.id or f"human:{index}", messages[: index + 1])
+    return None
+
+
+def request_tokens(request: ModelRequest) -> int:
+    """Estimate the prompt including the system message, tools, and output schema.
+
+    Args:
+        request: The request as prepared by upstream middleware.
+
+    Returns:
+        A local token estimate; no provider token-counting call is made.
+    """
+    messages = [*([request.system_message] if request.system_message else []), *request.messages]
+    schemas = [convert_to_openai_tool(tool) for tool in request.tools]
+    response_format = request.response_format
+    if isinstance(response_format, ProviderStrategy):
+        schemas.append(response_format.schema_spec.json_schema)
+    elif isinstance(response_format, (AutoStrategy, ToolStrategy)):
+        schemas.extend(
+            spec.json_schema for spec in ToolStrategy(response_format.schema).schema_specs
+        )
+    return count_tokens_approximately(messages) + (len(json.dumps(schemas)) + 3) // 4
+
+
+def _required_features(request: ModelRequest) -> set[str]:
+    features = {"text_inputs"}
+    if request.tools:
+        features.add("tool_calling")
+    choice = (
+        request.tool_choice.get("type")
+        if isinstance(request.tool_choice, dict)
+        else request.tool_choice
+    )
+    if choice not in (None, "auto", "none"):
+        features.add("tool_choice")
+    if isinstance(request.response_format, ProviderStrategy):
+        features.add("structured_output")
+    elif isinstance(request.response_format, ToolStrategy):
+        features.update(("tool_calling", "tool_choice"))
+    for message in request.messages:
+        if isinstance(message, (HumanMessage, ToolMessage)):
+            for block in message.content_blocks:
+                kind = block["type"]
+                if kind in {"image", "audio", "video"}:
+                    features.add(f"{kind}_inputs")
+                if kind == "image" and "url" in block:
+                    features.add("image_url_inputs")
+                elif kind == "file" and block.get("mime_type") == "application/pdf":
+                    features.add("pdf_inputs")
+                    if isinstance(message, ToolMessage):
+                        features.add("pdf_tool_message")
+                if isinstance(message, ToolMessage) and kind == "image":
+                    features.add("image_tool_message")
+    return features
+
+
+def _output_budget(model: BaseChatModel, request: ModelRequest, estimate: int) -> int:
+    budgets = []
+    for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+        value = request.model_settings.get(key, getattr(model, key, None))
+        if isinstance(value, int) and not isinstance(value, bool):
+            budgets.append(value)
+    return max(budgets, default=estimate)
+
+
+def ineligible_reasons(
+    model: BaseChatModel, request: ModelRequest, *, input_tokens: int, output_tokens: int
+) -> list[str]:
+    """Explain known incompatibilities, preserving support for incomplete profiles.
+
+    Args:
+        model: Candidate with capabilities in its LangChain model profile.
+        request: Request to check before selecting a candidate.
+        input_tokens: Estimated complete prompt size.
+        output_tokens: Output reserve when no model/request limit is configured.
+
+    Returns:
+        Unsupported features and exceeded token limits. Unknown profile fields are
+        not treated as an explicit rejection, matching Deep Agents' content handling.
+    """
+    profile = model.profile or {}
+    reasons = sorted(
+        feature for feature in _required_features(request) if profile.get(feature) is False
+    )
+    if (
+        isinstance(request.response_format, AutoStrategy)
+        and profile.get("structured_output") is False
+        and (profile.get("tool_calling") is False or profile.get("tool_choice") is False)
+    ):
+        reasons.append("structured_output")
+    output = _output_budget(model, request, output_tokens)
+    if (limit := profile.get("max_input_tokens")) is not None and input_tokens + output > limit:
+        reasons.append("context_window")
+    if (limit := profile.get("max_output_tokens")) is not None and output > limit:
+        reasons.append("output_budget")
+    return reasons
+
+
+def _payload(model: str, request: DecisionRequest) -> dict[str, object]:
+    questions: dict[str, object] = {}
+    for name, question in request["questions"].items():
+        if not isinstance(question, Score):
+            msg = "The routing Jev adapter supports Score questions only."
+            raise TypeError(msg)
+        questions[name] = {
+            "type": "score",
+            "instructions": question.instructions,
+            "criteria": [
+                level.description or level.label if isinstance(level, Level) else level
+                for level in question.levels
+            ],
+        }
+    return {"model": model, "state": dumpd(request["input"]), "questions": questions}
+
+
+def _invoke(model: str, request: DecisionRequest) -> DecisionResponse:
+    with openai.OpenAI(api_key=load_gateway_key(), base_url=_JEV_URL) as client:
+        data = client.post("/systemone", body=_payload(model, request), cast_to=object)
+    return DecisionResponse.model_validate(data)
+
+
+async def _ainvoke(model: str, request: DecisionRequest) -> DecisionResponse:
+    async with openai.AsyncOpenAI(api_key=load_gateway_key(), base_url=_JEV_URL) as client:
+        data = await client.post("/systemone", body=_payload(model, request), cast_to=object)
+    return DecisionResponse.model_validate(data)
+
+
+def make_decisions(model: str) -> Runnable[DecisionRequest, DecisionResponse]:
+    """Build a gateway client for Jev or an OpenAI decision model.
+
+    Args:
+        model: Native provider model ID; Jev IDs start with `jev-`.
+
+    Returns:
+        A sync and async runnable returning typed scores and usage.
+    """
+    if not model.startswith("jev-"):
+        return OpenAIDecisions(model=model, api_key=load_gateway_key, base_url=GATEWAY_OPENAI_URL)
+    return RunnableLambda(partial(_invoke, model), afunc=partial(_ainvoke, model)).with_config(
+        metadata={"ls_provider": "typesafe", "ls_model_name": model, "ls_model_type": "chat"}
+    )
 
 
 class RoutingAssessment(TypedDict):

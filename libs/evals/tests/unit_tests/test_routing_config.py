@@ -5,9 +5,13 @@ import json
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
-from deepagents_evals.routing import config as routing_config
-from deepagents_evals.routing.config import CONFIG_ENV, load_config, load_gateway_key
-from deepagents_evals.routing.models import ModelPricing
+from deepagents_evals.routing import middleware as routing_config
+from deepagents_evals.routing.middleware import (
+    CONFIG_ENV,
+    ModelPricing,
+    load_config,
+    load_gateway_key,
+)
 
 
 @pytest.mark.parametrize("kind", ["pt", "sk"])

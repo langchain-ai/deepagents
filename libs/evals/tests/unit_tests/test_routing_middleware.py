@@ -18,10 +18,15 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
 from pydantic import Field
 
-from deepagents_evals.routing import config as routing_config
-from deepagents_evals.routing.middleware import Granularity, LadderRoutingMiddleware, RouterState
-from deepagents_evals.routing.models import ModelDetails, ModelPricing
-from deepagents_evals.routing.turns import read_human_turn
+from deepagents_evals.routing import middleware as routing_config
+from deepagents_evals.routing.middleware import (
+    Granularity,
+    LadderRoutingMiddleware,
+    ModelDetails,
+    ModelPricing,
+    RouterState,
+    read_human_turn,
+)
 from deepagents_harbor.langgraph_project import langgraph_agent
 from deepagents_harbor.langgraph_project.langgraph_agent import _tau3_turn
 
@@ -419,7 +424,7 @@ async def test_harbor_factory_selects_the_turn_reader_for_its_tools(
         ),
     )
     monkeypatch.setattr(
-        "deepagents_evals.routing.decisions.make_decisions", lambda _model: decisions
+        "deepagents_evals.routing.middleware.make_decisions", lambda _model: decisions
     )
     monkeypatch.setattr(
         langgraph_agent,

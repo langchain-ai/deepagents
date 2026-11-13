@@ -11,7 +11,7 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 
-from deepagents_evals.routing.eligibility import ineligible_reasons, request_tokens
+from deepagents_evals.routing.middleware import ineligible_reasons, request_tokens
 
 if TYPE_CHECKING:
     from langchain_core.language_models.model_profile import ModelProfile

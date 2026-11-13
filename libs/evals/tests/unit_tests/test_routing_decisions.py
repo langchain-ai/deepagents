@@ -9,7 +9,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 from langchain_openai.decisions import DecisionRequest, Level, Score
 
-from deepagents_evals.routing.decisions import make_decisions
+from deepagents_evals.routing.middleware import make_decisions
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

@@ -5,7 +5,7 @@ description: Package roles, published Python and dependency contracts, developme
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
+    at: 2026-11-13T08:03:55.116Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -47,14 +47,14 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-13T08:03:55.116Z" }
 ---
 
 # Repository Architecture Overview
 
 This repository is an independently versioned Python monorepo, not one deployable service. The reusable `deepagents` SDK supplies the harness; ACP adapts a graph to the Agent Client Protocol; dcode packages a terminal coding-agent product; Talon is a local long-running host; evals is the quality boundary; and partner distributions supply optional sandbox or middleware capabilities. Installing a package makes that distribution available—it does not transfer its user interface, provider credentials, or runtime policy into the SDK.
 
-Related: [SDK construction and execution](./sdk-construction-execution.md), [system source map](./source-map.md), [ACP](../integrations/acp.md), [development](../operations/development.md), and [quickstart](../quickstart.md).
+Related: [SDK construction and execution](./sdk-construction-execution.md), [system source map](./source-map.md), [sandbox partners](../integrations/sandbox-partners.md), [development](../operations/development.md), and [quickstart](../quickstart.md).
 
 ## Distribution contracts and roles
 
@@ -62,7 +62,7 @@ A package's `pyproject.toml` is its installer-visible contract: its version, `re
 
 | Distribution | Source version | Python contract | Architectural role |
 | --- | --- | --- | --- |
-| `deepagents` | `0.7.35` | `>=3.11,<4.0` | Reusable, opinionated agent-harness SDK. |
+| `deepagents` | `0.7.37` | `>=3.11,<4.0` | Reusable, opinionated agent-harness SDK. |
 | `deepagents-acp` | `0.0.13` | `>=3.11,<4.0` | ACP protocol-to-graph bridge. |
 | `deepagents-code` / `dcode` | `0.2.7` | `>=3.14,<3.15` | Prebuilt terminal coding-agent product; both script names call the same CLI. |
 | `deepagents-talon` | `0.1.0` | `>=3.14,<3.15` | Experimental local host for channels, schedules, and agent lifecycle. |
@@ -116,19 +116,23 @@ flowchart TD
 
 *Solid edges are installer-visible dependency relationships; dotted edges are development-only `uv` source substitutions.*
 
-The most consequential compatibility edge is dcode's exact `deepagents==0.7.35` requirement. Raise that pin in the change that starts requiring newer SDK behavior; an editable checkout can otherwise hide an insufficient PyPI requirement. Dcode also requires ACP `>=0.0.13,<1.0.0` and QuickJS `>=0.3.12,<0.4.0`. By comparison, ACP deliberately has no SDK version bound, while Talon declares `deepagents>=0.7.35` and `deepagents-code>=0.2.6,<1.0.0`.
+### Coordinated SDK floors
+
+The source manifests now encode three distinct compatibility policies. Dcode pins `deepagents==0.7.37`: raise that pin in the change that starts requiring newer SDK behavior, because an editable checkout can otherwise hide an insufficient PyPI requirement. Dcode also requires ACP `>=0.0.13,<1.0.0` and QuickJS `>=0.3.12,<0.4.0`.
+
+Talon requires `deepagents>=0.7.36` and `deepagents-code>=0.2.7,<1.0.0`. Each of the five partner distributions—Daytona, Modal, QuickJS, Runloop, and Vercel—requires `deepagents>=0.7.36,<0.8.0`. These are lower-bound compatibility promises, not assertions that a checkout must resolve the SDK from PyPI at that floor. ACP deliberately declares `deepagents` without a version bound. Evals retains its independently chosen floors of `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`.
 
 The checkout graph is deliberately not identical to this dependency graph:
 
 - ACP maps only `deepagents` to its editable sibling.
 - Dcode maps the SDK, ACP, and all five partner distributions to editable siblings, even though provider packages remain optional wheel extras.
-- Evals maps its dcode sibling **non-editably**, while its SDK and QuickJS mappings are editable. Its published floors are `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`.
+- Evals maps its dcode sibling **non-editably**, while its SDK and QuickJS mappings are editable.
 - Talon maps only the direct SDK and dcode siblings editable. ACP or QuickJS may occur in its resolved local closure through dcode; they are not Talon direct source mappings or direct wheel requirements.
-- All five partner packages publish `deepagents>=0.7.35,<0.8.0` and map the local SDK editable for checkout development.
+- All five partner packages map the local SDK editable for checkout development.
 
 ### Extras are install choices, not policy or isolation
 
-Extras add implementation dependencies but do not configure credentials, create remote resources, or constitute an authorization boundary. The SDK keeps AWS, QuickJS, and video support optional. Dcode includes QuickJS and `langsmith[sandbox]` in its base requirements, provides provider extras for AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel, and retains an empty `quickjs` extra for compatible install commands because QuickJS is now normal dependency.
+Extras add implementation dependencies but do not configure credentials, create remote resources, or constitute an authorization boundary. The SDK keeps AWS, QuickJS, and video support optional. Dcode includes QuickJS and `langsmith[sandbox]` in its base requirements, provides provider extras for AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel, and retains an empty `quickjs` extra for compatible install commands because QuickJS is now a normal dependency.
 
 Talon's base wheel contains its host dependencies and default SQLite support. Its `history-local`, `history-voyage`, and `history-openai` extras select semantic-history implementations; `mongodb` and `postgres` install matching remote persistence implementations; and `openshell` obtains the provider through `deepagents-code[openshell]`. Its `media` and `media-cpu` extras are mutually exclusive. On Linux, the latter routes only `torch` and `torchaudio` through the explicit `pytorch-cpu` index; it does not alter published wheel metadata.
 
@@ -136,7 +140,7 @@ Talon's base wheel contains its host dependencies and default SQLite support. It
 
 Release Please manages distinct draft release PRs for the SDK, ACP, dcode, Talon, and the five partner distributions. Evals is intentionally absent from that configuration. The release configuration uses separate draft PRs and suppresses Release Please's own GitHub-release step; merging a managed release PR triggers the repository release workflow, which performs checks and creates the PyPI and GitHub releases.
 
-The release manifest is the current released-version baseline: `0.7.35` for the SDK, `0.0.13` for ACP, `0.2.7` for dcode, `0.1.0` for Talon, and the table's five partner versions. It is distinct from a package source manifest. Release Please updates it; it is not ordinary dependency metadata. This separation matters when adding a managed package: the baseline represents what has already shipped, while the package's own source version represents what its wheel will declare.
+The release manifest is the current released-version baseline: `0.7.37` for the SDK, `0.0.13` for ACP, `0.2.7` for dcode, `0.1.0` for Talon, and the table's five partner versions. It is distinct from a package source manifest. Release Please updates it; it is not ordinary dependency metadata. This separation matters when adding a managed package: the baseline represents what has already shipped, while the package's own source version represents what its wheel will declare.
 
 ## Lockfile lifecycle
 
@@ -154,13 +158,15 @@ flowchart TD
 
 *Lock refresh begins at a changed manifest and includes its full reverse local-source-consumer closure.*
 
-For example, changing `libs/code/pyproject.toml` requires re-locking dcode and its Talon and evals consumers. Use the helper from the repository root rather than selecting locks manually:
+A floor change in `libs/deepagents/pyproject.toml` therefore reaches every package that maps the SDK locally: ACP, dcode, evals, Talon, and all five partners. The closure continues through consumers of dcode, so evals and Talon are included even when a dcode manifest change is the starting point. The non-editable evals-to-dcode mapping still participates.
+
+Use the helper from the repository root rather than selecting locks manually:
 
 ```bash
-python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
+python .github/scripts/checks/refresh_lockfiles.py libs/deepagents/pyproject.toml
 ```
 
-The helper selects Python 3.14 for ACP, dcode, evals, and Talon locks, and Python 3.12 for the other discovered package directories. Local success only proves the resolved workspace graph; review the published requirement, optional extra, source mapping, and refreshed locks when changing a dependency boundary.
+For a dcode-only manifest change, substitute `libs/code/pyproject.toml`; it re-locks dcode plus its Talon and evals consumers. The helper selects Python 3.14 for ACP, dcode, evals, and Talon locks, and Python 3.12 for other discovered package directories. Local success only proves the resolved workspace graph; review the published requirement, optional extra, source mapping, and refreshed locks when changing a dependency boundary.
 
 ## Runtime ownership boundaries
 
@@ -182,7 +188,8 @@ Talon selects built-in SQLite, PostgreSQL, or MongoDB checkpoint storage by URI,
 ## Safe change checklist
 
 - Start SDK construction, middleware, profile, or delegation work at `create_deep_agent()` and its focused SDK tests; keep inline `task` delegation distinct from asynchronous deployed subagents.
-- For ACP changes, retain the compiled-graph versus factory distinction and verify session configuration, state, and durable-load behavior. Keep dcode policy in its wrapper rather than generic ACP translation.
+- Treat a floor update as a published compatibility promise. Change dcode's exact pin with any new SDK usage; keep Talon and partner floors aligned with the minimum SDK behavior they require; do not infer a published floor from a workspace source mapping.
 - For a package change, validate under its declared Python contract. Inspect installer-visible requirements separately from `uv` source mappings, refresh the full reverse-consumer lock closure, and commit every changed lock.
+- For ACP changes, retain the compiled-graph versus factory distinction and verify session configuration, state, and durable-load behavior. Keep dcode policy in its wrapper rather than generic ACP translation.
 - For Talon, do not describe sandboxing or approval prompts as a complete security boundary. Test the affected lifecycle, persistence, channel, cron, MCP, or policy behavior at the host boundary.
 - For a managed release, review the package-specific draft release PR and changelog, and ensure dcode's exact SDK pin reflects the minimum SDK behavior it uses.

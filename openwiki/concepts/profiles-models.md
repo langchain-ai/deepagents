@@ -1,11 +1,11 @@
 ---
 type: model and profile configuration
 title: Profiles and Models
-description: Explains SDK provider and harness profile resolution, plus how dcode and Talon construct, switch, retry, and summarize models.
+description: Explains Deep Agents provider and harness profile resolution, provider-aware prompt caching, and how dcode and Talon construct, switch, retry, and summarize models.
 tags: [models, sdk-profiles, dcode, talon, provider-configuration, retries]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
+    at: 2026-11-13T08:03:55.116Z
 sources:
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
     resource: repo://libs/code/deepagents_code/config_manifest.py
@@ -23,6 +23,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/_models.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-7a16b9a53a07e882b7305459
+    resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
   - id: openwiki-source-b27554b5c0e5b26fae2efb38
     resource: repo://libs/deepagents/deepagents/profiles/__init__.py
   - id: openwiki-source-f94d6bc3bb6ebd1565c1732f
@@ -33,11 +35,13 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
     resource: repo://libs/talon/deepagents_talon/model_selection.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-13T08:03:55.116Z" }
 ---
 
 # Profiles and Models
@@ -49,7 +53,7 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 | Mechanism | Key | Controls | Does not control |
 | --- | --- | --- | --- |
 | `ProviderProfile` | `provider` or `provider:model` | `init_chat_model` kwargs, dynamic kwargs, pre-initialization checks | Prompts, tools, or graph middleware |
-| `HarnessProfile` | `provider` or `provider:model` | Prompt assembly, tool visibility, middleware, default subagent behavior | Model-client construction |
+| `HarnessProfile` | `provider` or `provider:model` | Prompt assembly, tool visibility, middleware, and default subagent behavior | Model-client construction |
 | dcode capability profile | `provider:model` | Advertised input/context/tool capabilities | Client kwargs or admission |
 | dcode `models.allowed` | canonical `provider:model` | Whether dcode may construct the resolved model | Provider enablement or display metadata |
 
@@ -85,6 +89,16 @@ Middleware exclusion is stricter than tool exclusion. The filesystem and synchro
 ### Bootstrap and plugins
 
 Profile bootstrap is lazy and runs once per interpreter. A condition coordinates first access: other threads wait, while same-thread registration re-entry is permitted. Built-in provider and harness profiles register by direct import first; a failure restores the prior registries and propagates. Third-party, zero-argument hooks in `deepagents.provider_profiles` and `deepagents.harness_profiles` run afterward, so their registrations layer over built-ins. Entry-point enumeration, load, or invocation failures are logged/warned and skipped, preserving usable built-ins.
+
+## Provider-aware prompt caching
+
+`create_deep_agent()` appends prompt-caching middleware to each SDK-built stack: the main agent, generated general-purpose subagent, and declarative synchronous subagent. Compiled and remote asynchronous subagents retain their own stacks. This is independent of profile selection, though a `HarnessProfile.excluded_middleware` entry can remove the caching middleware by its public name or class.
+
+The Anthropic entry is always a lightweight stand-in named `AnthropicPromptCachingMiddleware`; it imports the real `langchain_anthropic` middleware only when a request actually targets an Anthropic chat model. Non-Anthropic requests pass through unchanged, which keeps `import deepagents` from loading the Anthropic SDK and permits runtime model switching to activate caching later.
+
+Bedrock and Fireworks caching middleware are optional integrations. Deep Agents attempts to import them from `langchain_aws` and `langchain_fireworks`, respectively, and silently omits only a genuinely absent provider package or prompt-caching module. It caches the lookup result, including absence, but constructs a fresh middleware instance for every assembled stack. An unrelated import failure, such as a broken transitive dependency, is propagated rather than misreported as an unavailable optional integration.
+
+In the main stack, prompt caching is placed after profile middleware and `SkillsMiddleware`, and before memory middleware. That ordering lets model-specific graph tuning and skill disclosure be included in the cacheable prompt while keeping subsequent memory updates from invalidating the Anthropic cached prefix.
 
 ## dcode: policy, construction, and retries
 
@@ -135,7 +149,7 @@ A successful dedicated model gets dcode retry handling, provider-appropriate tok
 
 ## Talon compatibility and model switching
 
-Talon is not a dcode session: it constructs models from its own environment and does not use dcode's `models.allowed`, `/auth` credential store, `ModelResult`, or retry policy. Its runtime applies `apply_provider_profile` before `init_chat_model` when it builds a model, so provider-profile construction behavior is shared. Its graph is assembled through `create_deep_agent`, so compatible harness profiles remain applicable to the main model and SDK-assembled synchronous subagents.
+Talon is not a dcode session: it constructs models from its own environment and does not use dcode's `models.allowed`, `/auth` credential store, `ModelResult`, or retry policy. Its runtime applies `apply_provider_profile` before `init_chat_model` when it builds a model, so provider-profile construction behavior is shared. Its graph is assembled through `create_deep_agent`, so compatible harness profiles and provider-aware prompt-caching behavior remain applicable to the main model and SDK-assembled synchronous subagents.
 
 Talon restricts interactive `/model` switching to an exactly matched catalog discovered from installed, credentialed providers (and configured gateway models). It validates and builds a selected model before activating it, caches it, and places it in a turn-local context so a selected model replaces the main-agent request model without recompiling the graph. Its selection and summarization middleware also build/cache a summarizer for the selected model, sizing compaction to that model's profile; subagents retain their own models. A failed selection leaves the existing/default model usable.
 
@@ -143,16 +157,16 @@ This division matters operationally: installing an SDK profile does not install 
 
 ## Package constraints and focused tests
 
-The current dcode package is `0.2.7`, requires Python `>=3.14,<3.15`, and pins `deepagents==0.7.35`. Deep Agents `0.7.35` supports Python `>=3.11,<4.0` and requires LangChain `>=1.4.10,<2.0.0`, LangChain Core `>=1.7.7,<2.0.0`, `langchain-anthropic>=1.7.10,<2.0.0`, and `langchain-google-genai>=4.4.3,<5.0.0`. The SDK's broader Python range does not widen dcode's released contract.
+The current dcode package is `0.2.7`, requires Python `>=3.14,<3.15`, and pins `deepagents==0.7.37`. Deep Agents `0.7.37` supports Python `>=3.11,<4.0` and requires LangChain `>=1.5.0,<2.0.0`, LangChain Core `>=1.8.0,<2.0.0`, `langchain-anthropic>=1.7.10,<2.0.0`, and `langchain-google-genai>=4.4.3,<5.0.0`. The SDK's broader Python range does not widen dcode's released contract.
 
-The dcode core includes Anthropic, Google GenAI, and OpenAI integrations; other provider integrations are separately installable extras. Profile registration only changes resolution behavior—it cannot provide an absent integration.
+The dcode core includes Anthropic, Google GenAI, and OpenAI integrations; other provider integrations are separately installable extras. Current core floors are `langchain-anthropic>=1.7.10,<2.0.0`, `langchain-google-genai>=4.4.3,<5.0.0`, and `langchain-openai>=1.7.4,<2.0.0`; the extras declare their own integration floors. Deep Agents keeps AWS prompt caching optional through its `aws` extra, and dcode's `bedrock` and `fireworks` extras install `langchain-aws` and `langchain-fireworks` respectively. Profile registration only changes resolution behavior—it cannot provide an absent integration.
 
-Focused regression coverage includes dcode model construction/retry tests, lazy summary fallback tests, SDK provider/harness profile tests, and Talon's model-selection tests. When changing this area, preserve admission-before-side-effects ordering, one retry owner, construction-versus-harness separation, and the fact that prebuilt or remote subagents retain ownership of their own graph stacks.
+Focused regression coverage includes dcode model construction/retry tests, lazy summary fallback tests, SDK provider/harness profile tests, prompt-caching tests for lazy Anthropic activation and optional Bedrock/Fireworks imports, and Talon's model-selection tests. When changing this area, preserve admission-before-side-effects ordering, one retry owner, construction-versus-harness separation, caching-stack ordering, and the fact that prebuilt or remote subagents retain ownership of their own graph stacks.
 
 ## Related pages
 
+- [Architecture overview](/openwiki/architecture/overview.md)
 - [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
-- [Configuration layering](/openwiki/concepts/config-layering.md)
-- [Subagents and skills](/openwiki/concepts/subagents-skills.md)
-- [Talon runtime integration](/openwiki/integrations/talon.md)
-- [Run a dcode session](/openwiki/workflows/run-dcode-session.md)
+- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
+- [Development](/openwiki/operations/development.md)
+- [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

@@ -4,8 +4,6 @@ title: SDK Construction and Execution
 description: How create_deep_agent validates a harness profile and assembles a LangChain graph, including backend binding, middleware order, state boundaries, and local or remote subagent execution.
 tags: [deepagents, sdk-construction, middleware, subagents, backends, langgraph]
 sources:
-  - id: openwiki-source-b93533cac55718d75277d1cf
-    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
   - id: openwiki-source-e483ff4cfd25918c8107d575
@@ -14,6 +12,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  - id: openwiki-source-7a16b9a53a07e882b7305459
+    resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
@@ -26,10 +26,12 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-917b61d56e652536ba962f3a
     resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
+  - id: openwiki-source-ca8183c87e6002c442ee2d62
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-13T08:03:55.116Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+    at: 2026-11-13T08:03:55.116Z
 ---
 
 # SDK Construction and Execution
@@ -42,21 +44,25 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 flowchart TD
     Input["SDK options"] --> Resolve["Resolve model and harness profile"]
     Resolve --> Validate["Validate profile exclusions"]
-    Validate --> Prepare["Rewrite tools and build prompt"]
+    Validate --> Prepare["Rewrite tools and assemble prompt"]
     Prepare --> Backend["Select and bind backend"]
-    Backend --> Split{"Subagent kind"}
-    Split -->|"declarative or compiled"| Inline["Build inline task middleware"]
+    Backend --> Split{"Subagent contract"}
+    Split -->|"declarative"| Declarative["Build child stack and compile task runnable"]
+    Split -->|"compiled"| Compiled["Keep caller runnable opaque"]
     Split -->|"graph_id"| Remote["Build remote task middleware"]
+    Declarative --> Inline["Build inline task middleware"]
+    Compiled --> Inline
     Inline --> Stack["Assemble and filter main stack"]
     Remote --> Stack
     Stack --> Private["Register private state keys"]
     Private --> Compile["LangChain create_agent"]
     Compile --> Main["Compiled main graph"]
-    Main -->|"task"| Child["Local child runnable"]
+    Main -->|"task"| Local["Local child runnable"]
+    Local --> Result["ToolMessage and state update"]
     Main -->|"remote tools"| Server["Remote Agent Protocol server"]
 ```
 
-Caption: assembly ends when the configured LangChain graph is returned. Inline task delegation invokes a local runnable; `graph_id` specifications use remote background-task tools instead.
+Caption: construction compiles declarative local children and the main graph, but accepts compiled children as supplied. At execution, `task` converts a local child result into a parent update; `graph_id` specifications use remote background-task tools instead.
 
 ## Inputs resolved before compilation
 
@@ -87,21 +93,29 @@ Caller middleware is neither blindly appended nor always placed at the start. A 
 
 The SDK separates `subagents=` into three execution contracts:
 
-- **Declarative `SubAgent`** — the SDK resolves its model and profile, builds its middleware, and later compiles it through `create_sub_agent()` for the synchronous `task` tool.
-- **`CompiledSubAgent`** — an already-built runnable used by `task`. Its internal stack and schema remain caller-owned; it must return state containing `messages`.
+- **Declarative `SubAgent`** — the SDK resolves its model and profile, builds its child stack, and `SubAgentMiddleware` compiles it through `create_sub_agent()` as the local runnable behind the synchronous `task` tool.
+- **`CompiledSubAgent`** — an already-built runnable used by `task`. The SDK does not alter its internal stack, state schema, or checkpoint policy; it must return state containing `messages`.
 - **`AsyncSubAgent`** — recognized by `graph_id`; it is passed to `AsyncSubAgentMiddleware`, which exposes background-task tools for an Agent Protocol server rather than the synchronous `task` tool.
 
 Unless disabled by the active main profile or overridden with a same-named inline spec, the SDK prepends a `general-purpose` declarative subagent. If that default is disabled and no other inline child is supplied, `SubAgentMiddleware` and the `task` tool are absent; remote async tools are independent. The default child is intentionally not a mirror of the main stack: only caller middleware matching an existing general-purpose slot may replace that slot, so arbitrary main-agent middleware does not leak into it.
 
-For every declarative child, the SDK builds filesystem, summarization, and patch middleware, then child-profile middleware, optional skills, provider caching, and refusal middleware. The child gets its own profile based on its resolved model. `create_sub_agent()` adds child `HumanInTheLoopMiddleware` for its effective `interrupt_on`, adds `UnsupportedContentMiddleware` if missing, and calls LangChain `create_agent()`. A fork is special: it uses the parent's assembled system prompt to preserve the prompt prefix, carries its own instructions in the delegated task message, inherits parent skills and cannot set different skills. It also inherits and merges parent caller middleware before its tail so it can rebuild parent prompt-producing state.
+For every declarative child, the SDK builds filesystem, summarization, and patch middleware, then child-profile middleware, optional skills, provider caching, and refusal middleware. The child gets its own profile based on its resolved model. `create_sub_agent()` adds child `HumanInTheLoopMiddleware` for its effective `interrupt_on`, adds `UnsupportedContentMiddleware` if missing, and calls LangChain `create_agent()`.
+
+Provider caching is appended to each SDK-built stack. The Anthropic entry is a lazy stand-in: it imports and constructs the real middleware only for an Anthropic request and otherwise passes the request through. Bedrock and Fireworks entries are appended only when their optional integrations are importable; their class lookup is cached but each stack receives a fresh middleware instance. Those entries use their real middleware names, so normal replacement and profile exclusion still work.
+
+A fork is special: it uses the parent's assembled system prompt byte-for-byte and carries its own instructions in the delegated task message. The inherited effective history and the task-tool ordering are likewise arranged to preserve the cacheable request prefix. A fork inherits parent skills and cannot set different skills. It also merges inherited parent caller middleware with its own middleware by name before the child tail, so it can rebuild dynamic prompt-producing state such as memory. Changing that inherited system prompt or tool definitions is an intentional cache-reuse tradeoff.
 
 ### Synchronous task execution
 
 `SubAgentMiddleware` validates nonempty, unique child names and accepts only `isolated` or beta `fork` mode. An isolated child receives a fresh human message containing the delegated description. A fork receives the parent's effective conversation after the current summarization event is applied, plus a task preamble and description. Forked declarative children receive compatible parent state and a guarded mirrored `task` tool; recursive delegation returns a refusal. Forked compiled children are opaque, so private and special keys are withheld.
 
-Before an inline child is invoked, normal task transfer removes special message handling, todos, structured output, skill bookkeeping, caller rubric, and registered private keys. On return, only changed non-excluded state values are merged back with one `ToolMessage`: serialized structured output when present, a refusal notice where applicable, or the last nonempty AI text. Concurrent children writing the same custom state key need a reducer; otherwise LangGraph can raise `InvalidUpdateError`.
+Before an inline child is invoked, an isolated task transfer removes special message handling, todos, structured output, skill bookkeeping, caller rubric, and registered private keys, then supplies only the delegated description as a fresh human message. A declarative fork instead carries compatible parent state, including private channels needed by its mirrored stack, drops fork-specific bookkeeping, and folds any summarization event into the effective history. A compiled fork remains opaque and receives only non-private transferable state. In both cases, the spawning task-call AI message is removed before fork history is built.
+
+On return, only changed non-excluded state values are merged back with one `ToolMessage`: serialized structured output when present, a refusal notice where applicable, or the last nonempty AI text. This avoids replaying inherited values through reducers. Concurrent children writing the same custom state key need a reducer; otherwise LangGraph can raise `InvalidUpdateError`.
 
 The task boundary turns `ModelRefusalError`, and a structured-output validation failure that contains a refusal, into a retry-warning result for the parent in both synchronous and asynchronous child invocation. Other structured-output failures propagate. This handling covers declarative and compiled children without pretending that the SDK installed refusal middleware in a compiled runnable. Child invocations inherit ambient LangGraph configuration and add subagent tracing metadata plus the parent task call ID.
+
+For a compiled LangGraph child, the task runner streams final values and checkpoint events so the result `ToolMessage` artifact can expose the namespace that actually saved the child history. No checkpoint event yields no artifact. A non-graph runnable instead reports the parent task namespace as a fallback. This is observability metadata, not model-visible content. A known limitation is a child wrapped with `.with_retry()`: it must be invoked rather than streamed, so its artifact can name the first task namespace even when the successful retry saved under that namespace with `|1`; retrying the `task` call itself records the finishing run's namespace.
 
 ### Remote asynchronous execution
 
@@ -123,7 +137,7 @@ Filesystem permissions are tool-layer policy, not backend-layer policy. `Filesys
 
 Operationally, provide an explicit model, select a backend appropriate to the trust boundary, and use a checkpointer/store at the outer graph boundary when state persistence is required. A backend only provides the file-operation contract; shell `execute` is available only when it also implements `SandboxBackendProtocol`. Direct backend calls do not inherit filesystem-tool permissions.
 
-Focused graph tests cover profile lookup and prompt assembly, default general-purpose child insertion or suppression, tool override/exclusion wiring, private-schema registration, middleware replacement and ordering, child stack isolation, skills placement, and backend binding. Subagent tests cover mode and unique-name validation, default `task` registration, dynamic response formats for declarative children, compiled-child schema rejection, state transfer, fork history and recursion refusal, and refusal conversion. These tests are the appropriate guardrails for changes to construction order or delegation boundaries.
+Focused graph tests cover profile lookup and prompt assembly, default general-purpose child insertion or suppression, tool override/exclusion wiring, private-schema registration, middleware replacement and ordering, child stack isolation, skills placement, backend binding, and optional provider caching on main and child stacks. Subagent tests cover mode and unique-name validation, default `task` registration, dynamic response formats for declarative children, compiled-child schema rejection, state transfer, fork history, prompt and tool-prefix preservation, recursion refusal, result selection, refusal conversion, and checkpoint-namespace artifacts for synchronous and asynchronous task execution. These tests are the appropriate guardrails for changes to construction order, cache-sensitive fork behavior, or delegation boundaries.
 
 ## Related pages
 

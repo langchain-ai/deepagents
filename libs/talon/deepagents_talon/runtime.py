@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import re
+import signal
+import subprocess
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -21,6 +23,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
+from deepagents.backends.protocol import ExecuteResponse
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -1613,12 +1616,72 @@ def _decision_payload(
     return [{"type": "reject"} for _ in range(count)]
 
 
+class _LocalShellBackend(LocalShellBackend):
+    """Run local commands with explicit process-group cleanup on timeout."""
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        """Execute a command, terminating its process group if it times out."""
+        if not command or not isinstance(command, str):
+            return ExecuteResponse(output="Error: Command must be a non-empty string.", exit_code=1)
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        if effective_timeout <= 0:
+            msg = f"timeout must be positive, got {effective_timeout}"
+            raise ValueError(msg)
+        try:
+            return self._execute_command(command, effective_timeout)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return ExecuteResponse(
+                output=f"Error executing command ({type(exc).__name__}): {exc}", exit_code=1
+            )
+
+    def _execute_command(self, command: str, timeout: int) -> ExecuteResponse:
+        with subprocess.Popen(  # noqa: S602  # execute intentionally accepts shell commands.
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            env=self._env,
+            cwd=str(self.cwd),
+            start_new_session=True,
+        ) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                return ExecuteResponse(
+                    output=f"Error: Command timed out after {timeout} seconds. "
+                    "Its process group was terminated; execution is incomplete. "
+                    "Retry an authorized read-only command once with a longer timeout "
+                    "if more time is the clear remedy.",
+                    exit_code=124,
+                )
+        return self._command_response(stdout, stderr, process.returncode)
+
+    def _command_response(self, stdout: str, stderr: str, exit_code: int) -> ExecuteResponse:
+        parts = [stdout] if stdout else []
+        if stderr:
+            parts.extend(f"[stderr] {line}" for line in stderr.strip().split("\n"))
+        output = "\n".join(parts) if parts else "<no output>"
+        encoded = output.encode("utf-8")
+        truncated = len(encoded) > self._max_output_bytes
+        if truncated:
+            output = encoded[: self._max_output_bytes].decode("utf-8", errors="ignore")
+            output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+        if exit_code != 0:
+            output = f"{output.rstrip()}\n\nExit code: {exit_code}"
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=truncated)
+
+
 def _default_backend(env: Mapping[str, str] | None, assistant_dir: Path | None) -> CompositeBackend:
     values = os.environ if env is None else env
     root = values.get(_WORKSPACE_ENV) or None
     home = assistant_dir or TalonConfig.from_env(values).home
     artifacts = _prepare_artifacts(home)
-    local = LocalShellBackend(
+    local = _LocalShellBackend(
         root_dir=root,
         virtual_mode=False,
         env=_backend_child_env(values),

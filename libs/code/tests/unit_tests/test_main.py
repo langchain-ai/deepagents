@@ -5,7 +5,7 @@ import os
 import signal
 import sys
 from contextlib import contextmanager
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -38,6 +38,7 @@ from deepagents_code.main import (
     _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE,
     _auto_install_ripgrep_cli,
     _install_termination_signal_handlers,
+    _make_stdio_encoding_safe,
     _prespawn_server,
     _print_session_stats,
     _render_teardown_thread_hints,
@@ -82,6 +83,77 @@ class TestTerminationSignalHandling:
         _install_termination_signal_handlers()
 
         install.assert_not_called()
+
+
+class TestMakeStdioEncodingSafe:
+    """Tests for `_make_stdio_encoding_safe`."""
+
+    def test_cp1252_stream_survives_unicode_glyphs(self):
+        """Unencodable glyphs degrade to "?" instead of raising."""
+        buffer = BytesIO()
+        stream = TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+            sys.stdout.write("✓ Server ready")
+            sys.stdout.flush()
+
+        assert buffer.getvalue() == b"? Server ready"
+
+    def test_stream_encoding_is_preserved(self):
+        """Only the error handler changes; the encoding stays untouched."""
+        buffer = BytesIO()
+        stream = TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert stream.encoding == "cp1252"
+        assert stream.errors == "replace"
+
+    def test_non_reconfigurable_stream_is_left_alone(self):
+        """Streams without `reconfigure` (e.g. StringIO) do not raise."""
+        stream = StringIO()
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert not stream.closed
+
+    def test_streams_handled_independently(self):
+        """A non-reconfigurable stdout must not stop stderr from being hardened.
+
+        In quiet mode `run_non_interactive` routes glyph-emitting output to
+        stderr, so a per-stream `continue` (not `break`/`return`) is
+        load-bearing: skipping stdout must still leave stderr reconfigured.
+        """
+        stdout = StringIO()  # no `reconfigure` -> skipped
+        stderr = TextIOWrapper(BytesIO(), encoding="cp1252")
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            _make_stdio_encoding_safe()
+
+        assert stderr.errors == "replace"
+        assert not stdout.closed
+
+    def test_closed_stream_is_swallowed(self):
+        """A closed stream raises `ValueError` on reconfigure; swallowed, no crash."""
+        stream = TextIOWrapper(BytesIO(), encoding="cp1252")
+        stream.close()
+        with (
+            patch.object(sys, "stdout", stream),
+            patch.object(sys, "stderr", StringIO()),
+        ):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert stream.closed
+
+    def test_duck_typed_reconfigure_typeerror_is_swallowed(self):
+        """A `reconfigure` with an incompatible signature must not crash the run."""
+        # This `reconfigure` takes no args, so calling it with `errors=` raises
+        # `TypeError` — the failure mode a non-stdlib stream wrapper (e.g. a
+        # capture/tee library) could exhibit. The guard must not propagate it.
+        stream = SimpleNamespace(reconfigure=lambda: None)
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert hasattr(stream, "reconfigure")
 
 
 class TestStartupAutoUpdate:

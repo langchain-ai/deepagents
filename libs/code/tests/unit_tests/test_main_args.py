@@ -1174,6 +1174,57 @@ class TestPipedStdinOutsideSessions:
         assert received == [piped]
 
 
+class TestRedirectedOutputEncoding:
+    """Commands survive text their stdout encoding cannot represent."""
+
+    @pytest.mark.parametrize(
+        ("argv", "entry_point"),
+        [
+            (["doctor"], "deepagents_code.doctor.run_doctor_command"),
+            (["skills", "list"], "deepagents_code.skills.execute_skills_command"),
+            (["threads", "list"], "deepagents_code.sessions.list_threads_command"),
+            (
+                ["plugin", "list"],
+                "deepagents_code.plugins.commands_cli.execute_plugin_command",
+            ),
+        ],
+        ids=["doctor", "skills-list", "threads-list", "plugin-list"],
+    )
+    def test_unencodable_text_prints_as_question_mark(
+        self, argv: list[str], entry_point: str
+    ) -> None:
+        """Regression test for #7692: text cp1252 can't encode prints as `?`.
+
+        On Windows, stdout redirected to a pipe or file is encoded with the
+        ANSI code page, so the first character outside it raised
+        `UnicodeEncodeError` and the command exited 1 mid-output.
+        """
+        from deepagents_code.main import cli_main
+
+        buffer = io.BytesIO()
+        # The stream Windows gives redirected stdout when UTF-8 mode is off.
+        stdout = io.TextIOWrapper(buffer, encoding="cp1252", errors="surrogateescape")
+
+        def run_command(*_args: object, **_kwargs: object) -> int:
+            sys.stdout.write("Turns merged PRs → release notes ✨")
+            return 0
+
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdout", stdout),
+            # Keeps the hardening off the test runner's own stderr.
+            patch.object(sys, "stderr", io.StringIO()),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(entry_point, side_effect=run_command),
+            # `doctor` exits through `sys.exit`; the others return.
+            suppress(SystemExit),
+        ):
+            cli_main()
+
+        stdout.flush()
+        assert buffer.getvalue() == b"Turns merged PRs ? release notes ?"
+
+
 class TestAgentResolutionScope:
     """Recent-agent fallback should only apply to session launches."""
 

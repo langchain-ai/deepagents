@@ -1,0 +1,41 @@
+{
+  "orchestrator_notes": "A strong planner inspects and plans; a cheaper executor acts and escalates back on friction. Top-level keys in ROUTING_CONFIG override these when it sets mode to orchestrator.",
+  "max_escalations": 4,
+  "error_streak": 3,
+  "planner": {
+    "model": "openai:gpt-6.1-sol",
+    "model_kwargs": {
+      "reasoning_effort": "xhigh",
+      "use_responses_api": true
+    },
+    "capabilities": {
+      "max_input_tokens": 922000,
+      "max_output_tokens": 128000,
+      "text_inputs": true,
+      "image_inputs": true,
+      "audio_inputs": false,
+      "video_inputs": false,
+      "tool_calling": true,
+      "tool_choice": true,
+      "structured_output": true
+    }
+  },
+  "executor": {
+    "model": "openai:gpt-6.1-terra",
+    "model_kwargs": {
+      "reasoning_effort": "xhigh",
+      "use_responses_api": true
+    },
+    "capabilities": {
+      "max_input_tokens": 922000,
+      "max_output_tokens": 128000,
+      "text_inputs": true,
+      "image_inputs": true,
+      "audio_inputs": false,
+      "video_inputs": false,
+      "tool_calling": true,
+      "tool_choice": true,
+      "structured_output": true
+    }
+  }
+}

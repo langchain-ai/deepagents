@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    from langchain.agents.middleware import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import BaseMessage
     from langchain_core.tools import BaseTool
@@ -641,10 +642,12 @@ def _tau3_turn(messages: Sequence[BaseMessage]) -> RoutingTurn | None:
 
 
 async def make_routed_graph(config: dict[str, object] | None = None) -> object:
-    """Create the bare graph on the model-routing ladder instead of `configurable.model`.
+    """Create the bare graph on routed models instead of `configurable.model`.
 
-    The ladder comes from `ROUTING_CONFIG`, else the packaged `default_routing.json`, which
-    `make stage-harbor-local-deps` stages next to this module. Needs `LC_GATEWAY_KEY`.
+    `ROUTING_CONFIG` with `"mode": "orchestrator"` hands control between a planner and an
+    executor (`default_orchestrator.json`); otherwise the difficulty ladder routes each turn
+    (`default_routing.json`). `make stage-harbor-local-deps` stages both next to this module.
+    Needs `LC_GATEWAY_KEY`.
 
     Args:
         config: LangGraph runtime config, as for `make_bare_graph`.
@@ -652,24 +655,15 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
     """
-    # Only this graph needs the staged routing package.
-    from deepagents_evals.routing.middleware import (  # noqa: PLC0415  # Only routed graphs need this package.
-        LadderRoutingMiddleware,
-        load_config,
-        make_decisions,
-        read_human_turn,
+    from deepagents_evals.routing import (  # noqa: PLC0415  # Only routed graphs need this package.
+        orchestrator,
     )
 
     configurable = _configurable(config)
-    routing = load_config()
     tools = await _mcp_tools(configurable)
-    turn_reader = (
-        _tau3_turn
-        if {"start_conversation", "send_message_to_user"} <= {tool.name for tool in tools}
-        else read_human_turn
-    )
+    anchor, middleware = _orchestrated() if orchestrator.requested() else _ladder(tools)
     return create_deep_agent(
-        model=routing.anchor,
+        model=anchor,
         backend=LocalShellBackend(
             root_dir=_workdir(configurable),
             inherit_env=False,
@@ -678,15 +672,47 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
         ),
         tools=tools or None,
         skills=_skills(configurable),
-        middleware=[
-            LadderRoutingMiddleware(
-                routing.models,
-                decision_model=make_decisions(routing.decision_model),
-                granularity=routing.granularity,
-                difficulty_limits=routing.difficulty_limits,
-                model_details=routing.model_details,
-                turn_reader=turn_reader,
-                task=routing.task,
-            )
-        ],
+        middleware=[middleware],
+    )
+
+
+def _orchestrated() -> tuple[BaseChatModel, AgentMiddleware[Any, Any, Any]]:
+    """The orchestrator's middleware, anchored on the executor so summaries and subagents run cheaply."""
+    from deepagents_evals.routing.orchestrator import (  # noqa: PLC0415  # Only routed graphs need this package.
+        OrchestratorMiddleware,
+        load_config,
+    )
+
+    config = load_config()
+    return config.executor, OrchestratorMiddleware(
+        config.planner,
+        config.executor,
+        max_escalations=config.max_escalations,
+        error_streak=config.error_streak,
+    )
+
+
+def _ladder(tools: Sequence[BaseTool]) -> tuple[BaseChatModel, AgentMiddleware[Any, Any, Any]]:
+    """The difficulty ladder's anchor and middleware, reading simulator turns when tau3 tools are present."""
+    from deepagents_evals.routing.middleware import (  # noqa: PLC0415  # Only routed graphs need this package.
+        LadderRoutingMiddleware,
+        load_config,
+        make_decisions,
+        read_human_turn,
+    )
+
+    routing = load_config()
+    turn_reader = (
+        _tau3_turn
+        if {"start_conversation", "send_message_to_user"} <= {tool.name for tool in tools}
+        else read_human_turn
+    )
+    return routing.anchor, LadderRoutingMiddleware(
+        routing.models,
+        decision_model=make_decisions(routing.decision_model),
+        granularity=routing.granularity,
+        difficulty_limits=routing.difficulty_limits,
+        model_details=routing.model_details,
+        turn_reader=turn_reader,
+        task=routing.task,
     )

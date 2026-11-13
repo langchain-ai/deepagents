@@ -2,15 +2,35 @@
   "decision_model": "jev-1.14.0",
   "pricing_verified_on": "2026-11-12",
   "routing_notes": "Prices are standard provider USD per million tokens, with short-duration cache writes. Override for negotiated gateway rates or other service tiers. Difficulty ceilings are provisional policy settings, not measured success rates; model order does not set suitability.",
-  "anchor": {"model": "anthropic:claude-opus-5-5", "model_kwargs": {"effort": "high"}},
+  "anchor": {
+    "model": "openai:gpt-6.1-sol",
+    "model_kwargs": {
+      "reasoning_effort": "xhigh",
+      "use_responses_api": true
+    },
+    "capabilities": {
+      "max_input_tokens": 922000,
+      "max_output_tokens": 128000,
+      "text_inputs": true,
+      "image_inputs": true,
+      "audio_inputs": false,
+      "video_inputs": false,
+      "tool_calling": true,
+      "tool_choice": true,
+      "structured_output": true
+    }
+  },
   "models": [
     {
       "model": "openai:gpt-6.1-sol",
-      "description": "General-purpose reasoning, coding, and agentic tool use with text and image input; configured at medium reasoning effort.",
-      "max_difficulty": 2,
-      "model_kwargs": {"reasoning_effort": "medium", "use_responses_api": true},
+      "description": "Complex coding, reasoning, computer use, and professional work with text and image input; configured at xhigh reasoning effort.",
+      "max_difficulty": 4,
+      "model_kwargs": {
+        "reasoning_effort": "xhigh",
+        "use_responses_api": true
+      },
       "capabilities": {
-        "max_input_tokens": 1050000,
+        "max_input_tokens": 922000,
         "max_output_tokens": 128000,
         "text_inputs": true,
         "image_inputs": true,
@@ -32,29 +52,34 @@
       "source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol"
     },
     {
-      "model": "anthropic:claude-opus-5-5",
-      "description": "Long-running agentic coding and knowledge work with text and image input; configured at high effort with adaptive thinking.",
-      "max_difficulty": 4,
-      "model_kwargs": {"effort": "high"},
+      "model": "openai:gpt-6.1-terra",
+      "description": "Efficient visual reasoning, precise computer use, and natural writing with text and image input; configured at xhigh reasoning effort.",
+      "max_difficulty": 2,
+      "model_kwargs": {
+        "reasoning_effort": "xhigh",
+        "use_responses_api": true
+      },
       "capabilities": {
-        "max_input_tokens": 1000000,
+        "max_input_tokens": 922000,
         "max_output_tokens": 128000,
         "text_inputs": true,
         "image_inputs": true,
         "audio_inputs": false,
         "video_inputs": false,
         "tool_calling": true,
-        "tool_choice": false,
+        "tool_choice": true,
         "structured_output": true
       },
       "pricing": {
-        "input": 4.0,
-        "output": 20.0,
-        "cache_read": 0.2,
-        "cache_write": 5.0
+        "input": 1.0,
+        "output": 5.0,
+        "cache_read": 0.05,
+        "cache_write": 1.25,
+        "long_context_threshold": 272000,
+        "long_context_input_multiplier": 2.0,
+        "long_context_output_multiplier": 1.5
       },
-      "source": "https://platform.claude.com/docs/en/models/opus-5-5/migration-guide",
-      "pricing_source": "https://platform.claude.com/docs/en/about-claude/pricing"
+      "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra"
     }
   ]
 }

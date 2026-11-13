@@ -14,16 +14,19 @@ from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
+from langchain.agents.middleware import ModelRetryMiddleware
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from langchain.agents.middleware import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
 
@@ -37,6 +40,27 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # to precisely the same specs. Matching case-insensitively here would re-bump
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
+
+_BARE_SYSTEM_PROMPTS: dict[str, str] = {
+    "claude-opus-5-5": """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
+
+Guidelines:
+- Use execute for shell commands and file operations like ls, rg, find.
+- Use read_file to examine files instead of cat or sed.
+- Use edit_file for precise changes (old_string must match exactly).
+- Use write_file only for new files or complete rewrites.
+- Be concise in your responses.
+- Show file paths clearly when working with files.""",
+}
+"""Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
+
+`create_deep_agent` sends no system prompt for models without a harness
+profile, so the bare agent otherwise runs on tool descriptions alone. This
+prompt follows pi's short default prompt, with deepagents' tool names.
+"""
+
+_MODEL_RETRY_ATTEMPTS = 3
+"""Retries for a model call that fails mid-request (e.g. a dropped stream)."""
 
 # Streaming makes the read timeout an idle timeout rather than a cap on the
 # whole generation; seconds are (connect, read).
@@ -481,9 +505,7 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         env={name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ},
         virtual_mode=False,
     )
-    # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
-    # prompt-free default. The sandbox workdir is already enforced by the shell
-    # backend's `root_dir`.
+    # The sandbox workdir is already enforced by the shell backend's `root_dir`.
     tools = await _mcp_tools(configurable)
     search_tool = _web_search_tool()
     if search_tool is not None:
@@ -493,7 +515,23 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         backend=backend,
         tools=tools or None,
         skills=_skills(configurable),
+        system_prompt=_BARE_SYSTEM_PROMPTS.get(getattr(model, "model", "")),
+        middleware=_bare_middleware(),
     )
+
+
+def _bare_middleware() -> list[AgentMiddleware]:
+    """Middleware the bare graph adds on top of `create_deep_agent`'s stack.
+
+    The retry runs outermost so a model call that fails mid-request is retried,
+    and the cache keep-alive sits inside it so its own pings are never retried.
+    `on_failure="error"` keeps an unrecoverable model error an errored trial
+    rather than a scored failure.
+    """
+    return [
+        ModelRetryMiddleware(max_retries=_MODEL_RETRY_ATTEMPTS, on_failure="error"),
+        AnthropicCacheKeepaliveMiddleware(),
+    ]
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

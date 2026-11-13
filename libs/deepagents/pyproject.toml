@@ -58,7 +58,7 @@ test = [
   "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
   "langchain-tests>=1.1.9",
-  "langchain-openai>=1.7.4,<2.0.0",
+  "langchain-openai>=1.8.0,<2.0.0",
   # The `aws` extra, so payload tests can drive real langchain-aws chat models.
   "langchain-aws>=1.9.3,<2.0.0",
   "twine",

@@ -4,15 +4,13 @@
 
 ## [0.2.8](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.7...deepagents-code==0.2.8) (2026-11-13)
 
-
 ### Features
 
-* **code:** set `DEEPAGENTS_CODE=1` in the local shell environment ([#7701](https://github.com/langchain-ai/deepagents/issues/7701)) ([55951fc](https://github.com/langchain-ai/deepagents/commit/55951fc6ce7b751aa72f7aff5e5c2d4c7c1b8e2e))
-
+- Set `DEEPAGENTS_CODE=1` in the local shell environment. ([#7701](https://github.com/langchain-ai/deepagents/pull/7701))
 
 ### Bug Fixes
 
-* **code:** replace unencodable characters in redirected output ([#7717](https://github.com/langchain-ai/deepagents/issues/7717)) ([a9ccfb7](https://github.com/langchain-ai/deepagents/commit/a9ccfb778876fc5c1190227889c7b26e271cb415))
+- Replace unencodable characters in redirected output. ([#7717](https://github.com/langchain-ai/deepagents/pull/7717))
 
 ## [0.2.7](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.6...deepagents-code==0.2.7) (2026-11-10)
 

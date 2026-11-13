@@ -763,7 +763,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
             if subagent_skills is not None:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills, permissions=subagent_permissions))
 
             append_prompt_caching_middleware(subagent_middleware)
             if is_forked and memory is not None:
@@ -865,7 +865,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
         if skills is not None:
-            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills, permissions=permissions))
 
         append_prompt_caching_middleware(gp_middleware)
         gp_middleware.append(ModelRefusalMiddleware())
@@ -964,7 +964,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # conversation and the model actually called (after user fallback or
         # routing middleware). Kept out of `_main_core_names` so novel user
         # middleware still lands ahead of it.
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills, permissions=permissions))
     append_prompt_caching_middleware(deepagent_middleware)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the

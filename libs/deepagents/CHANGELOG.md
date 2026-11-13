@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.7.38](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.37...deepagents==0.7.38) (2026-11-13)
+
+
+### Bug Fixes
+
+* **sdk:** drop results from ls, grep, glob when a symlink resolves outside approved search scope ([#7706](https://github.com/langchain-ai/deepagents/issues/7706)) ([ba7d8a0](https://github.com/langchain-ai/deepagents/commit/ba7d8a06abcb9481af1f4fa10c54495fa168eac3))
+
 ## [0.7.37](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.36...deepagents==0.7.37) (2026-11-12)
 
 ### Bug Fixes

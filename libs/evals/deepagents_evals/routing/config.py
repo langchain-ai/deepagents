@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from langchain.chat_models import init_chat_model
+
+from deepagents_evals.routing.models import ModelDetails, ModelPricing
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -51,15 +53,19 @@ class RoutingConfig:
 
     Args:
         anchor: The model passed to `create_deep_agent`; serves unrouted calls (summaries, subagents).
-        models: The ladder, cheapest first.
-        decision_model: OpenAI model the Decisions API estimates difficulty with.
+        models: Candidate models in stable index order, independent of price or suitability.
+        decision_model: Jev or OpenAI model used to estimate difficulty.
         granularity: Route once per thread or at the start of every turn.
+        difficulty_limits: Optional per-rung ceilings on the 0-4 task difficulty scale.
+        model_details: Descriptions and USD token prices corresponding to `models`.
     """
 
     anchor: BaseChatModel
     models: list[BaseChatModel]
     decision_model: str
     granularity: Granularity = "per_turn"
+    difficulty_limits: list[float] | None = field(default=None, kw_only=True)
+    model_details: list[ModelDetails] | None = field(default=None, kw_only=True)
 
 
 def _gateway_model(spec: Mapping[str, Any]) -> BaseChatModel:
@@ -80,6 +86,7 @@ def _gateway_model(spec: Mapping[str, Any]) -> BaseChatModel:
         base_url=GATEWAY_URLS[provider],
         api_key=load_gateway_key(),
         **spec.get("model_kwargs", {}),
+        **({"profile": spec["capabilities"]} if "capabilities" in spec else {}),
     )
 
 
@@ -91,6 +98,10 @@ def load_config() -> RoutingConfig:
             budgets against.
     """
     raw = json.loads(os.environ.get(CONFIG_ENV) or DEFAULT_CONFIG.read_text())
+    specified = ["max_difficulty" in spec for spec in raw["models"]]
+    if any(specified) and not all(specified):
+        msg = "Set max_difficulty for every model or omit it for all models."
+        raise ValueError(msg)
     anchor = _gateway_model(raw["anchor"])
     models = [_gateway_model(spec) for spec in raw["models"]]
     window = (anchor.profile or {}).get("max_input_tokens") or 0
@@ -107,4 +118,14 @@ def load_config() -> RoutingConfig:
         models=models,
         decision_model=raw["decision_model"],
         granularity=raw.get("granularity", "per_turn"),
+        difficulty_limits=[spec["max_difficulty"] for spec in raw["models"]]
+        if any("max_difficulty" in spec for spec in raw["models"])
+        else None,
+        model_details=[
+            ModelDetails(
+                description=spec.get("description", ""),
+                pricing=ModelPricing(**spec["pricing"]) if "pricing" in spec else None,
+            )
+            for spec in raw["models"]
+        ],
     )

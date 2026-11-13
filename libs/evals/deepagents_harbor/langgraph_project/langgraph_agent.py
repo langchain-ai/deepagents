@@ -653,13 +653,10 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
     """
     # Only this graph needs the staged routing package.
-    from langchain_openai.decisions import OpenAIDecisions  # noqa: PLC0415
-
     from deepagents_evals.routing.config import (  # noqa: PLC0415  # Only routed graphs need this package.
-        GATEWAY_OPENAI_URL,
         load_config,
-        load_gateway_key,
     )
+    from deepagents_evals.routing.decisions import make_decisions  # noqa: PLC0415
     from deepagents_evals.routing.middleware import LadderRoutingMiddleware  # noqa: PLC0415
     from deepagents_evals.routing.turns import read_human_turn  # noqa: PLC0415
 
@@ -684,12 +681,10 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
         middleware=[
             LadderRoutingMiddleware(
                 routing.models,
-                decision_model=OpenAIDecisions(
-                    model=routing.decision_model,
-                    api_key=load_gateway_key,
-                    base_url=GATEWAY_OPENAI_URL,
-                ),
+                decision_model=make_decisions(routing.decision_model),
                 granularity=routing.granularity,
+                difficulty_limits=routing.difficulty_limits,
+                model_details=routing.model_details,
                 turn_reader=turn_reader,
             )
         ],

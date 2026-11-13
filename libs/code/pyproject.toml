@@ -35,7 +35,7 @@ dependencies = [
     # Client-server architecture
     "langgraph-sdk>=0.4.14,<1.0.0",
     "langgraph-cli[inmem]>=0.4.43,<1.0.0",
-    "langgraph-runtime-inmem>=0.37.1,<1.0.0",
+    "langgraph-runtime-inmem>=0.38.0,<1.0.0",
     "httpx>=0.28.1",
 
     # Core model providers - others are added as optional
@@ -138,7 +138,7 @@ all-providers = [
 ]
 
 # Sandbox providers
-agentcore = ["langchain-agentcore-codeinterpreter>=0.0.6,<1.0.0"]
+agentcore = ["langchain-agentcore-codeinterpreter>=0.0.7,<1.0.0"]
 daytona = ["langchain-daytona>=0.0.9"]
 modal = ["langchain-modal>=0.0.7"]
 openshell = ["langchain-nvidia-openshell>=0.1.1"]

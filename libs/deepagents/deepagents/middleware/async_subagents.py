@@ -411,12 +411,28 @@ def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str
     return metadata
 
 
+_STREAM_OPTIONS: dict[str, Any] = {
+    "stream_mode": ["values", "updates", "messages-tuple", "custom"],
+    "stream_subgraphs": True,
+    "stream_resumable": True,
+}
+"""Streaming for the runs this middleware starts on this deployment.
+
+An app that shows a subagent's thread, or the parent's thread after a
+notification, joins runs it didn't start, and a join gets only what the run
+streams. Like an app's own runs, these stream tokens and subgraphs, and keep
+their events for a late join.
+"""
+
+
 def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
     """Keyword arguments for `runs.create` that link a run to this agent and set the subagent's webhook.
 
-    A subagent on this deployment runs with this agent's context, like a sync subagent.
+    A subagent on this deployment runs with this agent's context, like a sync subagent, and streams with `_STREAM_OPTIONS`.
     """
     options: dict[str, Any] = {"headers": _trace_headers(spec)}
+    if not spec.get("url"):
+        options.update(_STREAM_OPTIONS)
     if webhook := spec.get("webhook"):
         options["webhook"] = webhook
     context = None if spec.get("url") else _forwarded_context(runtime.context)
@@ -672,6 +688,7 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUp
             assistant_id=assistant_id,
             input={"messages": [_notification_message(event)]},
             multitask_strategy="reject",
+            **_STREAM_OPTIONS,
             **({"context": context} if context is not None else {}),
         )
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors

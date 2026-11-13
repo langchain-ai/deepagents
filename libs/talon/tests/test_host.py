@@ -1970,7 +1970,7 @@ async def test_failed_turn_replies_without_leaking_the_error(
             await asyncio.wait_for(host._tasks["test:chat"], 2)
 
         assert [conversation for conversation, _ in channel.sent] == ["chat"]
-        assert channel.sent[0][1]
+        assert channel.sent[0][1] == "Something went wrong while working on that. Check Talon logs."
         assert "sensitive upstream detail" not in channel.sent[0][1]
         assert "sensitive upstream detail" in caplog.text
     finally:

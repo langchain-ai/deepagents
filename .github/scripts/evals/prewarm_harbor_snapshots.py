@@ -94,8 +94,6 @@ def environments(
             session_id="prewarm",
             trial_paths=paths,
             task_env_config=config,
-            # Build snapshots where the shards' sandboxes look for them.
-            api_key=os.environ.get("LANGSMITH_SANDBOX_API_KEY") or None,
         )
         envs.append((f"{task.short_name}/{kind}", env))
     return envs

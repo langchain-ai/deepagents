@@ -1035,12 +1035,6 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          # Sandboxes authenticate with LANGSMITH_SANDBOX_API_KEY; LANGSMITH_API_KEY stays
-          # on tracing and experiments. The class reads the key itself so it never lands
-          # in the job config, as an `--ek api_key=...` value would.
-          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
-            env_flag="--env deepagents_harbor.langsmith_sandbox:SandboxKeyLangSmithEnvironment"
-          fi
           HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           agent_args=()
           case "$HARBOR_AGENT_IMPL" in

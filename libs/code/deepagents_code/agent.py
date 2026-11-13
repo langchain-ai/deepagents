@@ -3203,7 +3203,7 @@ def create_cli_agent(
             shell_env["GIT_TERMINAL_PROMPT"] = "0"
             # Lets CLIs the agent runs tell the call came from dcode, the way
             # Claude Code sets `CLAUDECODE` and Cursor sets `CURSOR_AGENT`.
-            shell_env["DCODE"] = "1"
+            shell_env["DEEPAGENTS_CODE"] = "1"
             restore_user_langsmith_env(shell_env, start_path=effective_cwd)
             user_tracing_project = shell_env.get("LANGSMITH_PROJECT")
             # Re-apply a launch-time PYTHONPATH that was stripped from the server

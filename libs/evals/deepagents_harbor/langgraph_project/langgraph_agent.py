@@ -41,8 +41,7 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
-_BARE_SYSTEM_PROMPTS: dict[str, str] = {
-    "claude-opus-5-5": """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
+_PI_STYLE_PROMPT = """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
 
 Guidelines:
 - Use execute for shell commands and file operations like ls, rg, find.
@@ -50,7 +49,11 @@ Guidelines:
 - Use edit_file for precise changes (old_string must match exactly).
 - Use write_file only for new files or complete rewrites.
 - Be concise in your responses.
-- Show file paths clearly when working with files.""",
+- Show file paths clearly when working with files."""
+
+_BARE_SYSTEM_PROMPTS: dict[str, str] = {
+    "claude-opus-5-5": _PI_STYLE_PROMPT,
+    "accounts/fireworks/models/glm-5p3": _PI_STYLE_PROMPT,
 }
 """Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
 

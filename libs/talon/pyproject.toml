@@ -24,7 +24,7 @@ dependencies = [
     # transitively via `discord.py`; declared because we import it.
     "aiohttp>=3.14.5",
     "aiosqlite>=0.22.1",
-    "deepagents>=0.7.37",
+    "deepagents>=0.7.38",
     "deepagents-code>=0.2.7,<1.0.0",
     "discord.py>=2.7.1",
     "fastmcp>=4.1.5",
@@ -60,7 +60,7 @@ history-voyage = [
     # `voyageai.Client`/`AsyncClient` directly.
     "voyageai>=0.5.0",
 ]
-history-openai = ["langchain-openai>=1.7.4,<2.0.0"]
+history-openai = ["langchain-openai>=1.8.0,<2.0.0"]
 # NVIDIA OpenShell sandbox (`DEEPAGENTS_TALON_SANDBOX=openshell`). The provider
 # lives in `deepagents-code`; this extra pulls in its backend package.
 openshell = ["deepagents-code[openshell]>=0.2.7,<1.0.0"]

@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.0.8](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.7...langchain-modal==0.0.8) (2026-11-13)
+
+
+### Bug Fixes
+
+* **modal:** migrate `ModalSandbox` file I/O to `Sandbox.filesystem` API ([#7664](https://github.com/langchain-ai/deepagents/issues/7664)) ([ee2f341](https://github.com/langchain-ai/deepagents/commit/ee2f3413bf6d29a2d6e1defcf5e38bc0d681a334))
+
 ## [0.0.7](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.6...langchain-modal==0.0.7) (2026-10-26)
 
 ### Bug Fixes

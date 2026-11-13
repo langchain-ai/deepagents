@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Self, cast
 from unittest.mock import AsyncMock, Mock
 
@@ -13,18 +14,21 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
-from langchain_openai.decisions import DecisionResponse, OpenAIDecisions, ScoreAnswer
+from langchain_openai.decisions import DecisionResponse, Level, OpenAIDecisions, ScoreAnswer
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
 from pydantic import Field
 
 from deepagents_evals.routing import middleware as routing_config
 from deepagents_evals.routing.middleware import (
+    GENERAL_TASK,
     Granularity,
     LadderRoutingMiddleware,
     ModelDetails,
     ModelPricing,
     RouterState,
+    RoutingTask,
+    load_task,
     read_human_turn,
 )
 from deepagents_harbor.langgraph_project import langgraph_agent
@@ -150,9 +154,58 @@ def test_difficulty_question_does_not_depend_on_model_ladder() -> None:
         requests.append(decisions.invoke.call_args.args[0])
 
     assert requests[0]["questions"] == requests[1]["questions"]
-    levels = requests[0]["questions"]["task_difficulty"].levels
-    assert len(levels) == 5
-    assert all(level.description for level in levels)
+    question = requests[0]["questions"]["task_difficulty"]
+    assert question.instructions == GENERAL_TASK.instructions
+    assert len(question.levels) == 5
+    assert all(level.description for level in question.levels)
+
+
+def test_default_task_is_general_and_unknown_presets_fail() -> None:
+    assert GENERAL_TASK.name == "general"
+    with pytest.raises(ValueError, match="Unknown routing task"):
+        load_task("nonexistent")
+
+
+def test_difficulty_limits_follow_the_task_scale() -> None:
+    task = load_task(
+        {
+            "name": "triage",
+            "instructions": "Rate it.",
+            "levels": [{"label": label} for label in ("easy", "medium", "hard")],
+        }
+    )
+    models = [ScriptedModel(model_name=name, responses=[]) for name in ("cheap", "strong")]
+
+    assert LadderRoutingMiddleware(
+        models, decision_model=_decisions(), task=task
+    ).difficulty_limits == [2, 2]
+    with pytest.raises(ValueError, match="0-2 range of task 'triage'"):
+        LadderRoutingMiddleware(
+            models, decision_model=_decisions(), difficulty_limits=[2, 3], task=task
+        )
+    with pytest.raises(ValueError, match="at least two"):
+        RoutingTask(name="flat", instructions="Rate it.", levels=(Level(label="only"),))
+
+
+@pytest.mark.parametrize(("fail_cost_scale", "selected"), [(2.0, 1), (0.0, 0)])
+def test_task_failure_cost_controls_risk_tolerance(fail_cost_scale: float, selected: int) -> None:
+    answer = _answer(1)
+    models = [
+        ScriptedModel(model_name=name, responses=[AIMessage(content=name)])
+        for name in ("cheap", "strong")
+    ]
+    router = LadderRoutingMiddleware(
+        models,
+        decision_model=_decisions(answer),
+        difficulty_limits=[2, 4],
+        model_details=_details(1, 2),
+        task=replace(GENERAL_TASK, name="tolerant", fail_cost_scale=fail_cost_scale),
+    )
+    agent = create_agent(model=models[0], middleware=[router])
+    result = agent.invoke({"messages": [HumanMessage(content="Help", id="turn")]})
+
+    assert result["decision_log"][0]["to_tier"] == selected
+    assert result["decision_log"][0]["task"] == "tolerant"
 
 
 @pytest.mark.parametrize("limits", [[2], [-1, 4], [2, 5], [float("nan"), 4]])

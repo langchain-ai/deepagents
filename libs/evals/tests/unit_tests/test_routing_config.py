@@ -205,3 +205,17 @@ def test_benchmark_defaults_have_usable_routing_metadata(monkeypatch: pytest.Mon
         for details in config.model_details
     )
     assert all((model.profile or {}).get("tool_calling") is True for model in config.models)
+
+
+def test_task_override_keeps_the_default_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LC_GATEWAY_KEY", "lsv2_pt_example")
+    monkeypatch.delenv(CONFIG_ENV, raising=False)
+    default = load_config()
+    monkeypatch.setenv(CONFIG_ENV, json.dumps({"task": "terminal_bench"}))
+    config = load_config()
+
+    assert config.task.name == "terminal_bench"
+    assert config.task.fail_cost_scale > default.task.fail_cost_scale
+    assert [m.model_name for m in config.models] == [m.model_name for m in default.models]
+    assert config.difficulty_limits == default.difficulty_limits
+    assert config.model_details == default.model_details

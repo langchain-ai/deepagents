@@ -686,6 +686,7 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
                 difficulty_limits=routing.difficulty_limits,
                 model_details=routing.model_details,
                 turn_reader=turn_reader,
+                task=routing.task,
             )
         ],
     )

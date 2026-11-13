@@ -4,60 +4,20 @@ title: Context Management
 description: How dcode reduces model-visible history without deleting checkpoints, stages archive persistence around server-owned offload, and keeps framework context out of user-facing conversation views.
 tags: [context-management, summarization, compaction, offload, checkpoints, model-context]
 sources:
-  - id: openwiki-source-e17f86b728ef61ea156ef240
-    resource: repo://libs/code/deepagents_code/_cli_context.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-48f42c39606ffdf77134df39
-    resource: repo://libs/code/deepagents_code/completion.py
-  - id: openwiki-source-90b0432baed346a5599a4e6c
-    resource: repo://libs/code/deepagents_code/editor.py
-  - id: openwiki-source-dd104912040624b0d673c588
-    resource: repo://libs/code/deepagents_code/goal_state_notice.py
-  - id: openwiki-source-8896ee5af2462c92e51bfb6e
-    resource: repo://libs/code/deepagents_code/local_context.py
-  - id: openwiki-source-528731d4c0ef5dde5cf54f4c
-    resource: repo://libs/code/deepagents_code/memory_guard.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-c100a7d2ff8c43af8ad1b816
-    resource: repo://libs/code/deepagents_code/offload_middleware.py
-  - id: openwiki-source-9b6cab59e92c8914079f0f53
-    resource: repo://libs/code/deepagents_code/offload.py
-  - id: openwiki-source-91cefe99e900fdb6f941b515
-    resource: repo://libs/code/deepagents_code/output_truncation.py
-  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
-    resource: repo://libs/code/tests/unit_tests/test_agent.py
-  - id: openwiki-source-d3c832989def55cb99198f1d
-    resource: repo://libs/code/tests/unit_tests/test_compact_tool.py
-  - id: openwiki-source-b9651042f519c9443b0f7085
-    resource: repo://libs/code/tests/unit_tests/test_completion.py
-  - id: openwiki-source-fa73e654f633986ba209ac92
-    resource: repo://libs/code/tests/unit_tests/test_editor.py
-  - id: openwiki-source-359dab1054eb0c26067ce930
-    resource: repo://libs/code/tests/unit_tests/test_idle_compaction.py
-  - id: openwiki-source-d965874b5a639c3205f2eadd
-    resource: repo://libs/code/tests/unit_tests/test_memory_guard.py
-  - id: openwiki-source-6a586415ef68cbe7c7967a41
-    resource: repo://libs/code/tests/unit_tests/test_offload_api.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-f763e99e439a1356866a7aa4
-    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-  - id: openwiki-source-69c260914d2dd18b60ad5900
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
-  - id: openwiki-source-6228ff9cf1d681a771797121
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
-  - id: openwiki-source-8e7076889e81540fe4fcb8c5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+  - id: openwiki-source-454da083c2cc29febd156c7e
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
+  - id: openwiki-source-ca8183c87e6002c442ee2d62
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-13T08:03:55.116Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
+    at: 2026-11-13T08:03:55.116Z
 ---
 
 # Context Management
@@ -151,22 +111,27 @@ This is deliberately separate from checkpoint state. It selects the active model
 
 ### Subagent context modes
 
-The SDK's declarative `SubAgent` defaults to `isolated`: it receives a state copy whose `messages` are just the delegated task. `mode="fork"` is the explicit, experimental alternative. A fork receives the parent's **effective** conversation—applying the summary event rather than replaying evicted raw history—plus a task preamble that says delegation in the earlier history has already happened. Its task tool is then refused, preventing recursive delegation.
+The SDK's declarative `SubAgent` defaults to `isolated`: it receives a filtered state copy whose `messages` are just the delegated task. `mode="fork"` is the explicit, experimental alternative. Before making fork messages, the dispatcher removes a trailing AI message with tool calls, applies the current summary event to the remaining parent history, and appends a task preamble saying that earlier delegation already happened. The fork therefore sees the model-visible effective conversation rather than the raw evicted prefix. Its real `task` tool is retained but refuses calls marked as forked, preventing recursive delegation.
 
-Forking is intentionally not a general state-sharing mechanism. Private middleware fields and defined excluded channels are withheld where appropriate; ordinary child results return to the parent through the `task` tool's final response/state-update path. A declarative fork may inherit private channels so its matching middleware can rebuild the parent's prompt, but a compiled runnable is treated as opaque and is not given those private channels. Forked specifications cannot declare their own skills, and their authored `system_prompt` is appended to the task rather than replacing the inherited system prefix; both restrictions protect prompt consistency and cache reuse.
+Forking is not unrestricted state sharing. Every fork drops the prior summarization event and session ID, the prior structured response, pinned skills, rubric, and the record of the parent's disclosed skill tools. A **declarative** fork otherwise receives private channels so its matching middleware can rebuild parent-derived request state; an opaque **compiled** runnable receives only non-private, non-excluded channels. On return, the task boundary still filters excluded, private, and unchanged values and projects the result as a correlated `ToolMessage`, so a child cannot freely overwrite parent-only fields.
+
+`mode="fork"` rejects the declarative `skills` field, but its middleware is not frozen: the fork stack combines parent and spec middleware by name, with the spec entry replacing an inherited entry of the same name. In particular, a supplied `SkillsMiddleware` can occupy the skills slot and thereby diverge from the parent's skill sources; custom middleware that rewrites the inherited system message or changes tools likewise sacrifices the cache match. `create_deep_agent` keeps the parent's assembled `system_prompt` byte-identical and moves the fork's authored `system_prompt` into the task message after the inherited history. This preserves the shared request prefix only while the effective history, prompt-producing middleware output, and tool surface remain identical.
 
 ```mermaid
 flowchart TD
-    Parent["Parent checkpoint state"] --> Decide{"Subagent mode"}
-    Decide -->|"isolated"| Isolated["Copy allowed state and task-only messages"]
-    Decide -->|"fork"| Effective["Apply summary event to parent history"]
-    Effective --> Forked["Inherited allowed state and task preamble"]
+    Parent["Parent runtime state"] --> Decide{"Subagent mode"}
+    Decide -->|"isolated"| Isolated["Filter state and use task-only messages"]
+    Decide -->|"declarative fork"| Effective["Remove dangling task call and apply summary event"]
+    Decide -->|"compiled fork"| Effective
+    Effective --> Declarative["Keep eligible private state and add task preamble"]
+    Effective --> Compiled["Keep nonprivate allowed state and add task preamble"]
     Isolated --> Invoke["Invoke child through task"]
-    Forked --> Invoke
-    Invoke --> Return["Return child result to parent tool call"]
+    Declarative --> Invoke
+    Compiled --> Invoke
+    Invoke --> Return["Filter result and return correlated tool message"]
 ```
 
-*An isolated subagent receives only the delegated task as message history; a fork receives compacted effective history, but neither path makes the child a free writer of parent state.*
+*Fork preparation reconstructs the effective message history in both fork paths, while declarative and compiled children deliberately receive different state projections.*
 
 dcode configures its generated `general-purpose` subagent as a fork when `FORKED_SUBAGENTS` is enabled (the default). It separately injects dcode's filesystem-tool allowlist into every custom subagent because the SDK's usual automatic general-purpose inheritance path is not used. Thus changing `--allow-fs-tools` must keep the parent and delegated tool surfaces aligned.
 
@@ -184,7 +149,7 @@ Shell completion is similarly outside model context. It introspects the same arg
 4. Do not widen the `/offload` allowlist to include `messages` without a new concurrency design.
 5. Diagnose a checkpoint-write error through readback before restoring costs or rolling back an archive; uncertain outcomes deliberately favor avoiding duplicate cost or destructive cleanup.
 6. Keep framework-owned `lc_source` values in every user-facing transcript/title filter, while retaining them in model requests when they carry live control state.
-7. Choose `isolated` unless the child needs the parent conversation. Treat `fork` as an explicit cache- and state-coupled mode; do not give it divergent skills or expect it to delegate again.
+7. Choose `isolated` unless the child needs the parent conversation. Treat `fork` as an explicit cache- and state-coupled mode: it cannot declare `skills` or delegate again, and a replacement `SkillsMiddleware`, prompt rewrite, or changed tool surface deliberately gives up shared-prefix cache reuse.
 8. Treat `CLIContext` as untrusted, per-run transport at a RemoteGraph boundary. Normalize it once and do not promote its model or workspace fields into checkpointed conversation state.
 
-`test_compact_tool.py` covers runtime model budgets, pending archive planning, cutoff anchoring, archive-read protection, and dedicated summary-model fallback. `test_offload_api.py` covers checkpoint/model hydration, the no-`messages` commit boundary, handoff source preservation, archive-link rollback, and cost settlement under write failure. `test_idle_compaction.py` exercises the cache-window, idleness, threshold, duplicate-scheduling, and new-input guards. `test_agent.py` covers dict-to-schema preservation of compaction fields and workspace-bound execution descriptions. `test_completion.py` exercises parser-derived, shell-safe candidates and generated script parsing; `test_editor.py` covers editor cleanup and the Windows launcher boundary.
+`test_compact_tool.py` covers runtime model budgets, pending archive planning, cutoff anchoring, archive-read protection, and dedicated summary-model fallback. `test_offload_api.py` covers checkpoint/model hydration, the no-`messages` commit boundary, handoff source preservation, archive-link rollback, and cost settlement under write failure. `test_idle_compaction.py` exercises the cache-window, idleness, threshold, duplicate-scheduling, and new-input guards. `test_subagent_middleware_init.py` verifies fork prompt-prefix identity, task-message instructions, dangling-task removal, cache-sensitive tool order, skill rejection, and recursion refusal; `test_subagents.py` distinguishes declarative private-state inheritance from compiled-fork projection. `test_agent.py` covers dict-to-schema preservation of compaction fields and workspace-bound execution descriptions. `test_completion.py` exercises parser-derived, shell-safe candidates and generated script parsing; `test_editor.py` covers editor cleanup and the Windows launcher boundary.

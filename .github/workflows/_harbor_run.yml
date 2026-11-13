@@ -31,10 +31,6 @@ on:
         # Explicit LangSmith dataset name; empty derives it from the dataset.
         type: string
         default: ""
-      use_evals_langsmith_key:
-        description: "Use the dedicated evals LangSmith key for experiments and tracing."
-        type: boolean
-        default: false
       rollouts:
         type: string
         default: "3"
@@ -330,7 +326,7 @@ jobs:
           HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           HARBOR_N_TASKS: ${{ inputs.n_tasks || '0' }}
           PREWARM_CONCURRENCY: ${{ inputs.prewarm_concurrency }}
-          LANGSMITH_API_KEY: ${{ inputs.use_evals_langsmith_key && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_API_KEY: ${{ (inputs.agent_impl == 'routed' || startsWith(inputs.langsmith_dataset, 'model-routing-')) && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
           LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
           LANGSMITH_SANDBOX_API_URL: "https://aws.api.smith.langchain.com/v2/sandboxes"
         run: |
@@ -413,7 +409,7 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.EVALS_LC_GATEWAY_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ inputs.use_evals_langsmith_key && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_API_KEY: ${{ (inputs.agent_impl == 'routed' || startsWith(inputs.langsmith_dataset, 'model-routing-')) && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
@@ -752,7 +748,7 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.EVALS_LC_GATEWAY_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ inputs.use_evals_langsmith_key && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_API_KEY: ${{ (inputs.agent_impl == 'routed' || startsWith(inputs.langsmith_dataset, 'model-routing-')) && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with

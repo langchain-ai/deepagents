@@ -10,7 +10,8 @@
 #
 # Required secrets (vary by sandbox + model provider):
 #   EVALS_LC_GATEWAY_KEY      — needed for the routed agent
-#   LANGSMITH_API_KEY          — experiment tracking (always required)
+#   EVALS_LANGSMITH_API_KEY    — routed runs and model-routing-* comparison datasets
+#   LANGSMITH_API_KEY          — experiment tracking for other runs
 #   LANGSMITH_SANDBOX_API_KEY  — LangSmith sandboxes, which run on AWS US
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
 #   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
@@ -51,11 +52,6 @@ on:
         required: false
         default: ""
         type: string
-      use_evals_langsmith_key:
-        description: "Use EVALS_LANGSMITH_API_KEY for benchmark experiments and tracing. Other runs keep LANGSMITH_API_KEY."
-        required: false
-        default: false
-        type: boolean
       dataset_path:
         description: "Optional local dataset path relative to libs/evals (for example, datasets/context-retrieval-evals). Takes priority over registry inputs."
         required: false
@@ -257,7 +253,7 @@ jobs:
       # model + resource limits" step, for the run job's shard_parallel input.
       shard_parallel: ${{ steps.limits.outputs.shard_parallel }}
     env:
-      LANGSMITH_API_KEY: ${{ inputs.use_evals_langsmith_key && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_API_KEY: ${{ (inputs.agent_impl == 'routed' || startsWith(inputs.langsmith_dataset, 'model-routing-')) && secrets.EVALS_LANGSMITH_API_KEY || secrets.LANGSMITH_API_KEY }}
     steps:
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -371,7 +367,6 @@ jobs:
       routing_config: ${{ inputs.routing_config }}
       # Empty: the leaf derives the dataset name itself.
       langsmith_dataset: ${{ inputs.langsmith_dataset }}
-      use_evals_langsmith_key: ${{ inputs.use_evals_langsmith_key }}
       rollouts: ${{ inputs.rollouts_per_task }}
       n_shards: ${{ inputs.n_shards }}
       # Derived pool the shards drain through (dynamic dispatch), not n_shards

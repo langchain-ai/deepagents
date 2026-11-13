@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.38](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.37...deepagents==0.7.38) (2026-11-13)
+
+### Bug Fixes
+
+- Exclude results from `ls`, `grep`, and `glob` when a symlink resolves outside the approved search scope. ([#7706](https://github.com/langchain-ai/deepagents/pull/7706))
+
 ## [0.7.37](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.36...deepagents==0.7.37) (2026-11-12)
 
 ### Bug Fixes

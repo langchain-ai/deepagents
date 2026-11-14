@@ -33,9 +33,6 @@ _PROFILE_FIELDS = frozenset(
     {
         "name",
         "status",
-        "context_window",
-        "profile_note",
-        "source",
         "max_input_tokens",
         "max_output_tokens",
         "text_inputs",

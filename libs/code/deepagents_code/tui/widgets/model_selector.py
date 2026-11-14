@@ -135,7 +135,24 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "xai:grok-4.7": "Grok 4.7",
     **_COMPATIBILITY_MODELS,
 }
-"""Curated main and supported compatibility routes, independent of discovery."""
+"""Hand-curated stable and compatibility models promoted across the UI, mapped to a
+human-readable display name.
+
+Used by the onboarding picker (`curated=True`) and by the in-`/model`
+"Recommended only" toggle (Ctrl+R). Membership tests and iteration operate on
+the spec keys; the names are a display fallback for `_get_model_display_name`
+when a provider package (and thus its profile `name`) is not installed — the
+common case for uninstalled recommendations and onboarding, where the raw
+model id (e.g. `accounts/fireworks/models/kimi-k3`) would otherwise
+show. For current models, an upstream profile `name` wins; compatibility
+entries always retain their previous-generation label.
+
+Same model IDs may appear under multiple providers (e.g. GLM 5.2 via
+`baseten`, `fireworks`, `ollama`, and `openrouter`) and are listed under each
+provider intentionally so the user can pick whichever provider they have
+credentials for.
+"""
+
 
 AUXILIARY_RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
@@ -143,7 +160,7 @@ AUXILIARY_RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:anthropic/claude-haiku-5.5": "Claude Haiku 5.5 (OpenRouter)",
     **_RECOMMENDED_MODELS,
 }
-"""Sidecar recommendations without changing main-agent or sidecar defaults."""
+"""Sidecar recommendations without changing the main-agent recommendations."""
 
 
 class DefaultModelScope(NamedTuple):
@@ -332,18 +349,6 @@ class ModelOption(Static):
         self.post_message(self.Clicked(self.model_spec, self.provider, self.index))
 
 
-class _ModelList(VerticalScroll):
-    """Scrollable options that retain selection visibility after layout changes."""
-
-    def on_resize(self) -> None:
-        self.call_after_refresh(self.scroll_selection_into_view)
-
-    def scroll_selection_into_view(self) -> None:
-        """Reveal the selection without hiding provider headers when space allows."""
-        for option in self.query(".model-option-selected"):
-            option.scroll_visible(animate=False, immediate=True)
-
-
 class CurrentModelTitle(Static):
     """Selector title whose current-model span copies on click."""
 
@@ -517,7 +522,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-detail-footer {
-        height: auto;
+        height: 4;
         padding: 0 2;
         margin-top: 1;
     }
@@ -777,7 +782,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             )
 
             # Scrollable model list
-            with _ModelList(classes="model-list"):
+            with VerticalScroll(classes="model-list"):
                 self._options_container = Container(id="model-options")
                 yield self._options_container
 
@@ -1821,7 +1826,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             """
             parts: list[Content] = []
             for key, label in keys:
-                if isinstance(profile.get(key), bool):
+                if key in profile:
                     base = (
                         Content.styled(label, colors.success)
                         if profile[key]
@@ -1835,11 +1840,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return parts
 
         # Line 1: Context window
-        token_keys = [
-            ("context_window", "total"),
-            ("max_input_tokens", "in"),
-            ("max_output_tokens", "out"),
-        ]
+        token_keys = [("max_input_tokens", "in"), ("max_output_tokens", "out")]
         ctx_parts = [p for k, s in token_keys if (p := _format_token(k, s)) is not None]
         bullet_sep = Content(f" {glyphs.bullet} ")
         line1 = (
@@ -1885,11 +1886,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             if has_visible_override
             else Content("")
         )
-        note = profile.get("profile_note")
-        if isinstance(note, str) and note:
-            line4 = Content.assemble(
-                line4, f" {glyphs.bullet} " if has_visible_override else "", note
-            )
 
         return Content.assemble(line1, "\n", line2, "\n", line3, "\n", line4)
 
@@ -1962,7 +1958,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             logger.warning("Failed to format footer for %s", spec, exc_info=True)
             text = Content.styled("Could not load profile details\n\n\n", "dim")
         footer.update(text)
-        self.call_after_refresh(self._fit_model_list)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.

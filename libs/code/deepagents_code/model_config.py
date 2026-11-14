@@ -1451,6 +1451,37 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
     return result
 
 
+ANTHROPIC_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "claude-haiku-5-5": {
+        "tool_choice": True,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "medium",
+    },
+}
+"""Capability fallbacks from https://platform.claude.com/docs/en/models/haiku-5-5/overview."""
+
+
+OPENAI_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "gpt-6.1-terra": {
+        "name": "GPT-6.1 Terra",
+        "max_input_tokens": 922_000,
+        "max_output_tokens": 128_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": False,
+        "video_inputs": False,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "tool_choice": True,
+        "structured_output": True,
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "medium",
+    },
+}
+"""Capability fallbacks from https://developers.openai.com/api/docs/models/gpt-6.1-terra."""
+
+
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
@@ -1512,6 +1543,21 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         module = importlib.util.module_from_spec(file_spec)
         file_spec.loader.exec_module(module)
         profiles = getattr(module, "_PROFILES", {})
+        fallbacks = {
+            "langchain_anthropic.data._profiles": ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+            "langchain_openai.data._profiles": OPENAI_MODEL_PROFILE_FALLBACKS,
+        }.get(module_path, {})
+        if fallbacks:
+            profiles = {
+                **fallbacks,
+                **{
+                    model: {
+                        **fallbacks.get(model, {}),
+                        **profile,
+                    }
+                    for model, profile in profiles.items()
+                },
+            }
         _provider_profiles_cache[module_path] = profiles
         return profiles
 
@@ -1881,6 +1927,23 @@ def get_model_profiles(
             seen_specs.add(spec)
             overrides = config.get_profile_overrides(provider, model_name=model_name)
             result[spec] = _build_entry(upstream_profile, overrides, cli_override)
+            # Mirror the curated `CODEX_MODELS` subset of openai profiles under
+            # the `openai_codex` provider so `/model openai_codex:<model>`
+            # resolves to the same upstream profile without duplicating data.
+            # Filtered by the allowlist — see the note in `get_available_models`.
+            if (
+                provider == "openai"
+                and model_name in CODEX_MODELS
+                and config.is_provider_enabled(CODEX_PROVIDER)
+            ):
+                codex_spec = f"{CODEX_PROVIDER}:{model_name}"
+                seen_specs.add(codex_spec)
+                codex_overrides = config.get_profile_overrides(
+                    CODEX_PROVIDER, model_name=model_name
+                )
+                result[codex_spec] = _build_entry(
+                    upstream_profile, codex_overrides, cli_override
+                )
 
     # Add config-only models and class_path provider profiles.
     for provider_name, provider_config in config.providers.items():
@@ -1967,23 +2030,6 @@ def get_model_profiles(
                 )
                 result[spec] = _build_entry(base, overrides, cli_override)
                 seen_specs.add(spec)
-
-    from deepagents_code._model_profiles import (
-        BUNDLED_MODEL_PROFILES,
-        merge_model_profile,
-    )
-
-    for spec in BUNDLED_MODEL_PROFILES:
-        provider, _, model_name = spec.partition(":")
-        if not config.is_provider_enabled(provider) or config.get_class_path(provider):
-            continue
-        existing = result.get(spec)
-        upstream = existing["profile"] if existing is not None else None
-        result[spec] = _build_entry(
-            merge_model_profile(spec, upstream),
-            config.get_profile_overrides(provider, model_name=model_name),
-            cli_override,
-        )
 
     frozen = MappingProxyType(result)
     if cli_override is None:

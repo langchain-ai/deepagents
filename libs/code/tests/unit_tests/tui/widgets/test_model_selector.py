@@ -1448,7 +1448,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "baseten:meta-models/muse-spark-open"
+        spec = "baseten:moonshotai/Kimi-K3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -1715,7 +1715,7 @@ class TestModelSelectorInstallRouting:
             # carries a dim `(Baseten)` provider tag, so a bare "dim" substring
             # search can't tell install-required dimming from the tag. The name
             # is wrapped in `[dim]...` only when install-required and unselected.
-            name_dim = "[dim]" + (profile_name or "moonshotai/Kimi-K3")
+            name_dim = "[dim]" + (profile_name or "Kimi K3")
             # The provider tag disambiguates the cross-provider Recent row and
             # must survive `_move_selection`'s incremental relabel — which
             # re-derives the label from the widget's persisted `show_provider`.

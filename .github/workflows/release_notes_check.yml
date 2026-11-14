@@ -162,10 +162,10 @@ jobs:
       # polls (up to ~12 min) for the automatic draft. A job timeout or cancellation
       # kills that step before it can conclude the check, leaving a required check
       # spinning forever. Close it here so an interrupted run reads as a re-runnable
-      # failure rather than a silent hang. No-ops on the happy path (already
-      # completed) and when no refresh check was created (pull_request runs).
+      # failure rather than a silent hang. Skip cleanup after successful validation
+      # even if GitHub reports in_progress, and when no check was created.
       - name: Close an interrupted refresh check
-        if: always() && steps.validate.outputs.refresh_check_id != ''
+        if: always() && steps.validate.outcome != 'success' && steps.validate.outputs.refresh_check_id != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REFRESH_CHECK_ID: ${{ steps.validate.outputs.refresh_check_id }}

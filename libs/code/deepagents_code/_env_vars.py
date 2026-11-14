@@ -318,6 +318,16 @@ Set only through the launching shell or global `~/.deepagents/.env`; a project
 `.env` cannot set it.
 """
 
+GIT_ATTRIBUTION = "DEEPAGENTS_CODE_GIT_ATTRIBUTION"
+"""Toggle git attribution of LangSmith traces (defaults to on).
+
+When enabled and tracing is active, dcode runs bounded, read-only `git`
+inspections around tools that can change a checkout, so traces record the
+repository and branch the agent actually worked on. Set to a falsy value (`0`,
+`false`, `no`, `off`, or empty) to skip these inspections entirely, for example
+in very large repositories. Also configurable as `[tracing].git_attribution`.
+"""
+
 GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
 """Apply generated goal criteria automatically in Auto mode.
 

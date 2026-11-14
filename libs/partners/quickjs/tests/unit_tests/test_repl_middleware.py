@@ -18,6 +18,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
+from langchain_core.callbacks import AsyncCallbackManager
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
@@ -917,6 +918,7 @@ def _subagent_runtime(
 
 async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> None:
     calls: list[dict[str, Any]] = []
+    parent_callbacks = AsyncCallbackManager(handlers=[])
 
     class _TaskTool:
         name = "task"
@@ -925,12 +927,14 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
             self,
             tool_input: dict[str, Any],
             *,
+            callbacks: Any = None,
             config: dict[str, Any] | None = None,
             tool_call_id: str | None = None,
         ) -> str:
             calls.append(
                 {
                     "tool_input": tool_input,
+                    "callbacks": callbacks,
                     "config": config,
                     "tool_call_id": tool_call_id,
                 }
@@ -940,7 +944,10 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
     runtime = ToolRuntime(
         state={},
         context={},
-        config={"configurable": {"thread_id": "parent-thread"}},
+        config={
+            "callbacks": parent_callbacks,
+            "configurable": {"thread_id": "parent-thread"},
+        },
         stream_writer=lambda _chunk: None,
         tools=[],
         tool_call_id="outer_eval_call",
@@ -958,6 +965,7 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
     assert result == "ok"
     assert calls
     assert calls[0]["config"] == runtime.config
+    assert calls[0]["callbacks"] is parent_callbacks
     assert calls[0]["tool_call_id"].startswith("ptc_task_")
     assert calls[0]["tool_input"]["runtime"].tool_call_id == calls[0]["tool_call_id"]
 
@@ -1662,3 +1670,36 @@ def test_subagent_prompt_uses_configured_concurrency() -> None:
     prompt = render_subagent_system_prompt(max_subagent_concurrency=100)
     assert "cap of 100 concurrent subagent calls" in prompt
     assert "recommendation, not a required limit" in prompt
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("-inf"), float("nan")])
+def test_rejects_invalid_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="`timeout` must be > 0 or None"):
+        CodeInterpreterMiddleware(timeout=timeout)
+
+
+_SPIN_300_MS = "const end = Date.now() + 300; while (Date.now() < end) {} 42"
+
+
+@pytest.mark.parametrize("timeout", [None, float("inf")])
+async def test_unbounded_timeout_outlives_a_short_deadline(
+    timeout: float | None,
+) -> None:
+    bounded = CodeInterpreterMiddleware(timeout=0.1, subagents=False)
+    unbounded = CodeInterpreterMiddleware(timeout=timeout, subagents=False)
+    try:
+        outcome = bounded._registry.get("t").eval_sync(_SPIN_300_MS)
+        assert outcome.error_type == "Timeout"
+        repl = unbounded._registry.get("t")
+        assert repl.eval_sync(_SPIN_300_MS).result == "42"
+        assert (await repl.eval_async(_SPIN_300_MS)).result == "42"
+        unbounded._registry.reset_repl("t")
+        assert unbounded._registry.get("t").eval_sync(_SPIN_300_MS).result == "42"
+    finally:
+        await bounded._registry.aevict("t")
+        await unbounded._registry.aevict("t")
+
+
+def test_default_timeout_is_unchanged() -> None:
+    mw = CodeInterpreterMiddleware()
+    assert "Timeout: 5.0s per call." in mw._base_prompt(ptc_attached=False)

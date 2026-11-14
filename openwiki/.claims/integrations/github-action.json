@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:752522f475adb0c11a9c09547af557d2a69f1498a4157897736a898a2d184827",
+  "pageVersion": "sha256:743620c6ea90eb5a4ddfc8771da326b743c5220383ec87d934c445bafb426764",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -89,16 +89,16 @@
       "statement": "In dcode headless mode, a missing shell allow list disables shell access, a restrictive list enables and gates shell commands, and `all` permits unrestricted shell commands and auto-approves tools; project MCP trust defaults to false and governs project stdio MCP loading.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2602-L2613",
-          "version": "repo-lines-v1:sha256:703bf11c24fbb7df2d838a490cb7dec0889d643c7253c84256e0d116ef7071f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwYTY0Yjk0NWNkYWRjOWIwZjI5NDc2ZjhlN2FiM2MyMTIwOTBhMTcxNTA3ZmY2ODY1MjNmZWYxYzE2NGI3MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1NzkzM2FhZTE1YWRmMTNkYjE1ZWFkZjQxYjA3YTVjOTY5YTU4ZTNmNDM1MWQxODIyNTNhYmM1OTdlNzdlN2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzMmE5MWM5ZWExZTQ3ZWU5MzIwZTFkMGFjMjBmMzNmOTVjZWJiMDc4NWRkYzI1NTVjZDNhNWY2ZjllNzJjNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1ODE5MDQ1NGYwMGNiZjRiNzU5MGVjNTgxOGEzZWU2MzE2NTkyNTg1OThjMDZlNjBiZGI0YzA0Y2NjM2YzN2QifQ"
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2831-L2842",
+          "version": "repo-lines-v1:sha256:703bf11c24fbb7df2d838a490cb7dec0889d643c7253c84256e0d116ef7071f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwYTY0Yjk0NWNkYWRjOWIwZjI5NDc2ZjhlN2FiM2MyMTIwOTBhMTcxNTA3ZmY2ODY1MjNmZWYxYzE2NGI3MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1NzkzM2FhZTE1YWRmMTNkYjE1ZWFkZjQxYjA3YTVjOTY5YTU4ZTNmNDM1MWQxODIyNTNhYmM1OTdlNzdlN2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg4ODcwZDRiZTE2ZWE0NjEwYmE4ZTdhOTE5MGQ1OTg1MzdlMTE0ZmRlZmJmNDkwNGFmY2UxN2I5NDQxNjcxMDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1ODE5MDQ1NGYwMGNiZjRiNzU5MGVjNTgxOGEzZWU2MzE2NTkyNTg1OThjMDZlNjBiZGI0YzA0Y2NjM2YzN2QifQ"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2657-L2662",
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2886-L2891",
           "version": "repo-lines-v1:sha256:ad6a585197fbf0ce8f75f81d3a39e48b95a2d1fa9ab990b3185fcb60ff0452df:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2QxY2Y4MzU2MGVmNGI5ZmI0NWIxZjc4MmY5Y2U2NmQxMzdmZjhhZGE3NjIxNWI3MDY1Njk1YjBjMjJlZjhhZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ0YmVhYTM5MGM5NGZmMzE3NjYzOGU4OTZjZjM0MmJiZDA5ZjMyMWZmOTU2NjBjZWQwNjliOTUyMmY4M2JhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDkzZDU5M2RmOThiZGU0Y2RkYjlhZTViMTEyNjljNDkyYjgwYmM5N2RkNzZlZGZkYTQ3YWFhZWMwMWIyZmZlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODkyMjBlMWU5ZmMwODNhZTc4YTI5OGFmYjE3N2NkODNmNGUxMGVlZThkMDhjY2I0YzE1ZDcyZDA5MTA0N2QxMyJ9"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2855-L2871",
-          "version": "repo-lines-v1:sha256:ba406178bfd506ac03ddb8d3bc3d17485f61569b56b25092e5aef2a8f19a11f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjZmNiNWVlYzNhYzdiNWVjMzI5NGRlZmUyOTkyMzllNWE5NTRiZmU3NDI1MWVjZjQ1OGIwZjU4ZjE5ZmRkYzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2NjgxM2Y0OTdkZmMwYjdiMDYyY2M5YjFiMDU3YzQ1NjVmZmRmYzExMmNhZTI1MTEwMjY0MjU5NjMxM2ZkYzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzMDlhZjM5MzRmMmM5NTI3OGYyMWFlZWU4NmU5NzYxNjNiNmViMjI5ODVhMTg0NjY1YzZhMWUwZDliYjJlYjQifQ"
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L3008-L3061",
+          "version": "repo-lines-v1:sha256:ef304d5127101fe4eb80085f131a6217d1d353228e528fe138c8856abdd25da0:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmYTdjMWJmOWFjNzg0MDQ5MTE3Y2Q5YjE4NWUzOGIxYTdhM2U0MWVmZjhkMWZmZjI5MzY1N2Q1YTBiMGM2NGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlNTY1NmMyMjI2OGZhYzdmNzNjMTZlMDk3NmQwYzAzYzMzNjg0YTM4Njk1MzVkNmQ3OWU4YWRjYzY3ZTFlYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5ZmE4MTViNWJmOWIzYzI0OWEyNmNlY2QwNmQzZGI3ZTFmZDg0MmFhN2Q4MTUwNTczOWM1MDhmYmI5NTZmN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkZDE5ZTU2NDI0M2QzZjg1OGFiNjAyNzM3ODBhOTQ0MTZmM2RmNTU1YWUxZjc2NGY3MzE1NWFkMGYzYzY5NjUifQ"
         }
       ]
     },
@@ -181,12 +181,8 @@
       "statement": "dcode treats an explicit MCP config path as a highest-precedence layer over auto-discovered MCP configuration, while `no_mcp` disables MCP tool loading and project stdio MCP remains disabled without trust.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2657-L2662",
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2886-L2891",
           "version": "repo-lines-v1:sha256:ad6a585197fbf0ce8f75f81d3a39e48b95a2d1fa9ab990b3185fcb60ff0452df:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2QxY2Y4MzU2MGVmNGI5ZmI0NWIxZjc4MmY5Y2U2NmQxMzdmZjhhZGE3NjIxNWI3MDY1Njk1YjBjMjJlZjhhZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ0YmVhYTM5MGM5NGZmMzE3NjYzOGU4OTZjZjM0MmJiZDA5ZjMyMWZmOTU2NjBjZWQwNjliOTUyMmY4M2JhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDkzZDU5M2RmOThiZGU0Y2RkYjlhZTViMTEyNjljNDkyYjgwYmM5N2RkNzZlZGZkYTQ3YWFhZWMwMWIyZmZlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODkyMjBlMWU5ZmMwODNhZTc4YTI5OGFmYjE3N2NkODNmNGUxMGVlZThkMDhjY2I0YzE1ZDcyZDA5MTA0N2QxMyJ9"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2838-L2850",
-          "version": "repo-lines-v1:sha256:610f3a8419dbe4925275a42046a6665239c31adac5e8ddf20c96f7a67eb54f30:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZDQ5ZDQ3Nzc0ZTQwYWM4NThiYmU4N2UxNjk3OGNkYjIyN2NmMDA0NzM3YWMzZGVkZTQ2MzM3ZmNjZjhlYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmZGFmYzA4YzlhZWRhZTYzMzkzMzAwNTRjYTQ5ODM2MTEwZTVjZmVkZmVkYzc4ZDJkZmMyNjNmYjBiZWY2YzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5OWUzNmRmZThlOTUwYzBhODUxYTVmZGVmZjAzODJmMGY5MzYyZGMwNTMyY2M0ZWJlZTIyMTQxYzNiYTk3OGIifQ"
         }
       ]
     },
@@ -210,7 +206,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:3a752e54c725b4c83fe7aa81798893dd576779ad4abdbb89f7948edf85169d90"
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
         }
       ]
     },
@@ -233,52 +229,12 @@
       ]
     },
     {
-      "id": "claim_3262d6c3e6e8479d8c51da58672cf1c9",
-      "statement": "Release-please manages `libs/code` as the `deepagents-code` component and, after recognizing its release commit from the Code changelog and commit title, dispatches the separate package release workflow; that workflow maps `deepagents-code` back to `libs/code`.",
-      "evidence": [
-        {
-          "resource": "repo://.github/workflows/release-please.yml#L1321-L1329",
-          "version": "repo-lines-v1:sha256:fdcf3115f295d13913aeff91d8a18104d7e39c85a72a2fb6f4ce02deadd5b475:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOThmZDU0MTNiNDI1M2I4MzAxMzkyMTJjOWI4Y2I4NGYwOGMwODQzOGY5NGM5Njg2YjBhNzNkNmRmYjRjMGU2ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE1YmM2MmIyYjEzMGNlZmVjNzE1NjdkNjdmOGJhMjFkMmNmMTkxZWJmMzZjZjgwZThjMmZiMGJlOTA5NTBhZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGYxNDQ4NTAwNmI1YTJjYTJlODM1NzU3MjUxMjVkOTc3N2YzY2UwMzE4YjA3NTM3YjIyZjZjNDkxMzA2MTVlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDYwNDg5NmVkNzkyNWM4ZGRkYTQyN2UzZWUwN2YyYTBjN2QxMzhkYTMyM2IzYWUwODMyMGRkMjgzNjIxZDRjZiJ9"
-        },
-        {
-          "resource": "repo://.github/workflows/release-please.yml#L207-L213",
-          "version": "repo-lines-v1:sha256:7f128d46ddf9a5e9d88b49bf0f903476b8c03737a580807c86b7b1e14da63466:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzhlYjhkMTFiNDUzNjZjNWI2NTIyZjI1YzMwYmYwMWVkNDZjZmMxYTU1Njc0NDQyYTNlODliODdjMDEzNWMyYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmY1NTk3OWNlNzMwMjAzM2U2YjJmZDdkODhmNTM3YTNiOGUwOTFlYTMwNWM4MTFmZmExMjc0YmY1NzY0ZWE1ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzNhMzk4YTE3Y2M5ZTZkMzRiZjE5NzUwOWUzNWQ2ZGZmOWY2YjZkNzBlNjBiN2MxOTk5NTIxODIzYTAxM2IwMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDI1MjM3NzUxNTk3NjU2MGU5NDA5M2QxMTczZGFhY2RiYjYxNThiN2IxOTk5ZjE3Yzc0MjA3ODViNTQ1NjEyNSJ9"
-        },
-        {
-          "resource": "repo://.github/workflows/release.yml#L122-L132",
-          "version": "repo-lines-v1:sha256:fe76f0ece86d3ac8240672053bee5cb565ac81185e395400d414d2396ee53639:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDUwNGE5NzhjM2M0M2FlMzRlMTU4ZDQ2ZDE2MmIzMjk1MjE4N2VhOTBkYzQ5MjM1NWJiYWNkNjlhMmMzZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlMDZjZWFjOThkYzI0NWZjNzA4MGVlNTE5ZGYyZjVlZjg2ZjMzZDE5YTMzZTRhNGI5NjA3MGE3ZGZmMDgxYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0MzdjYzdhMzNiMDhmNGZjYTI0MWQzMTIzYjdjNTc1YjZhMWZkNGM4NjY3MTFmNTliNDNlMjA5MzRhMzU2NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjYTJkZmQ5OTVjMmVmZjVkNTA4N2M2ZTA4ZWZjMmY2ZTg3Njg5NTc2NzEwYmNmY2I3Y2U1NDAwNjVhYzZjZDAifQ"
-        },
-        {
-          "resource": "repo://release-please-config.json#L90-L103",
-          "version": "repo-lines-v1:sha256:dea4852f8dff9aafb818947211694e01a40bc609193a4198c5ab50dae7026455:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZmUwZGRkMmMyNDhmYWZkNjA5N2ZmZjgyOTJhYjNkMTQxNWMyOTVmMjI1ODY2NjM2NTFlYzVmOWI2NjZiMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MjIzOWIxYmQ4MmI4NWVkNTBjMThhYmU2YjhlOTk3ODc1NWRhYzZmZDgwNDA5MjRjOGE4ODBjNTJmMDY1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjM2EzYWI3ZDYwNWRhMjQzOWUwNmEyZWEzMTExMjQyY2VhZjFhYjNkZThjMmVmOWMwZGFhYzVkYjUzNDgzYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwMGVjZTlhNDQyYzAxNjQ3MzgzMGQ1Yzc0ZDBjYTdiY2Q3ZWJjYzg2OGZmODE5ZmUyNTU0YjY5ZThkNmYyOGYifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_7e41a94394004ceb8323ca1b7804ab8f",
-      "statement": "A release build of `deepagents-code` can stamp its validated release commit into a generated wheel artifact for later reporting, while local and editable builds omit that artifact.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/hatch_build.py#L2-L7",
-          "version": "repo-lines-v1:sha256:2e61d183728e032a75d09e9fa566d2f9b1614f81ca0578749946b776d1e7a17e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGIxNDUwNWIzMTIyM2YwN2RlYWQ5N2MyYWUwYjA5MTExNjU2YjgxMWE1YjNiYjVmMDIwYzc1ZjlmOWIxODJlOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGNjYjRkZWI5ZTVkMGY3NTY4YjhkYzgwY2YzODRiOTk0ZDZiNjI3Y2NmNjcwZTVjOWQyYzJmNTJlMmZlMGRiNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
-        },
-        {
-          "resource": "repo://libs/code/hatch_build.py#L26-L67",
-          "version": "repo-lines-v1:sha256:13c2e4f2e336b29746115de1353351608774ec83ae0c57120edae6f6fac17496:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlYmEwOGEyNDRkNmNhN2I1NDBlNzNjYTBjN2M0NzE2MWVhNjg3NThlMDcxMDUwMTJmZWEyN2ZiOTNiMDAxYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmODU5YjJiNTMxNzBkNWM4NThkYjQ2NGQ2YzYyMmYzYmM4MzgyY2E0MTM4NWRmZDhmYWQ0N2I0ZDBjYzNkMTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxYjYzMTA0YzNhMzg5ODZiOTMyZWVmY2M1MWM0ZDI4MDFiZWU1YzQwMDdiMmU4MzY1ZTMwYzYwZjJiNjAzMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_eba1cb041c5540dd8e0a341a91b40742",
       "statement": "CI selects `libs/code` changes for dedicated Code lint and unit-test reusable workflows on Python 3.14.",
       "evidence": [
         {
-          "resource": "repo://.github/workflows/ci.yml#L255-L262",
-          "version": "repo-lines-v1:sha256:974877930aa9b58a43c6258175659acf6138029d310d9e2b39465b4f9dd31bc8:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTY4NmUxMjM4YmM5ODY2Zjc3MWQxZTdiOTIzMWVhMTg4NjE0OTNiMWEzYzE1YjU5YTgwODdlMGIxYjRhYzRjZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWJhODkyNDBmZTI3MWRlZTMwYWZkYjUxM2M3NWRhMjk3YzY5YmQxNzIzNzQwNzBlZjA2M2IzZWE5OTg1M2JkNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmE5NTcxNTRkZmQ5MmY2ZDgzODQ2ZDM2ZGIzM2RkYjZkYWZiYTk1YjZjYTEzZTE2YzQyYThmMzFlYzY2ZDc5YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGJiNDZhMzk4M2Y1N2VmZGVmNjVhNmVmN2ZkNDkzNjZmMjNmOWY2OGEzYmIxZDY3MTQ2YWViNGYwZmEzNWI2OSJ9"
-        },
-        {
-          "resource": "repo://.github/workflows/ci.yml#L347-L354",
-          "version": "repo-lines-v1:sha256:1f2a198e870d20b516425c4ee64aa79b38aa8cd5b04eee4f4f0340f1421cd055:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjEyOWIwM2I0YjliMGY2YmExNTY3ZjA3NTIwZmEwZDg4MDM4MTNmZDUyMjc2ZjlhOTNlOWFjMDMwNjg0YTU4NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmNiYzM3ZDI4MzZhOTkwMzJmYzA1Y2Q2MjhjYWU0ZDU2OTllNTdhNGJiNjYzNjI4Mjk1NmEzMWY2ZDI0ZDMxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDc4ODkyOWI4YTk0ZmE4NzdiOTIwOTE4M2QxNzhmZDMwODc1NjcyYTQ3MmY5OTRhNjFmODBlMTUzZGYzYTNlYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTllZDc4NWRmYjUxNDJmN2RiYWM0OGIzMzM1MGYxYmI3OTNiNWZmYWU0Y2UzMzI1ZjA0N2EyMTYxMzY3OWY0MyJ9"
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
         }
       ]
     },
@@ -287,22 +243,64 @@
       "statement": "The helper-script test job is not gated by the changed-package filters: it runs unless the change detector marks a curated release-notes-only apply, whereas the Code selector covers `libs/code`, `libs/deepagents`, and shared CI workflow/action paths.",
       "evidence": [
         {
-          "resource": "repo://.github/workflows/ci.yml#L160-L173",
-          "version": "repo-lines-v1:sha256:2bc70697b46a23f6d8c370fdb0c8a02c4c6b69f3e07ddbba7741dee0923b58af:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2ZWJmYjQ1MzhlNjIwZDE4Yzc3NjZlNjJhZjY5MGNiMDM0NjdkY2NjNWVmNTE2OGQ4ODhhMGJmYTAyZDI5MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4ZGRkNjAzMWI5NTFlZWFiMDEwZjgzMWEwYjllZjM5YTc4Yjk1NjQwMGFlZjJlNzFhZDc5MDc4YTNhYTc3NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwN2MyZTEwOTAyMjYzYWExNWIzOGE3ZjNjZTg3ZDhkOGNiMjFlYjMwNDgxM2MzYTNlZDg4YmFiOTY1MmNiOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiOGQ0NzBjZTcwOTRlMThkMjdkY2EzMmVhZmI1ODM1YTM5NDljZTVhODNjNzVjNTkxMjRiN2NmMmY0YmIyZjEifQ"
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
+        }
+      ]
+    },
+    {
+      "id": "claim_45fe76398d4b415dbfac91b7246888a9",
+      "statement": "Root `action.yml` is not a path in the Code selector, so its direct CI validation is the ungated helper-script suite; the Code reusable test workflow instead uses frozen uv resolution, installs the test group, and runs non-Windows tests through `make test` with sandbox tests enabled.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L103-L105",
+          "version": "repo-lines-v1:sha256:9c0d0d8e46fae6052b6e806ed1af1b38590102c84970f7b6a8a8a89886c004ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2NiZjg5NDk0Y2U4ZmQ5NjE1NjJjNWI4ZmZhM2YxYjdkYmEzNTQ1YzcyMjk3YWJhNjk5ZjhlMjBhNjFhNmY4YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWFkNDExMTU5YTY4MzYxYTdiMGNlZDc5NDAyZWZhY2Y3ZWNiOWE3NmYyOWRjM2ViODU0Y2EyYzAzNWY5ZDRkMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzgwZGY0NjUxZmExZDhjOWY2MWU5YmE4OGY3NTg0NzExNmUzYzcxNTcwYjExM2E5YmZhMTk4ZjgwMDc0YjVlYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjIyMTMzMDZmMjkzOTVmNmJiY2I2NWJjZjYyNGM5YTYzYzNjZjgyNTNmYzAzMDg2YmFiNjI2Njk3MTM5ZTFlNCJ9"
         },
         {
-          "resource": "repo://.github/workflows/ci.yml#L49-L71",
-          "version": "repo-lines-v1:sha256:957092c221d6813b284cf0e8c98af362869d1e96fe0f46ddf9ef06ceb03e9598:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ZjkyMDE5NDAxNmUwNmM2MzhhM2NkMWI4NDFlNjY4ODQ5ZWU2OTg0YjM0YWM2ZjU4NTBkYjczMDRhMzE3N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1N2RiYjE4MmQ5ZDE5NDhjOTc3NTZjYTYyNzBkMTQ2MDE3MGJjMjI4NWRiODQ1N2Y2MzQ3NzdkZGI1NWE0ZGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMjhjNGNhZjVkYzEzNjM1YmY1MWU4OTNkYjRiYjJmNmQ3Njg5YzQ0NjEyYzNkM2IxMTFlNzc2Y2FiZWRhOTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0NzliMjdkNTZhZTc1ZDE5MThkYzU1M2RlNjlmNzNhNDAzZTc3YmI1ZWYzN2ZjN2FhODUxM2ZhNDM3MjhiZjkifQ"
+          "resource": "repo://.github/workflows/_test.yml#L338-L362",
+          "version": "repo-lines-v1:sha256:f3c9aad2fc548d24607906a10beefedee8c25435561c3c9a564252241f1f857a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMDFmNWFhNDEwMTM3MjM4YzcxOGNhNWNiN2M3ODVhNzlkMTMwZGU1ZTdkY2ZmNDY2YzhiODFkMmM3OWE1NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1Njg4OGJjZDQ1YTY3M2FlYzZmMjA3NTRjOTEwYTZhY2U2NTRiOGFhY2ExYjQ5NjUwNzQ4YmQ2NzcyNWI0NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2ZjgwNTJiMzkzZDE3NDJhZjA1OTg5YzU2MDcwMTVjNzMxYWRiMGNmN2I4YmUzNTI0MTU1Mzc5MTIzMGE4MzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyNGNlY2QyNTk0NDkxMTM5ZThkMzk4YzgzOGJjMGM5MDI0OGQ0ZDk2OGJjMjdkYzJlZGFiOWY4NzhmZTRiYWEifQ"
         },
         {
-          "resource": "repo://.github/workflows/ci.yml#L566-L588",
-          "version": "repo-lines-v1:sha256:65750b7ed5a4333c0f1817c823aca7a13a178f5ec4132fb3b4966414500ece1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlODc2YTJhNWYwY2E3M2I2YWY2YmE4N2IyYzU0MjM2YzQyZDNlZGNjOTBlNWE5YWVhMjFkNWE1OTVkMTBkYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiYzEyZTI1M2NkZWFmODJmYzViOWEyMWE5ODhhYzEzZTAwYTk4NzZiY2MyNzQ2OGI3NmIwYTBhNWRmZTQ5YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkNWQxNTcxZTU1MTZjMThmNjVjNmMzMTFkNmMyNzNiMWY4NGQ2YTc4NTA3ZDAxYjU5YTg0ODYwYjhiNGZlZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMDRlZWRmYTlkOTgzY2UyY2JkNWNlODc0NWI4NmRkMDE5Zjc5YTRhYzk4NDRjZGU4YWQwZGUzZWQ3MzU1ZTEifQ"
+          "resource": "repo://.github/workflows/_test.yml#L41-L43",
+          "version": "repo-lines-v1:sha256:53408e903073a70581a45c28036aac9efb6d49c99a78734919bea23ed1eb6520:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTBhNTk0ZjM0YjdmMGVhNTczZGE3ODcwM2UyNzQ5MzBkYjcxOGM5NDJjYWYzYzA0MjUxNzU1ZjYyM2M2MGQ1YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjNiYmJlNThlZjA2Y2VmYzcyMWZhODk1Y2RlMTc4MTdkYTg3YTM1MjcxNDA0N2EwYTAxM2FlYTc3MTI2OTI0OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjhmMGM3MzFkNzYxMGI3M2M5MjE1YjM3YTAxNDZlNTNlZDhkMDE2NzQxNGM4M2EyMDZmMTIyOGVjMjIwZjVhYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGQyNzhmMTk3ZmJmOGZkYjYxN2UxN2EzMmE3YjQyZGViN2Y4ZjNkZjM3Njg2NjBmMzhmNWQ4YmU1Mzc0ZmVhMyJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca5f242df6d4427390736f3401c30e57",
+      "statement": "The current `deepagents-code` package is version `0.2.7` and requires Python `>=3.14,<3.15`; the changelog identifies the Python 3.14 requirement introduced in 0.2.0 as a breaking change.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/CHANGELOG.md#L129-L133",
+          "version": "repo-lines-v1:sha256:a9bad2712640d1aceb1366b1e7bcaa2f65cb3fc7118eae878370fff92673c169:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWZiMjE3NzdkOGU3ZjZmNmQ1MzBiNDQ0N2YwNWRhZDcwMTczZmFiNjZjYTk0ZDBkMmU0MTFmNmVhOTVkMjEzNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTU2OGEyYTVmODk2MDNhZDVkNTNhYzg4ZTVlYjRjZWIyYWQ1NTMyNzNlYWQ1M2I0ODZhYjg3OWJkMDY1MGNlMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDU2YmZiMjI3NjcwYmU3OGIwMTcwZGQ4OTQwNmQwMWE3MjQ2NDYyOTU5ZDY0MjA5MDA5MTVhMmI3YWU0NjYwNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDI1N2JjYmMzMThkNjQ0YzYyZDhjYzlkZjVmNmFmMjFiMzdmYWM5ZmUxYWJlYmY0NDU4YjZkMGFjZDI1OGE3MSJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L14",
+          "version": "repo-lines-v1:sha256:6f4572afd3ad414279437e98c47f5783490bebe37d15918728fc2ed67a6820d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2626df8f7b0d490689b0fbde9f68d938",
+      "statement": "The dcode root parser defines `--non-interactive` as a one-task, no-human-approval mode that can change files and access the network; the GitHub action selects that mode for its default prompt-delivery path.",
+      "evidence": [
+        {
+          "resource": "repo://action.yml#L482-L490",
+          "version": "repo-lines-v1:sha256:70d22d6615811e919af55e4f0045f9481accb64222fdc75f3225b74dcb1b6dc1:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmE1Yjk2ZjFkNTRjNTRlOWJmNDk5YzI1Y2U4ZjY0ODRmNTdkMWM5NDY3ODA1ODhiM2JlNTUxZTUyODJmMTk5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTgzYmE2ZWJhZmNjMzUyYzQyZGUxOTk2NTNhOGU3Nzc3ODBjM2E2OTk1YzExMjg5MDMzZmY0NTlkMGNiZjAxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGViNmMxMjFmM2RkN2RjZDg4ZDI1ODEwOTM3Yzc4ZDA2MDg1YmVjYWE2MTUwNzcyZTZjZGQ3MDNhYWQwZTZhZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWVkMzI1MzlkNmE2MThlMWZiNTA0MTMwY2ZmMzM1ODJmMDQzYTY4ZDM4NmU5ODI1NDgzOTk1OGE0NGE2ZjY5ZSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2739-L2747",
+          "version": "repo-lines-v1:sha256:309298730b0675a8f8a8ee40a54663219e4277f73f252d0efaa5760e3578b5d8:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlNDM5YTQ3NTAzNDI3YTRjNzlmOWJkM2MzYzNmYzFmOTNmZDFlN2I0YzdhMTUxZDVhZmFkMDQwMmQxYThlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzBjMWYxODhmMTQyZWQ3YTgyNDY4MGIyMDcxNzJjNTUxOWJjNjE0YTQ4ZmRhN2NmMTY3ZWRiOGRkZjc5OTU2YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzJjMmViZmNhYzBiZjM2N2YzMjYyZDdhNWE2NmNhOWY0YjFiMGEzZGQ4OGU4ZDMxNDJkNjM2NGJlMGU0NjQxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWU1MzYwZTg3ZTJhNDUxMzYzOTI1ZmZhNGYyOWU0NTQ2NjE2NzJiYWI0MjQxYzgwOTc5YmQ3M2M0OWJlMjM2MSJ9"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-28T08:04:17.781Z"
+    "at": "2026-11-11T08:04:08.950Z"
   }
 }

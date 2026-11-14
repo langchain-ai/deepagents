@@ -3,10 +3,14 @@
 import asyncio
 import contextlib
 import logging
+import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
+from deepagents.backends import BackendConsumer, StateBackend
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -21,7 +25,9 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api import beta
+from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.runnables.config import patch_config
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
 from langgraph.types import Command
@@ -32,6 +38,7 @@ if TYPE_CHECKING:
 
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import (
+    FS_SYSTEM_PROMPT,
     render_eval_tool_code_doc,
     render_eval_tool_description,
     render_repl_system_prompt,
@@ -89,7 +96,7 @@ class EvalSchema(BaseModel):
     code: str = Field(
         description=(
             "JavaScript expression or statement(s) to evaluate. "
-            "No fs/network/real-clock access."
+            "No network/real-clock access."
         ),
     )
 
@@ -124,17 +131,29 @@ def _new_slot_id() -> str:
 
 
 @beta()
-class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
+class CodeInterpreterMiddleware(
+    AgentMiddleware[REPLState, ContextT, ResponseT], BackendConsumer
+):
     """Middleware exposing a JS REPL to the agent.
 
     Each LangGraph thread gets its own QuickJS slot (worker + runtime +
     context), so globals from one conversation cannot leak into another.
 
+    !!! danger "`fs` bypasses file permissions and approvals"
+
+        With `fs` set, code the model writes can read, write, and delete
+        anything the backend can reach. `fs` calls the backend directly, so
+        `FilesystemMiddleware` permission rules, `create_deep_agent`
+        `permissions`, and `interrupt_on` approval do not apply to it. On a
+        `FilesystemBackend` with `virtual_mode=False`, or a local shell
+        backend, that is the host's filesystem. Enable `fs` only for trusted
+        use or with a backend sandboxed to files the agent may change.
+
     Args:
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
         timeout: Per-call timeout in seconds. Applied to every
-            `eval` on every context. Default 5.
+            `eval` on every context. `None` disables the deadline. Default 5.
 
             !!! warning
 
@@ -144,6 +163,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 is not counted against it. A slow or blocking host call can
                 therefore stall an `eval` for longer than `timeout` seconds, so
                 do not rely on it to bound total wall-clock duration.
+
+            !!! warning
+
+                Avoid `timeout=None` unless absolutely needed: a runaway `eval`
+                then runs forever, and asyncio cancellation cannot stop it.
+                Only use it with an external limit that can, such as a
+                process kill or workflow timeout.
         max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
@@ -214,6 +240,24 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             synchronously on the interpreter worker; return an authorized tool
             and enforce caller-specific access inside that tool. The same PTC
             approval limitations described above apply to resolved tools.
+        fs: Backend for a Node-style `fs` global in code: `readFile`,
+            `writeFile`, `readdir`, `access`, and `rm`, also under
+            `fs.promises`. `None` (default) gives code no `fs`. `True` uses
+            the backend `create_deep_agent` gives its file tools; with any
+            other agent factory, pass the backend itself. One middleware
+            instance with `fs=True` serves one agent's backend. `fs` reads
+            and writes UTF-8 text only and has only async functions. A file
+            too big for the QuickJS heap (`memory_limit`) ends the eval with
+            `MarshalError`.
+
+            !!! danger
+                `fs` calls the backend directly, not the file tools, so no
+                permission rule or approval guards it: code can read, write,
+                and delete anything the backend can reach. Leave `fs` unset
+                for an agent that relies on `FilesystemMiddleware`
+                permissions, `create_deep_agent` `permissions`, or
+                `interrupt_on` for files. `fs=True` gives code the same reach
+                as the agent's own backend.
         mode: REPL state persistence mode.
             - `"thread"`: state persists across calls and across turns.
             - `"turn"`: state persists across calls within a turn only.
@@ -258,7 +302,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self,
         *,
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = _DEFAULT_TIMEOUT,
         max_ptc_calls: int | None = _DEFAULT_MAX_PTC_CALLS,
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
@@ -267,12 +311,16 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
         ptc: PTCOption | None = None,
         resolve_tool: ToolResolver | None = None,
+        fs: BackendProtocol | bool | None = None,
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
+        if timeout is not None and not timeout > 0:
+            msg = "`timeout` must be > 0 or None"
+            raise ValueError(msg)
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
             raise ValueError(msg)
@@ -292,6 +340,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._max_subagent_concurrency = max_subagent_concurrency
         self._ptc = ptc
         self._resolve_tool = resolve_tool
+        self._fs_from_agent = fs is True
+        self._fs = None if isinstance(fs, bool) else fs
         self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
@@ -323,7 +373,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_chars = self._max_result_chars
         middleware = self
         code_doc = render_eval_tool_code_doc(mode=self._mode)
-        tool_description = render_eval_tool_description(mode=self._mode)
+        tool_description = render_eval_tool_description(
+            mode=self._mode, files_attached=self._fs_enabled
+        )
 
         def _make_tool_output(
             outcome: EvalOutcome,
@@ -358,18 +410,29 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 }
             )
 
+        def _with_eval_callbacks(
+            runtime: ToolRuntime[None, Any], callbacks: BaseCallbackManager | None
+        ) -> ToolRuntime[None, Any]:
+            # Parent PTC tool calls and `task()` subagents on the eval run, not
+            # on the agent's tools step.
+            return replace(
+                runtime, config=patch_config(runtime.config, callbacks=callbacks)
+            )
+
         def sync_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
+            callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
                 outcome = repl.eval_sync(
                     code,
-                    outer_runtime=runtime,
+                    outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
+                    fs=middleware._fs,
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -381,16 +444,18 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         async def async_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
+            callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
                 outcome = await repl.eval_async(
                     code,
-                    outer_runtime=runtime,
+                    outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     outer_loop=asyncio.get_running_loop(),
+                    fs=middleware._fs,
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -566,6 +631,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 memory_limit_mb=self._memory_limit_mb,
                 mode=self._mode,
                 ptc_attached=ptc_attached,
+                files_attached=self._fs_enabled,
             )
             self._base_prompt_cache[ptc_attached] = cached
         return cached
@@ -577,6 +643,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         live tool list off the request (middlewares upstream may have
         filtered it) and renders matching API-reference text without creating a VM.
         """
+        if self._fs_from_agent and self._fs is None:
+            msg = (
+                "CodeInterpreterMiddleware(fs=True) has no backend: build the agent "
+                "with create_deep_agent, or pass the backend as fs."
+            )
+            raise ValueError(msg)
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
 
         subagent_section = ""
@@ -587,7 +659,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             )
 
         if self._ptc is None:
-            return self._base_prompt(ptc_attached=False) + subagent_section
+            return self._with_fs(
+                self._base_prompt(ptc_attached=False) + subagent_section
+            )
 
         exposed = filter_tools_for_ptc(
             request_tools,
@@ -609,7 +683,31 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 render_ptc_prompt(exposed_tools, tool_name=self._tool_name),
             )
             self._ptc_prompt_by_slot[slot_id] = cached
-        return prompt + cached[1]
+        return self._with_fs(prompt + cached[1])
+
+    def _with_fs(self, prompt: str) -> str:
+        if not self._fs_enabled:
+            return prompt
+        return prompt.rstrip("\n") + FS_SYSTEM_PROMPT
+
+    @property
+    def _fs_enabled(self) -> bool:
+        return self._fs_from_agent or self._fs is not None
+
+    def bind_backend(self, backend: BackendProtocol) -> None:
+        """Use the agent's backend for `fs=True`; `create_deep_agent` calls this."""
+        if not self._fs_from_agent:
+            return
+        # Every `StateBackend` reads the running graph's own state, so any two
+        # are interchangeable; other backends must be the same object.
+        interchangeable = type(self._fs) is type(backend) is StateBackend
+        if self._fs is not None and self._fs is not backend and not interchangeable:
+            msg = (
+                "This CodeInterpreterMiddleware(fs=True) already serves another "
+                "agent's backend; create one middleware per agent."
+            )
+            raise ValueError(msg)
+        self._fs = backend
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str
@@ -719,6 +817,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""
+        # During interpreter finalization the daemon worker threads can no
+        # longer take the GIL, so closing a slot (which waits on its worker)
+        # would block forever and the process would never exit. The OS
+        # reclaims the interpreters' memory at exit anyway.
+        if sys.is_finalizing():
+            return
         # Wrapped in `contextlib.suppress` because __del__ must not raise
         # during interpreter shutdown, when dependencies may already be
         # half-unloaded.

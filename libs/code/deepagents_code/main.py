@@ -119,6 +119,38 @@ def _install_termination_signal_handlers() -> None:
             signal.signal(signum, _handle_termination_signal)
 
 
+def _make_stdio_encoding_safe() -> None:
+    """Prevent `UnicodeEncodeError` from killing a command mid-output.
+
+    Output redirected to a pipe or file is encoded with the locale encoding,
+    which on Windows is the ANSI code page (e.g. cp1252) unless UTF-8 mode is
+    on. Its default error handler raises on any character that encoding lacks,
+    so the first one, whether a glyph or text such as a thread name or skill
+    description, crashes the command. Reconfiguring the streams with
+    `errors="replace"` degrades unencodable characters to "?" instead. The
+    stream encoding itself is left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # Streams replaced by non-reconfigurable objects (e.g. a plain
+        # StringIO or a captured buffer) are left as-is.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except ValueError, OSError, TypeError:
+            # Closed, detached, or otherwise non-reconfigurable stream (a
+            # duck-typed `reconfigure` with a different signature raises
+            # `TypeError`) — leave it as-is. This is a best-effort hardening
+            # step; it must never itself crash the command.
+            logger.debug(
+                "Could not reconfigure %s error handler",
+                getattr(stream, "name", stream),
+                exc_info=True,
+            )
+            continue
+
+
 def build_version_text() -> str:
     """Build the plain-text output for the `--version` CLI flag.
 
@@ -423,43 +455,21 @@ def _render_teardown_thread_hints(
 
 
 def _confirm_update_after_restart(console: Console, version: str) -> None:
-    """Rewrite the pre-restart `Launching...` line as a stable update status.
+    """Confirm the running update, replacing the restart status on terminals."""
+    if console.is_terminal:
+        from rich.control import Control
+        from rich.segment import ControlType
 
-    The `Updated to v{version}. Launching...` line is printed by the previous
-    generation right before `os.execv`; this runs in the re-exec'd process to
-    clear the transient action once the new version is actually running.
-
-    The in-place rewrite is attempted only on a real terminal: `os.execv` does
-    nothing between that print and this process's first output, so the cursor
-    is parked on the line directly below it. On non-terminals the escape codes
-    would corrupt redirected output, so the line is left as-is.
-
-    The row count is recomputed against the current terminal width, so a resize
-    during the upgrade/re-exec window could make the erase loop clear the wrong
-    number of wrapped rows. This is a benign visual glitch (no exception), and
-    is rare enough not to warrant defending against here.
-
-    Args:
-        console: The Rich console used for startup output.
-        version: The version now running, used in the confirmation line.
-    """
-    if not console.is_terminal:
-        return
-    from rich.control import Control
-    from rich.segment import ControlType
-
-    launch_status = f"Updated to v{version}. Launching..."
-    launch_rows = _terminal_row_count(console, launch_status)
-    # Move up to the bottom row of the old status and erase each rendered row.
-    # This preserves the rewrite when Rich wrapped the status in a narrow pane.
-    for _ in range(launch_rows):
-        console.control(
-            Control(
-                (ControlType.CURSOR_UP, 1),
-                (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
-                (ControlType.ERASE_IN_LINE, 2),
+        launch_status = f"Restarting to load v{version}..."
+        launch_rows = _terminal_row_count(console, launch_status)
+        for _ in range(launch_rows):
+            console.control(
+                Control(
+                    (ControlType.CURSOR_UP, 1),
+                    (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
+                    (ControlType.ERASE_IN_LINE, 2),
+                )
             )
-        )
     console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
@@ -631,12 +641,14 @@ def _run_startup_auto_update(console: Console) -> None:
             by the fail-soft handler, so a process-exit request is never
             swallowed (the `os.execv` re-exec is simulated this way under test).
     """
+    from packaging.version import Version
     from rich.markup import escape
 
     from deepagents_code._env_vars import DEBUG_UPDATE, RESTARTED_AFTER_UPDATE
     from deepagents_code._version import __version__ as cli_version
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
+        _is_windows,
         clear_startup_auto_update_failure,
         create_update_log_file,
         detect_shadowed_dcode_safe,
@@ -677,28 +689,22 @@ def _run_startup_auto_update(console: Console) -> None:
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
-        if restarted_for is not None and is_installed_version_at_least(restarted_for):
+        if restarted_for is not None and Version(cli_version) >= Version(restarted_for):
             # The re-exec landed on the upgraded version, so the prior
-            # "Launching..." line can be replaced with a stable completed status.
+            # "Restarting..." line can be replaced with a stable completed status.
             try:
                 _confirm_update_after_restart(console, restarted_for)
             except Exception:
                 # The upgrade already succeeded; this rewrite is purely
                 # cosmetic. Swallow rendering glitches with their own guard so
                 # the outer fail-soft handler does not misreport a successful
-                # upgrade as "Auto-update failed". The prior "Launching..."
+                # upgrade as "Auto-update failed". The prior "Restarting..."
                 # line simply stays.
                 logger.debug("Post-restart update confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return
-        if is_installed_version_at_least(latest):
-            # The on-disk install already satisfies `latest` (e.g. the user ran
-            # `/update` in-session). `get_cached_update_available` compares the
-            # baked-in `__version__`, which lags an in-session upgrade, so
-            # re-running the upgrade here would be a redundant no-op and restart.
-            return
-        if restarted_for == latest:
+        if restarted_for == latest and Version(cli_version) < Version(latest):
             # Already restarted after upgrading to this version, yet it still
             # reports as available: the install did not change the running
             # version. Bail out instead of upgrading and restarting forever
@@ -715,6 +721,8 @@ def _run_startup_auto_update(console: Console) -> None:
                 f"Continuing with v{cli_version}.",
                 highlight=False,
             )
+            return
+        if is_installed_version_at_least(latest):
             return
         # A deferred migration is retried as soon as no other session is
         # running; the install lock section decides between migrating and
@@ -789,7 +797,9 @@ def _run_startup_auto_update(console: Console) -> None:
             from deepagents_code._session_lock import is_sole_session
 
             sole_session = is_sole_session()
-            if retrying_deferral and not sole_session:
+            # Windows defers every uv install, not only migrations, so there
+            # `perform_upgrade` picks which deferral guidance to repeat.
+            if retrying_deferral and not sole_session and not _is_windows():
                 # Repeat the deferral without re-fetching the release's Python
                 # requirement or announcing an update that will not happen.
                 console.print(
@@ -822,7 +832,8 @@ def _run_startup_auto_update(console: Console) -> None:
 
             def show_notice(message: str) -> None:
                 notices.append(message)
-                console.print(message, markup=False, highlight=False)
+                # A notice can name a command to paste, so keep it on one line.
+                console.print(message, markup=False, highlight=False, soft_wrap=True)
 
             success, output, _installed = asyncio.run(
                 perform_upgrade(
@@ -842,7 +853,7 @@ def _run_startup_auto_update(console: Console) -> None:
             # environment than this process. In that case restart through the
             # shim uv just upgraded, rather than this process's interpreter.
             # Warn before the restart so the notice lands above the
-            # `Launching...` line that `_confirm_update_after_restart` rewrites.
+            # `Restarting...` line that `_confirm_update_after_restart` rewrites.
             # Use the never-raises wrapper so a detector defect can't crash
             # startup after an otherwise-successful upgrade.
             shadow = detect_shadowed_dcode_safe()
@@ -860,7 +871,7 @@ def _run_startup_auto_update(console: Console) -> None:
                     markup=True,
                 )
             console.print(
-                f"[green]Updated to v{latest}. Launching...[/green]",
+                f"Restarting to load v{latest}...",
                 highlight=False,
             )
             # Record the target version so the re-exec'd process can detect a
@@ -891,7 +902,7 @@ def _run_startup_auto_update(console: Console) -> None:
         if unverified:
             _exit_after_unverified_update(console, persisted=persisted)
         if deferred:
-            # Nothing failed: the notice above explains how to migrate.
+            # Nothing failed: the notice above explains how to update.
             note = escape(_session_lock_unavailable_note())
             message = f"{note}Continuing with v{cli_version}."
         elif notices:
@@ -2277,16 +2288,21 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     return True
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser without parsing `sys.argv`.
+
+    Kept separate from `parse_args` so code that needs to inspect the command
+    tree, such as `dcode completion`, can do so without consuming arguments or
+    importing the runtime.
 
     Returns:
-        Parsed arguments namespace.
+        The fully populated parser.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
     from deepagents_code.client.commands.auth import setup_auth_parser
     from deepagents_code.client.commands.config import setup_config_parser
     from deepagents_code.client.commands.mcp import setup_mcp_parsers
+    from deepagents_code.completion import SHELLS, program_arg
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
 
@@ -2599,6 +2615,30 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="NAME",
         help="Installed optional extra to remove",
+    )
+
+    completion_parser = subparsers.add_parser(
+        "completion",
+        help="Generate shell completion scripts",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_completion_help")),
+    )
+    completion_parser.add_argument(
+        "shell",
+        nargs="?",
+        default=None,
+        choices=SHELLS,
+        help="Shell to generate a completion script for",
+    )
+    completion_parser.add_argument(
+        "--prog",
+        action="append",
+        metavar="NAME",
+        type=program_arg,
+        help=(
+            "Command name the script completes (repeatable; "
+            "default: dcode and deepagents-code)"
+        ),
     )
 
     # Default interactive mode — argument order here determines the
@@ -3041,11 +3081,21 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(_lazy_help("show_help")),
     )
 
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments.
+
+    Returns:
+        Parsed arguments namespace.
+    """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    parser = build_parser()
     args = parser.parse_args()
     if args.package and (args.uninstall is not None or args.command == "uninstall"):
         parser.error("--package cannot be used with uninstall")
-
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
     if (
         getattr(args, "trust_project_extensions", False)
@@ -3437,6 +3487,7 @@ async def run_textual_cli_async(
         ModelConfigError,
         ModelSpec,
         NoCredentialsConfiguredError,
+        NoModelConfiguredError,
     )
     from deepagents_code.onboarding import should_run_onboarding
 
@@ -3453,7 +3504,7 @@ async def run_textual_cli_async(
     defer_server_start = False
     try:
         resolved_spec = model_name or _get_default_model_spec()
-    except NoCredentialsConfiguredError:
+    except NoCredentialsConfiguredError, NoModelConfiguredError:
         resolved_spec = ""
         defer_server_start = True
     except ModelConfigError as e:
@@ -3895,6 +3946,29 @@ async def _run_acp_cli_async(
             except Exception:
                 logger.warning("MCP session cleanup failed", exc_info=True)
     return exit_code
+
+
+def _is_session_launch(args: argparse.Namespace) -> bool:
+    """Return whether these arguments start an agent session.
+
+    Subcommands and the management flags (`--update`, `--install`,
+    `--default-model` and the rest) exit without one, so piped stdin is their
+    input rather than a prompt. A new flag that exits before the session starts
+    belongs here too.
+
+    Returns:
+        `True` for interactive and headless launches.
+    """
+    if getattr(args, "command", None) is not None:
+        return False
+    return not (
+        args.update
+        or args.install
+        or args.uninstall is not None
+        or args.auto_update
+        or args.clear_default_model
+        or args.default_model is not None
+    )
 
 
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
@@ -5490,6 +5564,10 @@ def cli_main() -> None:
         KeyboardInterrupt: Re-raised out of the TUI teardown block so the
             outer handler can print the interruption notice and exit 130.
     """
+    # Every command can print text the stdout encoding lacks, so this runs
+    # before the first write, including the `--version` fast path below.
+    _make_stdio_encoding_safe()
+
     # Fix for gRPC fork issue on macOS
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
@@ -5576,11 +5654,16 @@ def cli_main() -> None:
 
             sys.exit(run_doctor_command(args))
 
+        if command == "completion":
+            from deepagents_code.completion import run_completion_command
+
+            sys.exit(run_completion_command(args))
+
         # Every remaining command can read or act on managed policy, so none
         # may run while that policy is unenforceable. `config`, `doctor`, and
         # `auth path` returned above because they are the tools for diagnosing
         # a broken managed file. Gating them would leave an administrator no way
-        # to see what is wrong. `help` reads no policy.
+        # to see what is wrong. `help` and `completion` read no policy.
         if command != "help":
             _require_managed_config_or_exit()
 
@@ -5823,7 +5906,11 @@ def cli_main() -> None:
             )
             sys.exit(exit_code)
 
-        apply_stdin_pipe(args)
+        # Only a session takes piped stdin as its prompt. Everything else leaves
+        # it alone, so a pipe that stays open cannot stall a subcommand and a
+        # subcommand's own prompt reads the piped answer.
+        if _is_session_launch(args):
+            apply_stdin_pipe(args)
         if args.non_interactive_message:
             # Piped stdin turned this launch headless. It gets no prewarm
             # thread, so install the redacting client now, as bootstrap would.
@@ -6116,6 +6203,7 @@ def cli_main() -> None:
                     format_installed_age_suffix,
                     format_log_follow_command,
                     format_release_age_parenthetical,
+                    get_cached_update_available,
                     is_update_available,
                     perform_upgrade,
                     prerelease_upgrade_supported,
@@ -6146,11 +6234,17 @@ def cli_main() -> None:
                         )
                         sys.exit(1)
 
-                console.print("Checking for updates...", style="dim")
-                available, latest = is_update_available(
-                    bypass_cache=True,
-                    include_prereleases=include_prereleases,
+                available, latest = (
+                    get_cached_update_available()
+                    if include_prereleases is None
+                    else (False, None)
                 )
+                if not available:
+                    console.print("Checking for updates...", style="dim")
+                    available, latest = is_update_available(
+                        bypass_cache=True,
+                        include_prereleases=include_prereleases,
+                    )
                 if latest is None:
                     console.print(
                         "[bold yellow]Warning:[/bold yellow] Could not "
@@ -6215,7 +6309,11 @@ def cli_main() -> None:
 
                     def show_notice(message: str) -> None:
                         notices.append(message)
-                        console.print(message, markup=False, highlight=False)
+                        # A notice can name a command to paste, so keep it on
+                        # one line.
+                        console.print(
+                            message, markup=False, highlight=False, soft_wrap=True
+                        )
 
                     success, output, _installed = asyncio.run(
                         perform_upgrade(
@@ -6543,6 +6641,17 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            from deepagents_code.config import _get_default_model_spec
+            from deepagents_code.model_config import ModelConfigError
+
+            try:
+                if args.resume_thread is None:
+                    args.model = (
+                        getattr(args, "model", None) or _get_default_model_spec()
+                    )
+            except ModelConfigError as exc:
+                console.print(str(exc), style="bold red", markup=False)
+                sys.exit(1)
             _print_configured_profile_notice()
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)

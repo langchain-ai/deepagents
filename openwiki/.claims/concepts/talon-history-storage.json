@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:3bec99e67f990b975dc0b25e7c41508edb9720438acfdf0f092ca7d8ba63c1dd",
+  "claims": [
+    {
+      "id": "claim_5d7ff65395334c129e8a7aceabcf15ac",
+      "statement": "In a model-enabled host, Talon independently opens a URI-selected checkpointer and history archive, then combines them with `ConversationSaver`; the echo runtime instead bypasses that model-host storage composition.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L309-L331",
+          "version": "repo-lines-v1:sha256:1347a8119cd28d0b38b0806405cbc91e3636e2c82ec923ac8b7dd9875e553a65:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyM2FkYTA1NDQyZjc4MWVlYTViN2VlNTU0MGQwOTQzNWRhYTc4ZmIxODE0N2QxODBjZGQyYzU5MjhjZmQwZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5YzVjZjJmMGZkYjM0YTEzOWJmMzBiYzhjYjM3YjYwOTlmODcxNjViOTJkMjlkYmJjYzA1ZjAyNWFiY2QxYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0ZGM5ZDNjZTQ0YzU0OGQ0MjlhNzE3NmRkYTIyYmExM2ZkZDJhZGJjMWM3NTAwZjA0NDYzOTJjYWU2MWEzMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmZjNmMGI1MmVlOGQxMjZkMzc3NGYxMmI3MmM5YjY0NTRlMDEwYWE4OGM3ODFiZjc3MGY4OTEzY2VjZmI1ZjkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L359-L373",
+          "version": "repo-lines-v1:sha256:98fb8dff2f8d1e6bcc54cc570110185ebd1cde02ca8969eca6199b0e009a18b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZDgzMDFjYzBmYjBjNjYwZWNhMjkyODY4ZTdkMjYwNzEwODk4YTgyMjU5MTBiNGMxZGQ5OWZlOTkyZjUwZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzZjgyZWJlNTc4ZGU5YzkzZTdhNThkNzNjZDIyMWRkMzExNDNlNTA5NmVlNzA5ZTY0MTEyMWEwZGFiM2JiNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxYTMzMmFkNWEwMzg0ODUwYTRmODk1OTNiZmM2Yjk2ZGNhYTE4NmUxN2E1Y2Y2NTEwNmExMTNlOTVhYjJkOTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0f5959141e3e4d02a6e84e585c7252d4",
+      "statement": "Checkpoint and history storage are independently URI-selected: built-in SQLite/file, PostgreSQL, and MongoDB schemes are supported, plugins are accepted only when exactly one matching entry point is installed, and initialization failures are surfaced as configuration errors without exposing driver details.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/checkpoint_backends.py#L25-L115",
+          "version": "repo-lines-v1:sha256:17145229061faf95242970dc2e14e10a8b8cabe1cc5ff35f945214deb4db7ce1:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMGZiZmU2ZTdmZDZmNzE4MWE0NDY2MjY3MDNlZmNkYjFjZWVjNDhhODVmNDg5NjEyODE5Y2YwMDYxODhiNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_backends.py#L37-L117",
+          "version": "repo-lines-v1:sha256:4a6aa8f3a16af9a2a5126d215974d4596f2239c62b4ddfa9b74f194aad1748bc:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwODcwNmIwOTc3YjdkYjZkYzQwMThhNGJmMDI3ZWMzNzQ5OWM0ZGM0NWQ3ZDRlZjlhYTliZTllY2NjMGNkN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3Zjk1YzVkMGJiNzU0MzkwN2ZjNWJjYTI1NTc5YjUxMmE1OWFhNGI0N2FhMzcxZWU1NDcxN2I4YWJjYmYxZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQyOTUzYmIyNWFlMTIzNjY2N2RhZDNjYTRiMjhjMmQ0ZjU2ZGExNjNkODZhNjI5Mjk0OTk0YjBmZmU1NTQ0NDkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f474a418f41c46c1a236802a19172b99",
+      "statement": "A `StoreConversationArchive` uses a metadata Store namespace based on the assistant ID and can use a separate vector Store; constructing it with the same Store instance for both metadata and vectors is rejected.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_backends.py#L60-L84",
+          "version": "repo-lines-v1:sha256:bde5117637ee225359643c59323319c7599fa74c62a71b46de2441e919cbf486:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjMDQ5YmVhYWExN2NiMGM5Mjc1NWRjOWMyODhmNjVhMWU5MmM4ZTc4MGMwYmU0ZDFjZTdjZWY5MmUwMTk3MTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ3ODczYjAxNjZhOGY2YjQwNGU4YjhlN2E0YjE4NDYxNzUxOGJjOTg0ZGMzNDU2N2NlYzQ1MGUwOGQ3NTVhMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0OGNkMDUyZjcxMTc3NjU5ZTBjYjMxZjcyNmE2ZGZlODVkOTg3NDJiY2M3ZTk1NDViMjhiYWQ0NDA5MjRmZjgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_archive.py#L97-L142",
+          "version": "repo-lines-v1:sha256:2b0c9ef9d85b6a2c24ce818752b1199c7b1bc3c15b7c0841a3c9f78a4951e3db:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjZjQ0YzRiYTk3ZGMwNzE2NzFiMjc5MjIwNGY5ZGY4YmNiNzUwN2Q1NTk1NGIxMjY0MjAwN2ZjZTFiYTgwY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0ODM4OGRlZWM0MTJlMzA4MDNiMjgyNTFlZWQ0ZjYxZTZkNTU4NmE5MWJjN2MxOGQzOWI5NTZhNWMwNGY3YmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlM2YyMTFlY2NjNmE3NTQ1NjNjM2RiZDllNjNkNDk5MGQzY2UyNzZhOTFjODY5MjNhZDU1YWM1ZWMxNzc1YzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_adc6d7b8445243ada54b3dee1520a1dc",
+      "statement": "The archive is restricted to trusted channel/chat scope and session ownership; top-level scoped checkpoints are archived while nested or unscoped checkpoints are not, and reassignment of a session to another scope is rejected.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive_saver.py#L193-L212",
+          "version": "repo-lines-v1:sha256:64fd74cd230e0721cac382429f4aa29091d5cbd0d961579d38301116710a1371:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmZTRkYjMwYjZjOTYwNzIwZjRmZjU1Y2Y3OWZkNTEzYTQ3YzFjODEzZjdlZGZjYTc3OWQ5Nzk1Y2IzZjFmNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3MmY5Njk1Yzc0NjdjNzQ3NzNjOWNlN2ZjNDI5YzVkMGQwZTQ4N2YzYzUxZDE1ZDY2NjhhM2QyNDA3MmJiOTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2MGYxZmI2MzU3N2NlZTAxYzY0MmI4NzA2ODI3YzA5ODEyNDVmN2JiMDU1ZmMzZDY0OWZlN2IwNzEyNzVjOGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxZmVmZmEzYTQ0MjkxZTIwODliYmUwOTczMDY0MWU3YTdlOTRlN2QwNjU0MTlhNDgwYWY0ZjcyMDY3MzA5ZjUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive_saver.py#L316-L323",
+          "version": "repo-lines-v1:sha256:145d0261448cb959c99d97a366446786ebf2b4ce16d5534f16c500ed56fccf0f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTE4NjE3NzY5NWJiNDkwYzZkYWZkMGQwNjM1ZGZiYjM1MWZiOWRiNGUyNDg2MGI1ZTBiNDMyOTUwOTU2MzZmOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5NjAwYTczZDJlMDJmMzUyYjkwZmVmMWQ4ZDYzODExYmE0YThlZTBjMWJlYWE3YWU0NjU4ZjM2YWEyZTE5OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjNlNTJkMjYxMTgwNmYxZTYxMjNlZWE4NzVlNmQ0MGVjMmYwODA2NjUzMjlhMTdiNDI0NzNkZGQzZmNkMmJiNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDkwMzEwMGU2Y2EyNjFlYjU2NmM1Mzk4MWM3MzNlOTNkNDdmYzVhNzhhZmViNGZkNTc1NTU1NTg5MWI0MjcwOCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_archive.py#L209-L240",
+          "version": "repo-lines-v1:sha256:058902c910bbac085f18fa301b39ac272f16ac6b75ab43ad67148835a9ed147a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyY2I0M2YwZjE3Y2EyYTVkZjk5MzIwMDcyZDUwNjY0ODNhMzIzOWVmZGJiNGI2OThkNWRmZDQyNmY3YTVkMGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMGRkZjlhMGYwOTYyNTc0ZWEzZGQ5ZmI2NDNlOWI4MGZkZTZjNWExNWQwYWJkM2Y2NTZkZjA0NWJmYWI1MDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlY2M2NjFmNjE3ZjE3ZGQwNzdkYmI3MDFlZGEyYzcyYjk0YjAzNGRiNTY1MjQxNDNmZGE2OTJkYzY2ZTMzYjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmM2Q0Y2Q2ZGQyM2Y2N2M4ODM5NzhiODE5ZDQ2NzkwOTQ1MjZiZmY5YTc5NTA2OWU3NjM1MWZhZWNkNjBkZTQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_archive_saver.py#L87-L97",
+          "version": "repo-lines-v1:sha256:a35c6920d38cfd0242996097e951f494633271340ec860272440a86f9356f44c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5Y2M4ODJhNGQ2MWM1ZDRiNTFkY2IwMzJlM2QwNDM1Y2ViNjk4NDNjMTgwN2I2ZmNjMTgyYzRlYmFkZWE0YmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1Nzg1MTQ3YWM3MDNhYTg3ZmFmYjVhNzkwMDEyNGM2YThmOTgyMDllZDBkYmNkMDYzMWVlNDIwODk4MDNlZGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFmNjdiYjJlZDY1ZTVmOGI5ZTc5ZDI5OTVhMzg4MGE5NGY2NDhhNWIzZmFiOWRkNTljNWE2YWY1YzQ1MTdjZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczMzQ5YTA2MTlmYThlMjc1MDFhZTI5NzRkMDUzMTc0NWQwZGM1MmM1M2E2Y2ZkYmY5ZjQ4YWE1ZGNmNzQxN2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_79c12ef3796d41c49fddfc8592c129f7",
+      "statement": "`ConversationSaver` persists a checkpoint before appending its changed messages and acknowledging that checkpoint in the independent archive; no cross-store transaction exists, so archive failure after checkpoint persistence propagates and a retry repairs the idempotent projection, while cancellation waits for both writes to finish.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive_saver.py#L153-L229",
+          "version": "repo-lines-v1:sha256:95ca72fb61a4ef792d7fe20d1a03a6186215d12a09d4d28172e698ef6ee9f1bc:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4YTNjM2RhZWU1NmFkOGY5NWFkNmY2ZDU5MTVmZjViM2U1YzZhZjE3ZDhiYTQ3MjhmMDExMmYzZmExNGY1YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExODJiYTIwMjY1MjliNmJhN2JiNGY4ZDcxZTJhNDkyY2UyODZmOTM4M2I0MzU1YTVmMjRlODhmOTU0OTQ2NzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhYWQwZmU2M2RiMzllMzNkMzNjNGQ2ZjdjNjgwODMzZDM1YzVhMDNmNjAzNjA4Mjk5Mjc0Y2E0MWVmZmU2NDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkZWUzMjNlOTNhYzViOWRhZGMzN2Q1N2I1OGNjNjM4YjdiOTA4MjIxMTFjNjdiM2JiNTM4MzY1M2IyZWM4Y2MifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_archive_saver.py#L100-L145",
+          "version": "repo-lines-v1:sha256:938ba4c02303860cf296e497de07fe1d5071b9562c13004ed91af3af54e165cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1OGNkM2NhYWFkMzcxNjA1N2JkZDliYzVkYjk4OGViNTA1YzIwODE1M2EwNjQyYzQzMDZjOWNiMzE1ZjE5NDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3NzFiZTM3ZWJiYWVkZjcwMzM2MTM5YmU1YWJmZjkxM2QxOGVlMGM1OTU1Y2JmYjEwM2YzNDZkZjU3YzVkYjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFmMmM1NGNhYmZmYTFjYzhkZGU1YmQ1YTQyMjA4YjAwYmJmM2VmNmJiZjJiODdhYTRhMzUwMDg4NDZhNWVjZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwM2JkMDA3N2UyOTc5OTFiODQ2Mjk1NWYxMTQ0ODU4OTFjMTNjODM0MTM2MTM5MDVlN2YxMDRhMjRjZjI4ZjUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_archive_saver.py#L159-L225",
+          "version": "repo-lines-v1:sha256:0176514a418a989e4d828ccf2403d7932a607e377dac5b306dc281aa00c869fa:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlNmYwZGZhNDc4Yjc5Y2ZkOTFlYWJlODAzMTNmZTllN2I3MGMyZGFmYTYxYTA0YzQzM2RlMTk1YmI4YWY4OGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwZTcwNjg4ODQ1M2QxMTg4NTRmZjI5MGFjNjY3OGNiMmM4YmM5ZTIzZDI1MzY3YWE4NTQ4NWJiYWU3YjY4ZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVkNDE0YTcwNDU0NzRkZDMyMThjMzNmNDZkMTg0Yjk2YzZlMTc5ZmQ4NjJlNjIxZGI4ODk4ZDg5MWIzZDZhZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViYjRhMjgzMjgzM2JkYjg5YzMwYmE2OTBjNjIxZDRiMmVkMmI4MjM2ZTJmZjVkMjNkNDM5MWU1ZDk1MmIzMTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c233b46dcd704528873256f6dd741312",
+      "statement": "The archive retains chunked Human, AI, and tool-message transcript content and AI tool-call arguments, preserves message revisions through revision-based deduplication, and makes only user messages and successfully delivered AI replies indexable.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_archive.py#L242-L353",
+          "version": "repo-lines-v1:sha256:75459a1068daae4e12ca09d0d57d1983a973ba37df8762ae5e03ca0dba9ba6bf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4OTY0YTUzMDBjNDhlOTAzZmEwOTc2OGVjZDhhMjM3NjM0OWRhN2I3MGIyZmY2ZmYwNDdhNTNmNzA2OTc0ZWYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlYTZiZjFmZjdhMDc2MThmNGM0MGNhMWRiZTRlMjY0NDIwZjNlMWU3ODQ2OTE4NDY2MDQxNDFiZTg5MmM4YWViIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZmMwMDhiNDc4YmYwZmFjYTVkNGEwYWI5ZWRhNjNlZDk4YWVmZmY2YTRmZDg4YjRkODA5NjVhOTBjYzY2NDhjIn0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_archive.py#L69-L94",
+          "version": "repo-lines-v1:sha256:7391a3b7ff088beed576c3481b27f005656d3d792678a8a9588b60589109fe79:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmNGE2ZmFlNWMzZjUzNjgyOGYwY2U1MTdjMzc1MjgyODU1OGNmOGExMjY2ZGIwOTc3ZmM0MmQ3NDc0N2ZmNGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiOGYwNThmNzdlYjg1NDA5MDYxZDg2YjIzMDg5MzQ2MzBhZTExNzlkMDkwNDdlMTRkMzRkOGNmYTU4ZjU3MWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5YjVkNDk2ZTc0Nzg3MjcwMzIyMjcwYzU0Y2ZiYTFkNGVjNzdmODhiMTNiZjhjZjFhZjE3NGUxZDIyMWY2NTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_57e76f9c50324674a10f45fe726d2873",
+      "statement": "Agent-facing conversation tools obtain trusted invocation scope rather than model-supplied scope, constrain pages to 1–20 entries, and translate scan-limit failures into tool errors; complete archive traversal refuses a page after 500 records rather than pretending it is complete.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive.py#L130-L210",
+          "version": "repo-lines-v1:sha256:b04ded610f1a45c5d132e0ee9bd64f9a4ca908e488e835538fe5c1bd1ea887b5:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhZjJkNzY1N2MyZjczNjBiNDA3MjMyMGU1NDI2YWNkMzdkMTU0NTdlMzFjODllMTA0YzIyMjU1ZGQ3NzgyNTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3ZTYxMjQ3YzQ1OTVlZTY0NTRkMTg3NWYyYzIwNTllN2JmMTkwMDE3MDExOGU5MTM4OGE4ZjZmYmUwNTZlM2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkwZmE3YWNmYjQ3NTgzYTc4NTQ1N2Y2YzRmY2Y4OGZjNjE1NmE5NWFkMzljOTRhMWY4YWVjYWMwNDk1MTEwNTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExNDZmNDMzMDcyYWIyMzk5NzJiMzFhNmNiMmQwMDdjYWU2MWU5OTUzMjAwZDhjM2E1MWY0ODBiNzlkMDE4ODMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_archive.py#L444-L491",
+          "version": "repo-lines-v1:sha256:794bd47f6af03c49510082a506adc882fc92872fc2118375cea19785fb538467:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwOWY5MWRlOTkwYWRmMWZiNWI0OTNlODZiM2MzMWFkZDA2ZGYzMWM2MDVkNDdkZTcxOWVjOTcwMDU1MjYyOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjZDVkNzg1MzY5MzMyZWNjZjI3ZWFlMDU4ZmJlMjhkMTdhZTNjMDkzMDcwOTIyZjRkOWVmODdkMWVjNzg4OWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4YmUyNzQzNDEyMjhiNmZhOGJjMDRmNTZlOWY2OTM1ZTIyM2UxY2RmMjU1YTEyMTQyYmI5MTY5Yjg5ODQ5YzcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c8237988ae1a40359936b2b91fd5c235",
+      "statement": "Optional vector search runs as a durable background worker that writes vectors before acknowledging rows, retries indexing errors without stopping conversation writes, applies a two-second semantic-search deadline, and falls back to keyword search on timeout or error.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_vectors.py#L204-L282",
+          "version": "repo-lines-v1:sha256:dab022224d5d63a1f61236e8e45fbbaec1bd2bc1e4b38df6b856ad403bb7102b:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNzg0NzkwMDQ4YjNjMzgyNjBjYjIzOTIxNjk3ZGY2MDU4NWU4YjlhNmJiNTE1MWVjMWI1YTVmZWZmYTM1ZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4YTc5MmNiOWRhNGRkOWU2N2FkYTRkNTJiM2M0MzY4ZGQ0ZmUyYTRlMWUwMTJmNWQyMWM4N2MwODZjOTEwNGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2YWIxZTU1MjllOGU5MDBjNzkxY2MxYjQ2NDQ0NjFmZGUyYjA1OTRkZmJjZDk2YWE0MGRmNTdjMmI4MzllMjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkYzFjNGYyNmUxNDYxMjZiNGU4Yjg0NDhlYmQ0NGVhMGUyMTk4ODhhNWM4MjhlYzQ4M2ZlMTQxODhhYjE1NTgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_vectors.py#L284-L375",
+          "version": "repo-lines-v1:sha256:e81ba42ef1da16fae1b7bda78f6319f814146e5a527ca1e46368bc7f0fff254c:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxOGE1N2Y0MjA3OGM1MWVlOGJmNTcwYTEyNTcwMjFlYjI0NDRiZjQ0ZjBmMjQxMDQ1NjhmODE5NTNlZTkxODMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzNWNmMmRiYWI4MjJlNDQ4NDMyOThlZmE1YTU2YmFmZjRmODc0YTVmNjUwYzk2MTBhMWY1OWVlOGMxZGZmZWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBiMGRhMTZjMTI3YjEyZDNjYmI4OGY0OTMxMmJlYThkYTVjZDBkY2YwOTk0YjFkOTM0NWJhMGYzMzk1ZjBkYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmOTM5NDljNzQ3OWVlZmYyYjEzMjQ0ODNhZWQ4YWUxMWU0NDkyODRhZGU2MDY5MWU4YjI0ZTZhMWYxMmI1NDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e40a59dca28d46cdb2f694ef9d0e54a3",
+      "statement": "Vector indexes are fingerprint generation-scoped; an incompatible existing fingerprint or interrupted reindex blocks startup unless explicit reindexing is enabled, in which case Talon durably erases old vectors, resets indexing progress, and rebuilds from retained transcripts with a restartable cursor.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L223-L253",
+          "version": "repo-lines-v1:sha256:88f94566582763ed2fb74f12ebc32fc9809c6bcf18795178d6313eec6b61249d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyZmI4ODAxY2Q2YzA4YzFmZDI1YWIxNDA4ZmEwYWUwZWNiNWUwNDM0M2MwZjkwN2JkYzIxODBjY2NhN2I0MzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDdkNWRjZTBhMTU0ZWNiNjNmY2I3ZGM4Y2FiOThlMmRjOWFkNTA2NmU2MjQ3Njg4MTdlZTcyNTgyOTI2NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzMjNiMGQ1OWQxYmFhZDdiOGVlZDBlMWFiYzAxYTQyNDFmMGUxMmNlZGEyNmE1OWY5OTM3MTY1YTE2MWYyZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ4Y2QwODg2OGI3Y2YzMDc3N2I2OWZkMTViOTZmOGI1MTg1YjYxZDJiODQxNzU0NTBiMDYwY2QxNzA3MzM5YWQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_vector_backends.py#L35-L123",
+          "version": "repo-lines-v1:sha256:af225052901501758fab27a8ea8d31065a7d15d87ec2b88a7f30a091dc8fdb1e:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmODRhMWViYzY2Y2I2Zjg0MzMyNTIwZjk1MDI0Y2Q4ZDU0YjA3OTRkZDM2ZGVkYzEzNjY2MjNhNzY5ZTI5ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwZDU1NGQyYTVmOWJiNzBhM2EwMDNmNWViMjI1YmEyZjY5MmM3ZDU3MzE0MWYxODUzOTc2ODk2NTFhZGE5NTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxNDJhMTBkZGU0YWEzMzFlNzY1MGM2MGNhY2VjMTljNzkyYmQyM2EzZWZkOTA0MTBmZmM5YzZkOThjZWQzMWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f9185d97373d4f2995ac773c4c1111bf",
+      "statement": "During session erasure, Talon deletes hook transcripts, then checkpoint state, then archive state; archive deletion marks the session first and removes vectors before transcript ownership, allowing failures to be retried and refusing metadata-only deletion when previously-used vector storage is unavailable.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/archive_saver.py#L249-L313",
+          "version": "repo-lines-v1:sha256:34fd29143523b1009e0320d7895087ef582a245a8e99bd9fa21e219b4631b426:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiNzFmMDViNjVmYTEzYzBjZTE4Nzk0NzdlYmViMzY2NGRjYmMwYjNhODYxYjA5NTRmN2JlZmY2M2Y5MjZkMTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0M2RiY2FkY2MyNTcwYjZkN2NlMjhhODJlZjBkZmQyYzg3ODgwYjZlYjI1YTllZWFmZjdmNjQ2MTYzNTZjMzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhYWJjNDMzNmNiYmNlMzM2ZjJhNzYwNGFmNGQ4MmU3OWEyNDJlOWM3ZGM4YWY0YjJlZWU3OTE2OGYxOGM2NzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0ZTE0YzljYTlhMTVmMTU2ZGVkNmJlM2E3Mjg1M2FlYzVkMzZiZmRlNzMyOWY3ZGIxMzMxODhjYmQwNzM0MTAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_vectors.py#L272-L282",
+          "version": "repo-lines-v1:sha256:498e1a7dc161444fc275cce92a13117395187932f9a8d298197b70d59bb73f21:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjNWJjNjIwMWM0ZGRjNjI0MzIyNTRhYjQ4NmU4MTE1ZjI5MWQ5YzA1OGQwZGYxZGI4Nzg4OGQ2MDQzZTBhZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4YTc5MmNiOWRhNGRkOWU2N2FkYTRkNTJiM2M0MzY4ZGQ0ZmUyYTRlMWUwMTJmNWQyMWM4N2MwODZjOTEwNGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNiMDMxNjVlOGY0MGMyYmUzODEwMTVkZWVjOWNiM2Q4MzY1MTg1MTk1OTE0ZTY3NGVlMGVkNmE5Y2ZjYWMzOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkYzFjNGYyNmUxNDYxMjZiNGU4Yjg0NDhlYmQ0NGVhMGUyMTk4ODhhNWM4MjhlYzQ4M2ZlMTQxODhhYjE1NTgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_archive.py#L639-L729",
+          "version": "repo-lines-v1:sha256:71dd7a4489777f0afa5c3ae9dbf500f35c5091305653348e294d8b2bfab027e6:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiN2MzOWM0MmE0ODA2MTk4NzBkZWFjNzM2NGUwYTU0NDExOGIzZThhOTFkZGIxN2ZmMGVmMGVmOGU0YzZmZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ4NGFlZTVlNTA4NDU4MWNlNjMwN2I4YmZmOTRjZTUwOTdlNzc4MDU1NGQ2OWI2YzAxMmNmNzQ5NzU4ZWYzMzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3YTA0NWQ2YWQ1MThmZDgwYTJiMmVlZTNjYmQxZThhZWUzM2RjYTgwNmYwZmUyMDY2NzIwMGY1MmFhODc0NjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e9f539ef77b040ecb20d604e487fb0b5",
+      "statement": "Archive metadata uses a bounded redo journal whose writes are replayed before access and cleared only after success; it requires one active writer per namespace and read-after-write storage consistency, and is explicitly not a distributed lock.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_archive.py#L97-L112",
+          "version": "repo-lines-v1:sha256:2e4b16fb57d3b944af4e466386db18e548201770d532a23e6d49419f190473c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjZjQ0YzRiYTk3ZGMwNzE2NzFiMjc5MjIwNGY5ZGY4YmNiNzUwN2Q1NTk1NGIxMjY0MjAwN2ZjZTFiYTgwY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0ODM4OGRlZWM0MTJlMzA4MDNiMjgyNTFlZWQ0ZjYxZTZkNTU4NmE5MWJjN2MxOGQzOWI5NTZhNWMwNGY3YmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5ZWIzMzljM2Y0Yjc1ODMzYzkwNDkwNmIxYmNmMjlkNWI1NTllZTFjMjBmYmM4ODg0MDc3ZTBjZTFkZjU2ZTgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/store_records.py#L56-L116",
+          "version": "repo-lines-v1:sha256:3d22baad2f4e7fd7bc01d0e98bab0bc0946d73bf25f4c463f07fdf882664afbe:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MDYxMGRlNmEzMTYzZTJhNmNhYmZkZTZhOTUwNjhhOWY3OWMzMWNjOWI1YzNjYzNkZGVlNDI0NGI3YmJkMzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1NmVjNTY0MWU4ZTUyZTg4NzNlYTVkOTYzNmJkZGI1Nzk2Y2JlMjcwYWNhMjEzYWNmNGM1NTYwYzlhZjg1ZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MjIzMTA2ZmQ4NzQyYjcwZWEyMzNmOWRjMzU5ZjRiMDJiYmIwNjliNzI4M2VlZjc2MjQ5OTUxNmJkN2I5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliOTYzYTFhNThkZDY2MTI1Y2M5ZjkzNzNkZjM0ZTQxYmIyNjA0YTE2MzNjNzE5MzcwYzZiM2U3ZmY1NzIzYmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d624992702f14394908453b81f2432a6",
+      "statement": "History supports local, Voyage, OpenAI-compatible, and Atlas embedding adapters; client-side embedding requests are bounded and validate returned vectors, while Atlas is restricted to MongoDB and remote adapter setup is selected through configuration.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_adapters.py#L157-L289",
+          "version": "repo-lines-v1:sha256:1ae2e28f33e8a0d69e9e5f184bd04d3f95a5c10a33856d3d5364a3f55c2d8d53:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkZGY4YjQwNTE3Yjc1ZmRmYzA5ODlhNzNmN2RmNjY0ZGVhOTM2NGMwODc2M2IzMDMyOTFlMzE5OThmN2I1YzVjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyNWFiYTQyODdjZGI5NTYxZDRlMWIyMjQ1MzhlMjUyYWFiNDA3NGQxNDIyOGI3NjQ0OTIwZmVkNTU4OTdjNTQxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ZWJjODZkMjY3M2EwODc5NmMxYmZhZTAwN2JiYjgyYjFkYTZlNjliNWYwM2EyODY0YmFjMWJkZmZiM2VmYjljIn0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_adapters.py#L43-L64",
+          "version": "repo-lines-v1:sha256:5e681026a7a113b4555d8a45bb2a425f47ff5aaba7740e568f24fe5bef066273:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3OWYwNDcyYTEyN2U1ZTIzMmJjY2UzMjM5ZTc3MzJjOWVkYWEyMzQwZDA2YzMxNmIzNmM3ZWQzMjM5NjYyNzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ1YTIwYTYxYTg2ODhjZjZmM2YyMmY1MGZhNmI4MGRhZjNkODRmZjI3OTk1OTAyNjQwN2U5Y2U0NTQ5OTgxNDgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_adapters.py#L87-L154",
+          "version": "repo-lines-v1:sha256:b4bed99dfabae74b6ca4a0215f3c7a11ec46da4978e641db2c2be324767ba05e:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmYmQwYTdhZjY5NGE4ZWJhNTgyNzViZDVkYTU1NzE3OGZiMmNhYWE2N2RlZDMxZDkyOGViODA0ZGU4MDE2NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY1ZDFmZmQyOTUwOTIxMzRhYzhhMzg5MTczYzNkMWUzZGNmMjIyMzdmMTEyNjM4MjAxNzdmOTU2OWYwNzYxZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxZDI0ODFjMjJkN2JiYmE3YWNlZjJhMjcwNjg4ODE1YTkyYjEzMmNkMjI0ZDZhMjYzODM4NzYxOTIwYmJlZmMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_backends.py#L44-L52",
+          "version": "repo-lines-v1:sha256:43674ebb61def14cead8bdd1fc1767737ac1303449d406a7ba6eccd038ac2fdb:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2NhZDkzNzFkZTNiYWE3NjFiMGE0M2U3YTFmZWFhNGUxOGI4YjlmMzIxZmY0YjFhYTQyYWRhMDVlNzJiNmExMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTdmYmQ5NmFkM2UyZmU2MjMzYWI5YjgwMDdiZWFiZjQzNGYyZWQ0ZTE3OTM2YzhmN2RhNWU0MjY3ZGZkN2E5ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGVmNjgwYTE0M2NhYmNhODIxNjBhNzNiNzYxYjA4YjQ2MmI5YjU2NmQ1YzhiZDgyMGIzMWQ1M2Y3ZDZmN2NlNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWI4ODI1ZmQ1YWMyMTA3Y2QxOWZhOTFmOWZhMGEwY2I0NjI0NjY0NjljZGJmM2FkOTUyYzAxMmQ1OWMzZGY1MCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_e18d3b59fe894bd88b9bea9cab869aeb",
+      "statement": "Vector-index shutdown is bounded: a wedged batch may be abandoned after cancellation so shutdown can continue, and unacknowledged work is retried on the next archive start.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_vectors.py#L105-L162",
+          "version": "repo-lines-v1:sha256:827cb491823c8f9caf7edd3b5c97ab64d050c0c7569ce00594708bb8e2e2e804:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmMzFhMWRlZTMzNGY3NTMwNTkwZjJhZjRhOGI1ZTJjZmQxNmU2ZDlhMzkxMDk0MDNhZWE2ODNlMmNjMzgwZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlOGVkMzQ2NmIzODNhYTRlNjA3MDg2ODNiNzUyZjdlODNhMWE2M2ZlYzRmMWI2NDEwYWE1ZjQ1OTI0MGNiODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYzNlMjZjY2I5YTNkYmM4ZWFmNzM2MTI2ZGFjODZmYTQ1YzMwMjBjODk3YjZmMWVkNzQ4N2RjNTcyZTAyNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNjZkNGMwMWM2ZjBmODEwYTgxMTY1NjkzZjg1MzEyNjc4ZjEwMmEzNzI5M2MxODVjOTNhNjMzODNkMTRkNzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_44ac155ac4254ee081529494ff601c10",
+      "statement": "The shared archive contract tests idempotent append, scope isolation, semantic retrieval, vector-before-text deletion, and deleting vectors even after search is disabled; saver tests cover projection failures and cancellation/reset ordering.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/store_archive_contract.py#L52-L127",
+          "version": "repo-lines-v1:sha256:b1fdad2490ceb6a5d64f5a4246dbe0816793d0a51d67d9df7c57ef1c007d0fe3:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmOWQwOTQyYmZkYmQ0OTU5ZDliYTJhMWJmMmNkMmFkYWVmZGQ1NzE2YjUwZjg1ZWY2NzAzYmMyMTUyMDA2NjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmNDQzY2MzNTU0NTg0YzUxMWIzMzlhYWZlNjMyM2M5ZWUzZWJkZTI1ZDRiNmY1Yjk3ZDBkZjE3NTdlN2ZhNzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5MGZjZGUyYzM3NGE0OWIyNjEwMTIyNDcyZjBjZTYwNzU3NjQ1NjcwZWY2MGMxZWEyMGZlNmYzNjU2M2RkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0MWJkZWM4OWY5ZDQwYmUzNmEyMzgyZThlNmQwOTZkNjJkYTQyOGU0MjhmMjVhZmNiZDhjMDhiOTk1ODAxYjYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_archive_saver.py#L100-L225",
+          "version": "repo-lines-v1:sha256:8eceb1eb60f74f01e1372aa63a78325241f93e90e59d87aa73d494e737173b79:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4NThjZDNjYWFhZDM3MTYwNTdiZGQ5YmM1ZGI5ODhlYjUwNWMyMDgxNTNhMDY0MmM0MzA2YzljYjMxNWYxOTQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMGU3MDY4ODg0NTNkMTE4ODU0ZmYyOTBhYzY2NzhjYjJjOGJjOWUyM2QyNTM2N2FhODU0ODViYmFlN2I2OGViIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxZjJjNTRjYWJmZmExY2M4ZGRlNWJkNWE0MjIwOGIwMGJiZjNlZjZiYmYyYjg3YWE0YTM1MDA4ODQ2YTVlY2YyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlYmI0YTI4MzI4MzNiZGI4OWMzMGJhNjkwYzYyMWQ0YjJlZDJiODIzNmUyZmY1ZDIzZDQzOTFlNWQ5NTJiMzEyIn0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-11-04T08:04:03.075Z"
+  }
+}

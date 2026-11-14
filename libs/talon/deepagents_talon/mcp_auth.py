@@ -1196,17 +1196,7 @@ async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
 
 
 def format_login_error(exc: BaseException) -> str:
-    """Return a credential-safe OAuth failure message.
-
-    Args:
-        exc: Failure to describe.
-
-    Returns:
-        The first line of the message for exception types whose text is known
-        not to embed credentials, and the type name otherwise -- including when
-        the message is empty, as `str(OSError())` is. Both call sites are
-        themselves error handlers, so this must not raise.
-    """
+    """Return a credential-safe OAuth failure message."""
     if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     if isinstance(exc, MCPAuthorizationError):
@@ -1225,7 +1215,13 @@ def format_login_error(exc: BaseException) -> str:
         first = str(exc).splitlines()
         if first and first[0]:
             return first[0]
-    return type(exc).__name__
+    message = "MCP login failed; retry login and check Talon logs for diagnostic error types."
+    if isinstance(exc, RuntimeError) and str(exc).startswith("Client failed to connect"):
+        message = (
+            "MCP connection failed; check the configured server URL and availability, "
+            "then retry login."
+        )
+    return message
 
 
 __all__ = [

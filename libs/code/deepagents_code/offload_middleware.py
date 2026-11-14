@@ -41,6 +41,7 @@ from deepagents_code._cli_context import (
     CLIContextSchema,
 )
 from deepagents_code.cost_tracking import CostState
+from deepagents_code.goal_state_notice import anchor_summarization_event
 from deepagents_code.hooks.models.domain import (
     CompactTrigger,
     HookEvent,
@@ -556,6 +557,7 @@ class _PendingArchive(NamedTuple):
     session_id: str
     summary: str
     state_cutoff: int
+    cutoff_message_id: str | None = None
 
     def update(self, file_path: str | None) -> dict[str, Any]:
         """Build the summary update with the archive's settled path.
@@ -569,6 +571,7 @@ class _PendingArchive(NamedTuple):
             file_path,
             self.state_cutoff,
             self.session_id,
+            cutoff_message_id=self.cutoff_message_id,
         )
 
     async def _previous_content(self, path: str) -> tuple[bool, str]:
@@ -1161,8 +1164,17 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Returns:
             The model response.
         """
-        call_model = partial(super().wrap_model_call, handler=handler)
+        original = request
+        call_model = partial(
+            super().wrap_model_call,
+            handler=lambda updated: handler(
+                updated.override(
+                    model=original.model, model_settings=original.model_settings
+                )
+            ),
+        )
         summarization = self._summarization_for_runtime(request.runtime)
+        request = self._summarization_request(request, summarization)
         prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
@@ -1219,10 +1231,19 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Returns:
             The model response.
         """
-        call_model = partial(super().awrap_model_call, handler=handler)
+        original = request
+        call_model = partial(
+            super().awrap_model_call,
+            handler=lambda updated: handler(
+                updated.override(
+                    model=original.model, model_settings=original.model_settings
+                )
+            ),
+        )
         summarization = await asyncio.to_thread(
             self._summarization_for_runtime, request.runtime
         )
+        request = self._summarization_request(request, summarization)
         prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
@@ -1325,6 +1346,23 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             ),
             func=sync_compact,
             coroutine=async_compact,
+        )
+
+    @staticmethod
+    def _summarization_request(
+        request: ModelRequest, summarization: SummarizationMiddleware
+    ) -> ModelRequest:
+        """Prepare selected-model budget checks without changing downstream selection.
+
+        Returns:
+            A request using the cached summarizer's main model and runtime settings.
+        """
+        config = _runtime_model_config(request.runtime)
+        if not config.model_spec:
+            return request
+        return request.override(
+            model=summarization.model,
+            model_settings={**request.model_settings, **config.model_params},
         )
 
     def _summarization_for_runtime(
@@ -1469,7 +1507,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             self._summarization_for_runtime, runtime
         )
         messages = state.get("messages", [])
-        event = state.get("_summarization_event")
+        event = anchor_summarization_event(state.get("_summarization_event"), messages)
         if not messages:
             msg = "Offload compaction requires checkpointed conversation messages."
             raise ValueError(msg)
@@ -1511,6 +1549,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             session_id,
             summary,
             state_cutoff,
+            messages[state_cutoff].id if state_cutoff < len(messages) else None,
         )
         return _ForcedCompactionPlan(summarization, summary, state_cutoff, archive)
 
@@ -1561,6 +1600,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         file_path: str | None,
         state_cutoff: int,
         session_id: str,
+        *,
+        cutoff_message_id: str | None = None,
     ) -> dict[str, Any]:
         """Build the state-only result used by the server `/offload` operation.
 
@@ -1582,6 +1623,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 `_summarization_session_id` (mirroring the SDK's compact and
                 auto-summarize paths) so a later offload appends to the same
                 archive instead of minting a fresh file.
+            cutoff_message_id: Id of the message at `state_cutoff`, so readers can
+                find the cutoff after earlier messages are removed.
 
         Returns:
             The summarization state update.
@@ -1611,6 +1654,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 # Absolute, not relative: a second `/offload` on the same thread
                 # reads this back as its base.
                 "cutoff_index": state_cutoff,
+                "cutoff_message_id": cutoff_message_id,
                 "summary_message": summary_message,
                 "file_path": file_path,
             },
@@ -1823,7 +1867,7 @@ class OffloadOperation:
         from langchain_core.messages.utils import count_tokens_approximately
 
         messages = list(state.get("messages", []))
-        event = state.get("_summarization_event")
+        event = anchor_summarization_event(state.get("_summarization_event"), messages)
         effective = self._compaction._summarization._apply_event_to_messages(
             messages, event
         )

@@ -163,8 +163,13 @@ async def test_migration_preserves_install_context_and_announces_before_install(
     notices: list[str] = []
 
     def install(command: str, **_kwargs: object) -> tuple[bool, str]:
-        assert notices
-        assert "3.14" in notices[0]
+        assert notices == [
+            (
+                "Updating to Python 3.14 for v2.0.0. "
+                "Keep other dcode sessions closed during the update. "
+                "Your settings and conversations will be preserved."
+            )
+        ]
         args = shlex.split(command)
         assert args[:4] == ["uv", "tool", "install", "-U"]
         assert args[args.index("--python") + 1] == "3.14"
@@ -237,6 +242,48 @@ async def test_windows_defers_migration_with_outside_command(
     args = shlex.split(output.rsplit("your shell: ", 1)[1])
     assert args[args.index("--python") + 1] == "3.14"
     assert "deepagents-code[openai,quickjs]==2.0.0" in args
+    uv_install.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("include_prereleases", "pins", "admits_prereleases"),
+    [(False, [], False), (None, ["deepagents==0.7.0a7"], True)],
+)
+async def test_windows_defers_upgrades_without_migration(
+    uv_install: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    include_prereleases: bool | None,
+    pins: list[str],
+    admits_prereleases: bool,
+) -> None:
+    """Windows also locks the running `dcode.exe`, so every upgrade defers."""
+    monkeypatch.setattr(update_check, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        update_check,
+        "_release_python_requirement",
+        lambda _version: SpecifierSet(">=3.12"),
+    )
+    monkeypatch.setattr(update_check, "release_prerelease_pins", lambda _version: pins)
+    notices: list[str] = []
+    deferred = MagicMock()
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, installed = await update_check.perform_upgrade(
+            target_version="2.0.0",
+            include_prereleases=include_prereleases,
+            on_notice=notices.append,
+            on_migration_deferred=deferred,
+        )
+    assert (success, installed) == (False, None)
+    deferred.assert_called_once_with()
+    assert notices == [output]
+    assert "requires migrating" not in output
+    args = shlex.split(output.rsplit("your shell: ", 1)[1])
+    assert args[args.index("--python") + 1] == "3.13"
+    assert "deepagents-code[openai,quickjs]==2.0.0" in args
+    assert args[args.index("--with") + 1] == "langchain-custom"
+    # The temporary constraints file cannot outlive this call.
+    assert "--constraints" not in args
+    assert ("--prerelease" in args) is admits_prereleases
     uv_install.assert_not_awaited()
 
 

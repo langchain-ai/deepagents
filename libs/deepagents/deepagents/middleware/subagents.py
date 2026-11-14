@@ -228,15 +228,23 @@ class SubAgent(TypedDict):
     - `dict[str, Any]`: A JSON schema dictionary
         (e.g., `{"type": "object", "properties": {...}, "required": [...]}`).
 
-    A declarative fork does not inherit the parent's `response_format`. Different
-    formats can change the provider request: `ToolStrategy` adds a schema tool,
-    while `ProviderStrategy` configures provider-native output. Either can reduce
-    prompt-cache reuse. If structured output is also appropriate for the fork,
-    explicitly set the same format on both parent and fork. This changes the
-    fork's result to JSON; it does not guarantee cache hits, since models,
-    middleware, tools, and provider caching behavior can also differ. A bare
-    schema or `AutoStrategy` may select different strategies for different models;
-    a per-task response-format override can also replace the fork's configured format.
+    Fork prompt-cache limitations:
+
+    A declarative fork's first request can differ from the parent's last request,
+    reducing prompt-cache reuse. The fork appends its task to the inherited history
+    and processes the conversation through its middleware: the added task can move
+    an earlier `write_file` argument outside the recent-message window, causing it
+    to be truncated, or trigger summarization of earlier messages. The fork also
+    does not inherit the parent's `response_format`. Different formats can change
+    the provider request: `ToolStrategy` adds a schema tool, while
+    `ProviderStrategy` configures provider-native output.
+
+    If structured output is also appropriate for the fork, explicitly set the same
+    format on both parent and fork. This changes the fork's result to JSON; it does
+    not guarantee cache hits, since history rendering, models, middleware, tools,
+    and provider caching behavior can also differ. A bare schema or `AutoStrategy`
+    may select different strategies for different models; a per-task response-format
+    override can also replace the fork's configured format.
 
     For example, to opt a fork into the parent's tool-based format:
 

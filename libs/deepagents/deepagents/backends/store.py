@@ -257,11 +257,11 @@ class StoreBackend(BackendProtocol):
         filter: dict[str, Any] | None = None,  # noqa: A002  # Matches LangGraph BaseStore.search() API
         page_size: int = 100,
     ) -> list[Item]:
-        """Search store with automatic pagination to retrieve all results.
+        """Search the exact namespace with automatic pagination.
 
         Args:
             store: The store to search.
-            namespace: Hierarchical path prefix to search within.
+            namespace: Exact namespace whose items should be returned.
             query: Optional query for natural language search.
             filter: Key-value pairs to filter results.
             page_size: Number of items to fetch per page.
@@ -288,7 +288,9 @@ class StoreBackend(BackendProtocol):
             )
             if not page_items:
                 break
-            all_items.extend(page_items)
+            # Store searches use a namespace prefix; files belong to the exact
+            # namespace, just like get/put. Keep paging over the unfiltered page.
+            all_items.extend(item for item in page_items if item.namespace == namespace)
             if len(page_items) < page_size:
                 break
             offset += page_size
@@ -317,7 +319,7 @@ class StoreBackend(BackendProtocol):
             )
             if not page_items:
                 break
-            all_items.extend(page_items)
+            all_items.extend(item for item in page_items if item.namespace == namespace)
             if len(page_items) < page_size:
                 break
             offset += page_size

@@ -601,6 +601,24 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
+    def _resolve_delete_path(self, file_path: str) -> Path:
+        """Validate containment without dereferencing the leaf being removed.
+
+        Keep the normal resolver's checks, including rejection of links outside
+        the virtual root. Resolve only the parent for the actual unlink/rmtree
+        so deleting a link does not delete its target instead.
+        """
+        self._resolve_path(file_path)
+        path = Path(file_path)
+        if self.virtual_mode:
+            path = self.cwd / file_path.lstrip("/")
+        elif not path.is_absolute():
+            path = self.cwd / path
+        parent = path.parent.resolve()
+        if self.virtual_mode and path != self.cwd:
+            parent.relative_to(self.cwd)
+        return parent / path.name
+
     def delete(self, file_path: str) -> DeleteResult:
         """Delete a file or directory from the filesystem.
 
@@ -618,7 +636,7 @@ class FilesystemBackend(BackendProtocol):
                 example when a nested entry is not writable).
         """
         try:
-            resolved_path = self._resolve_path(file_path)
+            resolved_path = self._resolve_delete_path(file_path)
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
@@ -627,6 +645,9 @@ class FilesystemBackend(BackendProtocol):
                 return DeleteResult(error=f"Error: '{file_path}' not found")
             if resolved_path.is_symlink():
                 resolved_path.unlink()
+            elif os.name == "nt" and resolved_path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT:
+                # Junctions are directory entries, not recursive-delete targets.
+                resolved_path.rmdir()
             elif resolved_path.is_dir():
                 shutil.rmtree(resolved_path)
             else:

@@ -16,6 +16,8 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    ExtendedModelResponse,
+    ModelCallResult,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
@@ -87,6 +89,8 @@ class REPLState(AgentState):
         ]
     ]
     _quickjs_snapshot_hmac: NotRequired[Annotated[bytes, PrivateStateAttr]]
+    _quickjs_ptc_tools: NotRequired[Annotated[list[str], PrivateStateAttr]]
+    """Names of the tools bound to `tools.*` for the latest model call."""
 
 
 class EvalSchema(BaseModel):
@@ -417,7 +421,7 @@ class CodeInterpreterMiddleware(
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
-                    tools=middleware._tools_for_eval(slot_id),
+                    tools=middleware._tools_for_eval(slot_id, runtime),
                     fs=middleware._fs,
                 )
             except _SnapshotRestoreError as exc:
@@ -439,7 +443,7 @@ class CodeInterpreterMiddleware(
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
-                    tools=middleware._tools_for_eval(slot_id),
+                    tools=middleware._tools_for_eval(slot_id, runtime),
                     outer_loop=asyncio.get_running_loop(),
                     fs=middleware._fs,
                 )
@@ -474,11 +478,31 @@ class CodeInterpreterMiddleware(
         """Return the REPL slot for one eval invocation."""
         return self._registry.get(slot_id)
 
-    def _tools_for_eval(self, slot_id: str) -> tuple[BaseTool, ...] | None:
-        """Return current bindings without allocating an interpreter."""
-        return (
-            self._ptc_tools_by_slot.get(slot_id, ()) if self._ptc is not None else None
+    def _tools_for_eval(
+        self, slot_id: str, runtime: ToolRuntime[None, Any]
+    ) -> tuple[BaseTool, ...] | None:
+        """Return current bindings without allocating an interpreter.
+
+        A model call caches the bindings and records their names in state. A
+        run resumed by another middleware instance can reach the eval before
+        any model call, so rebind the recorded names from the tool node's
+        tools. Tools that middleware hid from that model call stay unbound.
+        After such a resume, `tools.*` binds the tool node's instances by name,
+        not the instances from the model request.
+        """
+        if self._ptc is None:
+            return None
+        cached = self._ptc_tools_by_slot.get(slot_id)
+        if cached is not None:
+            return cached
+        names = runtime.state.get("_quickjs_ptc_tools")
+        if names is None:
+            return ()
+        bound = set(names)
+        available = filter_tools_for_ptc(
+            list(runtime.tools), self._ptc, self_tool_name=self._tool_name
         )
+        return tuple(tool for tool in available if tool.name in bound)
 
     def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:
         """Return authenticated thread state for lazy restoration."""
@@ -576,14 +600,15 @@ class CodeInterpreterMiddleware(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
+    ) -> ModelCallResult[ResponseT]:
         """Inject the REPL's system-prompt snippet on every model call."""
         prompt = self._prepare_for_call(request)
-        return handler(
+        response = handler(
             request.override(
                 system_message=self._extend(request.system_message, prompt)
             ),
         )
+        return self._record_bindings(request, response)
 
     async def awrap_model_call(
         self,
@@ -591,13 +616,36 @@ class CodeInterpreterMiddleware(
         handler: Callable[
             [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
         ],
-    ) -> ModelResponse[ResponseT]:
+    ) -> ModelCallResult[ResponseT]:
         """(async) Inject the REPL's system-prompt snippet on every model call."""
         prompt = self._prepare_for_call(request)
-        return await handler(
+        response = await handler(
             request.override(
                 system_message=self._extend(request.system_message, prompt)
             ),
+        )
+        return self._record_bindings(request, response)
+
+    def _record_bindings(
+        self,
+        request: ModelRequest[ContextT],
+        response: ModelResponse[ResponseT],
+    ) -> ModelCallResult[ResponseT]:
+        """Record this call's `tools.*` names in state when they changed.
+
+        The bindings cache lives in this instance only; `_tools_for_eval`
+        reads the names back when another instance resumes the run.
+        """
+        if self._ptc is None:
+            return response
+        slot_id = self._slot_id(getattr(request, "state", {}))
+        bound = self._ptc_tools_by_slot.get(slot_id, ())
+        names = sorted(tool.name for tool in bound)
+        if request.state.get("_quickjs_ptc_tools") == names:
+            return response
+        return ExtendedModelResponse(
+            model_response=response,
+            command=Command(update={"_quickjs_ptc_tools": names}),
         )
 
     def _base_prompt(self, *, ptc_attached: bool) -> str:

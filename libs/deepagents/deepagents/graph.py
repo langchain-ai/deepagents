@@ -46,13 +46,13 @@ from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
+from deepagents.middleware._utils import _FORK_INSTRUCTIONS_KEY, append_to_system_message
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
-    _FORK_INSTRUCTIONS_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
@@ -468,8 +468,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Setting `mode="fork"` on a `SubAgent` is experimental. A fork
             continues the parent's conversation and rebuilds its system prompt
-            instead of starting isolated; any `system_prompt` of its own is appended to
-            the inherited one, and it cannot define `skills`.
+            instead of starting isolated. Its own `system_prompt` follows the task
+            as a system message if its model profile supports
+            `mid_conversation_system_messages`; otherwise it is appended to the
+            inherited system prompt. A fork cannot define `skills`.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt
@@ -831,11 +833,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "middleware": subagent_middleware,
             }
             if is_forked:
-                # Keep the parent's system prompt byte-identical so the fork reuses
-                # the parent's cached prefix; its own prompt rides with the task.
                 processed["system_prompt"] = final_system_prompt
                 if fork_instructions := spec.get("system_prompt"):
-                    processed[_FORK_INSTRUCTIONS_KEY] = fork_instructions
+                    if (subagent_model.profile or {}).get("mid_conversation_system_messages"):
+                        processed[_FORK_INSTRUCTIONS_KEY] = fork_instructions
+                    elif isinstance(final_system_prompt, SystemMessage):
+                        processed["system_prompt"] = append_to_system_message(final_system_prompt, fork_instructions)
+                    else:
+                        processed["system_prompt"] = f"{final_system_prompt}\n\n{fork_instructions}"
             else:
                 processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:

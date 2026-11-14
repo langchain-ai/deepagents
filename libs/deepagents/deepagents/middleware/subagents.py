@@ -23,7 +23,7 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableBinding, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.pregel import Pregel
@@ -34,7 +34,7 @@ from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import _FORK_INSTRUCTIONS_KEY, append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import _RUBRIC_KEY
 from deepagents.middleware.summarization import (
@@ -76,15 +76,6 @@ _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
 
 Lets `task`/`atask` refuse recursive delegation at call time instead of
 omitting the tool -- see `_ForkTaskToolMiddleware` for why.
-"""
-
-_FORK_INSTRUCTIONS_KEY = "_deepagents_fork_instructions"
-"""Private spec key holding a declarative fork's own `system_prompt`.
-
-`create_deep_agent` gives a fork the parent's system prompt unchanged and moves
-the fork's own instructions here, so they are delivered with the task after the
-inherited history. Changing the system message would put the difference ahead
-of the history and stop the fork from reusing the parent's cached prompt prefix.
 """
 
 _FORK_RECURSION_REFUSAL = (
@@ -168,8 +159,9 @@ class SubAgent(TypedDict):
     Avoid middleware that rewrites the inherited system-prompt prefix in the
     fork's model request or changes tool definitions unless you accept reduced
     shared prompt-cache reuse and potentially higher model costs. This is
-    distinct from `SubAgent.system_prompt`, which a fork delivers with its task
-    message rather than in the system prompt. A `wrap_model_call` hook receives
+    distinct from `SubAgent.system_prompt`, which follows the task as a system
+    message on models supporting `mid_conversation_system_messages` and is
+    otherwise appended to the inherited system prompt. A `wrap_model_call` hook receives
     the inherited prompt through `request.system_message`. For example, this
     prepends text before the inherited
     prefix in the fork's request, preventing reuse of that prefix:
@@ -250,9 +242,10 @@ class SubAgent(TypedDict):
     system_prompt: NotRequired[str]
     """Instructions for the subagent. Uses an empty prompt when omitted.
 
-    Under `mode="fork"` the fork keeps the parent's system prompt unchanged so it
-    can reuse the parent's cached prompt prefix; these instructions are delivered
-    with the task message after the inherited conversation instead.
+    Under `mode="fork"`, these instructions follow the task as a `SystemMessage`
+    when the fork's model profile sets `mid_conversation_system_messages`, keeping
+    the parent's system prompt unchanged for prompt-cache reuse. Otherwise they
+    are appended to the inherited system prompt. They never become user text.
     """
 
     mode: NotRequired[Literal["isolated", "fork"]]
@@ -428,15 +421,16 @@ def _fork_messages(
 
     Applies summarization event so that a compiled subagent sees the
     compacted conversation instead of replaying what the parent already evicted.
-    The fork's own `instructions`, if any, go in the task message so everything
-    before it stays identical to the parent's request.
+    The fork's own `instructions`, if any, follow the task as a system message.
     """
     history = list(messages)
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
     effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
-    task = f"{preamble}{instructions}\n\n{description}" if instructions else preamble + description
-    return [*effective, HumanMessage(content=task)]
+    result = [*effective, HumanMessage(content=preamble + description)]
+    if instructions:
+        result.append(SystemMessage(content=instructions, additional_kwargs={_FORK_INSTRUCTIONS_KEY: True}))
+    return result
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.

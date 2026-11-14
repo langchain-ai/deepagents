@@ -11,6 +11,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
+from deepagents.middleware._utils import _FORK_INSTRUCTIONS_KEY
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     SummarizationToolMiddleware,
@@ -522,6 +523,35 @@ class TestCompactBackendUsage:
         path, content = backend.write.call_args.args
         assert path == event["file_path"]
         assert "Message 0" in content
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_manual_compaction_retains_fork_instructions_across_events(*, use_async: bool) -> None:
+    summarization = SummarizationMiddleware(model=_make_mock_model(), backend=_make_mock_backend(), trigger=("messages", 5), keep=("messages", 2))
+    middleware = SummarizationToolMiddleware(summarization)
+    instructions = SystemMessage(content="FORK_INSTRUCTIONS", id="instructions", additional_kwargs={_FORK_INSTRUCTIONS_KEY: True})
+    messages = [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(14)]
+    messages[1] = instructions
+    event = None
+    for count in (8, 14):
+        raw = [*messages[: count - 1], _ai_message_with_usage(120_000).model_copy(update={"id": f"s{count - 1}"})]
+        runtime = _make_runtime(raw, event=event)
+        if use_async:
+            with (
+                patch.object(summarization, "_acreate_summary", return_value="Summary."),
+                patch.object(summarization, "_aoffload_to_backend", return_value="/history.md"),
+            ):
+                result = await middleware._arun_compact(runtime)
+        else:
+            with patch.object(summarization, "_create_summary", return_value="Summary."):
+                result = middleware._run_compact(runtime)
+        event = result.update["_summarization_event"]
+        assert event["cutoff_index"] == count - 2
+        assert event["cutoff_message_id"] == f"s{count - 2}"
+        effective = summarization._apply_event_to_messages(raw, event)
+        expected = [f"s{count - 2}", "instructions", f"s{count - 1}"]
+        assert [m.id for m in effective[1:]] == expected
+        assert next(m for m in effective if m.id == "instructions") is instructions
 
 
 class TestComputeStateCutoff:

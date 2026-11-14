@@ -10,6 +10,9 @@ from langchain_core.messages import ContentBlock, SystemMessage
 if TYPE_CHECKING:
     from langchain_anthropic import ChatAnthropic
 
+_FORK_INSTRUCTIONS_KEY = "_deepagents_fork_instructions"
+"""Private spec key and system-message marker for a fork's instruction addendum."""
+
 
 def append_to_system_message(
     system_message: SystemMessage | None,

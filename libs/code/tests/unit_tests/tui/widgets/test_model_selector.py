@@ -1759,15 +1759,3 @@ class TestModelSelectorInstallRouting:
         result = ("server_provider:remote-model", "server_provider")
         assert results == [result]
         dismiss.assert_called_once_with(result)
-
-
-def test_compatibility_label_survives_upstream_display_name() -> None:
-    screen = ModelSelectorScreen(default_scope=None)
-    spec = "google_genai:gemini-3.8-flash"
-    screen._profiles = {
-        spec: ModelProfileEntry(
-            profile={"name": "Upstream name"}, overridden_keys=frozenset()
-        )
-    }
-    assert "previous generation" in screen._get_model_display_name(spec)
-    assert screen._get_model_status(spec) is None

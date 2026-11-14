@@ -75,11 +75,6 @@ from the per-provider sections below.
 """
 
 
-_COMPATIBILITY_MODELS: dict[str, str] = {
-    "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
-    "openrouter:google/gemini-3.8-flash": "Gemini 3.8 Flash (OpenRouter)",
-}
-
 _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-fable-5-2": "Claude Fable 5.2",
     "anthropic:claude-opus-5-5": "Claude Opus 5.5",
@@ -133,9 +128,8 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:z-ai/glm-5.3": "GLM 5.3",
     "openrouter:z-ai/glm-5.3-flash": "GLM 5.3 Flash",
     "xai:grok-4.7": "Grok 4.7",
-    **_COMPATIBILITY_MODELS,
 }
-"""Hand-curated stable and compatibility models promoted across the UI, mapped to a
+"""Hand-curated stable models promoted across the UI, mapped to a
 human-readable display name.
 
 Used by the onboarding picker (`curated=True`) and by the in-`/model`
@@ -144,8 +138,8 @@ the spec keys; the names are a display fallback for `_get_model_display_name`
 when a provider package (and thus its profile `name`) is not installed — the
 common case for uninstalled recommendations and onboarding, where the raw
 model id (e.g. `accounts/fireworks/models/kimi-k3`) would otherwise
-show. For current models, an upstream profile `name` wins; compatibility
-entries always retain their previous-generation label.
+show. When a profile is available its upstream `name` wins, so these stay a
+safety net rather than a second source of truth.
 
 Same model IDs may appear under multiple providers (e.g. GLM 5.2 via
 `baseten`, `fireworks`, `ollama`, and `openrouter`) and are listed under each
@@ -1924,8 +1918,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Returns:
             The display name for the row.
         """
-        if model_spec in _COMPATIBILITY_MODELS:
-            return f"{_COMPATIBILITY_MODELS[model_spec]} (previous generation)"
         entry = self._profiles.get(model_spec)
         if entry:
             profile = entry.get("profile")

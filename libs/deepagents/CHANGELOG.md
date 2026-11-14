@@ -2,6 +2,57 @@
 
 # Deep Agents Changelog
 
+## [0.7.38](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.37...deepagents==0.7.38) (2026-11-13)
+
+### Bug Fixes
+
+- Exclude results from `ls`, `grep`, and `glob` when a symlink resolves outside the approved search scope. ([#7706](https://github.com/langchain-ai/deepagents/pull/7706))
+
+## [0.7.37](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.36...deepagents==0.7.37) (2026-11-12)
+
+### Bug Fixes
+
+- Cache optional prompt-caching provider lookups in the SDK ([#7585](https://github.com/langchain-ai/deepagents/pull/7585)).
+
+## [0.7.36](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.35...deepagents==0.7.36) (2026-11-12)
+
+### Features
+
+- Pass the agent's backend to middleware that requests it ([#7668](https://github.com/langchain-ai/deepagents/pull/7668)).
+- Record the subagent's checkpoint namespace on the `task` tool message ([#7580](https://github.com/langchain-ai/deepagents/pull/7580)).
+
+### Bug Fixes
+
+- Prevent `FilesystemBackend.download_files` from hanging on FIFO files ([#7663](https://github.com/langchain-ai/deepagents/pull/7663)).
+
+## [0.7.35](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.34...deepagents==0.7.35) (2026-11-09)
+
+### Bug Fixes
+
+- Keep forked subagents on their parent's prompt-cache prefix ([#7628](https://github.com/langchain-ai/deepagents/pull/7628)).
+- Preserve symlink names in virtual filesystem results ([#7618](https://github.com/langchain-ai/deepagents/pull/7618)).
+- Correctly mark `read_file` media and Nemotron nudges as harness notifications ([#7589](https://github.com/langchain-ai/deepagents/pull/7589)).
+
+## [0.7.34](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.33...deepagents==0.7.34) (2026-11-05)
+
+### Bug Fixes
+
+- Fixed summarization cutoff handling by anchoring it to the message ID ([#7567](https://github.com/langchain-ai/deepagents/pull/7567)).
+
+## [0.7.33](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.32...deepagents==0.7.33) (2026-11-05)
+
+### Features
+
+- Raise errors on model refusals by default and report subagent refusals to the parent agent ([#7512](https://github.com/langchain-ai/deepagents/pull/7512)).
+- Add notification metadata to async subagent notifications ([#7334](https://github.com/langchain-ai/deepagents/pull/7334)).
+- Record the `task` call ID on subagent checkpoints ([#7509](https://github.com/langchain-ai/deepagents/pull/7509)).
+
+### Bug Fixes
+
+- Restrict the Python `grep` fallback to the requested file and clip long result lines to a window around the match ([#7539](https://github.com/langchain-ai/deepagents/pull/7539), [#7526](https://github.com/langchain-ai/deepagents/pull/7526)).
+- Report failed compaction with an error status ([#7538](https://github.com/langchain-ai/deepagents/pull/7538)).
+- Promote rubric middleware out of beta ([#7368](https://github.com/langchain-ai/deepagents/pull/7368)).
+
 ## [0.7.32](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.31...deepagents==0.7.32) (2026-10-23)
 
 ### Performance Improvements

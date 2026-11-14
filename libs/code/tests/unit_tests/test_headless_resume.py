@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -16,6 +18,7 @@ from deepagents_code.client.headless_resume import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
 
@@ -89,3 +92,40 @@ def test_persisted_model() -> None:
         None,
     )
     assert persisted_model({"_model_spec": "  "}) is None
+
+
+@pytest.mark.parametrize(
+    ("thread_model", "saved", "expected"),
+    [
+        ("openai:thread", None, "openai:thread"),
+        ("openai:thread", "openai:other", "openai:thread"),
+        (None, "openai:other", "openai:other"),
+        (None, None, None),
+    ],
+)
+async def test_resume_launch_uses_thread_model(
+    monkeypatch: pytest.MonkeyPatch,
+    thread_model: str | None,
+    saved: str | None,
+    expected: str | None,
+) -> None:
+    from deepagents_code.client.headless_resume import resume_launch_model
+    from deepagents_code.model_config import ModelConfig, NoModelConfiguredError
+
+    checkpoint = SimpleNamespace(
+        checkpoint={"channel_values": {"_model_spec": thread_model}}
+    )
+
+    @asynccontextmanager
+    async def checkpointer() -> AsyncIterator[SimpleNamespace]:
+        yield SimpleNamespace(aget_tuple=AsyncMock(return_value=checkpoint))
+
+    monkeypatch.setattr("deepagents_code.sessions.get_checkpointer", checkpointer)
+    monkeypatch.setattr(
+        ModelConfig, "load", classmethod(lambda _cls: ModelConfig(default_model=saved))
+    )
+    if expected is None:
+        with pytest.raises(NoModelConfiguredError, match="No model configured"):
+            await resume_launch_model("t-1")
+    else:
+        assert await resume_launch_model("t-1") == expected

@@ -87,6 +87,27 @@ def _validate_namespace(namespace: tuple[str, ...]) -> tuple[str, ...]:
     return namespace
 
 
+def _encode_upload(content: bytes) -> tuple[str, str]:
+    """Encode uploaded bytes as a `(content, encoding)` pair for storage.
+
+    Content is stored as text only if it is valid UTF-8 and contains no NUL
+    bytes; NUL marks content as binary and can't be stored in a Postgres
+    JSONB-backed store.
+
+    Args:
+        content: Raw uploaded bytes.
+
+    Returns:
+        The stored string and its encoding (`"utf-8"` or `"base64"`).
+    """
+    if b"\x00" not in content:
+        try:
+            return content.decode("utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            pass
+    return base64.standard_b64encode(content).decode("ascii"), "base64"
+
+
 class StoreBackend(BackendProtocol):
     """Backend that stores files in LangGraph's BaseStore (persistent).
 
@@ -663,8 +684,9 @@ class StoreBackend(BackendProtocol):
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the store.
 
-        Binary files (images, PDFs, etc.) are stored as base64-encoded strings.
-        Text files are stored as utf-8 strings.
+        Content that is valid UTF-8 and contains no NUL bytes is stored as a
+        UTF-8 string. Everything else (images, PDFs, etc.) is stored as a
+        base64-encoded string.
 
         Args:
             files: List of `(path, content)` tuples where content is bytes.
@@ -679,13 +701,7 @@ class StoreBackend(BackendProtocol):
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
-            try:
-                content_str = content.decode("utf-8")
-                encoding = "utf-8"
-            except UnicodeDecodeError:
-                content_str = base64.standard_b64encode(content).decode("ascii")
-                encoding = "base64"
-
+            content_str, encoding = _encode_upload(content)
             file_data = create_file_data(content_str, encoding=encoding)
             store_value = self._convert_file_data_to_store_value(file_data)
 

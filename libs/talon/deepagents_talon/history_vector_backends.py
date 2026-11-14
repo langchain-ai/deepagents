@@ -18,7 +18,7 @@ from deepagents_talon.store_archive_index import StoreVectorArchive
 from deepagents_talon.store_records import finish, number
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncGenerator, Callable
     from contextlib import AbstractAsyncContextManager
 
     from langgraph.store.base import BaseStore, IndexConfig
@@ -126,7 +126,7 @@ async def _erase_vectors(archive: StoreConversationArchive, store: BaseStore) ->
 @asynccontextmanager
 async def vector_backend(
     config: TalonConfig, profile: EmbeddingProfile | None, generation: str
-) -> AsyncIterator[BaseStore]:
+) -> AsyncGenerator[BaseStore]:
     """Open vectors separately from metadata, preserving the metadata plugin contract."""
     from deepagents_talon.history_backends import _mongodb_store, _postgres_store  # noqa: PLC0415
     from deepagents_talon.sqlite_history import sqlite_store  # noqa: PLC0415
@@ -160,7 +160,7 @@ async def vector_backend(
 @asynccontextmanager
 async def _plugin_vectors(
     uri: str, index: IndexConfig | None, generation: str
-) -> AsyncIterator[BaseStore]:
+) -> AsyncGenerator[BaseStore]:
     plugins = entry_points(
         group="deepagents_talon.history_vector_backends", name=urlsplit(uri).scheme
     )

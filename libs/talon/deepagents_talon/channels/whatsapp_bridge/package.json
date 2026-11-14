@@ -10,9 +10,10 @@
   },
   "dependencies": {
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.26.0"
+    "whatsapp-web.js": "^1.34.7"
   },
   "overrides": {
-    "@puppeteer/browsers": "^3.2.1"
+    "@puppeteer/browsers": "^3.2.6",
+    "zod": "^4.6.6"
   }
 }

@@ -110,7 +110,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import yaml
 from langchain.agents.middleware.types import OmitFromOutput, PrivateStateAttr
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, add_notification_metadata
 from langchain_core.tools import BaseTool
 from langgraph.runtime import Runtime, get_runtime
 
@@ -851,10 +851,8 @@ def _pinned_skill_message(skill: SkillMetadata, body: str) -> HumanMessage:
     name = html.escape(skill["name"], quote=True)
     path = html.escape(skill["path"], quote=True)
     marker = {"name": skill["name"], "path": skill["path"], "description": skill["description"]}
-    return HumanMessage(
-        content=f'<skill name="{name}" path="{path}">\n{body}\n</skill>',
-        additional_kwargs={"lc_source": "pinned_skill", "skill": marker},
-    )
+    message = HumanMessage(content=f'<skill name="{name}" path="{path}">\n{body}\n</skill>', additional_kwargs={"skill": marker})
+    return add_notification_metadata(message, source="pinned_skill")
 
 
 def _pin_update(skills: Sequence[SkillMetadata], responses: Sequence[FileDownloadResponse]) -> dict[str, Any]:

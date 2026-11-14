@@ -5,7 +5,7 @@ import io
 import os
 import sys
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -285,7 +285,7 @@ class TestHeadlessApprovalFlagHandling:
             return real_open(path, flags, mode, dir_fd=dir_fd)
 
         with (
-            patch.object(sys, "argv", argv),
+            patch.object(sys, "argv", [*argv, "--model", "openai:test-model"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("os.open", side_effect=_open_no_tty),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -774,7 +774,15 @@ class TestSkillFlagValidation:
             patch.object(
                 sys,
                 "argv",
-                ["deepagents", "--skill", "code-review", "--stdin", "-q"],
+                [
+                    "deepagents",
+                    "--skill",
+                    "code-review",
+                    "--stdin",
+                    "-q",
+                    "--model",
+                    "openai:test-model",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -819,7 +827,11 @@ class TestMaxTurnsArgument:
         mock_stdin.isatty.return_value = False
         mock_stdin.read.return_value = "piped task"
         with (
-            patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--max-turns", "5", "--model", "openai:test-model"],
+            ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
@@ -888,6 +900,23 @@ class TestHeadlessResumeArguments:
         code, mock_run = self._cli("-r", "t-1", "-n", "continue", "--rubric", "done")
         assert code == 2
         mock_run.assert_not_awaited()
+
+    @pytest.mark.parametrize("saved", [None, "openai:other"])
+    def test_resume_without_override_adopts_thread_model(
+        self, monkeypatch: pytest.MonkeyPatch, saved: str | None
+    ) -> None:
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls: ModelConfig(default_model=saved)),
+        )
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue")
+        assert code == 0
+        assert mock_run.await_args is not None
+        assert mock_run.await_args.kwargs["model_name"] is None
+        assert mock_run.await_args.kwargs["resume"].adopt_model is True
 
     def test_resume_id_reaches_the_headless_runner(self) -> None:
         from deepagents_code.client.headless_resume import ResumeRequest
@@ -1089,6 +1118,113 @@ class TestApplyStdinPipe:
         assert exc_info.value.code == 1
 
 
+class TestPipedStdinOutsideSessions:
+    """Commands that start no agent session leave piped stdin to themselves."""
+
+    @pytest.mark.parametrize(
+        ("argv", "entry_point", "piped"),
+        [
+            (
+                ["threads", "delete", "thread-1"],
+                "deepagents_code.sessions.delete_thread_command",
+                "thread-2\nthread-3\n",
+            ),
+            (
+                ["skills", "delete", "notes"],
+                "deepagents_code.skills.execute_skills_command",
+                "y\n",
+            ),
+            (
+                ["--install", "daytona"],
+                "deepagents_code.client.commands.extras.run_install_request",
+                "y\n",
+            ),
+        ],
+        ids=["threads-delete", "skills-delete", "install-flag"],
+    )
+    def test_command_reads_the_pipe(
+        self, argv: list[str], entry_point: str, piped: str
+    ) -> None:
+        """Regression test for #7587: piped stdin reaches the command unread.
+
+        In a `while read` loop the rest of the pipe is input for the next
+        iterations, and a command's own y/N prompt reads the piped answer.
+        """
+        from deepagents_code.main import cli_main
+
+        received: list[str] = []
+
+        def run_command(*_args: object, **_kwargs: object) -> int:
+            received.append(sys.stdin.read())
+            return 0
+
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdin", io.StringIO(piped)),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            # Keeps a regression from pointing this process's fd 0 at the
+            # terminal after it drains the pipe.
+            patch("deepagents_code.main.os.open", side_effect=OSError("no tty")),
+            patch(entry_point, side_effect=run_command),
+            # `--install` exits through `sys.exit`; subcommands return.
+            suppress(SystemExit),
+        ):
+            cli_main()
+
+        assert received == [piped]
+
+
+class TestRedirectedOutputEncoding:
+    """Commands survive text their stdout encoding cannot represent."""
+
+    @pytest.mark.parametrize(
+        ("argv", "entry_point"),
+        [
+            (["doctor"], "deepagents_code.doctor.run_doctor_command"),
+            (["skills", "list"], "deepagents_code.skills.execute_skills_command"),
+            (["threads", "list"], "deepagents_code.sessions.list_threads_command"),
+            (
+                ["plugin", "list"],
+                "deepagents_code.plugins.commands_cli.execute_plugin_command",
+            ),
+        ],
+        ids=["doctor", "skills-list", "threads-list", "plugin-list"],
+    )
+    def test_unencodable_text_prints_as_question_mark(
+        self, argv: list[str], entry_point: str
+    ) -> None:
+        """Regression test for #7692: text cp1252 can't encode prints as `?`.
+
+        On Windows, stdout redirected to a pipe or file is encoded with the
+        ANSI code page, so the first character outside it raised
+        `UnicodeEncodeError` and the command exited 1 mid-output.
+        """
+        from deepagents_code.main import cli_main
+
+        buffer = io.BytesIO()
+        # The stream Windows gives redirected stdout when UTF-8 mode is off.
+        stdout = io.TextIOWrapper(buffer, encoding="cp1252", errors="surrogateescape")
+
+        def run_command(*_args: object, **_kwargs: object) -> int:
+            sys.stdout.write("Turns merged PRs → release notes ✨")
+            return 0
+
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdout", stdout),
+            # Keeps the hardening off the test runner's own stderr.
+            patch.object(sys, "stderr", io.StringIO()),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(entry_point, side_effect=run_command),
+            # `doctor` exits through `sys.exit`; the others return.
+            suppress(SystemExit),
+        ):
+            cli_main()
+
+        stdout.flush()
+        assert buffer.getvalue() == b"Turns merged PRs ? release notes ?"
+
+
 class TestAgentResolutionScope:
     """Recent-agent fallback should only apply to session launches."""
 
@@ -1172,6 +1308,7 @@ class TestUpdateSubcommand:
         debug: bool = False,
         editable: bool,
         is_update_available_return: tuple[bool, str | None],
+        cached_update_return: tuple[bool, str | None] = (False, None),
         log_path: str = "/tmp/deepagents-update.log",
         prerelease: bool = False,
         flag_style: bool = False,
@@ -1210,6 +1347,10 @@ class TestUpdateSubcommand:
                 return_value=install_method,
             ),
             patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=cached_update_return,
+            ),
+            patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=is_update_available_return,
             ) as is_update_mock,
@@ -1231,6 +1372,52 @@ class TestUpdateSubcommand:
         ):
             cli_main()
         return int(exc_info.value.code or 0), is_update_mock, perform_upgrade_mock
+
+    @pytest.mark.parametrize("flag_style", [False, True])
+    def test_fresh_cached_update_skips_check(
+        self, capsys: pytest.CaptureFixture[str], *, flag_style: bool
+    ) -> None:
+        """A known update installs without another lookup or checking message."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=(True, "99.0.0"),
+            is_update_available_return=(False, None),
+            flag_style=flag_style,
+        )
+
+        assert code == 0
+        check.assert_not_called()
+        assert upgrade.call_args.kwargs["target_version"] == "99.0.0"
+        assert "Checking for updates" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("cached", [(False, None), (False, "0.0.1")])
+    def test_no_cached_update_refreshes(
+        self, capsys: pytest.CaptureFixture[str], cached: tuple[bool, str | None]
+    ) -> None:
+        """An absent update must not hide a release published since the last check."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=cached,
+            is_update_available_return=(True, "99.0.0"),
+        )
+
+        assert code == 0
+        check.assert_called_once_with(bypass_cache=True, include_prereleases=None)
+        assert upgrade.call_args.kwargs["target_version"] == "99.0.0"
+        assert "Checking for updates" in capsys.readouterr().out
+
+    def test_prerelease_update_does_not_reuse_stable_cache(self) -> None:
+        """Explicit pre-release intent fetches the requested release channel."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=(True, "99.0.0"),
+            is_update_available_return=(True, "100.0.0rc1"),
+            prerelease=True,
+        )
+
+        assert code == 0
+        check.assert_called_once_with(bypass_cache=True, include_prereleases=True)
+        assert upgrade.call_args.kwargs["target_version"] == "100.0.0rc1"
 
     def test_editable_install_skips_upgrade(self) -> None:
         """Editable install exits 0 without calling `is_update_available`/upgrade.

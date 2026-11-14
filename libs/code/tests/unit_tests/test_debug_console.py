@@ -450,10 +450,14 @@ class TestDebugConsoleToggle:
             assert console.query_one("#debug-log").region.bottom < app.size.height
 
             await pilot.press("tab")
+            assert console.focused is console.query_one("#debug-cost-breakdown", Button)
+            await pilot.press("tab")
             assert console.focused is console.query_one("#debug-mcp-servers", Button)
             await pilot.press("shift+tab")
+            assert console.focused is console.query_one("#debug-cost-breakdown", Button)
+            await pilot.press("shift+tab")
             assert console.focused is console.query_one("#debug-log")
-            await pilot.press("tab", "enter")
+            await pilot.press("tab", "tab", "enter")
             await pilot.pause()
             assert isinstance(app.screen, MCPServersScreen)
             modal = app.screen
@@ -486,7 +490,7 @@ class TestDebugConsoleToggle:
                 app.screen.query_one("#mcp-servers-body", Static)
             )
 
-    async def test_missing_history_hides_breakdown_but_keeps_total(self) -> None:
+    async def test_missing_history_opens_summary_and_keeps_total(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test(size=(140, 65)) as pilot:
             await pilot.pause()
@@ -504,8 +508,16 @@ class TestDebugConsoleToggle:
             ):
                 app._session_cost_breakdown = breakdown
                 screen._on_refresh_tick()
-                assert not button.display
-                assert "$1.25" in app._format_cost_summary()
+                assert button.display
+                await pilot.click(button)
+                await pilot.pause()
+                assert isinstance(app.screen, CostBreakdownScreen)
+                body = app.screen.query_one(".cost-breakdown-body", Markdown)
+                assert "Estimated thread cost: $1.25" in body._markdown
+                assert "| Category |" not in body._markdown
+                await pilot.press("escape")
+                await pilot.pause()
+                assert app.screen is screen
 
             app._session_cost_breakdown = _empty_cost_breakdown()
             screen._on_refresh_tick()

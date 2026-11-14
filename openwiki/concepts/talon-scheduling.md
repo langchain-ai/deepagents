@@ -1,11 +1,11 @@
 ---
 type: scheduling and background-work model
 title: Talon Scheduling and Background Work
-description: How Talon persists and executes unattended cron jobs, routes results, and separates scheduled delegation from detached chat subagents. Covers origins, approval boundaries, timeouts, result acknowledgement, retries, and shutdown.
+description: How Talon persists and executes unattended cron jobs, routes their results, and distinguishes scheduled inline delegation from process-local attended-chat subagents. Covers acknowledgement, redelivery, authority boundaries, limits, interruption recovery, and shutdown.
 tags: [talon, scheduling, cron, background-work, subagents, delivery]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-11-11T08:04:08.950Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -19,26 +19,32 @@ sources:
     resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
   - id: openwiki-source-ef047a301ffca1d2f8ab2c87
     resource: repo://libs/talon/deepagents_talon/cron/tools.py
+  - id: openwiki-source-cbf86ab9c145113d54045954
+    resource: repo://libs/talon/deepagents_talon/hooks.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-444dd041f0001b6042aeee4c
+    resource: repo://libs/talon/deepagents_talon/subagent_control.py
+  - id: openwiki-source-2d1f686d24d8182f60108ae7
+    resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-f2859f71853cf2cbdb40aaa3
     resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+  - id: openwiki-source-cf14bb91e6251d6d6d4a9413
+    resource: repo://libs/talon/tests/unit_tests/test_subagent_control.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 ---
 
 # Talon Scheduling and Background Work
 
-Talon separates persistent scheduling from an interactive conversation. `CronJobStore` owns assistant-scoped `jobs.json`; `PersistentCronScheduler` claims due records and invokes callbacks; and `TalonHost` executes a scheduled prompt and delivers its report. The CLI installs the scheduler only when at least one channel is configured, wiring the host as the runner and delivery boundary.
+Talon has two deliberately different deferred-work mechanisms. `PersistentCronScheduler` persists assistant-scoped jobs in `jobs.json`, claims due fires, invokes the host, and delivers returned text. `BackgroundSubagents` keeps workers in process for an attended chat conversation and injects their completed results into a later main-agent turn; neither workers nor results survive a restart. The CLI installs the persistent scheduler only when at least one channel is configured, wiring it to `TalonHost.run_scheduled_job` and a delivery callback.
 
-> **Unattended execution.** Talon is experimental. A cron fire is delegated access to the installed assistant, not a user-attended session, sandbox, or a mechanism for waiting on an approval or login.
+> **Unattended authority boundary:** Talon is experimental. Cron fires and background-result delivery turns have no approval or authorization handler. The runtime automatically rejects approval interrupts for `trigger: "cron"`; detached workers also clear the authorization handler inherited from their launching turn, so an authorization prompt cannot outlive the party able to answer it.
 
-## Persistent jobs and lifecycle
+## Persistent cron lifecycle
 
-A job persists its prompt, parsed schedule, repeat and end limits, enabled and next-run state, most recent outcome, origin, delivery preference, claim state, and optional pinned skills. Agent tools create, list, edit, and remove jobs using the current trusted origin. They accept relative one-shot and recurring schedules, explicit-timezone wall-clock schedules, and standard five-field cron forms; timezone-aware forms retain local-time behavior across daylight-saving changes.
-
-The origin is host-derived metadata rather than a model-chosen destination. It scopes job management and identifies the provider/conversation to which a result may be sent. `deliver_to` controls only whether a threaded channel result is addressed to the thread or its top-level channel; it does not broaden which jobs the caller can manage.
+A persisted job contains the prompt, schedule and recurrence/end state, next run, last status/error, trusted origin, delivery choice, claim timestamp, and optional pinned skills. Cron tools create, list, edit, and remove only jobs in the current origin scope. They accept relative one-shot or recurring schedules, timezone-aware wall-clock schedules, and five-field cron schedules. Wall-clock and cron forms retain their local-time meaning across daylight-saving changes. `deliver_to` selects only a channel-versus-thread result target; it does not widen management scope or alter the originating conversation.
 
 ```mermaid
 sequenceDiagram
@@ -48,76 +54,84 @@ sequenceDiagram
     participant Runtime as DeepAgentRuntime
     participant Channel as Channel adapter
     Scheduler->>Store: sweep finished records
-    Scheduler->>Store: find and claim due job
-    Store-->>Scheduler: claimed record persisted
-    Scheduler->>Host: run scheduled job
-    Host->>Runtime: invoke cron prompt
+    Scheduler->>Store: claim due job and persist next run
+    Scheduler->>Host: run claimed job
+    Host->>Runtime: cron metadata and prompt
     Runtime-->>Host: text or error
     Scheduler->>Store: record outcome
-    Scheduler->>Channel: deliver non-silent text
+    alt non-silent text
+        Scheduler->>Channel: deliver to stored origin target
+        Channel-->>Scheduler: success or failure
+        Scheduler->>Store: replace ok with error on failure
+    else blank or SILENT text
+        Scheduler-->>Scheduler: suppress delivery
+    end
 ```
 
-*The scheduler persists the claim before it executes the occurrence, then attempts delivery only after it has text.*
+*Scheduled lifecycle: durable state advances before execution, and a delivery failure becomes a failed run.*
 
-Each tick first discards eligible finished records, obtains due jobs, and processes them sequentially. Before invoking the host, `advance_next_run` rechecks that the record remains enabled and due, advances or completes its schedule, and persists the claimed record. This gives an occurrence at-most-once behavior: a process failure after that write does not automatically make it due again. A late occurrence outside the short `until` grace window is finished instead of delivered after the requested window. Failed and unresolved claimed records are retained for inspection, while `prune_completed` is the explicit retention cleanup path.
+Each tick first sweeps finished records and then processes due jobs sequentially. `advance_next_run` rechecks eligibility and writes the advanced or completed state before invoking the host. This claim-before-run design is effectively at-most-once per occurrence: a process failure after the claim is durable does not make that occurrence due again. A job past `until` beyond a small tick-latency grace is finished instead of being delivered after its requested window. An unexpected tick failure is logged and retried at the normal interval.
 
-The scheduler records invocation exceptions as errors. It records a returned result as `ok` before output handling, suppresses blank output and text with `[SILENT]` at either trimmed end, and overwrites the outcome with an error if delivery raises. An unexpected tick failure is logged and retried after the normal tick interval, rather than terminating the ticker.
+An invocation exception is recorded as an error. After returned text, the scheduler records `ok`, suppresses empty text and text whose trimmed start or end is `[SILENT]`, and changes the outcome to error if delivery raises. The host resolves the recorded origin channel and uses `send_with_retry` for the selected target; a missing origin adapter does not cause a result to be rerouted elsewhere.
 
-## Scheduled execution, authority, and delivery
+### Host execution, history, and skills
 
-For each fire, the host locks a stable root derived from the job ID but creates a unique run conversation ID. Fires of one job are serialized, while each starts with fresh checkpointed history rather than continuing an earlier scheduled prompt. A run is bounded to 30 minutes. On timeout, or cancellation caused by revoking the paired sender that created a DM job, the host attempts checkpoint interruption recovery before reporting failure.
+For each fire, the host locks a stable per-job cron root but creates a unique run conversation ID. Fires of a single job serialize, yet each starts with fresh checkpointed history rather than continuing a prior scheduled prompt. A run is bounded to 30 minutes. On timeout, or when revocation of the paired sender stops a scheduled DM run, the host attempts checkpoint interruption recovery before reporting the failure.
 
-The invocation carries `trigger: "cron"`, the durable origin, and any pinned skills. When persistent history is available and the origin adapter remains available, it can also receive the origin chat's read-only history scope. The runtime disables archive scope for cron turns, so the execution itself does not create an attended transcript entry; a successfully delivered final reply can still be recorded in delivery history.
+The host supplies `trigger: "cron"`, origin metadata, and pinned skills. If persistent history and the origin adapter are available, a cron turn can read the origin chat history scope but does not archive its own execution transcript there. A final reply enters history only after host-confirmed delivery.
 
-Cron receives neither host approval nor authorization handlers. The runtime also auto-rejects tool-approval interrupts for `trigger: "cron"`; protected interactive actions therefore cannot be completed by waiting for a person. This posture extends to cron delegation.
+A job may pin at most eight validated lowercase skill names. Validation de-duplicates while preserving first-seen order and does not require a skill to be installed yet. The host forwards these names as `pinned_skills`; the runtime accepts that metadata only for a cron request and injects it into graph/model assembly. Channel metadata cannot force skill pinning.
 
-For non-silent output, the host resolves the recorded provider adapter, chooses the thread or channel target from `deliver_to`, and uses `send_with_retry`. If sending succeeds, it may record delivery history. The standard CLI delivery adapter logs and drops a result when no adapter still serves the stored origin, so removing a provider can leave a successfully executed job without a report.
+Hooks are per turn: Talon loads only trusted assistant-home `hooks.json`, not workspace hooks, and validates hook snapshot, thread, and prompt identity before resuming an interrupt. Fresh local subagents get isolated hook identities and transcripts while retaining the parent turn's hook snapshot.
 
-## Skills and schedule configuration
+## Attended-chat background subagents
 
-A job can pin at most eight lowercase skill names. Validation removes duplicates without changing their order and intentionally does not require a skill to be installed when the job is created, because skill availability can change before a fire. The host forwards them as `pinned_skills`, and the runtime consumes that metadata only for cron requests; ordinary channel metadata cannot inject pinned skills into a turn.
+In an attended turn, `task` and `start_async_task` create in-memory workers owned by the conversation and immediately return a task ID. The table holds at most 128 entries. Running workers share a configurable cross-conversation limit (four by default, via `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`), have a one-hour timeout, and clamp results to 64,000 characters. At capacity, an attended launch is refused rather than queued.
 
-Cron is not a multi-process scheduler. Store instances sharing a resolved `jobs.json` path share a reentrant lock only within the current process, covering complete reads and mutations but never execution or delivery. Operate one owner process per jobs file.
+Workers retain necessary copied context but receive neither authorization handler nor approval operator. Failure, timeout, remote stream failure, or an approval interrupt becomes safe result text rather than a leak of arguments or credentials. Remote definitions load fail-closed from `[async_subagents]` in `~/.deepagents/config.toml`: every definition needs its table name, `description`, and `graph_id`; optional URL and string headers are validated. Remote streams use `on_disconnect="cancel"`.
 
-## Detached chat subagents and result handoff
-
-`BackgroundSubagents` gives ordinary attended turns a different model. `task` and `start_async_task` create in-memory workers owned by the conversation and return a task ID immediately. The conversation can continue while the worker runs; completed results are injected as data into a later main-agent turn. Jobs and results are process-local and disappear on restart.
-
-The table holds at most 128 jobs. Detached workers share a configurable cross-conversation limit (four by default); excess launches are refused. A worker has a one-hour timeout and its stored text is limited to 64,000 characters. It inherits useful scoped context but explicitly clears the authorization handler, preventing an approval from surviving the originating turn.
+Only the owning conversation can list, inspect, message, or cancel its workers. `inspect_subagent` can return that worker's final result, bounded lifecycle/model/tool metadata, and message receipt IDs/statuses; its activity stream omits reasoning, arguments, tool output, and message text. Guidance is limited to Talon-built local `task` workers: a nonblank message up to 2,000 characters enters a 20-message inbox and is injected at the next worker model boundary. It does not interrupt an active model or tool call.
 
 ```mermaid
 flowchart TD
-    Turn["Chat turn launches task"] --> Worker["In-memory worker"]
-    Worker --> Pending["Result pending for owner"]
-    Pending --> Next["Later main turn receives result data"]
-    Next --> Ack["Runtime acknowledges consumed IDs"]
-    Ack --> Deliver{"Host delivers reply"}
-    Deliver -->|"yes"| Complete["Result remains acknowledged"]
-    Deliver -->|"no"| Requeue["Offer IDs to a later turn"]
+    Launch["Attended turn launches worker"] --> Pending["Worker stores completed result"]
+    Pending --> Scan["Host scans ready owner results"]
+    Scan --> Gate{"Conversation is eligible"}
+    Gate -->|"no"| Scan
+    Gate -->|"yes"| Followup["Unattended background delivery turn"]
+    Followup --> Inject["Runtime injects keyed result data"]
+    Inject --> Completed{"Main turn completes"}
+    Completed -->|"no"| Retry["Count failed result delivery"]
+    Retry --> Scan
+    Completed -->|"yes"| Ack["Acknowledge consumed result IDs"]
+    Ack --> Sent{"Host sends reply"}
+    Sent -->|"yes"| Final["Result remains acknowledged"]
+    Sent -->|"no"| Requeue["Requeue returned IDs"]
+    Requeue --> Scan
 ```
 
-*Acknowledgement means the main agent completed a turn that consumed the result, not that the user received its reply.*
+*Background-result delivery: acknowledgement records main-turn consumption, while requeue repairs an acknowledged result whose reply never reached the conversation.*
 
-If a main turn fails while consuming pending results, the runtime increments their delivery count and drops a result after three failed attempts. If the model completed but the host discards or cancels the reply before delivery, the host requeues only the IDs consumed by that reply. This avoids silently losing work while not resurrecting unrelated, cancelled, or pruned work. Cancelling a conversation's background workers also discards its pending results.
+While running, the host polls about once per second. It skips an owner whose conversation/history scope is locked, whose agent turn is active, whose conversation is blocked or superseded, or which has no ready result. It claims a capped exponential-backoff slot before starting an unattended `background_delivery` follow-up.
 
-## Cron delegation is inline
+The runtime tracks results exposed to a main turn and acknowledges them only after that turn completes. A failed (non-cancelled) turn increments the selected result's delivery count; after three failed processing attempts, the result is dropped. `AgentResult` returns acknowledged IDs to the host. If a newer turn supersedes the reply, or cancellation occurs before delivery, the host requeues only those IDs. Cancelled or already-pruned work is not resurrected.
 
-A scheduled turn has no future user turn to receive detached work. Its `task` and `start_async_task` calls therefore run to completion within the current tool call; no background job or later delivery is created. The runtime replaces detached-work guidance, hides `list_subagents` and `cancel_subagent`, and prohibits nested delegation.
+## Scheduled delegation is inline
 
-Inline cron work uses a separate four-slot semaphore, so fan-out queues rather than consuming the detached-chat capacity or being refused. One operation has a 10-minute default timeout and returned text is clamped to 64,000 characters. Timeout and failure become safe tool error messages rather than escaping the graph and causing a whole-turn retry that could relaunch sibling delegations.
+A cron turn has no later user turn into which detached work could be delivered. For `trigger: "cron"`, `task` and `start_async_task` run inline and return their result in the same turn; they create no background job. Scheduled guidance explains this difference, inspection, messaging, listing, and cancellation tools are hidden, and nested delegation is refused.
 
-## Remote async subagents
+Inline scheduled calls use a separate four-slot semaphore and queue rather than consuming the attended-worker limit or returning a capacity refusal. The default timeout is 10 minutes and can be changed with `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT`; answer text is capped at 64,000 characters. Timeout or failure becomes a safe tool error, preventing a retryable escaping error from relaunching sibling delegation calls.
 
-Remote definitions are loaded from `[async_subagents]` tables in `~/.deepagents/config.toml` by default. Each requires a nonempty name, `description`, and `graph_id`; `url` and string-to-string `headers` are optional. Loading is fail-closed: an invalid definition rejects the complete configuration rather than silently operating with fewer targets. When invoked, a remote subagent streams a LangGraph run with `on_disconnect="cancel"`; an interrupt becomes a safe approval-needed result and a stream error becomes a safe failure.
+## Operations and safe changes
 
-## Shutdown and operating guidance
+`CronJobStore` locks serialize complete reads and mutations only among store instances in the current process. They do not coordinate other processes, execution, or delivery, so a `jobs.json` file needs one owner process.
 
-Host shutdown cancels the background dispatch loop and in-flight work, then stops channels, the scheduler, and the runtime; component stop failures are logged and do not prevent later components from stopping. The runtime cancels background workers before closing its graph or checkpoint resources. If a worker outlives the cancellation wait, it raises and intentionally leaves those resources open rather than allowing a live worker to write through a closed checkpointer.
+During host shutdown, Talon stops the background delivery loop, cancels in-flight work, stops channels and the scheduler, and finally stops the runtime. A component-stop failure is logged without preventing later shutdown steps. Runtime shutdown cancels background workers before closing graph/checkpoint resources. If workers outlive the cancellation wait, it raises and deliberately leaves those resources open rather than allowing live workers to write through a closed checkpointer.
 
-When changing this area, preserve the durable claim-before-run transition, trusted origin propagation, cron approval rejection, and the distinction between detached chat work and inline scheduled work.
+When changing this area, preserve the durable claim-before-run transition, trusted origin propagation, cron approval rejection, worker ownership/privacy, and the distinction between detached attended work and inline scheduled delegation.
 
 ## Focused tests
 
-`libs/talon/tests/cron/test_scheduler.py` covers tick ordering, claims, outcomes, suppressed output, and delivery failures; `test_until.py` covers expiry behavior. `libs/talon/tests/unit_tests/test_scheduled_history.py` covers fresh scheduled conversations and read-only origin history. `test_background.py` covers capacity, ownership, cancellation, acknowledgement/requeue, delivery failure limits, inline cron delegation, and shutdown. `libs/talon/tests/test_async_subagents.py` covers loading and fail-closed validation of remote definitions.
+`libs/talon/tests/cron/test_scheduler.py` covers claiming, outcomes, silent output, delivery failure, ticker recovery, and sequential execution. `libs/talon/tests/test_host.py` covers scheduled timeout recovery, serialization, background delivery, and scheduled delivery. `libs/talon/tests/unit_tests/test_scheduled_history.py` verifies fresh scheduled IDs and read-only origin history. `libs/talon/tests/unit_tests/test_background.py` exercises capacity, ownership, cancellation, acknowledgement/requeue, failure limits, remote cancellation, inline cron delegation, and shutdown. `libs/talon/tests/unit_tests/test_subagent_control.py` covers cooperative messages, privacy, and bounded retention.
 
-See also [state persistence](./state-persistence.md), [subagents and skills](./subagents-skills.md), [Talon channel admission](./talon-channel-admission.md), [Talon integration](../integrations/talon.md), and [security operations](../operations/security.md).
+See also [runtime behavior](../architecture/runtime-behavior.md), [subagents and skills](./subagents-skills.md), [Talon channel admission](./talon-channel-admission.md), [Talon integration](../integrations/talon.md), and [testing guide](../testing/testing-guide.md).

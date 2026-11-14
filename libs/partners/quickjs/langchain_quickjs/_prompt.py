@@ -8,6 +8,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
+from langchain_core.utils.json_schema import dereference_refs
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
@@ -17,18 +18,45 @@ if TYPE_CHECKING:
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+_SCALAR_TYPES = {
+    "string": "string",
+    "integer": "number",
+    "number": "number",
+    "boolean": "boolean",
+    "null": "null",
+}
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
     "{repl_intro_line}\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
-    "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
-    "unavailable or stubbed).\n"
+    "{sandbox_line}\n"
     "{side_effects_line}\n"
-    "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
+    "- {timeout_line}Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
+FS_SYSTEM_PROMPT = """
+
+### Files: `fs`
+
+`fs` is a global over this agent's files, the same files your file tools see. \
+Its functions return Promises, as Node's `fs/promises` does (`fs.promises` is \
+the same API), and read and write UTF-8 text only. Paths are absolute; relative \
+paths resolve from `/`.
+
+- `await fs.readFile(path)` returns the whole file as a string, without line \
+numbers or headers, as in `JSON.parse(await fs.readFile("/a.json"))`.
+- `await fs.writeFile(path, text)` creates or replaces a file, creating parent \
+directories.
+- `await fs.readdir(dir)` lists entry names. `await fs.access(path)` rejects \
+with `ENOENT` if the path is missing; as a boolean, \
+`await fs.access(path).then(() => true, () => false)`.
+- `await fs.rm(path, { recursive, force })` deletes as Node's does: a directory \
+needs `recursive: true`, and `force: true` ignores a missing path.
+- Errors are Node errors: check `err.code`, such as `ENOENT`, `EISDIR`, or \
+`EACCES`.
+- There are no sync functions such as `readFileSync`, no streams or callbacks, \
+and no `require`."""
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
 
 ### Dispatching Subagents with `task`
@@ -264,10 +292,11 @@ parallel, not to grind through it one tool call at a time.
 def render_repl_system_prompt(
     *,
     tool_name: str,
-    timeout: float,
+    timeout: float | None,
     memory_limit_mb: int,
     mode: Literal["thread", "turn", "call"],
     ptc_attached: bool = False,
+    files_attached: bool = False,
 ) -> str:
     """Render the base REPL system prompt text for `CodeInterpreterMiddleware`.
 
@@ -275,10 +304,27 @@ def render_repl_system_prompt(
     tools are exposed as the `tools.*` namespace it points the model at the
     API reference; otherwise it states the REPL is pure computation.
     """
+    if files_attached:
+        sandbox_line = (
+            "- Runtime sandbox: no network, stdlib, or wall-clock APIs (`fetch`, "
+            "`process`, real `Date.now()` are unavailable or stubbed). Files are "
+            "reachable through `fs`, documented below."
+        )
+    else:
+        sandbox_line = (
+            "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
+            "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
+            "unavailable or stubbed)."
+        )
     if ptc_attached:
         side_effects_line = (
             "- External side effects from inside the REPL are only reachable "
             "via the `tools.*` namespace documented in the API reference below."
+        )
+    elif files_attached:
+        side_effects_line = (
+            "- Apart from `fs`, the REPL has no access to host tools or the "
+            "network. Return values to communicate results."
         )
     else:
         side_effects_line = (
@@ -315,8 +361,9 @@ def render_repl_system_prompt(
     return _REPL_SYSTEM_PROMPT_TEMPLATE.format(
         repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
+        sandbox_line=sandbox_line,
         side_effects_line=side_effects_line,
-        timeout=timeout,
+        timeout_line=("" if timeout is None else f"Timeout: {timeout}s per call. "),
         memory_limit_mb=memory_limit_mb,
     )
 
@@ -350,7 +397,9 @@ def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str
     )
 
 
-def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> str:
+def render_eval_tool_description(
+    *, mode: Literal["thread", "turn", "call"], files_attached: bool = False
+) -> str:
     """Render the public eval tool description."""
     if mode == "call":
         state_line = (
@@ -369,7 +418,8 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
         )
     return (
         "Execute JavaScript in a sandboxed REPL. "
-        f"{state_line} No filesystem, network, or real clock. "
+        f"{state_line} No {'' if files_attached else 'filesystem, '}network, "
+        "or real clock. "
         "Top-level `await` is supported; a final-expression Promise resolves "
         "before the call returns."
     )
@@ -453,9 +503,9 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
+        model_json_schema = getattr(tool.tool_call_schema, "model_json_schema", None)
         if callable(model_json_schema):
-            return model_json_schema()
+            return dereference_refs(model_json_schema())
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort
         return None
     return None
@@ -488,13 +538,10 @@ def _render_signature(
     return f"tools.{fn_name}(input: {{\n{body}\n}}): {return_clause}"
 
 
-# Return types come from the tool's underlying function annotation. We feed
-# the annotation through `pydantic.TypeAdapter` to get a JSON Schema and
-# render it through the same `_json_schema_to_ts` we use for input args.
-# Compound shapes (TypedDict, BaseModel, recursive types) end up as `$ref`
-# in the schema and currently render as `unknown` — same behaviour as
-# nested-model input args. Until that path resolves `$ref` / `$defs`,
-# the simpler unified renderer is the right trade-off here.
+# Return types come from the tool's underlying function annotation (LangChain
+# has no output schema for function tools). We feed the annotation through
+# `pydantic.TypeAdapter` to get a JSON Schema and render it through the same
+# `_json_schema_to_ts` we use for input args.
 
 
 def _render_return_type(tool: BaseTool) -> str:
@@ -513,37 +560,47 @@ def _render_return_type(tool: BaseTool) -> str:
         schema = TypeAdapter(annotation).json_schema()
     except Exception:  # noqa: BLE001 — schema generation is best-effort
         return "unknown"
-    return _json_schema_to_ts(schema)
+    return _json_schema_to_ts(dereference_refs(schema))
 
 
 def _json_schema_to_ts(prop: dict[str, Any]) -> str:
-    """Shallow JSON-Schema → TS type renderer."""
+    """JSON-Schema → TS type renderer for `$ref`-free (dereferenced) schemas."""
+    if "const" in prop:
+        return json.dumps(prop["const"])
     if "enum" in prop:
         return " | ".join(json.dumps(v) for v in prop["enum"])
-    if "anyOf" in prop:
-        parts = [_json_schema_to_ts(part) for part in prop["anyOf"]]
-        return " | ".join(dict.fromkeys(parts))
+    for key, separator in (("anyOf", " | "), ("oneOf", " | "), ("allOf", " & ")):
+        if key in prop:
+            parts = [_json_schema_to_ts(part) for part in prop[key]]
+            return separator.join(dict.fromkeys(parts))
     t = prop.get("type")
-    if t == "string":
-        return "string"
-    if t in {"integer", "number"}:
-        return "number"
-    if t == "boolean":
-        return "boolean"
-    if t == "null":
-        return "null"
+    if t in _SCALAR_TYPES:
+        return _SCALAR_TYPES[t]
     if t == "array":
-        items = prop.get("items")
-        inner = _json_schema_to_ts(items) if isinstance(items, dict) else "unknown"
-        return f"{inner}[]"
+        return _render_array(prop.get("items"))
     if t == "object":
-        sub_props = prop.get("properties")
-        if isinstance(sub_props, dict) and sub_props:
-            required = set(prop.get("required", []))
-            fields = [
-                f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v)}"
-                for k, v in sub_props.items()
-            ]
-            return "{ " + "; ".join(fields) + " }"
-        return "Record<string, unknown>"
+        return _render_object(prop)
     return "unknown"
+
+
+def _render_array(items: Any) -> str:
+    if not isinstance(items, dict):
+        return "unknown[]"
+    inner = _json_schema_to_ts(items)
+    is_union = any(key in items for key in ("anyOf", "oneOf", "allOf", "enum"))
+    return f"({inner})[]" if is_union else f"{inner}[]"
+
+
+def _render_object(prop: dict[str, Any]) -> str:
+    sub_props = prop.get("properties")
+    if isinstance(sub_props, dict) and sub_props:
+        required = set(prop.get("required", []))
+        fields = [
+            f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v)}"
+            for k, v in sub_props.items()
+        ]
+        return "{ " + "; ".join(fields) + " }"
+    values = prop.get("additionalProperties")
+    if isinstance(values, dict) and values:
+        return f"Record<string, {_json_schema_to_ts(values)}>"
+    return "Record<string, unknown>"

@@ -46,6 +46,7 @@ from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
     ToolMessage,
+    add_notification_metadata,
 )
 from langchain_core.runnables import RunnableConfig, ensure_config
 from langgraph.errors import GraphBubbleUp
@@ -1263,10 +1264,9 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         return {
             **update,
             "messages": [
-                HumanMessage(
-                    content=self._revision_prompt(evaluation),
-                    name=RUBRIC_GRADER_MESSAGE_SOURCE,
-                    additional_kwargs={"lc_source": RUBRIC_GRADER_MESSAGE_SOURCE},
+                add_notification_metadata(
+                    HumanMessage(content=self._revision_prompt(evaluation), name=RUBRIC_GRADER_MESSAGE_SOURCE),
+                    source=RUBRIC_GRADER_MESSAGE_SOURCE,
                 )
             ],
             "jump_to": "model",

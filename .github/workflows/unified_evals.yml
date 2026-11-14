@@ -394,7 +394,7 @@ jobs:
       - name: "📤 Upload LangSmith usage"
         if: ${{ always() && hashFiles('_usage/langsmith_usage.json') != '' }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unified-langsmith-usage
           path: _usage/langsmith_usage.json
@@ -521,7 +521,7 @@ jobs:
         id: upload-combined
         if: ${{ always() && hashFiles('_combined/unified_summary.json') != '' }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unified-combined
           path: _combined/
@@ -658,7 +658,7 @@ jobs:
         id: upload-comparisons
         if: ${{ always() && hashFiles('_comparison/comparison_summary.json') != '' }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unified-comparison
           path: _comparison/

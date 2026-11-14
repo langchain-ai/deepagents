@@ -2649,6 +2649,19 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("tracing", "langsmith_redact"),
     ),
     ConfigOption(
+        key="tracing.git_attribution",
+        group="Tracing",
+        summary=(
+            "Run read-only git checks around checkout-changing tools to label "
+            "traces with the repository and branch worked on."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.GIT_ATTRIBUTION,
+        empty_env_is_false=True,
+        toml_keys=("tracing", "git_attribution"),
+    ),
+    ConfigOption(
         key="tracing.user_id",
         group="Tracing",
         summary="User identifier attached to LangSmith trace metadata.",

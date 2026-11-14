@@ -5,8 +5,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[4]
 AUTOMATION_WORKFLOW = ROOT / ".github/workflows/release_notes.yml"
@@ -81,10 +81,6 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
     # refreshed check's title/summary must name the validated package and version.
     assert "Curated release notes are valid for ${target}" in check_workflow
     assert "Validation result for ${target}: ${result.status}." in check_workflow
-    # A cancelled/timed-out poll must not leave the refresh check spinning forever:
-    # an always() finalizer closes an interrupted in_progress check.
-    assert "if: always() && steps.validate.outputs.refresh_check_id != ''" in check_workflow
-    assert "github.rest.checks.get" in check_workflow
     assert "head_sha: pr.head.sha" in check_workflow
     assert "github.rest.checks.create" in check_workflow
     assert "github.rest.checks.update" in check_workflow
@@ -98,6 +94,72 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
     release_please = RELEASE_PLEASE_WORKFLOW.read_text()
     assert "--ref main" in release_please
     assert "needs.update-lockfiles.result == 'success'" not in release_please
+
+
+@pytest.mark.parametrize(
+    ("outcome", "check_id", "status", "finalized"),
+    [
+        ("success", "123", "in_progress", False),
+        ("failure", "123", "in_progress", True),
+        ("cancelled", "123", "in_progress", True),
+        ("failure", "123", "completed", False),
+        ("cancelled", "123", "completed", False),
+        ("cancelled", "", "in_progress", False),
+    ],
+)
+def test_refresh_cleanup_preserves_finished_validation(
+    outcome: str, check_id: str, status: str, finalized: bool
+) -> None:
+    """Preserve validation results despite stale reads and close interrupted checks."""
+    steps = _load_workflow(CHECK_WORKFLOW)["jobs"]["curated-release-notes"]["steps"]
+    cleanup = next(
+        step for step in steps if step["name"] == "Close an interrupted refresh check"
+    )
+    condition = cleanup["if"]
+    script = """
+const input = JSON.parse(process.argv[1]);
+const steps = {validate: {outcome: input.outcome, outputs: {refresh_check_id: input.check_id}}};
+const always = () => true;
+const context = {repo: {owner: 'langchain-ai', repo: 'deepagents'}};
+const result = {updates: []};
+const github = {rest: {checks: {
+  async get() { return {data: {status: input.status}}; },
+  async update(update) { result.updates.push(update); },
+}}};
+const core = {warning(message) { throw new Error(message); }};
+process.env.REFRESH_CHECK_ID = input.check_id;
+(async () => {
+  if (CONDITION) {
+    SCRIPT
+  }
+})().then(() => process.stdout.write(JSON.stringify(result)));
+""".replace("CONDITION", condition).replace("SCRIPT", cleanup["with"]["script"])
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            script,
+            json.dumps(
+                {
+                    "outcome": outcome,
+                    "check_id": check_id,
+                    "status": status,
+                }
+            ),
+        ],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    updates = json.loads(result.stdout)["updates"]
+    if finalized:
+        assert len(updates) == 1
+        assert updates[0]["check_run_id"] == int(check_id)
+        assert updates[0]["status"] == "completed"
+        assert updates[0]["conclusion"] == "failure"
+    else:
+        assert updates == []
 
 
 def test_workflows_reference_helper_scripts_that_exist() -> None:
@@ -214,9 +276,8 @@ def test_mutation_workflow_commands_are_target_only() -> None:
         app_token = next(
             step for step in job["steps"] if step.get("id") == "app-token"
         )
-        assert app_token["uses"] == (
-            "actions/create-github-app-token@"
-            "bcd2ba49218906704ab6c1aa796996da409d3eb1"
+        assert re.fullmatch(
+            r"actions/create-github-app-token@[0-9a-f]{40}", app_token["uses"]
         )
         assert app_token["with"] == {
             "client-id": "${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}",

@@ -82,6 +82,20 @@ def btw_app(monkeypatch: pytest.MonkeyPatch) -> tuple[DeepAgentsApp, MagicMock]:
     return app, remote
 
 
+@pytest.fixture
+def posix_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build and run uv commands the way dcode does on POSIX hosts.
+
+    On Windows, dcode double-quotes uv arguments for cmd.exe and defers every
+    install to the user's shell. Tests that assert the `shlex.quote`-d command
+    or drive an install through the subprocess pin the host here, so they pass
+    on Windows too.
+    """
+    from deepagents_code import update_check
+
+    monkeypatch.setattr(update_check, "_is_windows", lambda: False)
+
+
 def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:
     """Return whether the test owns app-startup update-check setup."""
     return request.node.get_closest_marker(_UPDATE_CHECK_SELF_MANAGED_MARK) is not None

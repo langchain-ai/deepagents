@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-
 import modal
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -29,28 +27,16 @@ class ModalSandbox(BaseSandbox):
         content_bytes: bytes | None = None
 
         try:
-            f = self._sandbox.open(path, "rb")
-            try:
-                content = f.read()
-            finally:
-                with contextlib.suppress(Exception):
-                    f.close()
-
-            if isinstance(content, memoryview):
-                content_bytes = content.tobytes()
-            elif isinstance(content, str):
-                content_bytes = content.encode()
-            else:
-                content_bytes = content
-        except FileNotFoundError:
+            content_bytes = self._sandbox.filesystem.read_bytes(path)
+        except (
+            modal.exception.SandboxFilesystemNotFoundError,
+            modal.exception.SandboxFilesystemNotADirectoryError,
+        ):
             error = "file_not_found"
-        except PermissionError:
+        except modal.exception.SandboxFilesystemPermissionError:
             error = "permission_denied"
-        except IsADirectoryError:
+        except modal.exception.SandboxFilesystemIsADirectoryError:
             error = "is_directory"
-        except modal.exception.FilesystemExecutionError as e:
-            msg = str(e).lower()
-            error = "is_directory" if "is a directory" in msg else "file_not_found"
 
         return FileDownloadResponse(path=path, content=content_bytes, error=error)
 
@@ -59,18 +45,13 @@ class ModalSandbox(BaseSandbox):
             return FileUploadResponse(path=path, error="invalid_path")
 
         try:
-            f = self._sandbox.open(path, "wb")
-            try:
-                f.write(content)
-            finally:
-                with contextlib.suppress(Exception):
-                    f.close()
+            self._sandbox.filesystem.write_bytes(content, path)
             return FileUploadResponse(path=path, error=None)
-        except PermissionError:
+        except modal.exception.SandboxFilesystemPermissionError:
             return FileUploadResponse(path=path, error="permission_denied")
-        except FileNotFoundError:
+        except modal.exception.SandboxFilesystemNotADirectoryError:
             return FileUploadResponse(path=path, error="file_not_found")
-        except IsADirectoryError:
+        except modal.exception.SandboxFilesystemIsADirectoryError:
             return FileUploadResponse(path=path, error="is_directory")
 
     @property

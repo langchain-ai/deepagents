@@ -129,13 +129,6 @@ class SubAgent(TypedDict):
 
         `mode="fork"` is experimental and may change in a future release.
 
-    !!! note "Fork history and prompt caching"
-
-        The fork processes its inherited history and new task through middleware
-        again. Argument truncation or summarization can change earlier messages
-        when the task shifts a threshold or preservation window, including on
-        the first model call. A shared prompt-cache prefix is not guaranteed.
-
     When using `create_deep_agent`, subagents automatically receive
     a default middleware stack before any custom `middleware` specified in
     this spec.
@@ -270,6 +263,11 @@ class SubAgent(TypedDict):
     it rebuilds the same system prompt. It cannot define `skills`, which would
     diverge from the parent's. `tools` isn't restricted the same way -- a fork's
     own tools work normally; the tradeoff is cache misses.
+
+    The fork adds its task after the inherited history, then processes the full
+    conversation through its middleware. The added task can cause older messages
+    to be shortened or summarized differently than in the parent's last model
+    request. This can reduce prompt-cache reuse, even on the fork's first call.
     """
 
 

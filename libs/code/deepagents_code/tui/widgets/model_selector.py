@@ -90,6 +90,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     ),
     "fireworks:accounts/fireworks/models/glm-5p3": "GLM 5.3",
     "fireworks:accounts/fireworks/models/glm-5p3-flash": "GLM 5.3 Flash",
+    "fireworks:accounts/fireworks/models/kimi-k3p1-pro": "Kimi K3.1 Pro",
     "fireworks:accounts/fireworks/models/minimax-m3p1-flash": "MiniMax M3.1 Flash",
     "fireworks:accounts/fireworks/models/muse-spark-open": "Muse Spark Open",
     "fireworks:accounts/fireworks/models/qwen3p8-max": "Qwen 3.8 Max (hosted)",

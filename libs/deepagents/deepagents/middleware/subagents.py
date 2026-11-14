@@ -228,6 +228,38 @@ class SubAgent(TypedDict):
     - `dict[str, Any]`: A JSON schema dictionary
         (e.g., `{"type": "object", "properties": {...}, "required": [...]}`).
 
+    A declarative fork does not inherit the parent's `response_format`. Different
+    formats can change the provider request: `ToolStrategy` adds a schema tool,
+    while `ProviderStrategy` configures provider-native output. Either can reduce
+    prompt-cache reuse. If structured output is also appropriate for the fork,
+    explicitly set the same format on both parent and fork. This changes the
+    fork's result to JSON; it does not guarantee cache hits, since models,
+    middleware, tools, and provider caching behavior can also differ. A bare
+    schema or `AutoStrategy` may select different strategies for different models;
+    a per-task response-format override can also replace the fork's configured format.
+
+    For example, to opt a fork into the parent's tool-based format:
+
+    ```python
+    from langchain.agents.structured_output import ToolStrategy
+    from pydantic import BaseModel
+    from deepagents import create_deep_agent
+
+    class Findings(BaseModel):
+        findings: str
+
+    output_format = ToolStrategy(Findings)
+    agent = create_deep_agent(
+        response_format=output_format,
+        subagents=[{
+            "name": "analyzer",
+            "description": "Analyzes data and returns structured findings",
+            "mode": "fork",
+            "response_format": output_format,
+        }],
+    )
+    ```
+
     Example:
         ```python
         from pydantic import BaseModel

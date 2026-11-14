@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.0...deepagents-talon==0.1.1) (2026-11-14)
+
+
+### Features
+
+* **talon:** add `media-cpu` extra with CPU-only torch on Linux ([#7596](https://github.com/langchain-ai/deepagents/issues/7596)) ([f7c3af6](https://github.com/langchain-ai/deepagents/commit/f7c3af67565f00894cb596f689d41bee10ae89af))
+* **talon:** add main-agent command hooks ([#7380](https://github.com/langchain-ai/deepagents/issues/7380)) ([13e3eab](https://github.com/langchain-ai/deepagents/commit/13e3eab6064015e700e8c3e1c41efcc222d8d62b))
+* **talon:** ask structured clarifying questions over chat ([#7607](https://github.com/langchain-ai/deepagents/issues/7607)) ([0ce4259](https://github.com/langchain-ai/deepagents/commit/0ce42594e2bfd261b1da5e63e41d14e79fd3aa24))
+* **talon:** enable and disable configured MCP servers ([#7608](https://github.com/langchain-ai/deepagents/issues/7608)) ([63e4816](https://github.com/langchain-ai/deepagents/commit/63e4816937aade3536a2f31bcef91d2a5b584df7))
+* **talon:** filter conversation history by time window and role ([#7712](https://github.com/langchain-ai/deepagents/issues/7712)) ([c4f08a3](https://github.com/langchain-ai/deepagents/commit/c4f08a3de015003a9f16ebf560e5fef439000f11))
+* **talon:** inspect and guide background subagents ([#7609](https://github.com/langchain-ai/deepagents/issues/7609)) ([e20be5f](https://github.com/langchain-ai/deepagents/commit/e20be5f22e87dd088d706525917b51f1a2945c63))
+* **talon:** run command hooks in local subagents ([#7381](https://github.com/langchain-ai/deepagents/issues/7381)) ([f8a6a7f](https://github.com/langchain-ai/deepagents/commit/f8a6a7fdd7241dea0c40fb31d30cd3c4c98f95fb))
+* **talon:** support DeepSeek reasoning levels ([#7439](https://github.com/langchain-ai/deepagents/issues/7439)) ([3a217ce](https://github.com/langchain-ai/deepagents/commit/3a217cec7183b601f2b33e0144e09bb50ad44f01))
+* **talon:** support skill-scoped MCP tools ([#7280](https://github.com/langchain-ai/deepagents/issues/7280)) ([2a5b748](https://github.com/langchain-ai/deepagents/commit/2a5b748dcc1e76c3eb5cd1735351e230788f00d7))
+
+
+### Bug Fixes
+
+* **talon:** avoid duplicate subagent result delivery ([#7619](https://github.com/langchain-ai/deepagents/issues/7619)) ([dbb8ab1](https://github.com/langchain-ai/deepagents/commit/dbb8ab19b9498463973a5ff039f88fbee30ddd9a))
+* **talon:** avoid stale WhatsApp Web cache on startup ([#7631](https://github.com/langchain-ai/deepagents/issues/7631)) ([a21f53a](https://github.com/langchain-ai/deepagents/commit/a21f53a007f770cfd5c09e6b44682eb25ad8462a))
+* **talon:** block precompiled delegation with enabled approvals ([#7604](https://github.com/langchain-ai/deepagents/issues/7604)) ([34b802d](https://github.com/langchain-ai/deepagents/commit/34b802d29b044cd9b3fbf7dcd50d025a2e9a4a98))
+* **talon:** delegate lengthy investigations early ([#7621](https://github.com/langchain-ai/deepagents/issues/7621)) ([ab8db29](https://github.com/langchain-ai/deepagents/commit/ab8db292c7b15efee53346a1e8907f60e1c0d34e))
+* **talon:** download only Transformers files for local speech models ([#7597](https://github.com/langchain-ai/deepagents/issues/7597)) ([cb1635d](https://github.com/langchain-ai/deepagents/commit/cb1635d027f1afc1cba780590e094aa2817e5c34))
+* **talon:** erase hook transcripts with conversation history ([#7382](https://github.com/langchain-ai/deepagents/issues/7382)) ([701c986](https://github.com/langchain-ai/deepagents/commit/701c986640635807ee19b5b0adce63ea9c8f888d))
+* **talon:** extract plain text from subagent results ([#7645](https://github.com/langchain-ai/deepagents/issues/7645)) ([215951c](https://github.com/langchain-ai/deepagents/commit/215951c556a4a493dda77c12e9e2fe959fc375fc))
+* **talon:** extract text from tool-attached task results ([#7652](https://github.com/langchain-ai/deepagents/issues/7652)) ([2429841](https://github.com/langchain-ai/deepagents/commit/24298415103c809e31ae6d0291632062ed44bdb5))
+* **talon:** identify user interruptions in traces ([#7623](https://github.com/langchain-ai/deepagents/issues/7623)) ([ca275e6](https://github.com/langchain-ai/deepagents/commit/ca275e6c8c7ae260ec1191899a72c270da710956))
+* **talon:** make MCP login failures actionable ([#7646](https://github.com/langchain-ai/deepagents/issues/7646)) ([ee5071a](https://github.com/langchain-ai/deepagents/commit/ee5071a3ba8e23ec4dc2d4c91eb2cf1d0612d707))
+* **talon:** parse comma-separated skills and memory paths ([#7625](https://github.com/langchain-ai/deepagents/issues/7625)) ([1cf989a](https://github.com/langchain-ai/deepagents/commit/1cf989a30166ae56adc75e9ed60cca94789c9f9b))
+* **talon:** preserve gateway provider reasoning controls ([#7047](https://github.com/langchain-ai/deepagents/issues/7047)) ([1e3bbef](https://github.com/langchain-ai/deepagents/commit/1e3bbef613ab916161115fe47b29463a905147b0))
+* **talon:** preserve optional MCP arguments on Responses ([#7530](https://github.com/langchain-ai/deepagents/issues/7530)) ([f161e20](https://github.com/langchain-ai/deepagents/commit/f161e20568619f9ff61d483ea0fdf00e63c45215))
+* **talon:** prevent shell workarounds for unavailable integrations ([#7622](https://github.com/langchain-ai/deepagents/issues/7622)) ([d315d8e](https://github.com/langchain-ai/deepagents/commit/d315d8e12dd4f2c250a759a38825f1ea1c9484d6))
+* **talon:** reject tool approvals without a sender ([#7605](https://github.com/langchain-ai/deepagents/issues/7605)) ([324ee54](https://github.com/langchain-ai/deepagents/commit/324ee54956dfec2ba85164a17fdece70bcdfdfb1))
+* **talon:** summarize fresh subagent context ([#7676](https://github.com/langchain-ai/deepagents/issues/7676)) ([7c8a85e](https://github.com/langchain-ai/deepagents/commit/7c8a85e27026b234ce9223933d6ea29767088f64))
+* **talon:** suppress unchanged `list_subagents` polls ([#7677](https://github.com/langchain-ai/deepagents/issues/7677)) ([c158f2a](https://github.com/langchain-ai/deepagents/commit/c158f2ad5b49459b1bdc42efd5f1252f54a51005))
+
 ## [0.1.0](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.9...deepagents-talon==0.1.0) (2026-10-22)
 
 ### ⚠ BREAKING CHANGES

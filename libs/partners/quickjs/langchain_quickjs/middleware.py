@@ -717,7 +717,7 @@ class CodeInterpreterMiddleware(
             # tag that would later authenticate a mismatched payload.
             return {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         # Sign the full payload *before* `encode_snapshot` folds it into a
-        # `bsdiff` patch record. Restore recomputes the tag over the bytes the
+        # delta record. Restore recomputes the tag over the bytes the
         # patch chain replays back to, so the signature authenticates the
         # reconstructed snapshot rather than any single delta.
         update: dict[str, Any] = {

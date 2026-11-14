@@ -1517,6 +1517,50 @@ def _build_async_subagent_tools(
     ]
 
 
+def _refuse_fork_async_tool(**_kwargs: Any) -> str:
+    """Refuse remote task operations in a fork."""
+    return "You are a subagent and cannot start or manage the parent's async tasks. Complete this task yourself."
+
+
+async def _arefuse_fork_async_tool(**kwargs: Any) -> str:
+    """Async version of the fork's refusal."""
+    return _refuse_fork_async_tool(**kwargs)
+
+
+class _ForkAsyncToolsMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    """Mirror async tool schemas without retaining their remote clients or hooks."""
+
+    def __init__(self, source: "AsyncSubAgentMiddleware") -> None:
+        if any(type(tool) is not StructuredTool for tool in source.tools):
+            msg = "Cannot safely mirror non-StructuredTool async subagent tools into a fork."
+            raise ValueError(msg)
+        self._name = source.name
+        self.excluded_as = type(source)
+        self.system_prompt = source.system_prompt
+        self.tools = [tool.model_copy(update={"func": _refuse_fork_async_tool, "coroutine": _arefuse_fork_async_tool}) for tool in source.tools]
+
+    @property
+    def name(self) -> str:
+        """Preserve the source middleware's name."""
+        return self._name
+
+    def wrap_model_call(
+        self, request: ModelRequest[ContextT], handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]]
+    ) -> ModelResponse[ResponseT]:
+        """Preserve the parent's async guidance without its task hooks."""
+        if self.system_prompt is not None:
+            return handler(request.override(system_message=append_to_system_message(request.system_message, self.system_prompt)))
+        return handler(request)
+
+    async def awrap_model_call(
+        self, request: ModelRequest[ContextT], handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]]
+    ) -> ModelResponse[ResponseT]:
+        """Async version of the prompt-preserving wrapper."""
+        if self.system_prompt is not None:
+            return await handler(request.override(system_message=append_to_system_message(request.system_message, self.system_prompt)))
+        return await handler(request)
+
+
 def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:
     """The notification for a task outcome a check found, or `None` for outcomes not worth waking for."""
     if status not in {"success", "error", "timeout", "cancelled", _WAITING}:

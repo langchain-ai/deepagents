@@ -54,6 +54,7 @@ SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 _FORK_EXCLUDED_STATE_KEYS = frozenset(
     {
         "structured_response",
+        "async_tasks",
         "pinned_skills",
         _RUBRIC_KEY,
         SUMMARIZATION_EVENT_KEY,
@@ -67,8 +68,8 @@ The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
 describe the parent's last model call; the fork records its own. Skills the parent
-has yet to pin are the parent's own. The rubric grades the parent's whole goal,
-not the fork's task.
+has yet to pin are the parent's own. Async tasks and the rubric belong to the
+parent, not the fork.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
@@ -787,7 +788,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
             infer_schema=False,
             args_schema=TaskToolSchema,
         )
-        fork_middleware = list(spec.get("middleware", []))
+        from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware, _ForkAsyncToolsMiddleware  # noqa: PLC0415
+
+        fork_middleware = [_ForkAsyncToolsMiddleware(m) if isinstance(m, AsyncSubAgentMiddleware) else m for m in spec.get("middleware", [])]
         # The parent's `task` sits right after its filesystem tools; matching that
         # position keeps both tools blocks in the same order. Tests assert that tool
         # order matches.
@@ -844,7 +847,12 @@ def _build_task_tool(  # noqa: C901, PLR0915
             raise ValueError(error_msg)
 
         state_update = {
-            k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys and not _is_unchanged(k, v, inputs)
+            k: v
+            for k, v in result.items()
+            if k not in _EXCLUDED_STATE_KEYS
+            and k not in private_state_keys
+            and not (k == "async_tasks" and inputs.get(_FORKED_CONTEXT_KEY))
+            and not _is_unchanged(k, v, inputs)
         }
 
         structured = result.get("structured_response")

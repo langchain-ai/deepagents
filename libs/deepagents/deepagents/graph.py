@@ -715,11 +715,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # override, and so its middleware stack (including any factory-based
     # `extra_middleware`) isn't built and then discarded.
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
-    async_subagents: list[AsyncSubAgent] = []
+    async_subagents = [cast("AsyncSubAgent", spec) for spec in subagents or [] if "graph_id" in spec]
+    async_middleware = AsyncSubAgentMiddleware(async_subagents=async_subagents) if async_subagents else None
     for spec in subagents or []:
         if "graph_id" in spec:
-            # Then spec is an AsyncSubAgent
-            async_subagents.append(cast("AsyncSubAgent", spec))
             continue
         if _is_compiled_subagent(spec):
             # CompiledSubAgent - use as-is
@@ -756,6 +755,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
+            if is_forked and async_middleware is not None:
+                subagent_middleware.append(async_middleware)
             # Core names captured before the tail so new spec middleware (and a
             # fork's inherited parent middleware) splices in ahead of it,
             # including ahead of Skills.
@@ -947,10 +948,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ]
     )
 
-    if async_subagents:
+    if async_middleware is not None:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+        deepagent_middleware.append(async_middleware)
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.

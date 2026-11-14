@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import ToolMessage
+from langchain_core.messages.content import is_data_content_block
 from langgraph.types import Command
 from pydantic import BaseModel
 from quickjs_rs import UNDEFINED
@@ -14,6 +15,14 @@ if TYPE_CHECKING:
     from langchain_quickjs._repl import EvalOutcome
 
 _TRUNCATE_MARKER = "… [truncated {n} chars]"
+
+MAX_CONTENT_BLOCK_BYTES = 8 * 1024 * 1024
+"""Cap on the total base64 size of content blocks an eval may return."""
+
+# Payload fields that must be strings for a provider to serialize the block.
+_BLOCK_STR_KEYS = ("base64", "data", "url", "file_id", "mime_type")
+# Inline payload fields counted against `MAX_CONTENT_BLOCK_BYTES` (`data` is v0).
+_BLOCK_PAYLOAD_KEYS = ("base64", "data")
 
 
 def format_handle(handle: Any) -> str:
@@ -57,6 +66,62 @@ def _format_jsvalue(value: Any) -> str:
             "{" + ", ".join(f"{k}: {_format_nested(v)}" for k, v in value.items()) + "}"
         )
     return repr(value)
+
+
+def content_blocks(value: Any) -> list[dict[str, Any]] | None:
+    """Return `value` as message content blocks, or `None` if it is not content.
+
+    An eval's final value counts as content when it is a single data content
+    block (image, audio, video, or file) or an array of data blocks and
+    strings with at least one data block. Strings become text blocks.
+    """
+    items = value if isinstance(value, list) else [value]
+    if not any(_is_data_block(item) for item in items):
+        return None
+    blocks: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, str):
+            blocks.append({"type": "text", "text": item})
+        elif _is_data_block(item):
+            blocks.append(item)
+        else:
+            return None
+    return blocks
+
+
+def _is_data_block(item: Any) -> bool:
+    """Check that `item` is a data content block a provider can serialize."""
+    if not isinstance(item, dict) or not is_data_content_block(item):
+        return False
+    return all(isinstance(item[key], str) for key in _BLOCK_STR_KEYS if key in item)
+
+
+def render_result(value: Any) -> tuple[str, list[dict[str, Any]] | None]:
+    """Render an eval's final value as summary text plus optional content blocks.
+
+    Content blocks are summarized in the text (`[image/png]`) and returned for
+    the tool message. Blocks whose base64 payloads exceed
+    `MAX_CONTENT_BLOCK_BYTES` in total are dropped for an error message, since
+    stringifying them would flood the context with base64 text.
+    """
+    blocks = content_blocks(value)
+    if blocks is None:
+        return stringify(value), None
+    size = sum(
+        len(block.get(key, "")) for block in blocks for key in _BLOCK_PAYLOAD_KEYS
+    )
+    if size > MAX_CONTENT_BLOCK_BYTES:
+        msg = (
+            f"Content blocks not shown: {size} bytes of base64 exceeds the "
+            f"{MAX_CONTENT_BLOCK_BYTES}-byte limit."
+        )
+        return msg, None
+    return " ".join(f"[{_describe_block(block)}]" for block in blocks), blocks
+
+
+def _describe_block(block: dict[str, Any]) -> str:
+    mime_type = block.get("mime_type")
+    return mime_type if isinstance(mime_type, str) else str(block["type"])
 
 
 def _format_nested(value: Any) -> str:

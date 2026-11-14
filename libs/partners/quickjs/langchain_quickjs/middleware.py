@@ -367,8 +367,12 @@ class CodeInterpreterMiddleware(
             outcome: EvalOutcome,
             tool_call_id: str | None,
         ) -> ToolMessage:
+            text = format_outcome(outcome, max_result_chars=max_chars)
+            content: str | list[str | dict[str, Any]] = text
+            if outcome.blocks is not None:
+                content = [{"type": "text", "text": text}, *outcome.blocks]
             return ToolMessage(
-                content=format_outcome(outcome, max_result_chars=max_chars),
+                content=content,
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )

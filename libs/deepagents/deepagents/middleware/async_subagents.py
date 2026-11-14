@@ -45,7 +45,8 @@ from langchain_core.messages import (
     get_notification_metadata,
 )
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import BaseTool, StructuredTool, Tool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -1517,27 +1518,54 @@ def _build_async_subagent_tools(
     ]
 
 
-def _refuse_fork_async_tool(**_kwargs: Any) -> str:
+def _refuse_fork_async_tool(*_args: Any, **_kwargs: Any) -> str:
     """Refuse remote task operations in a fork."""
     return "You are a subagent and cannot start or manage the parent's async tasks. Complete this task yourself."
 
 
-async def _arefuse_fork_async_tool(**kwargs: Any) -> str:
+async def _arefuse_fork_async_tool(*args: Any, **kwargs: Any) -> str:
     """Async version of the fork's refusal."""
-    return _refuse_fork_async_tool(**kwargs)
+    return _refuse_fork_async_tool(*args, **kwargs)
+
+
+def _mirror_fork_async_tool(tool: BaseTool) -> BaseTool:
+    """Mirror only the model-visible definition, not the tool's execution behavior."""
+    try:
+        definition = convert_to_openai_tool(tool)
+        function = definition["function"]
+        parameters = json.loads(json.dumps(function["parameters"], allow_nan=False))
+        extras = json.loads(json.dumps(tool.extras, allow_nan=False)) if tool.extras is not None else None
+        if isinstance(tool, Tool) and not tool.args_schema:
+            mirror = Tool(
+                name=tool.name, description=tool.description, extras=extras, func=_refuse_fork_async_tool, coroutine=_arefuse_fork_async_tool
+            )
+        else:
+            mirror = StructuredTool(
+                name=tool.name,
+                description=tool.description,
+                args_schema=parameters,
+                extras=extras,
+                func=_refuse_fork_async_tool,
+                coroutine=_arefuse_fork_async_tool,
+            )
+        matches = json.dumps(definition, allow_nan=False) == json.dumps(convert_to_openai_tool(mirror), allow_nan=False)
+    except (KeyError, TypeError, ValueError, RecursionError) as exc:
+        msg = f"Cannot safely mirror async subagent tool {tool.name!r} into a fork. Use a client-side tool with a serializable, reproducible schema."
+        raise ValueError(msg) from exc
+    if not matches or (extras and "provider_tool_definition" in extras):
+        msg = f"Cannot safely mirror async subagent tool {tool.name!r} into a fork. Use a client-side tool with a serializable, reproducible schema."
+        raise ValueError(msg)
+    return mirror
 
 
 class _ForkAsyncToolsMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Mirror async tool schemas without retaining their remote clients or hooks."""
 
     def __init__(self, source: "AsyncSubAgentMiddleware") -> None:
-        if any(type(tool) is not StructuredTool for tool in source.tools):
-            msg = "Cannot safely mirror non-StructuredTool async subagent tools into a fork."
-            raise ValueError(msg)
         self._name = source.name
         self.excluded_as = type(source)
         self.system_prompt = source.system_prompt
-        self.tools = [tool.model_copy(update={"func": _refuse_fork_async_tool, "coroutine": _arefuse_fork_async_tool}) for tool in source.tools]
+        self.tools = [_mirror_fork_async_tool(tool) for tool in source.tools]
 
     @property
     def name(self) -> str:

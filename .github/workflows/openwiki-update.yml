@@ -20,9 +20,15 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26"
+
+      - name: Set up Python and uv
+        uses: ./.github/actions/uv_setup
+        with:
+          python-version: "3.14"
+          enable-cache: "false"
 
       - name: Install OpenWiki
         run: npm install --global openwiki@0.4.2
@@ -38,7 +44,7 @@ jobs:
 
       - name: Generate OpenWiki GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         with:
           client-id: ${{ vars.OPENWIKI_APP_CLIENT_ID }}
           private-key: ${{ secrets.OPENWIKI_APP_PRIVATE_KEY }}
@@ -72,6 +78,15 @@ jobs:
 
           # Stage only the paths OpenWiki is allowed to change.
           git add -- openwiki AGENTS.md
+
+          mapfile -d '' -t generated_files < <(git diff --cached --name-only --diff-filter=ACMR -z -- openwiki AGENTS.md)
+          if ((${#generated_files[@]})); then
+            printf -v hygiene_files ' %q' "${generated_files[@]}"
+            if ! make -C libs hygiene HYGIENE_ARGS="--files$hygiene_files"; then
+              make -C libs hygiene HYGIENE_ARGS="--files$hygiene_files"
+            fi
+            git add -- openwiki AGENTS.md
+          fi
 
           if git diff --cached --quiet; then
             echo "No OpenWiki changes to commit."

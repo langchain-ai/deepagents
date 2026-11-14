@@ -1,60 +1,26 @@
 ---
 type: architecture concept
-title: Filesystem Tools and Backends
-description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, content lifecycle, and the containment boundaries verified by focused tests.
+title: Tools and Filesystem Access
+description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, search deadlines, content lifecycle, media reads, and containment boundaries.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
 sources:
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-a12868876b60484607797187
-    resource: repo://libs/code/deepagents_code/file_ops.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-752b52e8fedb86515652254d
-    resource: repo://libs/code/deepagents_code/managed_tools.py
-  - id: openwiki-source-f6d553e7afdf54acac36e7d3
-    resource: repo://libs/code/deepagents_code/mcp_tools.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-3300d75e0c132882e2e3b4ce
-    resource: repo://libs/code/deepagents_code/tool_catalog.py
-  - id: openwiki-source-8ccbc389e8d6198afea76baa
-    resource: repo://libs/code/tests/unit_tests/test_file_ops.py
-  - id: openwiki-source-f598809da8d8fbff2d7ae090
-    resource: repo://libs/code/tests/unit_tests/test_server_manager.py
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-e483ff4cfd25918c8107d575
     resource: repo://libs/deepagents/deepagents/backends/filesystem.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-d4463137befa776cd47750d4
-    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-303a7196a0e1a36cc078621b
-    resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-8b1aaf77fc0430fd00711a73
-    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-903e05891b2ddf4f958276fd
-    resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
+  - id: openwiki-source-7b8607fdda73d9d47ee17387
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-25T08:05:05.473Z
+    at: 2026-11-10T08:04:01.717Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
-# Filesystem Tools and Backends
+# Tools and Filesystem Access
 
 `FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned filesystem policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it. SDK profile exclusions are model-surface controls rather than authorization, while dcode treats its explicitly configured filesystem allowlist as a security control and carries it into configurable subagents. See [Backends](backends.md) for storage and routing, [Permissions & HITL](permissions-hitl.md) for approval configuration, and [MCP](../integrations/mcp.md) for remote tools.
 
@@ -62,7 +28,13 @@ verified:
 
 The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` build all of them; an explicit list must include `read_file`, and tools absent from that list are not registered with the dispatchable tool node. At model-request time, filesystem middleware removes `delete` when the backend does not implement the optional operation and removes `execute` unless the backend is execution capable. It also adjusts the `grep` and `execute` descriptions to the remaining visible tools.
 
-A harness profile's `excluded_tools` is a later, independent model-surface control. Graph construction appends `_ToolExclusionMiddleware` after profile and caller middleware so it removes named tools after all injection has happened; it also rejects a model call that still names an excluded tool. This makes the advertised and executable surfaces agree for that agent/profile, but it is explicitly not a security control. It is distinct from an absent construction-time tool, capability filtering, a filesystem permission denial, and a HITL interruption.
+A harness profile's `excluded_tools` is a later, independent model-surface control. Graph construction appends `_ToolExclusionMiddleware` after profile processing and caller middleware placement so it removes named tools after all injection has happened; it also rejects a tool call that still names an excluded tool. This makes the advertised and executable surfaces agree for that agent/profile, but it is explicitly not a security control. It is distinct from an absent construction-time tool, capability filtering, a filesystem permission denial, and a HITL interruption.
+
+### Assembly order matters
+
+For the main agent, `create_deep_agent` starts with `FilesystemMiddleware`, then adds the subagent task layer when applicable, parent notification, summarization, and tool-call patching (plus optional async subagents). Its tail then materializes profile middleware, optionally adds skills and prompt caching, adds memory when configured, compiles filesystem `interrupt` permissions into `HumanInTheLoopMiddleware`, then adds `UnsupportedContentMiddleware` and `ModelRefusalMiddleware`. Profile middleware exclusions are applied before and after caller middleware is placed, so exclusions cannot be restored by that placement. Finally, `_ToolExclusionMiddleware` is appended last when the profile names excluded tools. Thus it sees the final request tool set and wraps the final tool-call path; a custom `wrap_model_call` cannot re-advertise an excluded name.
+
+The same final tool-exclusion rule is applied to configured and generated subagents, including the general-purpose subagent. Their middleware stacks differ from the main-agent tail, so do not infer that a main-agent memory, HITL, or unsupported-content wrapper automatically exists in every subagent solely from a profile setting. See [Middleware catalog](middleware-catalog.md) for the broader assembly model.
 
 ```mermaid
 flowchart TD
@@ -150,7 +122,15 @@ File operations route individually, but `execute` does not: a composite always d
 
 ## Direct filesystem access and permission policy
 
-`FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible paths use virtual absolute form and do not reveal the host root. `virtual_mode` provides stable path semantics—especially when `CompositeBackend` strips a route prefix before forwarding a path—but is not a sandbox or process-isolation boundary. With `virtual_mode=False`, absolute paths are used as-is and relative paths can escape `root_dir`.
+`FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible paths use virtual absolute form and do not reveal the host root. The implementation also detects symlink loops, avoids following a final symlink when the platform supports `O_NOFOLLOW`, and reports batch upload/download failures per input with normalized error codes.
+
+`virtual_mode` provides stable path semantics—especially when `CompositeBackend` strips a route prefix before forwarding a path—but is **not** a sandbox or process-isolation boundary. It does not remove the process's ambient host permissions, prevent a separately available shell/network capability from reading host data, or make direct host access safe for untrusted agents. `FilesystemBackend` remains capability-sensitive direct host filesystem access and should be used only in an appropriately trusted or externally isolated environment. With `virtual_mode=False`, absolute paths are used as-is and relative paths can escape `root_dir`.
+
+### Local search and glob behavior
+
+The backend-level `grep` is a literal substring search, not a regex facility. It first uses `rg` when available with fixed-string mode, streams JSON matches, drains stderr concurrently, and stops only after observing a match beyond a total `max_count` cap; therefore exactly `max_count` matches can still be complete, while a result marked `truncated=True` is incomplete. One synchronous search phase has a 15-second deadline. A watchdog kills a stalled `rg`: if it already emitted matches, those partial results are returned as truncated; with no output it falls back to Python. An unavailable or unexecutable `rg`, and a hard nonzero exit, also trigger the fallback (discarding any hard-error partial output). The Python fallback has its own 15-second budget, skips files over `max_file_size_mb`, and returns previously found matches with an error when a walk or file read fails partway through. The asynchronous wrapper allows 35 seconds so a timed-out ripgrep phase can be followed by the fallback phase. Both paths preserve the searched symlink spelling in results where possible but filter results whose resolved target lies outside the requested search root. In virtual mode, agent-visible fallback errors are sanitized so the physical root and embedded host paths do not leak.
+
+`glob` and grep's `glob` filter share one matcher. A pattern without `/` matches a basename at any depth; a pattern with `/` is evaluated relative to the search root; `**` is supported; and a leading `/` anchors to that root. Brace expansion is supported. Dot names require an explicit dot in the matching segment, and `**` does not descend into dot-directories—so `*.yml` can match a nested file beneath `.github`, while `**/*.yml` does not. Traversal segments (`..`) and patterns refused by the matcher return a structured glob error rather than escaping the backend. Local `glob` walks entries under a five-second backend budget, returns sorted regular-file matches collected before expiry with `truncated=True` and reason `budget`, and treats a mid-walk failure as an error rather than benign truncation. The middleware adds a longer outer `GLOB_TIMEOUT`, uses a bounded shared worker pool for synchronous calls so abandoned workers cannot queue without limit, and returns a tool error when that outer deadline expires.
 
 `FilesystemPermission` rules classify operations as `read` or `write` and have `allow`, `deny`, or `interrupt` mode. Patterns must be absolute and may not contain `..` or `~`. For ordinary exact operations, declaration order is significant: the first matching rule decides. Middleware checks both the requested normalized path and, for `FilesystemBackend` including routed composites, its symlink-resolved target; an unresolved target is refused when rules are configured. List and search results filter denied entries, including aliases that resolve to denied targets.
 
@@ -186,9 +166,37 @@ When execution is active, middleware adds route-to-host mapping guidance only fo
 
 ## Read media and content lifecycle
 
-For text, `read_file` produces a paginated line-numbered result. For backend-declared base64, it emits a multimodal block selected from the extension (`image`, `audio`, `video`, or generic `file`) rather than line-numbered text, retaining the validated source path and MIME type in metadata. Video decoding, when optional dependencies are available, samples frames into a synthetic `HumanMessage`; middleware moves that message after the entire preceding `ToolMessage` batch to satisfy provider ordering.
+For text, `read_file` produces a paginated line-numbered result. For backend-declared base64, it normally emits a multimodal block selected from the extension (`image`, `audio`, `video`, or generic `file`) rather than line-numbered text, retaining the validated source path and MIME type in metadata.
 
-`UnsupportedContentMiddleware`, placed after the core, memory, and HITL stack before later profile/caller stack shaping, copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
+### Optional video frame extraction
+
+The optional `deepagents[video]` extra changes the `read_file` path for supported videos; it does **not** supply a sandbox. `FilesystemMiddleware` probes the optional PyAV and Pillow dependencies when it creates the read tool, and advertises a schema whose `offset` and `limit` describe video semantics only when they are available. A binary video result is base64-decoded, subject to an input-size cap, and passed to the extractor. For video reads, `offset` is seconds from the source start and `limit` is seconds of source duration, not text-line pagination. The extractor samples JPEG frames at the middleware's fixed 0.5 fps and emits timestamp text/image blocks; it also bounds decode time, output frames, dimensions, and encoded bytes. Extraction errors—including corrupt payloads, missing streams, no frame in the requested window, and a broken optional installation—become a `read_file` tool error so the turn can recover rather than receiving raw video bytes.
+
+A successful extraction returns a normal `ToolMessage` describing the sampled-frame count plus a marked synthetic `HumanMessage` containing the window header and frame blocks. Before either sync or async model call, middleware relocates marked media messages behind **all** `ToolMessage`s belonging to the preceding assistant tool-call batch; this preserves provider-required tool-result ordering when a video read and other tools ran in parallel. Without the optional dependencies, extraction is not attempted: established video extensions retain the generic inline `video` block behavior, while `.mkv` remains a generic `file` block (although backends still read it as binary). Thus media decoding support and backend/sandbox isolation are separate concerns.
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent tool turn
+    participant Middleware as FilesystemMiddleware
+    participant Backend as Backend
+    participant Extractor as Optional video extractor
+    participant Model as Model request
+    Agent->>Middleware: read_file video with offset and limit
+    Middleware->>Backend: read binary video
+    alt video extra available
+        Middleware->>Extractor: bytes and seconds window
+        Extractor-->>Middleware: timestamped JPEG frame blocks
+        Middleware-->>Agent: ToolMessage plus synthetic HumanMessage
+        Middleware->>Model: ToolMessages then media message
+    else video extra unavailable
+        Middleware-->>Agent: generic video or file ToolMessage
+        Middleware->>Model: generic media block
+    end
+```
+
+This sequence shows the optional media transformation and ordering repair; it makes no claim about execution or filesystem isolation.
+
+In the main-agent assembly, `UnsupportedContentMiddleware` follows the core, memory, and HITL layers and precedes `ModelRefusalMiddleware` and the final tool-exclusion tail. It copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
 
 Large text and binary payloads have separate lifecycles:
 
@@ -213,9 +221,13 @@ The binary lifecycle stores references in history but restores verified payloads
 
 ## Operational guidance
 
-Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
+Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. Install `deepagents[video]` only to enable frame extraction; choose and operate a sandbox separately. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
 
-When changing this area, exercise the focused behavior rather than only tool registration: virtual-root containment and symlink resolution; composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement. For server-backed dcode sessions, also test the environment round trip and fail-closed `allow_fs_tools` validation, workspace claim contents, cancellation-safe startup cleanup, and context-manager shutdown. Run the `BaseSandbox` local operation suite with `RUN_SANDBOX_TESTS=true` when modifying its portable file-operation behavior, but do not treat its local subprocess fixture as a sandbox security test.
+When changing this area, exercise the focused behavior rather than only tool registration. The filesystem-backend suite is the regression boundary for both modes: it checks virtual paths and host-path mode, direct-child `ls` ordering and errors, text pagination (including negative/zero limits and end-of-file), binary/video classification and size guards, byte upload/download with partial batch success, edit newline normalization, and recursive deletion that removes a symlink itself rather than its directory target. It also verifies symlink-loop errors and that virtual display paths do not reveal `root_dir`. The video middleware suite separately verifies sync and async extraction routing, seconds-window forwarding, error conversion, generic fallback without the optional extra, and reordering synthetic media after a parallel tool-result batch.
+
+For search, retain literal treatment of regex-looking input; directory-component include globs when the process cwd differs from the search root; file-scoped search; total match caps; ripgrep timeout, executable-race, stderr-draining, and hard-error fallback paths; Python fallback partial-error behavior; and containment filtering for a symlink that points outside a searched root. The suite isolates the cached ripgrep resolver around tests. It skips real-binary coverage when `rg` is locally unavailable, but treats a missing binary as a failure when CI sets `DEEPAGENTS_RIPGREP_EXPECTED=1`; this protects the real-binary and symlink-containment contract from a silently failed CI installation. Preserve the shared glob dialect—hidden-name behavior, brace expansion, traversal refusal, anchoring, and basename-at-any-depth matching—and its failure distinction: a deadline returns partial `truncated` results, while a mid-walk exception is an error. Keep the backend glob budget below the middleware deadline so the useful partial backend result wins before the outer tool timeout.
+
+Also test composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement. For server-backed dcode sessions, also test the environment round trip and fail-closed `allow_fs_tools` validation, workspace claim contents, cancellation-safe startup cleanup, and context-manager shutdown. Run the `BaseSandbox` local operation suite with `RUN_SANDBOX_TESTS=true` when modifying its portable file-operation behavior, but do not treat its local subprocess fixture as a sandbox security test.
 
 ## Related pages
 

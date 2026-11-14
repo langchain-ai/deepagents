@@ -12,7 +12,7 @@ from uuid import uuid4
 from langgraph.store.base import PutOp
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Coroutine
+    from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
 
     from langgraph.store.base import BaseStore
 
@@ -70,7 +70,7 @@ class StoreRecords:
         self.lock = asyncio.Lock()
 
     @asynccontextmanager
-    async def access(self) -> AsyncIterator[None]:
+    async def access(self) -> AsyncGenerator[None]:
         """Serialize access and recover interrupted writes before exposing records."""
         async with self.lock:
             await finish(self.recover())

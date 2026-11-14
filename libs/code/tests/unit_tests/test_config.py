@@ -1477,126 +1477,24 @@ class TestDefaultModelSpecAllowlist:
         assert "<default>" not in str(excinfo.value)
         assert "No model can be used" in str(excinfo.value)
 
-    def test_all_allowed_providers_missing_credentials(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "allowed", [("openai:available",), ("openai:*",), ("my_gateway:*",)]
+    )
+    def test_policy_without_saved_choice_requires_selection(
+        self, monkeypatch: pytest.MonkeyPatch, allowed: tuple[str, ...]
     ) -> None:
-        """Every candidate definitively lacking auth is a distinct failure.
-
-        Distinguishable from the bare no-credentials case because the remedy
-        differs: only a credential for an allowlisted provider helps.
-        """
         from deepagents_code.config import _get_default_model_spec
 
         self._pin(
             monkeypatch,
             ModelConfig(
-                allowed_models=("openai:gpt-5.6-terra", "anthropic:claude-opus-5"),
+                default_model="anthropic:blocked",
+                allowed_models=allowed,
                 allowed_models_source="config.toml",
             ),
         )
-        monkeypatch.setattr(
-            model_config,
-            "get_provider_auth_status",
-            lambda provider: model_config.ProviderAuthStatus(
-                state=model_config.ProviderAuthState.MISSING,
-                source=None,
-                provider=provider,
-            ),
-        )
-
-        with pytest.raises(model_config.NoAllowedModelCredentialsError) as excinfo:
-            _get_default_model_spec()
-
-        # Names what would fix it, and stays catchable as the base class so the
-        # existing deferred-start recovery keeps working.
-        assert "openai:gpt-5.6-terra" in str(excinfo.value)
-        assert isinstance(excinfo.value, model_config.NoCredentialsConfiguredError)
-
-    def test_disallowed_stored_default_is_skipped_for_an_allowed_candidate(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A stale `[models].default` outside policy does not win."""
-        from deepagents_code.config import _get_default_model_spec
-
-        self._pin(
-            monkeypatch,
-            ModelConfig(
-                default_model="openai:blocked",
-                allowed_models=("anthropic:claude-opus-5",),
-                allowed_models_source="config.toml",
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_provider_auth_status",
-            lambda provider: model_config.ProviderAuthStatus(
-                state=model_config.ProviderAuthState.CONFIGURED,
-                source=model_config.ProviderAuthSource.ENV,
-                provider=provider,
-            ),
-        )
-
-        assert _get_default_model_spec() == "anthropic:claude-opus-5"
-
-    def test_wildcard_expands_to_discovered_models(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A `provider:*` wildcard yields the discovered lineup, not just config.
-
-        Built-in providers like `openai` have their models discovered from the
-        installed provider package, not from `[models.providers.openai].models`,
-        so a wildcard policy with valid credentials must not fall through to
-        the "No discoverable models" error.
-        """
-        from deepagents_code.config import _get_default_model_spec
-
-        self._pin(
-            monkeypatch,
-            ModelConfig(
-                allowed_models=("openai:*",),
-                allowed_models_source="config.toml",
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_discovered_models",
-            lambda provider: (
-                ["gpt-5.6-terra", "gpt-5.5"] if provider == "openai" else []
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_provider_auth_status",
-            lambda provider: model_config.ProviderAuthStatus(
-                state=model_config.ProviderAuthState.CONFIGURED,
-                source=model_config.ProviderAuthSource.ENV,
-                provider=provider,
-            ),
-        )
-
-        assert _get_default_model_spec() == "openai:gpt-5.6-terra"
-
-    def test_wildcard_with_no_discovered_models_fails_closed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A wildcard for a provider with no known models has no candidates."""
-        from deepagents_code.config import _get_default_model_spec
-
-        self._pin(
-            monkeypatch,
-            ModelConfig(
-                allowed_models=("openai:*",),
-                allowed_models_source="config.toml",
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_discovered_models",
-            lambda _provider: [],
-        )
-
         with pytest.raises(
-            model_config.NoAllowedModelCredentialsError, match="No discoverable"
+            model_config.NoModelConfiguredError, match="No model configured"
         ):
             _get_default_model_spec()
 
@@ -2279,17 +2177,57 @@ class TestWorkspaceStoredCredentials:
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             if provider == "anthropic":
+                if not json.loads(request.content).get("stream"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "id": "test-message",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": "test-model",
+                            "content": [{"type": "text", "text": "Hello"}],
+                            "stop_reason": "end_turn",
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        },
+                    )
+                events = [
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "test-message",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": "test-model",
+                            "content": [],
+                            "stop_reason": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
+                    },
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Hello"},
+                    },
+                    {"type": "content_block_stop", "index": 0},
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                        "usage": {"output_tokens": 1},
+                    },
+                    {"type": "message_stop"},
+                ]
                 return httpx.Response(
                     200,
-                    json={
-                        "id": "test-message",
-                        "type": "message",
-                        "role": "assistant",
-                        "model": "test-model",
-                        "content": [{"type": "text", "text": "Hello"}],
-                        "stop_reason": "end_turn",
-                        "usage": {"input_tokens": 1, "output_tokens": 1},
-                    },
+                    headers={"content-type": "text/event-stream"},
+                    text="".join(
+                        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                        for event in events
+                    ),
                 )
             return httpx.Response(
                 200,
@@ -7846,6 +7784,54 @@ class TestAgentDirStaysOffTheHeavyImportPath:
     `deepagents_code.agent`, which pulls in both at module level and cost
     roughly 0.8s on commands that touch no model code.
     """
+
+
+@pytest.mark.parametrize(
+    ("file_threshold", "env_threshold", "expected"),
+    [
+        (None, None, 0),
+        (100_000, None, 100_000),
+        (100_000, "0", 0),
+        (0, "50000", 50_000),
+    ],
+)
+def test_stream_config_idle_compaction_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_threshold: int | None,
+    env_threshold: str | None,
+    expected: int,
+) -> None:
+    """Trace filters reflect layered idle compaction settings, including reloads."""
+    from deepagents_code import _env_vars, model_config
+    from deepagents_code.config import build_stream_config
+    from deepagents_code.configuration import service
+
+    monkeypatch.delenv(_env_vars.IDLE_COMPACTION_TOKENS, raising=False)
+    if env_threshold is not None:
+        monkeypatch.setenv(_env_vars.IDLE_COMPACTION_TOKENS, env_threshold)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        ""
+        if file_threshold is None
+        else f"[history]\nidle_compaction_tokens = {file_threshold}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_file)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        metadata = build_stream_config("idle", assistant_id=None)["metadata"]
+        assert metadata["dcode_idle_compaction"] is (expected > 0)
+        assert metadata["dcode_idle_compaction_tokens"] == expected
+        monkeypatch.setenv(_env_vars.IDLE_COMPACTION_TOKENS, "0")
+        service.invalidate_config_sources()
+        metadata = build_stream_config("idle", assistant_id=None)["metadata"]
+        assert metadata["dcode_idle_compaction"] is False
+        assert metadata["dcode_idle_compaction_tokens"] == 0
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
 
 
 class TestBuildStreamConfigRecursionLimit:

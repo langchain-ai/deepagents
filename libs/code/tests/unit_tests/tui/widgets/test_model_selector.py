@@ -2,7 +2,7 @@
 
 import tomllib
 from typing import TYPE_CHECKING, ClassVar
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
@@ -278,7 +278,7 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
-            assert "Ctrl+R recommended" in str(help_text.content)
+            assert "Ctrl+R all models" in str(help_text.content)
             # `content` holds the full string even when a one-row clamp clips it
             # off-screen, so the rendered `region.height` is the load-bearing
             # assertion that actually catches the regression.
@@ -288,6 +288,49 @@ class TestModelSelectorChrome:
 
 class TestRecommendedToggle:
     """Tests for the Ctrl+R recommended-only toggle in `/model`."""
+
+    async def test_recommendations_visible_by_default_and_toggle_hint_tracks_action(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Current recommendations appear first and Ctrl+R expands the catalog."""
+        from deepagents_code.model_catalog import ModelCatalog
+
+        models = ["openai:other-model", "openai:recommended-model"]
+
+        load_catalog = AsyncMock(
+            return_value=ModelCatalog(models=models, profiles={}, providers={})
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.model_selector.load_recent_models", list
+        )
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                catalog_loader=load_catalog,
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
+                recommended_models={"openai:recommended-model": "Recommended Model"},
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            info = screen.query_one("#model-selector-info", Static)
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Showing recommended models" in str(info.content)
+            assert "Ctrl+R all models" in str(help_text.content)
+            assert set(dict(screen._filtered_models)) == set(models[1:])
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert "Showing all models" in str(info.content)
+            assert "Ctrl+R recommended" in str(help_text.content)
+            assert set(dict(screen._filtered_models)) == set(models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert "Showing recommended models" in str(info.content)
+            assert "Ctrl+R all models" in str(help_text.content)
+            assert set(dict(screen._filtered_models)) == set(models[1:])
 
     async def test_info_line_reflects_active_search(self) -> None:
         """Typing a filter should avoid stale recommended-only copy."""
@@ -308,6 +351,22 @@ class TestRecommendedToggle:
             assert "Showing recommended models" not in str(info.content)
 
 
+@pytest.fixture
+def single_model_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep persistence and label tests independent of provider recommendations."""
+    from deepagents_code import model_catalog
+    from deepagents_code.tui.widgets import model_selector
+
+    monkeypatch.setattr(
+        model_catalog, "get_available_models", lambda: {"anthropic": ["test-model"]}
+    )
+    monkeypatch.setattr(
+        model_selector, "_RECOMMENDED_MODELS", {"anthropic:test-model": "Test Model"}
+    )
+    monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+
+@pytest.mark.usefixtures("single_model_catalog")
 class TestDefaultModelScope:
     """Tests for which stored preference Ctrl+S writes.
 
@@ -315,19 +374,6 @@ class TestDefaultModelScope:
     so a scope mix-up would let the classifier picker retarget the model the
     agent itself runs on.
     """
-
-    @staticmethod
-    def _stub_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
-        """Reduce the catalog to a single deterministic row."""
-        from deepagents_code import model_catalog
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_catalog,
-            "get_available_models",
-            lambda: {"anthropic": ["claude-sonnet-5"]},
-        )
-        monkeypatch.setattr(model_selector, "load_recent_models", list)
 
     async def test_write_failure_raises_a_toast_naming_the_remedy(
         self, monkeypatch: pytest.MonkeyPatch
@@ -343,10 +389,7 @@ class TestDefaultModelScope:
         shape alike, so "check permissions" alone sends users to inspect
         permissions that are already correct.
         """
-        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
-
-        self._stub_catalog(monkeypatch)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
@@ -385,13 +428,11 @@ class TestDefaultModelScope:
         the provider unavailable to `dcode`. The remedy must flow through
         `safe_install_extra_recovery_command` like `/install` failures do.
         """
-        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
         from deepagents_code.tui.widgets.model_selector import (
             AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )
 
-        self._stub_catalog(monkeypatch)
         monkeypatch.setattr(
             "deepagents_code.update_check.install_extra_recovery_command",
             lambda _extra: "uv tool install deepagents-code --with langchain-anthropic",
@@ -419,7 +460,7 @@ class TestDefaultModelScope:
         assert "pip install" not in notified[0]
 
     async def test_ctrl_s_clears_stored_model_with_missing_provider(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, tmp_path: Path
     ) -> None:
         """Ctrl+S clears a stored spec even when its provider was uninstalled.
 
@@ -431,9 +472,8 @@ class TestDefaultModelScope:
             AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )
 
-        self._stub_catalog(monkeypatch)
         (tmp_path / "config.toml").write_text(
-            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            '[models]\nauto_classifier = "anthropic:test-model"\n',
             encoding="utf-8",
         )
 
@@ -457,12 +497,11 @@ class TestDefaultModelScope:
         assert "auto_classifier" not in data["models"]
 
 
+@pytest.mark.usefixtures("single_model_catalog")
 class TestNamesToggle:
     """Tests for the Ctrl+N names/raw-spec toggle in `/model`."""
 
-    async def test_names_toggle_clobbers_ctrl_s_success_message(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_names_toggle_clobbers_ctrl_s_success_message(self) -> None:
         """A pending Ctrl+S restore timer must not resurrect a stale hint.
 
         Ctrl+N and Ctrl+S both write the footer. Toggling while a success
@@ -471,16 +510,6 @@ class TestNamesToggle:
         holds because `_restore_help_text` recomputes rather than replaying a
         string captured when the message was set.
         """
-        from deepagents_code import model_catalog
-        from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_catalog,
-            "get_available_models",
-            lambda: {"anthropic": ["claude-sonnet-5"]},
-        )
-        monkeypatch.setattr(model_selector, "load_recent_models", list)
-
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
@@ -501,19 +530,9 @@ class TestNamesToggle:
             screen._restore_help_text()
             assert "Ctrl+N names" in str(help_widget.content)
 
-    async def test_names_toggle_preserves_ctrl_s_error_message(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_names_toggle_preserves_ctrl_s_error_message(self) -> None:
         """Ctrl+N must not wipe the only notice that saving the default failed."""
-        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
-
-        monkeypatch.setattr(
-            model_catalog,
-            "get_available_models",
-            lambda: {"anthropic": ["claude-sonnet-5"]},
-        )
-        monkeypatch.setattr(model_selector, "load_recent_models", list)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
@@ -538,7 +557,7 @@ class TestNamesToggle:
 
             # Rows still flip; only the footer refresh is held back.
             assert screen._show_specs
-            assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+            assert "anthropic:test-model" in str(screen._option_widgets[0].content)
             assert "Failed to save default" in str(help_widget.content)
 
             screen._restore_help_text()
@@ -785,7 +804,7 @@ class TestModelSelectorFiltering:
         from deepagents_code import model_config
 
         model_config.DEFAULT_CONFIG_PATH.write_text(
-            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            '[models]\nallowed = ["anthropic:test-model"]\n',
             encoding="utf-8",
         )
         model_config.clear_caches()
@@ -811,7 +830,7 @@ class TestModelSelectorFiltering:
         from deepagents_code import model_config
 
         model_config.DEFAULT_CONFIG_PATH.write_text(
-            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            '[models]\nallowed = ["anthropic:test-model"]\n',
             encoding="utf-8",
         )
         model_config.clear_caches()
@@ -833,7 +852,7 @@ class TestModelSelectorFiltering:
             assert "not allowed by the configured models.allowed" in content
             # Naming the permitted specs is the only way out when they are not
             # discoverable, so the empty state must carry them.
-            assert "anthropic:claude-sonnet-5" in content
+            assert "anthropic:test-model" in content
 
     def test_enter_selects_highlighted_model_not_filter_text(
         self, monkeypatch: pytest.MonkeyPatch

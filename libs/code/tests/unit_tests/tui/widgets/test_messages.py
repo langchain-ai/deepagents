@@ -3008,6 +3008,36 @@ class TestModeColorsDrift:
 class TestQueuedUserMessageModeRendering:
     """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
 
+    @pytest.mark.parametrize("trigger", ["", "!", "!!", "/"])
+    @pytest.mark.parametrize("width", [24, 80])
+    async def test_long_token_wraps_beside_prompt(
+        self, trigger: str, width: int
+    ) -> None:
+        body = "https://example.com/" + "a" * 140 + " trailing text\nnext line"
+        widget = QueuedUserMessage(trigger + body)
+        app = App()
+        async with app.run_test(size=(width, 24)) as pilot:
+            await app.mount(widget)
+            await pilot.pause()
+            from textual.style import Style as TStyle
+            from textual.visual import RenderOptions
+
+            rendered = _render_content(widget)
+            options = RenderOptions(lambda _: TStyle.null(), {})
+            lines = [
+                strip.text
+                for strip in rendered.render_strips(
+                    widget.content_size.width, None, TStyle.null(), options
+                )
+            ]
+            prefix = widget._prefix_and_body()[0][0]
+            assert lines[0].startswith(prefix + "https://")
+            assert all(line.startswith("  ") for line in lines[1:])
+            assert "".join("".join(line[2:].split()) for line in lines) == "".join(
+                body.split()
+            )
+            assert widget.content_size.height == len(lines)
+
 
 class TestStripPromptPrefix:
     """Unit tests for `_strip_prompt_prefix` selection trimming."""

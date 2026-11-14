@@ -1,6 +1,7 @@
 # Files
 
-- [CI, Labels, and Workflow Security](ci-labeling.md) - Operational contracts for reusable CI, maintainer-controlled label exceptions, package selection, ripgrep coverage, and trusted release automation.
+- [CI Gates and Labels](ci-labeling.md) - CI topology, required-gate semantics, unconditional lockfile verification, text hygiene, trusted curated-release handling, and narrowly scoped PR-label exceptions. Also covers labeling and release fan-out controls that affect merge operations.
 - [dcode Costs, Traces, and Session Operations](cost-and-sessions.md) - Operate dcode's durable thread checkpoints and estimated cost accounting while keeping transient UI telemetry distinct. Covers server-side offload settlement, trace redaction and lifecycle, ownership fencing, and focused verification.
-- [Development, Dependencies, Lockfiles, and Releases](development.md) - Package-scoped uv development, published dependency contracts, editable-source lockfile maintenance, and Release Please operations. Explains coordinated manifests, generated locks, curated release notes, and safe publication boundaries.
-- [Security and Trust Boundaries](security.md) - Operational boundaries for Deep Agents tools, local execution, dcode workspace trust, extensions and MCP, ACP approvals, Talon channels, credentials, and plugins.
+- [dcode Installation and Update Lifecycle](dcode-install-and-update.md) - How dcode checks, announces, and applies self-updates, including install-method safeguards, metadata caching, locking, Python migrations, and optional dependency changes. Covers safe deferral, recovery, and editable-install behavior for updates, extras, and arbitrary packages.
+- [Development and Release Operations](development.md) - Package-local development contracts, dependency compatibility, lockfile closure, release baselines, and the scheduled process that raises compatible LangChain-ecosystem floors.
+- [Security and Trust Boundaries](security.md) - Operational guidance for execution authority, filesystem policy, dcode server startup, MCP/OAuth safety, and Talon channel and unattended-run controls.

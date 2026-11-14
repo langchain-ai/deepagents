@@ -123,6 +123,10 @@ def run_uninstall_request(*, name: str) -> int:
     if outcome.extra_was_absent:
         console.print(escape(outcome.output), highlight=False)
         return 0
+    if outcome.deferred:
+        # Nothing ran. `soft_wrap` keeps the command on one line to paste.
+        console.print(outcome.output, markup=False, highlight=False, soft_wrap=True)
+        return 1
     if outcome.success:
         console.print(
             f"[green]Uninstalled extra '{name}'.[/green] Its packages are already "
@@ -260,15 +264,22 @@ def _run_install_package(*, name: str, yes: bool) -> int:
             highlight=False,
             markup=False,
         )
-        success, output = asyncio.run(
-            perform_install_package(package, log_path=pkg_log_path)
+        outcome = asyncio.run(
+            perform_install_package(
+                package,
+                log_path=pkg_log_path,
+            )
         )
-        if success:
+        if outcome.success:
             console.print(f"[green]Installed package '{package}'.[/green]")
             return 0
+        if outcome.deferred:
+            # Nothing ran. `soft_wrap` keeps the command on one line to paste.
+            console.print(outcome.output, markup=False, highlight=False, soft_wrap=True)
+            return 1
         # Tail the last 200 chars — uv prints the resolved error at the end.
         # The full output is in the log.
-        detail = f": {output[-200:]}" if output else ""
+        detail = f": {outcome.output[-200:]}" if outcome.output else ""
         console.print(
             f"[bold red]Install failed[/bold red]{escape(detail)}\nLog: {pkg_log_path}",
             markup=True,
@@ -376,6 +387,10 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
         if outcome.success:
             console.print(f"[green]Installed extra '{extra}'.[/green]")
             return 0
+        if outcome.deferred:
+            # Nothing ran. `soft_wrap` keeps the command on one line to paste.
+            console.print(outcome.output, markup=False, highlight=False, soft_wrap=True)
+            return 1
         # Tail the last 200 chars — uv resolver prints the resolved error at
         # the end, not the beginning.
         detail = f": {outcome.output[-200:]}" if outcome.output else ""

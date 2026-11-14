@@ -15,10 +15,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
+from deepagents.middleware.summarization import create_summarization_middleware
+from langchain.agents.middleware.types import (
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
+)
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.config import MODEL_RETRIES_ATTR
+from deepagents_code.configurable_model import ConfigurableModelMiddleware
 from deepagents_code.hooks.models.domain import HookEvent, PreCompactDecision
 from deepagents_code.offload_middleware import (
     _SUMMARY_TRIM_FALLBACK,
@@ -112,6 +121,127 @@ class TestArchiveReadGuard:
 
         assert guard.download_files([response.path]) == [response]
         assert guard.write(response.path, "new history") == expected
+
+
+class _BudgetChatModel(FakeListChatModel):
+    model_name: str
+    max_tokens: int = 1_000
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("startup_limit", "selected_limit", "context_limit", "tokens", "output", "compact"),
+    [
+        (32_000, 128_000, None, 64_000, 2_000, False),
+        (128_000, 32_000, None, 26_000, 8_000, True),
+        (128_000, 32_000, None, 26_000, 2_000, False),
+        (128_000, 128_000, 24_000, 26_000, 2_000, True),
+    ],
+)
+async def test_auto_compaction_uses_selected_model_budget(
+    asynchronous: bool,
+    startup_limit: int,
+    selected_limit: int,
+    context_limit: int | None,
+    tokens: int,
+    output: int,
+    compact: bool,
+    tmp_path: Path,
+) -> None:
+    """Budget checks follow runtime selection without bypassing model overrides."""
+    from deepagents.backends import FilesystemBackend
+
+    from deepagents_code.agent import build_model_identity_section
+    from deepagents_code.config import ModelResult
+
+    startup = _BudgetChatModel(
+        model_name="startup",
+        responses=["startup"],
+        profile={"max_input_tokens": startup_limit},
+    )
+    selected = _BudgetChatModel(
+        model_name="selected",
+        responses=["selected"],
+        profile={"max_input_tokens": selected_limit},
+    )
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    middleware = CLICompactionMiddleware(
+        create_summarization_middleware(startup, backend)
+    )
+    configurable = ConfigurableModelMiddleware(
+        persist_model_state=False, openai_prompt_cache_key=False
+    )
+    messages: list[AnyMessage] = [
+        HumanMessage("x" * (tokens * 4)),
+        AIMessage("done"),
+        HumanMessage("next"),
+    ]
+    request: ModelRequest[Any] = ModelRequest(
+        model=startup,
+        messages=messages,
+        tools=[],
+        state={"messages": messages},
+        system_prompt=build_model_identity_section("startup", provider="anthropic"),
+        model_settings={"max_tokens": 16_000, "cache_control": "ephemeral"},
+        runtime=Runtime(
+            context=CLIContextSchema(
+                model="selected",
+                model_params={"max_tokens": output},
+                profile_overrides={"max_input_tokens": selected_limit},
+                model_context_limit=context_limit,
+            )
+        ),
+    )
+    received: list[ModelRequest] = []
+
+    def call_model(resolved: ModelRequest) -> ModelResponse:
+        received.append(resolved)
+        return ModelResponse(result=[resolved.model.invoke(resolved.messages)])
+
+    async def acall_model(resolved: ModelRequest) -> ModelResponse:
+        received.append(resolved)
+        return ModelResponse(result=[await resolved.model.ainvoke(resolved.messages)])
+
+    async def aconfigure(resolved: ModelRequest) -> ModelResponse:
+        response = await configurable.awrap_model_call(resolved, acall_model)
+        assert isinstance(response, ModelResponse)
+        return response
+
+    def configure(resolved: ModelRequest) -> ModelResponse:
+        response = configurable.wrap_model_call(resolved, call_model)
+        assert isinstance(response, ModelResponse)
+        return response
+
+    with patch(
+        "deepagents_code.config.create_model",
+        return_value=ModelResult(
+            model=selected,
+            model_name="selected",
+            provider="openai",
+            context_limit=context_limit or selected_limit,
+        ),
+    ):
+        response = (
+            await middleware.awrap_model_call(request, aconfigure)
+            if asynchronous
+            else middleware.wrap_model_call(request, configure)
+        )
+
+    command = response.command if isinstance(response, ExtendedModelResponse) else None
+    update = command.update if command is not None else None
+    compacted = isinstance(update, dict) and "_summarization_event" in update
+    assert compacted is compact
+    assert len(received) == 1
+    resolved = received[0]
+    assert resolved.model is selected
+    assert resolved.model_settings["max_tokens"] == output
+    assert "cache_control" not in resolved.model_settings
+    assert resolved.system_prompt is not None
+    assert "selected" in resolved.system_prompt
+    assert "startup" not in resolved.system_prompt
+    assert (resolved.messages != messages) is compact
+    assert request.model is startup
+    assert request.model_settings["max_tokens"] == 16_000
 
 
 class TestCLICompactionMiddleware:
@@ -335,6 +465,41 @@ class TestCLICompactionMiddleware:
         assert event["cutoff_index"] == 9
         assert event["file_path"] == "/conversation_history/thread.md"
         assert isinstance(event["summary_message"], HumanMessage)
+
+    async def test_operation_path_anchors_prior_cutoff_and_records_its_id(
+        self,
+    ) -> None:
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 2
+        summarization._compute_state_cutoff.return_value = 2
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        messages = [
+            HumanMessage("b", id="b"),
+            HumanMessage("c", id="c"),
+            HumanMessage("d", id="d"),
+        ]
+        # "a" was removed after this event was written, so "b" moved to index 0.
+        prior = {
+            "cutoff_index": 1,
+            "cutoff_message_id": "b",
+            "summary_message": None,
+            "file_path": None,
+        }
+
+        result = await middleware.arun_forced_compaction_update(
+            cast("Any", {"messages": messages, "_summarization_event": prior}),
+            runtime,
+        )
+
+        assert result is not None
+        anchored = {**prior, "cutoff_index": 0}
+        summarization._apply_event_to_messages.assert_called_once_with(
+            messages, anchored
+        )
+        summarization._compute_state_cutoff.assert_called_once_with(anchored, 2)
+        assert result["_summarization_event"]["cutoff_message_id"] == "d"
 
     async def test_operation_path_threads_and_persists_the_session_id(self) -> None:
         """`/offload` must reuse and re-commit the SDK's archive-file id.

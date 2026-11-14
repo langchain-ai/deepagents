@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from deepagents_code._version import __version__
+from deepagents_code.update_check import InstallOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -732,7 +733,7 @@ async def test_update_deps_decline_app_update_refreshes_current_deps(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(
+                return_value=InstallOutcome(
                     True,
                     " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
                 ),
@@ -788,7 +789,7 @@ async def test_update_deps_decline_app_update_reports_no_new_deps(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(True, "Resolved 120 packages in 12ms\n"),
+                return_value=InstallOutcome(True, "Resolved 120 packages in 12ms\n"),
             ),
             patch(
                 "deepagents_code.update_check.perform_upgrade",
@@ -847,7 +848,7 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(
+                return_value=InstallOutcome(
                     True,
                     " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
                 ),
@@ -1039,7 +1040,7 @@ async def test_update_refresh_prompt_responsive_through_message_pump(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(
+                return_value=InstallOutcome(
                     True,
                     " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
                 ),
@@ -1115,7 +1116,7 @@ async def test_update_deps_prompt_responsive_through_message_pump(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=InstallOutcome(True, ""),
             ) as refresh_mock,
         ):
             assert app._chat_input is not None

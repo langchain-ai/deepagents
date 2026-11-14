@@ -6,48 +6,34 @@ tags: [evaluations, testing, langsmith, harbor, benchmarking]
 sources:
   - id: openwiki-source-3032482267151cb6e217d034
     resource: repo://.github/scripts/evals/aggregate_unified.py
-  - id: openwiki-source-9842c305906ea17c402879dd
-    resource: repo://.github/scripts/evals/experiment_name.py
   - id: openwiki-source-666ffb85801f05fea2a2adbf
     resource: repo://.github/scripts/evals/unified_prep.py
+  - id: openwiki-source-c0a8cdd7847afa481defa30b
+    resource: repo://.github/scripts/tests/evals/test_unified_workflow.py
+  - id: openwiki-source-fa750a379507f8fc66395df2
+    resource: repo://.github/workflows/_eval.yml
   - id: openwiki-source-60d75d0ff1b1cedd1f38db0c
     resource: repo://.github/workflows/_harbor_run.yml
+  - id: openwiki-source-f9138a1fe0bc1bdbb69e3995
+    resource: repo://.github/workflows/evals_trials.yml
+  - id: openwiki-source-efa89bc59ebc2bd6d1443749
+    resource: repo://.github/workflows/evals.yml
   - id: openwiki-source-b6252e3f3473cd89534f2acb
     resource: repo://.github/workflows/unified_evals.yml
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-0153e073a6645f3118ca08c4
     resource: repo://libs/evals/AGENTS.md
   - id: openwiki-source-c0799cb44ce695871e7f3bf6
     resource: repo://libs/evals/CONTRIBUTING.md
   - id: openwiki-source-b57141bb692e5ccd2249f996
     resource: repo://libs/evals/deepagents_evals/cli.py
-  - id: openwiki-source-e1c2a6ed3b5b19dcacccb3b4
-    resource: repo://libs/evals/deepagents_harbor/agent.py
   - id: openwiki-source-dd120a1be03e34bad3c59b22
     resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
-  - id: openwiki-source-02279348940c05e8a156489b
-    resource: repo://libs/evals/EVAL_CATALOG.md
-  - id: openwiki-source-be7f6aa28551fac7310db803
-    resource: repo://libs/evals/Makefile
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
     resource: repo://libs/evals/README.md
-  - id: openwiki-source-f3c8f48b7dd96f2acf2b21a8
-    resource: repo://libs/evals/scripts/run_trials.py
-  - id: openwiki-source-444185e93422c817e5e81a83
-    resource: repo://libs/evals/tests/evals/conftest.py
-  - id: openwiki-source-4c40634a8db8c72db8e98001
-    resource: repo://libs/evals/tests/evals/utils.py
-  - id: openwiki-source-78f970513a111c43fc9971ce
-    resource: repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
-  - id: openwiki-source-7daa825b2b1033e42c95e741
-    resource: repo://libs/evals/UNIFIED_EVALS.md
+generated: { by: "openwiki/0.4.2", at: "2026-11-02T08:04:35.090Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-27T08:05:40.296Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
+    at: 2026-11-02T08:04:35.090Z
 ---
 
 # Run Evals
@@ -62,6 +48,19 @@ Deep Agents has four intentionally different evaluation boundaries. Start with t
 | How do models, branches, and harnesses compare on a fixed battery? | `unified_evals.yml` | Cross-model Harbor scorecard. |
 
 The normal `libs/evals` `make test` target runs `tests/unit_tests` with non-Unix sockets disabled; `make evals` separately invokes real-model tests in `tests/evals`. Package unit and integration suites are likewise package-owned. Run focused deterministic tests first, then pay for the narrower remote measurement that is needed.
+
+```mermaid
+flowchart TD
+    Change["product change"] --> Unit["package deterministic tests"]
+    Change --> Behavior["traced behavioral eval"]
+    Change --> Harbor["Harbor task verification"]
+    Behavior --> Trace["LangSmith trajectory and eval report"]
+    Harbor --> Task["task verifier and Harbor artifacts"]
+    Trace --> Trials["repeat when comparing models"]
+    Task --> Unified["fixed battery comparison"]
+```
+
+Caption: each evaluation boundary produces a different signal; sequence them when useful, but do not substitute one for another.
 
 ## Behavioral pytest evals
 
@@ -120,6 +119,27 @@ deepagents-evals aggregate trial_runs/memory --summary-out summary.json
 Trials are sequential within one process because concurrent experiment creation and provider traffic are unsafe. Each trial writes an `evals_report_trial_NNN.json`; aggregation writes `trials_summary.json` with summary statistics, failures, per-category scores, and only numeric non-null metrics. The pytest reporter makes its session status zero even when individual evals fail, so trial automation uses aggregated `counts.failed.mean`, not a trial's pytest return code. A positive failed mean exits `1`; configuration/drift errors exit `2`; unusable reports exit `3`.
 
 When discovery data changes, regenerate rather than hand-edit generated documentation: `EVAL_CATALOG.md` is generated from `tests/evals`, while model groups come from the curated registry. `catalog --check` and `model-groups --check` make stale generated output a configuration failure.
+
+### GitHub Actions: one model per reusable run
+
+Dispatch `evals.yml` for provider-partitioned behavioral evals. Its prep job resolves the requested model group or explicit model list into provider matrices. Each provider matrix is serialized (`max-parallel: 1`) to avoid provider-local rate-limit bursts, while different provider jobs may run concurrently; every leaf calls `_eval.yml` with a stable, artifact-safe key. The reusable workflow sets tracing and a per-model LangSmith experiment, applies category, tier, OpenRouter pin/fallback, OpenAI reasoning-effort, and REPL controls, then runs `make evals`.
+
+Only the selected provider credential is exposed to the execution step alongside the LangSmith key. A report is required even if pytest itself returned successfully: `_eval.yml` checks `evals_report.json`, adds its metrics, category scores, and experiment links to the job summary, and uploads `evals-report-<artifact_key>`. Optional LLM failure analysis is explicitly best-effort and, if produced, is a separate `failure-analysis-<artifact_key>` artifact. The workflow's final aggregate downloads all reports, creates `evals_summary.json`, and may generate and publish charts; chart generation or publishing does not replace the JSON result.
+
+`evals_trials.yml` reuses the same leaf workflow for a single `provider:model`. It builds deterministic artifact keys of the form `trial-NNN-<model-slug>`, accepts 1 through 20 trials, and defaults to one concurrent trial. A dispatcher can opt into parallel trials only after confirming the provider can absorb the burst. Its aggregate job downloads `evals-report-trial-*`, runs `scripts/run_trials.py --aggregate-only`, uploads `trials-summary`, and fails the summary job when fewer usable reports arrive than requested—so a partial sample is visible rather than greenwashed.
+
+```mermaid
+flowchart TD
+    Dispatch["evals or evals trials dispatch"] --> Matrix["validate and resolve provider or trial matrix"]
+    Matrix --> Leaf["_eval reusable run"]
+    Leaf --> Report["evals report artifact"]
+    Leaf --> Analysis["optional failure analysis artifact"]
+    Report --> Aggregate["aggregate reports"]
+    Aggregate --> Summary["JSON summary and job summary"]
+    Aggregate --> Charts["best effort charts and publish"]
+```
+
+Caption: behavioral-eval CI preserves the report as the authoritative artifact while diagnostics and charts are additive.
 
 ## Harbor benchmark runs
 
@@ -190,6 +210,12 @@ Caption: prep establishes the expected leaf grid and experiment identities; comb
 For binary categories, `pass@K` is the fraction of tasks passing at least one of K rollouts; `avg@K` divides passing trials by expected trials so missing rollout data cannot inflate a result. Graded research uses `avg@K` because its `pass@K` is structurally zero. The combiner validates summary schema and rollout count, quarantines duplicate leaves, marks missing or malformed expected leaves incomplete, and ranks rows by macro `avg@K`. It emits a radar input only with at least three categories. Artifact-download, malformed-summary, and usage failures become structured warnings and incomplete diagnostics rather than silently improving a ranking.
 
 The usage collector is best-effort and is isolated from the publishing job: it receives the LangSmith key, whereas the combine/publish job has repository write access but not that key. Keep model, task/profile, graph, branch SHA, sandbox, judge, reasoning effort, and rollout count fixed when interpreting a comparison. Branch comparisons overlay only `libs/deepagents`, `libs/code`, `libs/acp`, and `libs/partners/quickjs` from a verified resolved SHA; the Harbor harness and benchmark infrastructure remain at the workflow revision.
+
+### Change and test the orchestration safely
+
+Treat the workflow contracts as part of the evaluation implementation. `test_unified_workflow.py` statically checks dispatch defaults and forwarding, full-profile enumeration, flat-pool and per-category aggregate matrices, credential checks, branch overlays, artifact naming, retry/timeout controls, download retry classification, publication serialization, and the separation between LangSmith usage credentials and repository-write publishing. Pair an orchestration change with the focused test covering its contract, rather than relying on a paid dispatch to discover wiring drift.
+
+For changes to prep or aggregation policy, also preserve these invariants: category mappings must name registered graphs; an explicit task filter must be exact; expected leaves must remain available to combination; and missing artifacts, malformed leaf summaries, duplicated leaf identities, or unavailable usage must become warnings/incompleteness rather than disappear from the scorecard. A green best-effort post-processing job is not evidence that all rollouts completed.
 
 ## Operating checklist
 

@@ -468,8 +468,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Setting `mode="fork"` on a `SubAgent` is experimental. A fork
             continues the parent's conversation and rebuilds its system prompt
-            instead of starting isolated; any `system_prompt` of its own is appended to
-            the inherited one, and it cannot define `skills`.
+            instead of starting isolated; its own `system_prompt` is sent with the
+            task, and it cannot define `skills`. It does not inherit the parent's
+            `response_format`. To align structured-output settings when the fork
+            should also return structured data, set the same format on its spec;
+            otherwise the provider requests may differ and reduce cache reuse.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt

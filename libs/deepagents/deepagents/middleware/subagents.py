@@ -228,25 +228,26 @@ class SubAgent(TypedDict):
     - `dict[str, Any]`: A JSON schema dictionary
         (e.g., `{"type": "object", "properties": {...}, "required": [...]}`).
 
-    Fork prompt-cache limitations:
+    Forks and prompt caching:
 
-    A declarative fork's first request can differ from the parent's last request,
-    reducing prompt-cache reuse. The fork appends its task to the inherited history
-    and processes the conversation through its middleware: the added task can move
-    an earlier `write_file` argument outside the recent-message window, causing it
-    to be truncated, or trigger summarization of earlier messages. The fork also
-    does not inherit the parent's `response_format`. Different formats can change
-    the provider request: `ToolStrategy` adds a schema tool, while
-    `ProviderStrategy` configures provider-native output.
+    A fork continues the parent's conversation, but its first model request may
+    differ from the parent's last request. That can reduce prompt-cache reuse:
 
-    If structured output is also appropriate for the fork, explicitly set the same
-    format on both parent and fork. This changes the fork's result to JSON; it does
-    not guarantee cache hits, since history rendering, models, middleware, tools,
-    and provider caching behavior can also differ. A bare schema or `AutoStrategy`
-    may select different strategies for different models; a per-task response-format
-    override can also replace the fork's configured format.
+    - The fork adds its task to the history before running middleware. This can
+        trigger summarization or cause an older `write_file` argument to be
+        truncated when it falls outside the recent-message window.
+    - A declarative fork doesn't inherit the parent's `response_format`. The
+        format affects the request: `ToolStrategy` adds a schema tool, while
+        `ProviderStrategy` uses provider-native output settings.
 
-    For example, to opt a fork into the parent's tool-based format:
+    If the fork also needs structured output, you can set the same format on both
+    parent and fork. The fork will then return JSON instead of its last message.
+    Matching formats alone doesn't guarantee a cache hit: history, models,
+    middleware, tools, and provider caching behavior can still differ. A bare
+    schema or `AutoStrategy` may choose different strategies for different models,
+    and a per-task override can replace the fork's configured format.
+
+    For example, to give a fork the parent's tool-based format:
 
     ```python
     from langchain.agents.structured_output import ToolStrategy

@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:9977ef92925f50583a92123fbad192596819f11360c8b4e2ffeac4d30fa15f97",
+  "pageVersion": "sha256:122df802229ba84e8aea2e820c07cc4e6c913ce884fef635c081f9864d696849",
   "claims": [
     {
       "id": "claim_84c087f65f2749b8bf613b47f43f37ee",
-      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.37, ACP 0.0.13, Code 0.2.7, Talon 0.1.0, Daytona 0.0.9, Modal 0.0.7, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.12—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
+      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.38, ACP 0.0.13, Code 0.2.8, Talon 0.1.0, Daytona 0.0.9, Modal 0.0.8, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.12—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:5dd426ee3bccb9d091a398d9461354531f1f9771b3740f2d2705bc2c47f34e6a"
+          "version": "repo-file-v1:sha256:1d21a49e8b332c7607559dc50c6db630f62e6bbd32939bca2a87619142e4d368"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -114,11 +114,11 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L14",
-          "version": "repo-lines-v1:sha256:6f4572afd3ad414279437e98c47f5783490bebe37d15918728fc2ed67a6820d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+          "version": "repo-lines-v1:sha256:fe2a3fcea183220cb7200791eeb39680f7e211586acb7a71c39e47b20d0781c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L8",
-          "version": "repo-lines-v1:sha256:bbcee6a27f0b2ee4c447b5b55a3dc8aee0de0af096cdd7e0ad7b502e6619622f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjhjMGU5MDkzY2QzZTgwYTIzMTNiYWE0YzlmNWNmYzIwMjU0MmJmMzg2NmYxZTAzNTJmNzI3ODJlY2Y0ODA3MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODZlNGQ0ZDY5ZTk0NThhYWUxMDViYjQ3MjAwMzY4NjRlMGZiOWQ3MTc5NWMxMzYxZmQ2YWY4MTBjMDNkZTMzMyJ9"
+          "version": "repo-lines-v1:sha256:edff99529ae422bc8106d7b0b12fdb7a7448aaba2e3a5d33ded33a8b73c33c9e:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjhjMGU5MDkzY2QzZTgwYTIzMTNiYWE0YzlmNWNmYzIwMjU0MmJmMzg2NmYxZTAzNTJmNzI3ODJlY2Y0ODA3MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODZlNGQ0ZDY5ZTk0NThhYWUxMDViYjQ3MjAwMzY4NjRlMGZiOWQ3MTc5NWMxMzYxZmQ2YWY4MTBjMDNkZTMzMyJ9"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L5-L11",
@@ -128,7 +128,7 @@
     },
     {
       "id": "claim_17930e8eb1084b27993631f87f68633a",
-      "statement": "Code publishes an exact `deepagents==0.7.37` dependency but replaces it with an editable `../deepagents` source in the workspace, so local development does not validate the SDK version delivered to PyPI users.",
+      "statement": "Code publishes an exact `deepagents==0.7.38` dependency but replaces it with an editable `../deepagents` source in the workspace, so local development does not validate the SDK version delivered to PyPI users.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L224-L231",
@@ -136,7 +136,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L26-L32",
-          "version": "repo-lines-v1:sha256:53dc902f48c24c1767b25b0d72f615188f21a96f6edec13ed97573559ef8f777:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDlmY2UzMjIwMzRhMWYyN2UwNmNkYjc3OGYxNGY5NWNmOTIwNGRkOTAyYTc1MTIyZjJlOWE4YzkyODAzZDk3MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDJmY2ZlNTQxNjczYzI0NDk2NmZiMzMxY2UyMjZhNWU5YzFjNDY2MWQ3MTQyMDBhNWVhNTkyYmViMTVhOTMxNyJ9"
+          "version": "repo-lines-v1:sha256:3af8aea7e7c0d648eb02eb421be3436ccf771d43c07cfe675f796e02a85b24ee:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDlmY2UzMjIwMzRhMWYyN2UwNmNkYjc3OGYxNGY5NWNmOTIwNGRkOTAyYTc1MTIyZjJlOWE4YzkyODAzZDk3MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDJmY2ZlNTQxNjczYzI0NDk2NmZiMzMxY2UyMjZhNWU5YzFjNDY2MWQ3MTQyMDBhNWVhNTkyYmViMTVhOTMxNyJ9"
         }
       ]
     },
@@ -209,20 +209,6 @@
       ]
     },
     {
-      "id": "claim_4b570ede444c4cf088fba0060e3c853d",
-      "statement": "The repository pre-commit configuration runs package-specific formatting and linting for matching Deep Agents, Code, Evals, and ACP changes, checks lock freshness for library manifest or lock changes, and validates Conventional Commit messages.",
-      "evidence": [
-        {
-          "resource": "repo://.pre-commit-config.yaml#L12-L34",
-          "version": "repo-lines-v1:sha256:139c743d5fec2b02707eec600bccf24c0dfb263b2c140b531bb3359fdbeaf0c8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMTEwZGI1YTkzNTdjZGExZDc4MjE2Y2RjMGJmOGIyNTVlMzM4Y2JjMWYzMjdlMGRmMDhjZmM3NzM5MWRkZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0YzMzNGExNzMzY2U1Y2NmZjA1NWZjYzUzODNkMjA0Yjk2NjkzMDA1NmQ5MjIwMTY0ZDlhMmUxNDVkNmQ3ZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhMDZjODM0M2JkM2VhYmY1MjczMGY2MDQwYmQ3OTE1Zjk0Njc5YTA3MGEyMzQ4MGE5Y2NiZGJmNTRjZWJmZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjMDAxMWU2NGM1ZGE1Yzg2YzQwOTRiYWM4OGFlZDZhMzc4MDc3NjI1MTUyN2UxODQ1M2MwYTY1NGU3ZjFmYmMifQ"
-        },
-        {
-          "resource": "repo://.pre-commit-config.yaml#L57-L104",
-          "version": "repo-lines-v1:sha256:f22511333e32a3ba99913b63ff4d87b2d065f472a762ca4d67b58b45b818f240:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNWFjN2E3OGNlODgzZmExOGI3MDdlODJmMzU1ZjRkZDQ0OWNmZWNjNzkyZmVkMWYwZGQyOGFlM2Y2MDk4NTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxNzg2YmQzZDQ5YmE5M2IyNmM0NDY4MzUyZDVlYjA3OWI1ZmNlNGZkZmQ2MzY4Mzg2NDIxZGVmYzI2NzA0ZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhOTJiN2YyMDUzNTE5NjZjNmJmM2ZjNWYyZGM5NTZlNWYzYTk1OTk4MzEwMjMwM2YwZWQyY2JlNDgwMWM4NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyM2YwMjY2NTdjN2Y3OTY4ZTI5OTZkOWYxYmJmZTE5NmNmMWQyMTUyZjc4NzVmNDkyYTMzY2JhZmEwNjFiODMifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_5276de4451a5425cad81745f7fed742d",
       "statement": "The scheduled dependency-minimums updater runs daily at 09:00 UTC or by manual dispatch over release-managed packages. It raises only `>=` and `~=` lower bounds for names in the LangChain, LangGraph, LangSmith, and Deep Agents prefixes, preserving existing ranges, extras, markers, compatible-release ceilings, and exact pins.",
       "evidence": [
@@ -283,38 +269,80 @@
       ]
     },
     {
-      "id": "claim_2f1645e9bfb3402faf8e4323c27c1ff1",
-      "statement": "Talon requires `deepagents>=0.7.36` and `deepagents-code>=0.2.7,<1.0.0`, while Daytona, Modal, QuickJS, Runloop, and Vercel each constrain Deep Agents to `>=0.7.36,<0.8.0`; their editable source mappings apply only to local development.",
+      "id": "claim_b3f33fcaad2b4c03bd27927eb78b74a1",
+      "statement": "The curated release-notes gate applies to every release-please-managed package: a ready release PR receives a marked bot draft, `@release-bot apply` writes the package changelog and PR body, and only `ci:skip-curated-notes` bypasses the merge gate; the merged changelog supplies the published GitHub release notes.",
       "evidence": [
         {
-          "resource": "repo://libs/partners/daytona/pyproject.toml#L22-L26",
-          "version": "repo-lines-v1:sha256:db5c67d178dfe698bd66c924eaa38b2eff0b37563d716b00ac7574753aefb4c3:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMwYjc1OThjMmJmMzg1NzgyMmIwZDMwODZmZmVmYTQ3ZDBkZTA5MTUwODRmNjdkY2YzNGRmMmNkZGI4OGNjNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYwY2VlZGQwYmFiYmE2OGNmMjg5OWQ4NTQxYTg1ZmMxYTFmM2U4MmVkOTJhNTc0MzZlZGMyNjM2NTZmMmY3ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2I1ODYxYmVjMDBlNjE1NzJjNjZkZTk0NzVlZDc3NzllYTZjOTEwMjI1Yjg2MjY4ODMyMTg4MGRlYTkxZjlmYiJ9"
+          "resource": "repo://.github/RELEASING.md#L60-L86",
+          "version": "repo-lines-v1:sha256:26ebf4f38965bad0f82ecb740a7e3d4b770d07ec8466954b78aa07ff07dbcd37:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NjU2YzExMmI1OTE4ZDAzM2JmNmQxYjA5YzM5NmE2YjVlOWNiYzBlZWEwM2Y2ZWRhYTU1YzI4NWVmZmE3NDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViNGFhNjk5N2E4YjU2NTc3YjZlN2IwY2M0MDFmY2Q3YTM3NTlhYTNhMGFkNTY3YmNiNDc4ZjI5M2M3N2M3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYyZTM4ZTkwZjJmZmFhMDlmODg0MDQ3NjI0YWNlNDY1NjU2NzY5MTgzMzA5MGNlZGNjZDUzMGJiODA4MmQyNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmMzgyNTE0NjQ5ZTlkOTUzODUzZDQwMDkxOGQ5YmIxMmJiYjAzZjE5Y2MzYTJiMDQ4NTBjODQ3YThiMDBlMjgifQ"
         },
         {
-          "resource": "repo://libs/partners/modal/pyproject.toml#L22-L26",
-          "version": "repo-lines-v1:sha256:ea9189f6e2b58a79d091e4231e7f12bfd0403481b43eb3ead197206a744a4e20:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjIwMWIwZTE2ZDEwMjZjNTUyOTRjNzA5ZmVjNjAyMWEzMjU4M2JmMjIzOTNmMTdlM2Q2YTY5ZWE3MDMwN2Y5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2E3ZTYyNTI4YmJiNTI3NDNlNWVhMWFiZjMxOWQzYmFjZjc3ZTFlM2RhMzhlOGFiYzg2NDM0MTNmM2YyOTI4NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2I1ODYxYmVjMDBlNjE1NzJjNjZkZTk0NzVlZDc3NzllYTZjOTEwMjI1Yjg2MjY4ODMyMTg4MGRlYTkxZjlmYiJ9"
+          "resource": "repo://.github/workflows/release_notes_check.yml#L35-L159",
+          "version": "repo-lines-v1:sha256:0f735236438fbd0015c89104a60f7a8650ce521f54f303cbd42e6ebbb454d40b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlOWQ4MDE1NGVkNDJmYzVjNzc5YjEzMzE1NzhiNThiODljODAxZWFjZTc0ZjI0Y2Q0OGViNGEyMzU3OTQwYTk1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTIyYzQyY2QxOWM2ZDAzZDgwOGM0NTI3MjA1NTI4MjViN2VhMWM1YjQ5MWIyMTg1MTFjYWM3NDE1Y2Y5ZDliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1N2RlZWZlYmJlMDkzMzJkZjdjYzc1ZmFiYzZkNzcwNGQ0NGRhMzM3ZWRlYzY3NDQwYjU5NTI2OWJkNjAwNzFkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlMzY1NDRhM2UwMmM5MTA5NTNhOTJhNmQ2MWNlNWY0YmE0MTVmNGM1NDEwYjBjZTliY2NhYzYwMDdiOTU1NDdmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_405d82069d034fabae78334da450af4b",
+      "statement": "Curated-note automation derives the target from the release PR/configuration and keeps privileged processing on trusted `main` code: release content is fetched as API data at a validated SHA, while draft/apply mutations use short-lived GitHub App tokens after command and maintainer validation.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L60-L82",
+          "version": "repo-lines-v1:sha256:0f3039f93843ce74eebe527ed1212f2838d2569932c2233d108cc56f7c4812ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NjU2YzExMmI1OTE4ZDAzM2JmNmQxYjA5YzM5NmE2YjVlOWNiYzBlZWEwM2Y2ZWRhYTU1YzI4NWVmZmE3NDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhNjkwOGNmMTI3NWVlOWJlZDc5OTU0NGVjZWE4OTQ5OTUzNTFhMDQ1NTdhYmY2ZWQxZjU3ZGI1MmNjYzliMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYyZTM4ZTkwZjJmZmFhMDlmODg0MDQ3NjI0YWNlNDY1NjU2NzY5MTgzMzA5MGNlZGNjZDUzMGJiODA4MmQyNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYwMTAxODlmZGM3M2ExMzY2NWE5OGY3MDdjY2Y3OTRiZTVlZGU1Mzk0MjJiNmVjZDNiNGNkZmViMDNhMTc0NTAifQ"
         },
         {
-          "resource": "repo://libs/partners/quickjs/pyproject.toml#L21-L31",
-          "version": "repo-lines-v1:sha256:bcfac8799611d2931c5bb991b8e62e6110938b838943c77637644ca36ac66970:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzOWJlNDk3OGJlOGQyMTNlNjQxZDczYjI0MTM4ZWMyZDc3ODlmNmZjZTVjY2U4OWQ2MDRmNzhjYWIyZTdhMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3NzQwZmI5YTRkMjJjOTg3Mzg0NTRlYTlkMTcwMzE3MjE3MzJiOGEzMzRmMjEyNDA0MWIyZWYxMTUwYWQ0MzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiNTg2MWJlYzAwZTYxNTcyYzY2ZGU5NDc1ZWQ3Nzc5ZWE2YzkxMDIyNWI4NjI2ODgzMjE4ODBkZWE5MWY5ZmIifQ"
+          "resource": "repo://.github/workflows/release_notes.yml#L109-L127",
+          "version": "repo-lines-v1:sha256:9773dc6c9eca73f17dfe90a80415bcd1b7844ec183925d6ca464f99c08956139:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwM2FmN2UwY2Q1N2ZmNzVkOWFlZWFkMTI4ZWY1Njg1MzA1OTk2NjI5NDM5ODE0YWRmMTNjNDhkMTY1ZjljMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMmY3OWIyM2Y3NjVkODRjMmViOTk1ODQxOTRkNmQ3Njc0ZmQ5NWUyN2JiMDFhMGNhYjRkNGYwZmUwMzllMmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY1YTM1ZjM0NmE1MzUxNjIyMWI1YmFmNjUxMTY4MzUzMTU2OGEwMmUwOTYxNzc3ZTljOTljZWQ2ZjJiMTRjMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2OTBjNWIyNGRjY2FlOGZmOTQ4MjRkNThhZDVmZDAwOWNhNTEwNmExNjZkYTQwOGVjYjYxNjUzYTE2YmViMDkifQ"
         },
         {
-          "resource": "repo://libs/partners/runloop/pyproject.toml#L22-L26",
-          "version": "repo-lines-v1:sha256:0cc442b56f040e62d3424a18e4b137cbc1789655f1dd8f320287f255129b39cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjIwMWIwZTE2ZDEwMjZjNTUyOTRjNzA5ZmVjNjAyMWEzMjU4M2JmMjIzOTNmMTdlM2Q2YTY5ZWE3MDMwN2Y5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGUzYWYzMTkwOGVmNzY5YmU1NjM5M2QyYzI0YWY4N2M5MTVhMzU3OTY5YzdlYWYwMTA1NGNmMmQzNWRhODc2OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2I1ODYxYmVjMDBlNjE1NzJjNjZkZTk0NzVlZDc3NzllYTZjOTEwMjI1Yjg2MjY4ODMyMTg4MGRlYTkxZjlmYiJ9"
+          "resource": "repo://.github/workflows/release_notes.yml#L2-L13",
+          "version": "repo-lines-v1:sha256:cf35713d07bd08f82f06014072495633ea9c0141c3a2c60ad0e6a21b1e72f492:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTQ0YzM3NmQ5MWRjOTE5ZWQ0OWY1MWY3ZjE3ODExOWQ2MDUxMDE4Y2IxNDExYmIxN2M1ZWIwMTZjZTM5Y2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZGI4NDc3NzZlZTA4ZDEzNWJlZTZlYWM3MjllOTc4NTQyNGQ2Yzk0NTQzZGQ4NGZiYTE4MDM1OWRmYTc3MDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI4ODJhMjI1YzVhYmYyNTQ4NmQyYTMzNTE1NmZlMzljOTUyMGMxMWE0NWE2MWQzM2RmYTU5NGQyOWUwNGEzZWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlNDdhZTE4OWE3ODk1ODQ2Y2ZlYTBhNzdiNDIxY2ZkNjM1ZmU5YTYxNjI3ZGY4OWJiZDMzNTU2M2U1MTk2YTAifQ"
         },
         {
-          "resource": "repo://libs/partners/vercel/pyproject.toml#L22-L26",
-          "version": "repo-lines-v1:sha256:354bb47d5002eb78d98602ed0a5aebf806f11875606afa35087a0c66a7307b1a:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2Q2NTQ3N2Y3MGVhMjEyZWFjNjFlZWZjZDAzNTM3ZjI1OTkzMWZmMTE3NDE0NzAxMmI3ZGE3M2FjMDRlZWRhYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTBmNzVhYWFmNmVlYmVlMjRkMmNhMmEyYmJkZjM2NjRjNjhiN2FkNGU1YzIxYmI3N2E0NzEwNmIzZDQyNjU2ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2I1ODYxYmVjMDBlNjE1NzJjNjZkZTk0NzVlZDc3NzllYTZjOTEwMjI1Yjg2MjY4ODMyMTg4MGRlYTkxZjlmYiJ9"
+          "resource": "repo://.github/workflows/release_notes.yml#L67-L86",
+          "version": "repo-lines-v1:sha256:0734ffed49d000baaa84fa1fa5f5f49de62170f9ca1aba21d87f36c9a4ed7d1f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5ZmU3Njc0ZTYzZWZjNmMwZGQwOGQzODJiYTkxOWZjMjdhM2Y3Y2YyMDAxZDcwNjUxNGYzZTYwNDBkMGYwNmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhZWNlMDA4YmZhZTVlZTM4YjExNTM0NGVlZWVjY2M4ZTZkOWRiMDAwZjQxODk5Njg3MzI4ODk0Zjk5ZDhlYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzZDM4Y2Q4MDVlYThhMTU3YWQwMTBjNTRjODIwN2FlZjFiYWRjN2NjNTMyYzk4Y2QxMjlmMzVhYTc4ZDRiNTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_92382252642b4e82b74f2534ac109def",
+      "statement": "On release PRs, the dependency-freshness workflow treats stale manifest lower bounds and known PyPI query failures as advisory output and PR comments, but then hard-fails on built-wheel metadata validation or failure to install the wheel and dependencies from PyPI in a fresh target-version environment.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/release/check_dep_freshness.py#L501-L597",
+          "version": "repo-lines-v1:sha256:656bdd7a6df0bedd2da315b81562d77da5505286c46baf5005cc5df2d64c138e:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMmJhY2E3NzVmZjZlODE3ZDQ3ZGExZmU0YTc2OWU5MjljMjVjZmY3ZWNlYmNlOTFiNDQxNGY0NzA1NTk1ZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MjMzYjNmZmVhMzJhMjNkZjUzMDY1MzQzNDhmMmRlZTc3NmE1YTZmNzRmYjUzMzE3NWRkYzUzOWE4ZmU0NjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1NzJiYjc4YWNlNTAyYjM1M2EwMjFhN2NlMWMwZjBiNjRiOWQyYWI0ZGU5YmM2YTg2NjE1NzMzZWEwM2Q5NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU0OGQ3NDgzZDA2MGYxNzIyZTI0NTM2ODg4MzM0MjU2YjU0OTBlOGJiZTg2OTgyMDY3NmNhOWVhZjM1MDljYzkifQ"
         },
         {
-          "resource": "repo://libs/talon/pyproject.toml#L22-L50",
-          "version": "repo-lines-v1:sha256:da482fe91c9317f874912c8b0bd08d0b8e35e0b56bfc349020958e145ddd35ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NGY3NjBkNTIwMzNjZGJmMGNiODVmYzMwNmI1MjJhNzA5NjBhZmFmMTg5ZmEyNjQ3OTlmYjAwODkyNzgxM2EifQ"
+          "resource": "repo://.github/workflows/check_dep_freshness.yml#L27-L127",
+          "version": "repo-lines-v1:sha256:ddc950ed426c476093255dae454ad051f8f85fb5634e8f7de427ee10cfd8ec09:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5Y2JkYzA2YjIxNWI3ZmRjYzMyYzU2ZWI5NGEwMjBjN2JhZTYyYWVhMTc4NmRhYTI4MWVkZDQ2YjYxMjA2NTM2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkNzBhN2Q0NWU2N2FjYjVhZWVjMWZjNzc5NmM2NTYyMzY5Nzg2OWQ4ZmE3M2Q5OTY1NzBhOTRhNWViNmQxZGI2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMGEyNmI3NTViNTI3MjVhYjRlMDBhNGZkZTBiNWY0ZTdlNzg4MjVjMDZkOGEwZWIwNjQzMjk4YTJmMDRlYTQ0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MDlmNTY3YjhhODgyZTU5MmIyYzkyYjdlNzJkMGVjY2UwYTc5MjllNDgwMGQ1MWE3ZDM3ZmVjYjg2YjBkYWIyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_53304d090464405c83aecfab2a07db9d",
+      "statement": "Built-wheel metadata validation reads active wheel dependency requirements and compares them with PyPI metadata; direct URLs, PyPI query failures, unavailable satisfying releases, and real Python-coverage gaps fail, while a third-party upper bound that omits only unreleased CPython minors emits a successful warning. Repo-managed sibling dependencies additionally require the newest eligible PyPI metadata to match current sibling Python compatibility.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/release/check_wheel_dep_freshness.py#L821-L947",
+          "version": "repo-lines-v1:sha256:986f7156ad3fdbd3846e71bba473c1cb8c79d3ab31b6a440471477463002bf5a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhYWNiZjhhZDJhMTJkY2Q5MmJlM2Y1MzY3YzkyMDg4OGQwNDRmMTVlM2ZmOTlmZDQ4NTYxZWVhYjdmNjkwMDdkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhYjUzNWJlZDc2YmEyYTM2YWU3Y2Y5Y2VhZTY2OWEzY2UyYjE3ZmYzOGM5ZGUyNWUwOWU1M2Q4MTY4NTMyYjNlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1ZWU5YzAzMzM3NmY5OGNlN2YwOTNhMDdmNzZiNWQwMDhjMmI5YjcyYTE0NGU0OGY0N2Y2ZTYxN2ZhNmYxYjFhIn0"
+        },
+        {
+          "resource": "repo://.github/scripts/release/check_wheel_dep_freshness.py#L969-L1042",
+          "version": "repo-lines-v1:sha256:4c28b270cb2d4ce06df4e0db77c93decc701b133490de89ff635f9a4c688aa8f:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5OTA0NDcwMjlkODUyOGU3NzgxYmI0NTM3Njc0NDhkMjA3YTU5YWMxNWZlYTVjODk0NzE4OGVjNTVlZTM0ZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3NWVmYTBmMDQxYTc3MmMxMThiZWM0NDllNWUzNzExMTc5NTMwMGNkZmZhNTA3OTU1YzE4YTNlMjk4ZDU1YjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzZWU2ODM0ODFmMWM0NmUzMWI3MTA4YzIwMDQ2ZWQ2ZDM1YzEyZGI0MjE1MzRkODgxNzY1NjZlMWQxZDVhNWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5NGY4NjFhNWZiOGM4ZDUzODExMGU4M2ZmYzk2MTQ0NTIxNGVjMThjOTY2MTFlMWRmNjdhNWJkNDgzMjdiOGUifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/release/test_check_wheel_dep_freshness.py#L109-L175",
+          "version": "repo-lines-v1:sha256:7cd01761de0beee38c2ed3307be7b2ef11ae3f690fcb8b5687f45bc1adc2f33c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlODg0ZDNlMmQ2YWE3N2MyMjdjNTgyNjFlMGMzMGUzNDg2ZTZjMjk3MTA2NjJhMWJjYjllODg3YjM4ZDVjOTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzZGRjODExOWE2NjJlMzU3ODljYTk3OTE3Yzc0YWQ1NTQ3N2UxYmI3MWMzYmQ4NWE2OWMyMmM5NGU3NzkwM2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmYjQyNzIxNzBmNjE3ODZmNmM1NmMyN2M4ZTUzZDMxMzA3YjQ4M2IxZTcwYjZmNWMwNTUxZWVmOGIxYWVhZDMifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/release/test_check_wheel_dep_freshness.py#L199-L260",
+          "version": "repo-lines-v1:sha256:fb7c245c45f2492810f4958f5a03a575d9072f1d0d7e75fa7b77817b417c2e28:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZmNiZWU2ZmI1NTI3NTc2OWE2YjBlNGM2NDQ4NWEwMTY4NDJhNDAyZGVlM2U2MjEyMmI3MjM2OGIwZTE4NjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwZWZmODhmMzAxNjFkYzk2MzY4ZTk3NWUzNjI0ZGNmZDk4ZTIzOTE5ZTJkYmNlN2Q3MjRjZDU0MGJiY2IzZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2MWNiODcwMGM5YTVhYzBjYjM3YzFjODAxMTYyOWNjNmQ1YTZmNGFkNzM2ZTlmOWE5MjU1ZWJhZjgzMGViMWUifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-13T08:03:55.116Z"
+    "at": "2026-11-14T08:03:44.053Z"
   }
 }

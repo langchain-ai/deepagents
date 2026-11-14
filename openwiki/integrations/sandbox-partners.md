@@ -1,12 +1,34 @@
 ---
 type: integration architecture
 title: Sandbox and Partner Integrations
-description: How dcode selects and owns optional remote sandbox providers, and how the separately packaged QuickJS middleware embeds a JavaScript REPL. Covers QuickJS persistence, direct filesystem and tool bridges, approval boundaries, and partner package contracts.
-tags: [dcode, sandbox, integrations, providers, quickjs, persistence, filesystem]
+description: How dcode selects and owns optional remote sandbox providers, including Modal's backend and normalized file-operation behavior. Covers the separately packaged QuickJS middleware, its persistence and bridge boundaries, and partner package compatibility.
+tags: [dcode, sandbox, integrations, providers, modal, quickjs, filesystem]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-12T08:04:16.521Z
+    at: 2026-11-14T08:03:44.053Z
 sources:
+  - id: openwiki-source-5e59f90a38f5bdf9ed76984b
+    resource: repo://.release-please-manifest.json
+  - id: openwiki-source-bcf1f68e7989964d2fcec7aa
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
+  - id: openwiki-source-03e3942e51522a3aa485168d
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_provider.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
+    resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-d4463137befa776cd47750d4
+    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-5e387cb8bab7ca8537e7d97c
+    resource: repo://libs/partners/modal/langchain_modal/sandbox.py
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
+  - id: openwiki-source-47e7cf704d54342cf95c8125
+    resource: repo://libs/partners/modal/tests/integration_tests/test_integration.py
+  - id: openwiki-source-ac47f3f14a26a8141beddfc3
+    resource: repo://libs/partners/modal/tests/unit_tests/test_sandbox.py
   - id: openwiki-source-a0668a30e4f0ac9f77cd0048
     resource: repo://libs/partners/quickjs/langchain_quickjs/_subagent.py
   - id: openwiki-source-e93ea9e1f8eb3113683abb76
@@ -17,7 +39,11 @@ sources:
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_subagent_events.py
   - id: openwiki-source-7f225a40788309863f345e08
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_subagent_replay.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-12T08:04:16.521Z" }
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
+generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
 ---
 
 # Sandbox and Partner Integrations
@@ -76,7 +102,7 @@ This table records dcode's built-in metadata. `sandbox_id` means dcode permits a
 
 Partner packages are independently versioned distributions. Each owns its environment, `pyproject.toml`, `Makefile`, tests, and package-local `uv.lock`; they are not owned by dcode's curated provider registry. A lock is generated resolution for that package's development/CI environment, not a second dependency manifest. Do not hand-edit it.
 
-The current release manifest lists `deepagents-code` `0.2.7`, `langchain-daytona` `0.0.9`, `langchain-modal` `0.0.7`, `langchain-runloop` `0.0.7`, `langchain-vercel-sandbox` `0.0.2`, and `langchain-quickjs` `0.3.12`. Daytona, Modal, Runloop, and Vercel each require Python `>=3.11,<4.0`, bound Deep Agents to `>=0.7.35,<0.8.0`, and declare their provider SDK. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.35`, bundles LangSmith sandbox support, and exposes the other curated remote providers through optional extras.
+The current release manifest lists `deepagents-code` `0.2.8`, `langchain-daytona` `0.0.9`, `langchain-modal` `0.0.8`, `langchain-runloop` `0.0.7`, `langchain-vercel-sandbox` `0.0.2`, and `langchain-quickjs` `0.3.12`. Daytona, Modal, Runloop, and Vercel each require Python `>=3.11,<4.0` and Deep Agents `>=0.7.38,<0.8.0`; their provider-SDK floors are Daytona `>=0.197.0`, Modal `>=1.5.3`, and Vercel `>=0.5.9`, while Runloop declares `runloop-api-client` without a version floor. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.38`, bundles LangSmith sandbox support, and exposes the other curated remote providers through optional extras, including `langchain-modal>=0.0.8`.
 
 A manifest or local-path-source change can invalidate reverse consumers' locks as well as its own. Refresh the affected closure rather than changing a lock by hand, and keep dependency/lockfile churn separate from a bump-worthy feature or fix when release scope matters. The repository's targeted refresher and checker select the appropriate interpreter and report the required closure:
 
@@ -84,6 +110,20 @@ A manifest or local-path-source change can invalidate reverse consumers' locks a
 python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
 python .github/scripts/checks/check_lockfiles_pre_commit.py libs/code/pyproject.toml
 ```
+
+## Modal provider and backend
+
+`deepagents-code[modal]` supplies the package and the dcode provider owns Modal resource acquisition. The provider resolves `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` through the workspace environment, including `DEEPAGENTS_CODE_`-prefixed equivalents. If both are present, it creates a Modal client with them; if only one is present, it fails instead of falling back to the server's default Modal identity. With neither set, Modal's normal default authentication is used. It looks up or creates the `deepagents-sandbox` app under that selected identity.
+
+For a new resource, the provider creates a sandbox with workdir `/workspace` and polls it for readiness by executing `echo ready`; a terminated sandbox or failure to become ready within the configurable startup timeout causes failure, and the latter is terminated. When `sandbox_id` is supplied, it attaches with `Sandbox.from_id` instead. The factory's ownership rule still applies: dcode deletes a created sandbox at context exit, but leaves an attached one intact. The provider returns `ModalSandbox`, the partner package's `SandboxBackendProtocol` implementation.
+
+`ModalSandbox` is deliberately a thin adapter around an existing `modal.Sandbox`. Its `id` is Modal's `object_id`. `execute()` runs `bash -c <command>`, waits for completion, combines stdout and stderr (placing stderr after a newline when both exist), reports Modal's return code, and always reports `truncated=False`; its default command timeout is 30 minutes, while an explicit `0` retains Modal's meaning of waiting indefinitely. The inherited `BaseSandbox` helpers implement higher-level listing, search, read, write, and edit operations on top of the adapter's execution and raw file-transfer primitives. They do not reduce the authority of shell execution.
+
+### Modal file transfers and normalized failures
+
+`download_files()` and `upload_files()` preserve one response per requested item, in order. Both reject a non-absolute path locally as `invalid_path`; they otherwise call Modal's byte filesystem API. A read maps Modal `SandboxFilesystemNotFoundError` and `SandboxFilesystemNotADirectoryError` to `file_not_found`, `SandboxFilesystemPermissionError` to `permission_denied`, and `SandboxFilesystemIsADirectoryError` to `is_directory`. A write maps the latter three applicable conditions—non-directory to `file_not_found`, permission to `permission_denied`, and directory to `is_directory`. Successful reads return the original bytes and successful writes return no error.
+
+These are the backend protocol's recoverable `FileOperationError` values, so callers can correlate a partial batch result by path and decide whether an LLM can repair the request. The adapter does **not** translate every Modal exception: for example, a `SandboxFilesystemFileTooLargeError` escapes. This makes an unknown or non-recoverable provider failure visible rather than falsely reporting a normalized condition, while a mapped error on one item does not prevent later batch items from being attempted. The focused unit tests cover every mapping, continuation after a mapped read/write failure, binary content preservation, call ordering, and propagation of the unmapped too-large error. The integration suite runs the shared sandbox conformance tests against a real Modal sandbox and requires both Modal credentials.
 
 ## QuickJS middleware entrypoint and capability boundary
 
@@ -208,6 +248,7 @@ For dcode provider discovery, precedence, factory ownership, and invalid-option 
 ```bash
 make -C libs/code test TEST_FILE=tests/unit_tests/test_sandbox_registry.py
 make -C libs/code test TEST_FILE=tests/unit_tests/test_sandbox_factory.py
+make -C libs/partners/modal test TEST_FILE=tests/unit_tests/test_sandbox.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_end_to_end.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_repl_middleware.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_subagent_events.py

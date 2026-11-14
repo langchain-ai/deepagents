@@ -1,8 +1,11 @@
 ---
 type: delegation and progressive-disclosure concept
 title: Subagents and Skills
-description: Deep Agents supports synchronous SDK child graphs and remote Agent Protocol tasks, while Talon adapts both to fresh local workers and conversation-owned background jobs. Skills progressively disclose instructions and selected tools; that visibility is distinct from permissions, approvals, and authority.
+description: Deep Agents distinguishes synchronous local child graphs, context-sharing forks, and durable remote Agent Protocol tasks. Talon adapts delegation for conversational delivery, while skills progressively disclose instructions and selected tools without granting authority.
 tags: [deepagents, subagents, delegation, skills, talon, permissions]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-14T08:03:44.053Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -16,6 +19,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-454da083c2cc29febd156c7e
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-917b61d56e652536ba962f3a
     resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
@@ -28,10 +33,7 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-13T08:03:55.116Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-13T08:03:55.116Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
 ---
 
 # Subagents and Skills
@@ -86,9 +88,11 @@ The SDK's policy inheritance is specific to declarative children: their filesyst
 
 ### SDK remote async: durable remote work
 
-An `AsyncSubAgent` names a remote graph with `name`, `description`, and `graph_id`, with optional URL, headers, notification, webhook, update strategy, and experimental fork mode. `start_async_task` creates remote work and returns promptly with a task ID. `async_tasks` lives in parent state, so task records survive compaction and can be listed, checked, updated, or cancelled by the async task tools.
+An `AsyncSubAgent` names an Agent Protocol graph with `name`, `description`, and `graph_id`; it can also set a URL, headers, webhook, notification behavior, update strategy, and experimental fork mode. `start_async_task` creates a remote thread and run, returns promptly with a task ID, and records its agent name, thread, run, and status in parent-state `async_tasks`. The middleware supplies five task tools: start, check, update, cancel, and list. This state survives compaction/offloading, so a later parent turn can inspect or control tracked work.
 
-The async middleware checks unfinished remote tasks in asynchronous runs and converts changed outcomes into messages for the parent. A remote run that is waiting for human input is `waiting`, not a successful result. Remote execution remains a deployment boundary: it does not inherit the local parent graph's filesystem, credentials, prompt, approval handlers, or persistence.
+An update normally interrupts the active remote run; `update_strategy="enqueue"` queues the follow-up instead. In either case this is a remote task lifecycle, not a local `task` call. The async middleware polls unfinished records only on the asynchronous path, before model calls and after a final answer; a changed terminal, cancelled, timeout, or human-input outcome becomes a labeled parent message. A remote run waiting for human input is `waiting`, not success.
+
+`mode="fork"` snapshots the effective parent message history at launch, removes local tool artifacts, and appends the task; isolated mode sends only the task description. It copies conversation content, not the parent graph's configuration: remote execution does not inherit the local filesystem, credentials, prompt, approval handlers, or persistence. A URL-less local ASGI target requires an async parent entrypoint such as `ainvoke`; synchronous `invoke` requires a reachable URL.
 
 ## Dcode-defined local children
 
@@ -161,7 +165,8 @@ The focused tests make the intended boundaries executable:
 
 - `libs/deepagents/tests/unit_tests/test_subagents.py` covers correlated local results, state isolation and parallel updates, fork context, and checkpoint artifacts. In particular, it verifies nested namespaces, retry-aware namespace reporting, `checkpointer=True` and `False`, and the `.with_retry()` namespace limitation.
 - `libs/deepagents/tests/unit_tests/test_subagent_refusal.py` verifies that declarative and compiled local children turn returned or raised model refusals—including structured-output refusals—into a task result, while a main agent still raises by default.
-- `libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py` verifies the fork's inherited prompt prefix, its task-local instructions, skill prohibition, state distinctions, and recursion refusal.
+- `libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py` verifies the fork's inherited prompt prefix, task-local instructions, skill prohibition, state distinctions, and recursion refusal; `middleware/test_fork_payload.py` additionally checks provider payload equivalence, inherited history, cache-control placement, and task-message boundaries.
+- `libs/deepagents/tests/unit_tests/test_async_subagents.py` verifies tool construction and validation, task-state reduction, launch records, isolated versus fork launch payloads, and the remote task lifecycle. In particular, the launch-payload test is the boundary test for a fork being a snapshot of messages rather than inheritance of the parent graph.
 - `libs/talon/tests/unit_tests/test_background.py` covers owner isolation, capacity, cancellation, independent worker thread IDs, acknowledgement/requeue/drop delivery semantics, timeout and sanitized error behavior, result text projection, remote streaming, and scheduled inline fan-out.
 - `libs/talon/tests/unit_tests/test_research_subagents.py` covers fresh-context isolation, explicit attachments and per-task selection, no implicit general-purpose role, recursive-delegation denial, approval behavior for fresh versus compiled children, and rejection of Talon fork mode.
 

@@ -83,7 +83,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "baseten:deepseek-ai/DeepSeek-V4.1-Flash-1017": "DeepSeek V4.1 Flash 1017",
     "baseten:meta-models/muse-spark-open": "Muse Spark Open",
     "baseten:moonshotai/Kimi-K3": "Kimi K3",
-    "baseten:nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B": "Nemotron 3.5 Super VL",
+    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.3": "GLM 5.3",
     "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",
     "fireworks:accounts/fireworks/models/deepseek-v4p1-flash-1017": (
@@ -125,7 +125,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:meta/muse-spark-open": "Muse Spark Open",
     "openrouter:minimax/minimax-m3.1-flash": "MiniMax M3.1 Flash",
     "openrouter:mistralai/mistral-large-4-0": "Mistral Large 4",
-    "openrouter:nvidia/nemotron-3.5-super-vl": "Nemotron 3.5 Super VL",
+    "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
     "openrouter:qwen/qwen3.8-max-0902": "Qwen 3.8 Max",
     "openrouter:z-ai/glm-5.3": "GLM 5.3",
     "openrouter:z-ai/glm-5.3-flash": "GLM 5.3 Flash",

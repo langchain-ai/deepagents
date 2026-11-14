@@ -568,3 +568,29 @@ async def test_newer_summary_choice_survives_older_selection(
     finally:
         release.set()
         await older
+
+
+def test_profileless_installed_provider_keeps_recommendations_and_policy(
+    isolated_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = "ollama:mistral-large-4:cloud"
+    monkeypatch.setattr(model_catalog, "get_available_models", dict)
+    monkeypatch.setattr(
+        config_manifest, "is_provider_package_installed", lambda _: True
+    )
+    catalog = model_catalog.load_model_catalog(recommended_models=[spec])
+    assert catalog.models == [spec]
+    assert catalog.providers["ollama"].install_extra is None
+
+    isolated_config.write_text(
+        '[models]\nallowed = ["openai:custom"]\n', encoding="utf-8"
+    )
+    model_config.clear_caches()
+    assert model_catalog.load_model_catalog(recommended_models=[spec]).models == []
+    isolated_config.write_text(
+        "[models.providers.ollama]\nenabled = false\n", encoding="utf-8"
+    )
+    model_config.clear_caches()
+    catalog = model_catalog.load_model_catalog(recommended_models=[spec])
+    assert catalog.models == []
+    assert "ollama" not in catalog.providers

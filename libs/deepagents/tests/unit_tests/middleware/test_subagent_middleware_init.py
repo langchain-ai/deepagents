@@ -168,10 +168,9 @@ class TestSubagentMiddlewareInit:
         assert not _is_forked_compiled_subagent(spec)
 
     def test_forked_subagent_sends_its_own_system_prompt_with_the_task(self) -> None:
-        """A fork keeps the parent's system prompt and history as its prefix.
+        """A fork passes its own instructions after the parent messages to the model.
 
-        Its own `system_prompt` arrives in the task message, so the request
-        before that message matches the parent's and can reuse its prompt cache.
+        Provider serialization and cache hits are not exercised by this fake model.
         """
         parent_model = GenericFakeChatModel(
             messages=iter(

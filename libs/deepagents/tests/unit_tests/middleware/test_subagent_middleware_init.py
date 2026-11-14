@@ -167,11 +167,8 @@ class TestSubagentMiddlewareInit:
         assert not _is_forked_subagent(spec)
         assert not _is_forked_compiled_subagent(spec)
 
-    def test_forked_subagent_sends_its_own_system_prompt_with_the_task(self) -> None:
-        """A fork passes its own instructions after the parent messages to the model.
-
-        Provider serialization and cache hits are not exercised by this fake model.
-        """
+    def test_forked_subagent_appends_system_prompt_without_profile_support(self) -> None:
+        """A model without profile support keeps fork instructions in its system prompt."""
         parent_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -203,9 +200,10 @@ class TestSubagentMiddlewareInit:
         agent.invoke({"messages": [HumanMessage(content="start")]}, {"recursion_limit": 25})
 
         parent_request = parent_model.call_history[0]["messages"]
-        *fork_prefix, fork_task = worker_model.call_history[0]["messages"]
-        assert fork_prefix == parent_request
-        assert "FORK_EXTRA" in fork_task.text
+        fork_system, *fork_history, fork_task = worker_model.call_history[0]["messages"]
+        assert fork_system.text == "PARENT_PROMPT\n\nFORK_EXTRA"
+        assert fork_history == parent_request[1:]
+        assert "FORK_EXTRA" not in fork_task.text
         assert fork_task.text.endswith("continue")
 
     def test_rejects_skills_on_forked_subagent(self) -> None:

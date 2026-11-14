@@ -104,7 +104,7 @@ from typing_extensions import TypedDict
 
 from deepagents.backends import CompositeBackend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import _FORK_INSTRUCTIONS_KEY, append_to_system_message
 
 _MEDIA_REFERENCE_SUMMARY_PROMPT = """<media_reference_information>
 Conversation history may include XML media reference tags, for example:
@@ -618,6 +618,24 @@ def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     return message.model_copy(update={"content": content})
 
 
+def _is_fork_instructions(message: AnyMessage) -> bool:
+    """Identify system instructions originating from a declarative fork's prompt."""
+    return isinstance(message, SystemMessage) and bool(message.additional_kwargs.get(_FORK_INSTRUCTIONS_KEY))
+
+
+def _restore_fork_instructions(messages: list[AnyMessage], evicted: list[AnyMessage]) -> list[AnyMessage]:
+    """Reanchor original fork instructions after the final user turn, before any assistant prefill."""
+    instructions: list[AnyMessage] = []
+    for message in [*evicted, *messages]:
+        if _is_fork_instructions(message) and not any(message is kept or (message.id is not None and message.id == kept.id) for kept in instructions):
+            instructions.append(message)
+    if not instructions:
+        return messages
+    tail = [message for message in messages if not _is_fork_instructions(message)]
+    index = max((i + 1 for i, message in enumerate(tail) if isinstance(message, (HumanMessage, ToolMessage))), default=len(tail))
+    return [*tail[:index], *instructions, *tail[index:]]
+
+
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
@@ -959,7 +977,8 @@ A condensed summary follows:
         When a prior summarization event exists, the effective conversation is
         the summary message followed by all messages from `cutoff_index` onward.
         Messages kept from before the summary lose their bound reasoning blocks
-        (see `SummarizationEvent.created_at_index`).
+        (see `SummarizationEvent.created_at_index`). Original fork instructions
+        are reanchored within the compacted portion; later turns keep their prefix.
 
         Args:
             messages: Full message list from state.
@@ -985,7 +1004,7 @@ A condensed summary follows:
                 cutoff_idx,
                 len(messages),
             )
-            return [summary_msg]
+            return _restore_fork_instructions([summary_msg], messages)
 
         kept_from = event.get("created_at_index")
         if not isinstance(kept_from, int):
@@ -995,7 +1014,8 @@ A condensed summary follows:
         result: list[AnyMessage] = [summary_msg]
         for index, message in enumerate(messages[cutoff_idx:], start=cutoff_idx):
             result.append(_drop_bound_reasoning(message) if index < kept_from else message)
-        return result
+        boundary = max(1, kept_from - cutoff_idx + 1) if isinstance(event.get("created_at_index"), int) else len(result)
+        return [*_restore_fork_instructions(result[:boundary], messages[:cutoff_idx]), *result[boundary:]]
 
     @staticmethod
     def _compute_state_cutoff(
@@ -1005,11 +1025,9 @@ A condensed summary follows:
     ) -> int:
         """Translate an effective-list cutoff index to an absolute state index.
 
-        When a prior summarization event exists, the effective message list
-        starts with the summary message at index 0. The -1 accounts for the
-        summary message at effective index 0, which does not correspond to a
-        real state message -- the effective cutoff already counts it, so we
-        subtract 1 to avoid double-counting.
+        When a prior event exists, the effective list starts with a synthetic
+        summary. Fork instructions may also have moved; map the remaining
+        non-instruction tail back to its original positions.
 
         Args:
             event: The prior `_summarization_event`, or `None`.
@@ -1025,9 +1043,15 @@ A condensed summary follows:
         if not isinstance(prior_cutoff, int):
             logger.warning("Malformed _summarization_event: missing cutoff_index")
             return effective_cutoff
-        if messages is not None:
-            prior_cutoff = _resolve_cutoff_index(messages, event)
-        return prior_cutoff + effective_cutoff - 1
+        if messages is None:
+            return prior_cutoff + effective_cutoff - 1
+        prior_cutoff = _resolve_cutoff_index(messages, event)
+        if not any(_is_fork_instructions(message) for message in messages):
+            return prior_cutoff + effective_cutoff - 1
+        effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(messages, event)
+        consumed = sum(not _is_fork_instructions(message) for message in effective[1:effective_cutoff])
+        tail_indices = [index for index in range(prior_cutoff, len(messages)) if not _is_fork_instructions(messages[index])]
+        return tail_indices[consumed] if consumed < len(tail_indices) else len(messages)
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Check if argument truncation should be triggered.
@@ -1747,7 +1771,10 @@ A condensed summary follows:
         }
 
         # Modify request to use summarized messages
-        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
+        modified_messages = _restore_fork_instructions(
+            [*new_messages, *map(_drop_bound_reasoning, preserved_messages)],
+            state_messages[:state_cutoff_index],
+        )
         modified_request = request.override(messages=modified_messages)
         response, new_state_tail = self._call_with_budget(
             modified_request,
@@ -1889,7 +1916,10 @@ A condensed summary follows:
         }
 
         # Modify request to use summarized messages
-        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
+        modified_messages = _restore_fork_instructions(
+            [*new_messages, *map(_drop_bound_reasoning, preserved_messages)],
+            state_messages[:state_cutoff_index],
+        )
         modified_request = request.override(messages=modified_messages)
         response, new_state_tail = await self._acall_with_budget(
             modified_request,

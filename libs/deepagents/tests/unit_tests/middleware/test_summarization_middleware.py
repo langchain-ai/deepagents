@@ -22,6 +22,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
+from deepagents.middleware._utils import _FORK_INSTRUCTIONS_KEY
 from deepagents.middleware.summarization import (
     SummarizationEvent,
     SummarizationMiddleware,
@@ -2794,6 +2795,68 @@ def test_chained_summarization_cutoff_index() -> None:
     assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]
     _, content = backend.write_calls[2]
     assert offloaded_labels(content) == ["S12", "S13", "S14", "S15", "S16", "S17"]
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("remove_head", [False, True])
+@pytest.mark.parametrize("keep", [1, 2, 4])
+@pytest.mark.parametrize("instruction_index", [1, 5], ids=["early-instructions", "late-instructions"])
+async def test_chained_fork_compaction_preserves_instructions_and_raw_tail(
+    *, use_async: bool, remove_head: bool, keep: int, instruction_index: int
+) -> None:
+    middleware = SummarizationMiddleware(model=make_mock_model(), backend=MockBackend(), trigger=("messages", 5), keep=("messages", keep))
+    instructions = SystemMessage(content="FORK_INSTRUCTIONS", additional_kwargs={_FORK_INSTRUCTIONS_KEY: True}, id="instructions")
+    messages = [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(20)]
+    messages[instruction_index] = instructions
+    event = None
+    for count in (8, 14, 20):
+        raw = messages[int(remove_head and count > 8) : count]
+        state = cast("AgentState", {"messages": raw, "_summarization_event": event})
+        if use_async:
+            result, sent = await call_awrap_model_call(middleware, state, make_mock_runtime())
+        else:
+            result, sent = call_wrap_model_call(middleware, state, make_mock_runtime())
+        assert isinstance(result, ExtendedModelResponse)
+        event = result.command.update["_summarization_event"]
+        assert event["cutoff_index"] == len(raw) - keep
+        assert event["cutoff_message_id"] == f"s{count - keep}"
+        assert sent is not None
+        expected = [f"s{i}" for i in range(count - keep, count) if i != instruction_index]
+        expected.insert(-1, "instructions")
+        assert [m.id for m in sent.messages[1:]] == expected
+        assert next(m for m in sent.messages if m.id == "instructions") is instructions
+        assert middleware._apply_event_to_messages(raw, event) == sent.messages
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_fork_compaction_keeps_request_only_argument_truncation(*, use_async: bool) -> None:
+    middleware = SummarizationMiddleware(
+        model=make_mock_model(),
+        backend=MockBackend(),
+        trigger=("messages", 5),
+        keep=("messages", 4),
+        truncate_args_settings={"trigger": ("messages", 1), "keep": ("messages", 1), "max_length": 50},
+    )
+    messages = [
+        HumanMessage(content="old"),
+        AIMessage(content="answer"),
+        HumanMessage(content="task"),
+        SystemMessage(content="FORK_INSTRUCTIONS", additional_kwargs={_FORK_INSTRUCTIONS_KEY: True}),
+        AIMessage(content="", tool_calls=[{"id": "write", "name": "write_file", "args": {"content": "x" * 100}}]),
+        ToolMessage(content="written", tool_call_id="write"),
+        HumanMessage(content="continue"),
+        AIMessage(content="answer"),
+    ]
+    state = cast("AgentState", {"messages": messages})
+    if use_async:
+        result, sent = await call_awrap_model_call(middleware, state, make_mock_runtime())
+    else:
+        result, sent = call_wrap_model_call(middleware, state, make_mock_runtime())
+    assert isinstance(result, ExtendedModelResponse)
+    assert sent is not None
+    assert sent.messages[1].tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    assert messages[4].tool_calls[0]["args"]["content"] == "x" * 100
+    assert sent.messages[-2] is messages[3]
 
 
 def _thinking_message(index: int) -> AIMessage:

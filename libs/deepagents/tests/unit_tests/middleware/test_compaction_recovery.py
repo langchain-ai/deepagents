@@ -8,6 +8,7 @@ from langchain.agents.middleware.types import AgentState, ExtendedModelResponse,
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 
+from deepagents.middleware._utils import _FORK_INSTRUCTIONS_KEY
 from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.unit_tests.middleware.test_summarization_middleware import MockBackend, make_mock_model, make_mock_runtime
 
@@ -250,3 +251,25 @@ async def test_output_reservation_clips_an_otherwise_fitting_summary(*, asynchro
     await _invoke(_middleware(request, MockBackend()), request, handler, asynchronous=asynchronous)
     assert len(sent) == 1
     assert len(sent[0].messages[-1].content) < 6000
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("replay", [False, True])
+async def test_fork_instructions_count_toward_compacted_budget(*, asynchronous: bool, replay: bool) -> None:
+    request = _request(tail_size=1, limit=10000)
+    instructions = SystemMessage(content="s" * 10000, additional_kwargs={_FORK_INSTRUCTIONS_KEY: True}, id="instructions")
+    messages = [*request.messages[:3], instructions, *request.messages[3:]]
+    state = {"messages": messages}
+    if replay:
+        state["_summarization_event"] = {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": 4,
+            "file_path": None,
+        }
+    request = request.override(messages=messages, state=cast("AgentState", state))
+
+    def handler(_current: ModelRequest) -> ModelResponse:
+        pytest.fail("Retained fork instructions must be budgeted before sending")
+
+    with pytest.raises(ContextOverflowError, match="above the input budget"):
+        await _invoke(_middleware(request, MockBackend(), keep=2), request, handler, asynchronous=asynchronous)

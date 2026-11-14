@@ -351,7 +351,7 @@ def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
     assert outcome.result == "undefined"
 
 
-def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
+def test_registry_new_repl_has_fresh_state_on_same_runtime() -> None:
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -362,10 +362,11 @@ def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
         repl = reg.get("thread-a")
         old_runtime = reg._slots["thread-a"].runtime
         repl.eval_sync("globalThis.answer = 42")
-        reg.reset_repl("thread-a")
-        replaced = reg.get("thread-a")
-        outcome = replaced.eval_sync("typeof answer")
-        assert replaced is not repl
+        fresh = reg.new_repl("thread-a")
+        outcome = fresh.eval_sync("typeof answer")
+        fresh.close()
+        assert fresh is not repl
+        assert reg.get("thread-a") is repl
         assert reg._slots["thread-a"].runtime is old_runtime
     finally:
         reg.close()
@@ -817,23 +818,15 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
             store=None,
         )
         assert tool.coroutine is not None
-        first_repl = mw._registry.get(slot_id)
-        first_runtime = mw._registry._slots[slot_id].runtime
         first = await tool.coroutine(
             runtime=runtime,
             code="globalThis.answer = 42; answer",
         )
         assert "<result>42</result>" in first.content
-        after_first = mw._registry.get_if_exists(slot_id)
-        assert after_first is not None
-        assert after_first is not first_repl
-        assert mw._registry._slots[slot_id].runtime is first_runtime
+        first_runtime = mw._registry._slots[slot_id].runtime
 
         second = await tool.coroutine(runtime=runtime, code="typeof answer")
         assert "<result>undefined</result>" in second.content
-        after_second = mw._registry.get_if_exists(slot_id)
-        assert after_second is not None
-        assert after_second is not after_first
         assert mw._registry._slots[slot_id].runtime is first_runtime
     finally:
         mw._registry.close()
@@ -1531,8 +1524,7 @@ async def test_async_task_global_limits_concurrency_per_repl(
     expected_limit = 32 if limit is None else limit
     repl = middleware._registry.get("concurrency")
     if reset:
-        middleware._registry.reset_repl("concurrency")
-        repl = middleware._registry.get("concurrency")
+        repl = middleware._registry.new_repl("concurrency")
 
     class _CountingRunner:
         def __init__(self) -> None:
@@ -1693,8 +1685,9 @@ async def test_unbounded_timeout_outlives_a_short_deadline(
         repl = unbounded._registry.get("t")
         assert repl.eval_sync(_SPIN_300_MS).result == "42"
         assert (await repl.eval_async(_SPIN_300_MS)).result == "42"
-        unbounded._registry.reset_repl("t")
-        assert unbounded._registry.get("t").eval_sync(_SPIN_300_MS).result == "42"
+        fresh = unbounded._registry.new_repl("t")
+        assert fresh.eval_sync(_SPIN_300_MS).result == "42"
+        fresh.close()
     finally:
         await bounded._registry.aevict("t")
         await unbounded._registry.aevict("t")

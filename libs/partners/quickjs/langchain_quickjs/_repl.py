@@ -1045,40 +1045,20 @@ class _Registry:
         if slot is not None:
             await self._aclose_slot(slot)
 
-    def reset_repl(self, thread_id: str) -> None:
-        """Replace the slot REPL while keeping its worker and runtime alive."""
+    def new_repl(self, thread_id: str) -> _ThreadREPL:
+        """Build a fresh REPL on the slot's worker and runtime.
+
+        The REPL is not stored on the slot; the caller owns it and closes it.
+        """
         with self._lock:
             slot = self._slots.get(thread_id)
-        if slot is None:
-            return
+            if slot is None:
+                slot = self._build_slot_locked(thread_id)
+                self._slots[thread_id] = slot
+        return self._new_repl(slot.worker, slot.runtime)
 
-        with contextlib.suppress(Exception):
-            slot.repl.close()
-        new_repl = _ThreadREPL(
-            slot.worker,
-            slot.runtime,
-            timeout=self.timeout,
-            capture_console=self.capture_console,
-            max_stdout_chars=self.max_stdout_chars,
-            max_ptc_calls=self.max_ptc_calls,
-            subagents_enabled=self.subagents_enabled,
-            max_subagent_concurrency=self.max_subagent_concurrency,
-        )
-
-        with self._lock:
-            current = self._slots.get(thread_id)
-            if current is slot:
-                slot.repl = new_repl
-                return
-        # Slot was removed/replaced while rebuilding.
-        with contextlib.suppress(Exception):
-            new_repl.close()
-
-    def _build_slot_locked(self, thread_id: str) -> _Slot:
-        name = f"quickjs-worker-{thread_id[:8]}"
-        worker = ThreadWorker(name=name)
-        runtime = worker.run_sync(self._acreate_runtime())
-        repl = _ThreadREPL(
+    def _new_repl(self, worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
+        return _ThreadREPL(
             worker,
             runtime,
             timeout=self.timeout,
@@ -1088,6 +1068,12 @@ class _Registry:
             subagents_enabled=self.subagents_enabled,
             max_subagent_concurrency=self.max_subagent_concurrency,
         )
+
+    def _build_slot_locked(self, thread_id: str) -> _Slot:
+        name = f"quickjs-worker-{thread_id[:8]}"
+        worker = ThreadWorker(name=name)
+        runtime = worker.run_sync(self._acreate_runtime())
+        repl = self._new_repl(worker, runtime)
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
     def _close_slot(self, slot: _Slot) -> None:

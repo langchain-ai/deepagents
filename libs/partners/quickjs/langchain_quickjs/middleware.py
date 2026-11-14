@@ -424,7 +424,7 @@ class CodeInterpreterMiddleware(
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
                 if middleware._mode == "call":
-                    middleware._registry.reset_repl(slot_id)
+                    repl.close()
             return _make_tool_output(outcome, runtime.tool_call_id)
 
         async def async_eval(
@@ -447,7 +447,7 @@ class CodeInterpreterMiddleware(
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
                 if middleware._mode == "call":
-                    middleware._registry.reset_repl(slot_id)
+                    await repl.aclose()
             return _make_tool_output(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
@@ -471,7 +471,13 @@ class CodeInterpreterMiddleware(
         return names
 
     def _repl_for_eval(self, slot_id: str) -> Any:
-        """Return the REPL slot for one eval invocation."""
+        """Return the REPL for one eval invocation.
+
+        In `call` mode each invocation gets its own REPL, so parallel calls
+        in one turn never share (or close) each other's context.
+        """
+        if self._mode == "call":
+            return self._registry.new_repl(slot_id)
         return self._registry.get(slot_id)
 
     def _tools_for_eval(self, slot_id: str) -> tuple[BaseTool, ...] | None:

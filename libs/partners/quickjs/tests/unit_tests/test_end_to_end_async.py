@@ -259,3 +259,53 @@ async def test_quickjs_async_parallel_agents() -> None:
         tool_message = _eval_tool_message(result)
         _assert_result_contains(tool_message.content, str(index * 10))
         assert result["messages"][-1].content == f"done-{index}"
+
+
+@tool("slow")
+async def slow_tool() -> str:
+    """Sleep briefly so a sibling eval overlaps this one."""
+    await asyncio.sleep(0.1)
+    return "done"
+
+
+async def test_quickjs_mode_call_parallel_evals_run_independently() -> None:
+    """Parallel `mode="call"` evals each get their own REPL and both finish."""
+    model = FakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "await tools.slow({})"},
+                            "id": "call_slow",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "eval",
+                            "args": {"code": "1 + 1"},
+                            "id": "call_fast",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="finished"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(mode="call", ptc=[slow_tool])],
+    )
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="go")]})
+
+    contents = {
+        m.tool_call_id: m.content
+        for m in result["messages"]
+        if isinstance(m, ToolMessage) and m.name == "eval"
+    }
+    _assert_result_contains(contents["call_slow"], "done")
+    _assert_result_contains(contents["call_fast"], "2")
+    assert result["messages"][-1].content == "finished"

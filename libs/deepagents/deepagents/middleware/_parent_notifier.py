@@ -21,6 +21,7 @@ from deepagents.middleware.async_subagents import (
     _current_run_id,
     _failure_text,
     _final_content,
+    _has_unfinished_tasks,
     _launching_agent,
     _notify_parent,
     _task_event,
@@ -46,8 +47,9 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         return None
 
     async def aafter_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
-        """Report a finished run with its final answer."""
-        await self._areport("success", runtime.context, result=_final_content(state))
+        """Report a finished run with its final answer, as `delegated` while its own async tasks are unfinished."""
+        status: Literal["success", "delegated"] = "delegated" if _has_unfinished_tasks(state) else "success"
+        await self._areport(status, runtime.context, result=_final_content(state))
         return None
 
     def wrap_model_call(
@@ -72,7 +74,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
             await self._areport("error", request.runtime.context, error=_failure_text(e))
             raise
 
-    async def _areport(self, status: Literal["success", "error"], context: ContextT, **details: object) -> None:
+    async def _areport(self, status: Literal["success", "error", "delegated"], context: ContextT, **details: object) -> None:
         """Notify once per run, for this graph's own run that an async subagent tool started."""
         config = get_config()
         # Graphs nested in this run (e.g. a sync subagent that's a deep agent) inherit its config,

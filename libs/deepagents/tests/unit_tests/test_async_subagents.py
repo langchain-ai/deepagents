@@ -2461,3 +2461,101 @@ class TestQueuedUpdates:
     def test_invalid_strategy(self, strategy: str | None) -> None:
         with pytest.raises(ValueError, match="invalid update_strategy"):
             AsyncSubAgentMiddleware(async_subagents=[_make_spec(update_strategy=strategy)])
+
+
+def _own_task(status: str) -> dict[str, Any]:
+    """An async task the subagent itself started, as its own state records it."""
+    return {"engineer_thread": {**_lead_record(status)["values"]["async_tasks"]["thread_abc"], "task_id": "engineer_thread"}}
+
+
+def _delegating_server(*, own_status: str = "running", newer: dict[str, Any] | None = None) -> _FakeServer:
+    """A subagent whose tracked run ended; `newer` is a later run on its thread, started by its own subagents' reports."""
+    server = _FakeServer(
+        {"thread_abc": _child("WORKING: started the engineers", async_tasks=_own_task(own_status))}, {"run_id": "run_xyz", "status": "success"}
+    )
+    if newer is not None:
+
+        async def latest(**_kwargs: Any) -> list[dict[str, Any]]:
+            return [newer]
+
+        server.runs.list = latest
+    return server
+
+
+class TestDelegatedStatus:
+    async def test_run_ending_with_unfinished_tasks_reports_delegated(self) -> None:
+        server = _FakeServer()
+        state = {"messages": [AIMessage(content="WORKING: started the engineers")], "async_tasks": _own_task("running")}
+
+        await _call_callback("aafter_agent", state, MagicMock(), server=server)
+
+        assert _woken_event(server)["status"] == "delegated"
+        assert "reports again when they finish" in _woken_text(server)
+
+    async def test_run_ending_with_finished_tasks_reports_success(self) -> None:
+        server = _FakeServer()
+        state = {"messages": [AIMessage(content="DONE: built the API")], "async_tasks": _own_task("success")}
+
+        await _call_callback("aafter_agent", state, MagicMock(), server=server)
+
+        assert _woken_event(server)["status"] == "success"
+
+    async def test_check_reports_delegated_not_success(self) -> None:
+        update = await _pull("abefore_model", _lead_state(), _delegating_server())
+
+        assert [e["status"] for e in _pulled_events(update)] == ["delegated"]
+        assert "WORKING: started the engineers" in _text(update["messages"][0])
+        assert update["async_tasks"]["thread_abc"]["status"] == "delegated"
+
+    async def test_later_run_is_reported_when_its_subagents_finish(self) -> None:
+        """The subagent's own subagents wake it for a new run; the parent picks that run's answer up."""
+        server = _delegating_server(own_status="success", newer={"run_id": "run_final", "status": "success"})
+        server.thread_data["thread_abc"] = _child("DONE: built the API", async_tasks=_own_task("success"))
+
+        update = await _pull("abefore_model", _lead_state("delegated"), server)
+
+        assert [(e["status"], e["run_id"]) for e in _pulled_events(update)] == [("success", "run_final")]
+        assert "DONE: built the API" in _text(update["messages"][0])
+        assert update["async_tasks"]["thread_abc"]["run_id"] == "run_final"
+
+    async def test_later_run_still_going_is_followed_without_a_report(self) -> None:
+        server = _delegating_server(newer={"run_id": "run_final", "status": "running"})
+
+        update = await _pull("abefore_model", _lead_state("delegated"), server)
+
+        assert "messages" not in update
+        assert (update["async_tasks"]["thread_abc"]["status"], update["async_tasks"]["thread_abc"]["run_id"]) == ("running", "run_final")
+
+    async def test_unchanged_delegated_task_is_not_reported_again(self) -> None:
+        assert await _pull("abefore_model", _lead_state("delegated"), _delegating_server(newer={"run_id": "run_xyz", "status": "success"})) is None
+
+    async def test_finished_task_is_not_checked(self) -> None:
+        server = _delegating_server()
+        server.runs.get = AsyncMock()
+
+        assert await _pull("abefore_model", _lead_state("success"), server) is None
+        server.runs.get.assert_not_called()
+
+    def test_notification_from_a_later_run_is_recorded(self) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None)])
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "run_final"}
+        messages = [HumanMessage(content="note", additional_kwargs={"deepagents_notification": event})]
+
+        update = middleware.before_agent({**_lead_state("delegated"), "messages": messages}, MagicMock())
+
+        recorded = update["async_tasks"]["thread_abc"]
+        assert (recorded["status"], recorded["run_id"]) == ("success", "run_final")
+
+    async def test_check_tool_says_the_task_is_not_finished(self) -> None:
+        client = MagicMock()
+        client.runs.get = AsyncMock(return_value={"run_id": "run_xyz", "status": "success"})
+        client.threads.get = AsyncMock(return_value=_child("WORKING: started the engineers", async_tasks=_own_task("running")))
+        check = _get_tool(_build_async_subagent_tools([_make_spec()]), "check_async_task")
+
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=client):
+            result = await check.coroutine(task_id="thread_abc", runtime=_make_runtime_with_task())
+
+        parsed = json.loads(result.update["messages"][0].content)
+        assert (parsed["status"], parsed["result"]) == ("delegated", "WORKING: started the engineers")
+        assert "not its final one" in parsed["note"]
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "delegated"

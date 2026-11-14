@@ -6926,6 +6926,7 @@ def _apply_profile_overrides(
     *,
     label: str,
     raise_on_failure: bool = False,
+    replace: bool = False,
 ) -> None:
     """Merge `overrides` into `model.profile`.
 
@@ -6940,6 +6941,7 @@ def _apply_profile_overrides(
             (e.g., `"config.toml"`, `"CLI --profile-override"`).
         raise_on_failure: When `True`, raise `ModelConfigError` instead
             of logging a warning if assignment fails.
+        replace: Discard inherited profile fields before applying the new profile.
 
     Raises:
         ModelConfigError: If `raise_on_failure` is `True` and the model
@@ -6949,7 +6951,11 @@ def _apply_profile_overrides(
 
     logger.debug("Applying %s profile overrides: %s", label, overrides)
     profile = getattr(model, "profile", None)
-    merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
+    merged = (
+        {**profile, **overrides}
+        if isinstance(profile, dict) and not replace
+        else overrides
+    )
     try:
         model.profile = merged  # ty: ignore[invalid-assignment]
     except (AttributeError, TypeError, ValueError) as exc:
@@ -7297,26 +7303,23 @@ def create_model(
 
     _set_configured_model_metadata(model, model_name, resolved_provider)
 
-    if provider in {"anthropic", "openai"}:
-        from deepagents_code.model_config import (
-            ANTHROPIC_MODEL_PROFILE_FALLBACKS,
-            OPENAI_MODEL_PROFILE_FALLBACKS,
-        )
+    from deepagents_code._model_profiles import (
+        BUNDLED_MODEL_PROFILES,
+        merge_model_profile,
+    )
 
-        fallbacks = (
-            ANTHROPIC_MODEL_PROFILE_FALLBACKS
-            if provider == "anthropic"
-            else OPENAI_MODEL_PROFILE_FALLBACKS
+    spec = f"{provider}:{model_name}"
+    if spec in BUNDLED_MODEL_PROFILES and not class_path:
+        upstream = getattr(model, "profile", None)
+        profile = merge_model_profile(
+            spec, upstream if isinstance(upstream, dict) else None
         )
-        fallback = fallbacks.get(model_name)
-        if fallback:
-            upstream = getattr(model, "profile", None)
-            _apply_profile_overrides(
-                model,
-                {**fallback, **(upstream if isinstance(upstream, dict) else {})},
-                model_name,
-                label="bundled fallback",
-            )
+        explicit_profile = kwargs.get("profile")
+        if isinstance(explicit_profile, dict):
+            profile.update(explicit_profile)
+        _apply_profile_overrides(
+            model, profile, model_name, label="bundled profile", replace=True
+        )
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:

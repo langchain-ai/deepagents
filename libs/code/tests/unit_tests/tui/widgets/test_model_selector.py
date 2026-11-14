@@ -248,6 +248,112 @@ class TestModelSelectorChrome:
         assert max_height.cells is not None
         assert max_height.cells <= 16
 
+    @pytest.mark.parametrize("width", [64, 80])
+    async def test_selection_refits_wrapped_profile_details(self, width: int) -> None:
+        """Changing to a longer profile keeps details and controls on screen."""
+        from deepagents_code.model_catalog import CatalogProfile, ModelCatalog
+
+        models = [f"openai:model-{index}" for index in range(20)]
+        catalog = ModelCatalog(
+            models=models,
+            providers={},
+            profiles={
+                models[1]: CatalogProfile(
+                    profile={
+                        "context_window": 1_050_000,
+                        "max_input_tokens": 922_000,
+                        "max_output_tokens": 128_000,
+                        "structured_output": True,
+                        "tool_calling": True,
+                        "profile_note": (
+                            "Unified budget; provider xhigh unavailable in adapter; "
+                            "preserve signatures."
+                        ),
+                    },
+                    overridden_keys=["max_input_tokens"],
+                )
+            },
+        )
+        app = ModelSelectorTestApp()
+        async with app.run_test(size=(width, 24)) as pilot:
+            screen = ModelSelectorScreen(
+                catalog_loader=AsyncMock(return_value=catalog),
+                recommended_models=dict.fromkeys(models, "Model"),
+                include_recent_models=False,
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.pause()
+
+            footer = screen.query_one("#model-detail-footer", Static)
+            help_text = screen.query_one(".model-selector-help", Static)
+            container = screen.query_one(Vertical)
+            assert "preserve signatures" in str(footer.content)
+            assert container.region.y >= 0
+            assert container.region.bottom <= app.size.height
+            assert help_text.region.bottom <= app.size.height
+            assert footer.region.height > 4
+
+    @pytest.mark.parametrize("initial_width", [64, 80])
+    async def test_narrow_profile_keeps_selected_model_visible(
+        self, initial_width: int
+    ) -> None:
+        """Wrapped profile details cannot hide the selected row behind its header."""
+        from deepagents_code.model_catalog import CatalogProfile, ModelCatalog
+
+        spec = "google_genai:gemini-4-hydrogen"
+        catalog = ModelCatalog(
+            models=[spec],
+            providers={},
+            profiles={
+                spec: CatalogProfile(
+                    profile={
+                        "context_window": 1_048_576,
+                        "max_input_tokens": 983_040,
+                        "max_output_tokens": 65_536,
+                        "text_inputs": True,
+                        "image_inputs": True,
+                        "audio_inputs": True,
+                        "pdf_inputs": True,
+                        "video_inputs": True,
+                        "reasoning_output": True,
+                        "structured_output": True,
+                        "tool_calling": True,
+                        "profile_note": (
+                            "Unified budget; provider xhigh unavailable in adapter; "
+                            "preserve signatures."
+                        ),
+                    },
+                    overridden_keys=[],
+                )
+            },
+        )
+        app = ModelSelectorTestApp()
+        async with app.run_test(size=(initial_width, 24)) as pilot:
+            screen = ModelSelectorScreen(
+                catalog_loader=AsyncMock(return_value=catalog),
+                recommended_models={spec: "Gemini 4 Hydrogen"},
+                include_recent_models=False,
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+
+            if initial_width != 64:
+                await pilot.resize_terminal(64, 24)
+            await pilot.pause()
+
+            body = screen.query_one(".model-list", VerticalScroll)
+            selected = screen._option_widgets[screen._selected_index]
+            assert selected.region.y >= body.region.y
+            assert selected.region.bottom <= body.region.bottom
+            assert screen.query_one(Vertical).region.bottom <= app.size.height
+
     async def test_standard_selector_help_shows_close_hint(self) -> None:
         """The regular `/model` selector should advertise Escape dismissal."""
         app = ModelSelectorTestApp()
@@ -1414,7 +1520,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k3"
+        spec = "fireworks:accounts/fireworks/models/minimax-m3p1-flash"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         # Provider is installed/discoverable but its profiles omit the curated
@@ -1448,7 +1554,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "baseten:moonshotai/Kimi-K3"
+        spec = "baseten:meta-models/muse-spark-open"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -1478,7 +1584,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k3"
+        spec = "fireworks:accounts/fireworks/models/minimax-m3p1-flash"
         model = spec.split(":", 1)[1]
         assert spec in model_selector._RECOMMENDED_MODELS
 

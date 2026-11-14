@@ -1968,7 +1968,9 @@ class TestGetAvailableModels:
                 expected = models[f"http://localhost:{port}"] if enabled else []
                 assert get_available_models().get("ollama", []) == expected
                 profiles = get_model_profiles(cli_override=override)
-                assert set(profiles) == {f"ollama:{name}" for name in expected}
+                assert {
+                    spec for spec in profiles if spec.endswith((":first", ":second"))
+                } == {f"ollama:{name}" for name in expected}
                 for name in expected:
                     profile = profiles[f"ollama:{name}"]["profile"]
                     assert profile["max_input_tokens"] == (
@@ -4419,7 +4421,7 @@ class TestGetModelProfiles:
         ("provider", "model"),
         [("anthropic", "claude-haiku-5-5"), ("openai", "gpt-6.1-terra")],
     )
-    def test_fallback_fills_only_missing_profile_fields(
+    def test_provider_loader_preserves_raw_upstream_fields(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, model: str
     ) -> None:
         profiles_path = tmp_path / "data" / "_profiles.py"
@@ -4441,14 +4443,7 @@ class TestGetModelProfiles:
         assert profiles[model]["structured_output"] is False
         assert profiles[model]["max_input_tokens"] == 1234
         assert profiles[model]["reasoning_effort_default"] == "high"
-        assert profiles[model]["reasoning_effort_levels"] == [
-            *(["none"] if provider == "openai" else []),
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-        ]
+        assert "reasoning_effort_levels" not in profiles[model]
         clear_caches()
 
     @pytest.mark.parametrize(

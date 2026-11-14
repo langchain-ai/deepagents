@@ -75,85 +75,75 @@ from the per-provider sections below.
 """
 
 
+_COMPATIBILITY_MODELS: dict[str, str] = {
+    "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
+    "openrouter:google/gemini-3.8-flash": "Gemini 3.8 Flash (OpenRouter)",
+}
+
 _RECOMMENDED_MODELS: dict[str, str] = {
-    "anthropic:claude-fable-5-1": "Claude Fable 5.1",
+    "anthropic:claude-fable-5-2": "Claude Fable 5.2",
     "anthropic:claude-opus-5-5": "Claude Opus 5.5",
     "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
-    "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
-    "baseten:deepseek-ai/DeepSeek-V4.1-Flash": "DeepSeek V4.1 Flash",
-    "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
     "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
-    "baseten:moonshotai/Kimi-K3": "Kimi K3",
-    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
+    "baseten:deepseek-ai/DeepSeek-V4.1-Flash-1017": "DeepSeek V4.1 Flash 1017",
+    "baseten:meta-models/muse-spark-open": "Muse Spark Open",
+    "baseten:nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B": "Nemotron 3.5 Super VL",
     "baseten:zai-org/GLM-5.3": "GLM 5.3",
     "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",
-    "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": (
-        "DeepSeek V4 Flash 0731"
+    "fireworks:accounts/fireworks/models/deepseek-v4p1-flash-1017": (
+        "DeepSeek V4.1 Flash 1017"
     ),
-    "fireworks:accounts/fireworks/models/deepseek-v4p1-flash": "DeepSeek V4.1 Flash",
-    "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
-    "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "fireworks:accounts/fireworks/models/glm-5p3": "GLM 5.3",
     "fireworks:accounts/fireworks/models/glm-5p3-flash": "GLM 5.3 Flash",
-    "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
-    "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
-    "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
-    "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
+    "fireworks:accounts/fireworks/models/minimax-m3p1-flash": "MiniMax M3.1 Flash",
+    "fireworks:accounts/fireworks/models/muse-spark-open": "Muse Spark Open",
+    "fireworks:accounts/fireworks/models/qwen3p8-max": "Qwen 3.8 Max (hosted)",
     "google_genai:gemini-4-argon": "Gemini 4 Argon",
-    "meta:muse-spark-1.2": "Muse Spark 1.2",
-    "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
-    "ollama:deepseek-v4.1-flash:cloud": "DeepSeek V4.1 Flash",
-    "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
-    "ollama:glm-5.3:cloud": "GLM 5.3",
+    "google_genai:gemini-4-carbon": "Gemini 4 Carbon",
+    "google_genai:gemini-4-hydrogen": "Gemini 4 Hydrogen",
+    "meta:muse-spark-1.3": "Muse Spark 1.3",
+    "ollama:deepseek-v4-pro:0813-cloud": "DeepSeek V4 Pro 0813",
+    "ollama:deepseek-v4.1-flash:1017-cloud": "DeepSeek V4.1 Flash 1017",
     "ollama:glm-5.3-flash:cloud": "GLM 5.3 Flash",
-    "ollama:minimax-m3:cloud": "MiniMax-M3",
+    "ollama:glm-5.3:cloud": "GLM 5.3",
+    "ollama:minimax-m3.1-flash:cloud": "MiniMax M3.1 Flash",
+    "ollama:mistral-large-4:cloud": "Mistral Large 4",
+    "ollama:muse-spark-open:cloud": "Muse Spark Open",
     "openai:gpt-6-astra": "GPT-6 Astra",
     "openai:gpt-6-luna": "GPT-6 Luna",
     "openai:gpt-6.1-sol": "GPT-6.1 Sol",
     "openai:gpt-6.1-terra": "GPT-6.1 Terra",
-    "openai_codex:gpt-5.6-luna": "GPT-5.6 Luna",
-    "openai_codex:gpt-5.6-sol": "GPT-5.6 Sol",
-    "openai_codex:gpt-5.6-terra": "GPT-5.6 Terra",
-    "openrouter:anthropic/claude-opus-5.5": "Claude Opus 5.5",
-    "openrouter:anthropic/claude-sonnet-5.5": "Claude Sonnet 5.5",
-    "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
-    "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
-    "openrouter:deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
-    "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "openai_codex:gpt-6-astra": "GPT-6 Astra (ChatGPT OAuth)",
+    "openai_codex:gpt-6-luna": "GPT-6 Luna (ChatGPT OAuth)",
+    "openai_codex:gpt-6.1-sol": "GPT-6.1 Sol (ChatGPT OAuth)",
+    "openai_codex:gpt-6.1-terra": "GPT-6.1 Terra (ChatGPT OAuth)",
+    "openrouter:anthropic/claude-fable-5.2": "Claude Fable 5.2 (OpenRouter)",
+    "openrouter:anthropic/claude-opus-5.5": "Claude Opus 5.5 (OpenRouter)",
+    "openrouter:anthropic/claude-sonnet-5.5": "Claude Sonnet 5.5 (OpenRouter)",
     "openrouter:deepseek/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
-    "openrouter:google/gemini-4-argon": "Gemini 4 Argon",
-    "openrouter:moonshotai/kimi-k3": "Kimi K3",
-    "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
-    "openrouter:openrouter/fusion": "OpenRouter Fusion",
-    "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
+    "openrouter:deepseek/deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash 1017",
+    "openrouter:google/gemini-4-argon": "Gemini 4 Argon (OpenRouter)",
+    "openrouter:google/gemini-4-carbon": "Gemini 4 Carbon (OpenRouter)",
+    "openrouter:google/gemini-4-hydrogen": "Gemini 4 Hydrogen (OpenRouter)",
+    "openrouter:meta/muse-spark-open": "Muse Spark Open",
+    "openrouter:minimax/minimax-m3.1-flash": "MiniMax M3.1 Flash",
+    "openrouter:mistralai/mistral-large-4-0": "Mistral Large 4",
+    "openrouter:nvidia/nemotron-3.5-super-vl": "Nemotron 3.5 Super VL",
+    "openrouter:qwen/qwen3.8-max-0902": "Qwen 3.8 Max (hosted)",
     "openrouter:z-ai/glm-5.3": "GLM 5.3",
     "openrouter:z-ai/glm-5.3-flash": "GLM 5.3 Flash",
-    "xai:grok-4.5": "Grok 4.5",
+    "xai:grok-4.7": "Grok 4.7",
+    **_COMPATIBILITY_MODELS,
 }
-"""Hand-curated frontier-tier models promoted across the UI, mapped to a
-human-readable display name.
-
-Used by the onboarding picker (`curated=True`) and by the in-`/model`
-"Recommended only" toggle (Ctrl+R). Membership tests and iteration operate on
-the spec keys; the names are a display fallback for `_get_model_display_name`
-when a provider package (and thus its profile `name`) is not installed — the
-common case for uninstalled recommendations and onboarding, where the raw
-model id (e.g. `accounts/fireworks/models/kimi-k3`) would otherwise
-show. When a profile is available its upstream `name` wins, so these stay a
-safety net rather than a second source of truth.
-
-Same model IDs may appear under multiple providers (e.g. GLM 5.2 via
-`baseten`, `fireworks`, `ollama`, and `openrouter`) and are listed under each
-provider intentionally so the user can pick whichever provider they have
-credentials for.
-"""
-
+"""Curated main and supported compatibility routes, independent of discovery."""
 
 AUXILIARY_RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
+    "meta:muse-ember-1.0": "Muse Ember 1.0",
+    "openrouter:anthropic/claude-haiku-5.5": "Claude Haiku 5.5 (OpenRouter)",
     **_RECOMMENDED_MODELS,
 }
-"""Sidecar recommendations without changing the main-agent recommendations."""
+"""Sidecar recommendations without changing main-agent or sidecar defaults."""
 
 
 class DefaultModelScope(NamedTuple):
@@ -342,6 +332,18 @@ class ModelOption(Static):
         self.post_message(self.Clicked(self.model_spec, self.provider, self.index))
 
 
+class _ModelList(VerticalScroll):
+    """Scrollable options that retain selection visibility after layout changes."""
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self.scroll_selection_into_view)
+
+    def scroll_selection_into_view(self) -> None:
+        """Reveal the selection without hiding provider headers when space allows."""
+        for option in self.query(".model-option-selected"):
+            option.scroll_visible(animate=False, immediate=True)
+
+
 class CurrentModelTitle(Static):
     """Selector title whose current-model span copies on click."""
 
@@ -515,7 +517,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-detail-footer {
-        height: 4;
+        height: auto;
         padding: 0 2;
         margin-top: 1;
     }
@@ -775,7 +777,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             )
 
             # Scrollable model list
-            with VerticalScroll(classes="model-list"):
+            with _ModelList(classes="model-list"):
                 self._options_container = Container(id="model-options")
                 yield self._options_container
 
@@ -1819,7 +1821,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             """
             parts: list[Content] = []
             for key, label in keys:
-                if key in profile:
+                if isinstance(profile.get(key), bool):
                     base = (
                         Content.styled(label, colors.success)
                         if profile[key]
@@ -1833,7 +1835,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return parts
 
         # Line 1: Context window
-        token_keys = [("max_input_tokens", "in"), ("max_output_tokens", "out")]
+        token_keys = [
+            ("context_window", "total"),
+            ("max_input_tokens", "in"),
+            ("max_output_tokens", "out"),
+        ]
         ctx_parts = [p for k, s in token_keys if (p := _format_token(k, s)) is not None]
         bullet_sep = Content(f" {glyphs.bullet} ")
         line1 = (
@@ -1879,6 +1885,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             if has_visible_override
             else Content("")
         )
+        note = profile.get("profile_note")
+        if isinstance(note, str) and note:
+            line4 = Content.assemble(
+                line4, f" {glyphs.bullet} " if has_visible_override else "", note
+            )
 
         return Content.assemble(line1, "\n", line2, "\n", line3, "\n", line4)
 
@@ -1917,6 +1928,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Returns:
             The display name for the row.
         """
+        if model_spec in _COMPATIBILITY_MODELS:
+            return f"{_COMPATIBILITY_MODELS[model_spec]} (previous generation)"
         entry = self._profiles.get(model_spec)
         if entry:
             profile = entry.get("profile")
@@ -1949,6 +1962,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             logger.warning("Failed to format footer for %s", spec, exc_info=True)
             text = Content.styled("Could not load profile details\n\n\n", "dim")
         footer.update(text)
+        self.call_after_refresh(self._fit_model_list)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.

@@ -33,6 +33,9 @@ _PROFILE_FIELDS = frozenset(
     {
         "name",
         "status",
+        "context_window",
+        "profile_note",
+        "source",
         "max_input_tokens",
         "max_output_tokens",
         "text_inputs",
@@ -185,6 +188,7 @@ def load_model_catalog(
     Returns:
         Displayable capabilities, policy, and provider readiness.
     """
+    from deepagents_code.config_manifest import is_provider_package_installed
     from deepagents_code.model_config import MANAGED_CONFIG_SOURCE
 
     config = ModelConfig.load()
@@ -209,7 +213,12 @@ def load_model_catalog(
             if provider not in providers:
                 providers[provider] = _provider_entry(provider, config)
             info = providers[provider]
-            if provider in available or info.install_extra or spec == current_spec:
+            if (
+                provider in available
+                or info.install_extra
+                or is_provider_package_installed(provider)
+                or spec == current_spec
+            ):
                 models.append(spec)
         except Exception:
             logger.warning(

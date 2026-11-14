@@ -265,9 +265,11 @@ class SubAgent(TypedDict):
     own tools work normally; the tradeoff is cache misses.
 
     The fork adds its task after the inherited history, then processes the full
-    conversation through its middleware. The added task can cause older messages
-    to be shortened or summarized differently than in the parent's last model
-    request. This can reduce prompt-cache reuse, even on the fork's first call.
+    conversation through its middleware. For example, a `write_file` argument
+    preserved in the parent's last model request can fall outside the fork's
+    recent-message window, so the fork's first request contains a truncated
+    argument instead. The added task can also trigger summarization of earlier
+    messages. Either change can reduce prompt-cache reuse.
     """
 
 

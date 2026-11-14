@@ -1144,7 +1144,7 @@ requires-dist = [
     { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.7.3,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.4.3,<5.0.0" },
-    { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.5,<4.0.0" },
+    { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.3.0,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.3,<2.0.0" },
     { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.3,<2.0.0" },
     { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.2,<2.0.0" },
@@ -2581,7 +2581,7 @@ wheels = [
 
 [[package]]
 name = "langchain-google-vertexai"
-version = "3.2.5"
+version = "3.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bottleneck" },
@@ -2595,9 +2595,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "validators" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a3/aa/41a21eb5ce98e25fb1e171063f77597d5f8f57e91c4aaeb05b07fc8b77ab/langchain_google_vertexai-3.2.5.tar.gz", hash = "sha256:0a4b267aceefbaf8622bb47a13bffd8b2f93e2f2b9e298a91305592e88f33531", size = 350802, upload-time = "2026-10-23T14:37:22.11Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/91/a5b3f93181412b6e2aa4b114078f844bd8aa020d6fa4b813f0344ceb2228/langchain_google_vertexai-3.3.0.tar.gz", hash = "sha256:0b4a8c5cb896af022d43020503849f24c7d19752aec33481a8edeee3e18a1b23", size = 322334, upload-time = "2026-11-13T22:53:19.206Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cd/8d/9d4f123fe940e7e976db8728a162c534496b753044b660c0935db2cddaa6/langchain_google_vertexai-3.2.5-py3-none-any.whl", hash = "sha256:d4ea1c470ba79d5a99bd1ac92ebd45cb133e5c06caf5064756422e90742b9862", size = 120255, upload-time = "2026-10-23T14:37:20.876Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/50/bc558bd35146bd5cb1038f43513f97c079dc3e5b7a32c09ac81fd9a8f802/langchain_google_vertexai-3.3.0-py3-none-any.whl", hash = "sha256:46db0f68acdfebe2954371c035199db0b8b034e8502eb307aef51f7fa44b370e", size = 120124, upload-time = "2026-11-13T22:53:18.06Z" },
 ]
 
 [[package]]
@@ -2834,14 +2834,14 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.5.0,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.8.0,<2.0.0" },
-    { name = "langgraph", specifier = ">=1.2.21,<2.0.0" },
+    { name = "langgraph", specifier = ">=1.2.22,<2.0.0" },
     { name = "quickjs-rs", specifier = ">=0.2.6,<0.3.0" },
 ]
 
 [package.metadata.requires-dev]
 test = [
     { name = "build" },
-    { name = "langgraph-checkpoint-postgres", specifier = ">=3.2.0,<4.0.0" },
+    { name = "langgraph-checkpoint-postgres", specifier = ">=3.2.1,<4.0.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4.0.0" },
     { name = "pytest", specifier = ">=9.1.1,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
@@ -2949,7 +2949,7 @@ wheels = [
 
 [[package]]
 name = "langgraph"
-version = "1.2.21"
+version = "1.2.22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
@@ -2959,9 +2959,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/01/399abb21ff4f6be75de46ea9a342dacdc3ccb8e745eb2e4875f1f27f42c5/langgraph-1.2.21.tar.gz", hash = "sha256:382b657eaf3cd568245de4bf264db94d514e2a6d0916046b3125a228aee1c307", size = 798394, upload-time = "2026-11-12T18:06:32.025Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/90/80e9905d7d010a32d1a8fc6a2d413f039d2179ecf7727f6ebdd3a428fff3/langgraph-1.2.22.tar.gz", hash = "sha256:32700dc34b5cf9ebb397258c2e56392f017d4dbc51c9591339225c3c1b7b5126", size = 799615, upload-time = "2026-11-14T01:43:44.184Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/d3/dbd2d986e2fa9e142cdc8d4865896a321146ea12f315abe8705ef5ec660a/langgraph-1.2.21-py3-none-any.whl", hash = "sha256:e3e8ed606cbf577ee394d0e4bba0ba723de18c2ecd2f51529fc2ef4051fbca93", size = 263844, upload-time = "2026-11-12T18:06:30.205Z" },
+    { url = "https://files.pythonhosted.org/packages/46/7e/52b1f714b976d344f116ccaae44e2abe4a5602ec849ab4174e3df80f0e2c/langgraph-1.2.22-py3-none-any.whl", hash = "sha256:0f8ebec55a58667e40474a0e55bdb4f06a8c7a1d98cde2b7c8d996a2ee78fe3f", size = 264465, upload-time = "2026-11-14T01:43:42.476Z" },
 ]
 
 [[package]]

@@ -788,9 +788,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             infer_schema=False,
             args_schema=TaskToolSchema,
         )
-        from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware, _ForkAsyncToolsMiddleware  # noqa: PLC0415
-
-        fork_middleware = [_ForkAsyncToolsMiddleware(m) if isinstance(m, AsyncSubAgentMiddleware) else m for m in spec.get("middleware", [])]
+        fork_middleware = list(spec.get("middleware", []))
         # The parent's `task` sits right after its filesystem tools; matching that
         # position keeps both tools blocks in the same order. Tests assert that tool
         # order matches.

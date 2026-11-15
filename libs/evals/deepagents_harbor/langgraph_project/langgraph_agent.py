@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
+from deepagents.profiles import HarnessProfile, register_harness_profile
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, runtime_state
@@ -60,6 +61,15 @@ _BARE_SYSTEM_PROMPTS: dict[str, str] = {
 `create_deep_agent` sends no system prompt for models without a harness
 profile, so the bare agent otherwise runs on tool descriptions alone. This
 prompt follows pi's short default prompt, with deepagents' tool names.
+"""
+
+_BARE_READ_LIMITS: dict[str, int] = {
+    "fireworks:accounts/fireworks/models/glm-5p3": 2000,
+}
+"""Eval-only `read_file` default line counts for the bare graph, keyed by model spec.
+
+With the SDK's 100-line default, GLM 5.3 pages through files and resends its
+whole context on every extra call; this tests reading larger windows.
 """
 
 _MODEL_RETRY_ATTEMPTS = 3
@@ -498,6 +508,7 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
+    _register_bare_read_limit(_model_name(configurable))
     # Harbor runs each task in its own isolated container rooted at the workdir,
     # and tasks operate on the real sandbox paths, so path virtualization is
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
@@ -521,6 +532,13 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         system_prompt=_BARE_SYSTEM_PROMPTS.get(getattr(model, "model", "")),
         middleware=_bare_middleware(),
     )
+
+
+def _register_bare_read_limit(model_spec: str) -> None:
+    """Register the eval's `read_file` default for `model_spec`, if it has one."""
+    read_limit = _BARE_READ_LIMITS.get(model_spec)
+    if read_limit is not None:
+        register_harness_profile(model_spec, HarnessProfile(read_limit=read_limit))
 
 
 def _bare_middleware() -> list[AgentMiddleware]:

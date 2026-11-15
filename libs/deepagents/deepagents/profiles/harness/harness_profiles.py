@@ -318,8 +318,16 @@ class HarnessProfileConfig:
     is dropped too. Async subagents are unaffected.
     """
 
+    read_limit: int | None = None
+    """Lines `read_file` returns from a text file when the model omits `limit`.
+
+    `None` (the default) keeps `FilesystemMiddleware`'s default of 100 lines.
+    Applies to the main agent and its subagents. Must be positive.
+    """
+
     def __post_init__(self) -> None:
         """Freeze mutable mappings and validate grammar of string entries."""
+        _validate_read_limit(self.read_limit)
         if not isinstance(self.tool_description_overrides, MappingProxyType):
             object.__setattr__(
                 self,
@@ -354,6 +362,8 @@ class HarnessProfileConfig:
             out["base_system_prompt"] = self.base_system_prompt
         if self.system_prompt_suffix is not None:
             out["system_prompt_suffix"] = self.system_prompt_suffix
+        if self.read_limit is not None:
+            out["read_limit"] = self.read_limit
         if self.tool_description_overrides:
             out["tool_description_overrides"] = _coerce_str_mapping(
                 dict(self.tool_description_overrides),
@@ -400,6 +410,7 @@ class HarnessProfileConfig:
             tool_description_overrides=_coerce_str_mapping(data.get("tool_description_overrides"), "tool_description_overrides"),
             excluded_tools=_coerce_frozen_strset(data.get("excluded_tools"), "excluded_tools"),
             excluded_middleware=_coerce_frozen_strset(data.get("excluded_middleware"), "excluded_middleware"),
+            read_limit=_coerce_int_or_none(data.get("read_limit"), "read_limit"),
             general_purpose_subagent=_coerce_general_purpose_subagent(data.get("general_purpose_subagent")),
         )
 
@@ -433,6 +444,7 @@ class HarnessProfileConfig:
             excluded_tools=self.excluded_tools,
             excluded_middleware=frozenset(self.excluded_middleware),
             general_purpose_subagent=self.general_purpose_subagent,
+            read_limit=self.read_limit,
         )
 
     @classmethod
@@ -476,6 +488,7 @@ class HarnessProfileConfig:
             excluded_tools=profile.excluded_tools,
             excluded_middleware=frozenset(_serialize_runtime_excluded_middleware_entry(entry) for entry in profile.excluded_middleware),
             general_purpose_subagent=profile.general_purpose_subagent,
+            read_limit=profile.read_limit,
         )
 
 
@@ -724,6 +737,13 @@ class HarnessProfile:
     subagents are unaffected.
     """
 
+    read_limit: int | None = None
+    """Lines `read_file` returns from a text file when the model omits `limit`.
+
+    `None` (the default) keeps `FilesystemMiddleware`'s default of 100 lines.
+    Applies to the main agent and its subagents. Must be positive.
+    """
+
     def __post_init__(self) -> None:
         """Freeze mutable container fields to prevent post-construction mutation.
 
@@ -762,6 +782,7 @@ class HarnessProfile:
         extra = self.extra_middleware
         if not callable(extra) and not isinstance(extra, tuple):
             object.__setattr__(self, "extra_middleware", tuple(extra))
+        _validate_read_limit(self.read_limit)
         scaffolding_violations: list[str] = []
         for entry in self.excluded_middleware:
             if isinstance(entry, str):
@@ -799,6 +820,23 @@ def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
     if profile.system_prompt_suffix is not None:
         prompt = prompt + "\n\n" + profile.system_prompt_suffix if prompt else profile.system_prompt_suffix
     return prompt
+
+
+def _validate_read_limit(read_limit: int | None) -> None:
+    """Raise `ValueError` unless `read_limit` is `None` or a positive integer."""
+    if read_limit is not None and (isinstance(read_limit, bool) or not isinstance(read_limit, int) or read_limit <= 0):
+        msg = f"read_limit must be a positive integer or None, got {read_limit!r}"
+        raise ValueError(msg)
+
+
+def _coerce_int_or_none(value: object, name: str) -> int | None:
+    """Return `value` as an `int`, or `None` when unset; raise `TypeError` otherwise."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        msg = f"{name} must be an integer or None, got {type(value).__name__}"
+        raise TypeError(msg)
+    return value
 
 
 _HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessProfileConfig))
@@ -1294,6 +1332,7 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
             base.general_purpose_subagent,
             override.general_purpose_subagent,
         ),
+        read_limit=override.read_limit if override.read_limit is not None else base.read_limit,
     )
 
 

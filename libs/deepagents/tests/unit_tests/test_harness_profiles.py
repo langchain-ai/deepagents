@@ -407,3 +407,28 @@ class TestMaterializeExtraMiddleware:
         b = profile.materialize_extra_middleware()
         assert a == b
         assert a is not b
+
+
+class TestReadLimitProfileField:
+    """`read_limit` on harness profiles."""
+
+    def test_config_round_trips_read_limit(self) -> None:
+        config = HarnessProfileConfig(read_limit=2000)
+        assert config.to_dict() == {"read_limit": 2000}
+        assert HarnessProfileConfig.from_dict({"read_limit": 2000}) == config
+        assert config.to_harness_profile().read_limit == 2000
+        assert HarnessProfileConfig.from_harness_profile(HarnessProfile(read_limit=2000)) == config
+
+    def test_unset_read_limit_is_omitted_from_dict(self) -> None:
+        assert "read_limit" not in HarnessProfileConfig().to_dict()
+
+    @pytest.mark.parametrize("value", [0, -1, True])
+    def test_invalid_read_limit_raises(self, value: object) -> None:
+        with pytest.raises(ValueError, match="read_limit must be a positive integer"):
+            HarnessProfile(read_limit=value)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="read_limit must be a positive integer"):
+            HarnessProfileConfig(read_limit=value)  # type: ignore[arg-type]
+
+    def test_from_dict_rejects_non_integer_read_limit(self) -> None:
+        with pytest.raises(TypeError, match="read_limit must be an integer"):
+            HarnessProfileConfig.from_dict({"read_limit": "2000"})

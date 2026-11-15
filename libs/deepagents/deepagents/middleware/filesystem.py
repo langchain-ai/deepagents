@@ -40,7 +40,7 @@ from langgraph.channels.delta import DeltaChannel
 from langgraph.channels.untracked_value import UntrackedValue
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
@@ -1514,13 +1514,68 @@ READ_FILE_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
     multimodal_bullets=_IMAGE_PDF_PAGINATION_BULLET,
 )
 
+_VIDEO_PAGINATION_BULLETS = (
+    f"{_IMAGE_PDF_PAGINATION_BULLET}\n"
+    "- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail."
+)
+
 READ_FILE_VIDEO_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
     first_line="For text files, by default it reads up to 100 lines starting from the beginning of the file",
-    multimodal_bullets=(
-        f"{_IMAGE_PDF_PAGINATION_BULLET}\n"
-        "- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail."
-    ),
+    multimodal_bullets=_VIDEO_PAGINATION_BULLETS,
 )
+
+
+def _read_file_tool_description(read_limit: int, *, video_enabled: bool) -> str:
+    """Return the default `read_file` description, stating `read_limit` as the default window."""
+    if read_limit == DEFAULT_READ_LIMIT:
+        return READ_FILE_VIDEO_TOOL_DESCRIPTION if video_enabled else READ_FILE_TOOL_DESCRIPTION
+    if not video_enabled:
+        return _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
+            first_line=f"By default, it reads up to {read_limit} lines starting from the beginning of the file",
+            multimodal_bullets=_IMAGE_PDF_PAGINATION_BULLET,
+        )
+    return _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
+        first_line=f"For text files, by default it reads up to {read_limit} lines starting from the beginning of the file",
+        multimodal_bullets=_VIDEO_PAGINATION_BULLETS,
+    )
+
+
+def _read_file_args_schema(read_limit: int, *, video_enabled: bool) -> type[BaseModel]:
+    """Return the `read_file` input schema, documenting `read_limit` as the default `limit`."""
+    if read_limit == DEFAULT_READ_LIMIT:
+        return ReadVideoFileSchema if video_enabled else ReadFileSchema
+    if not video_enabled:
+        limit_field = Field(default=read_limit, description="Maximum number of lines to read. Use for pagination of large files.")
+        return create_model("ReadFileSchema", __base__=ReadFileSchema, limit=(int, limit_field))
+    limit_field = Field(
+        default=None,
+        description=(
+            f"Maximum number of lines to read for text files (default {read_limit}). "
+            f"For videos, seconds of source to sample (default {DEFAULT_READ_LIMIT})."
+        ),
+    )
+    return create_model("ReadVideoFileSchema", __base__=ReadVideoFileSchema, limit=(int | None, limit_field))
+
+
+def _default_read_limit(validated_path: str, read_limit: int, *, video_enabled: bool) -> int:
+    """Return the `limit` for a `read_file` call that passed none; videos keep the 100-second window."""
+    if video_enabled and _get_read_file_type(validated_path, video_enabled=True) == "video":
+        return DEFAULT_READ_LIMIT
+    return read_limit
+
+
+def _validate_limits(*, max_execute_timeout: int, grep_max_count: int | None, read_limit: int) -> None:
+    """Raise `ValueError` for non-positive `FilesystemMiddleware` limits."""
+    if max_execute_timeout <= 0:
+        msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+        raise ValueError(msg)
+    if grep_max_count is not None and grep_max_count <= 0:
+        msg = f"grep_max_count must be positive or None, got {grep_max_count}"
+        raise ValueError(msg)
+    if read_limit <= 0:
+        msg = f"read_limit must be positive, got {read_limit}"
+        raise ValueError(msg)
+
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
@@ -1899,6 +1954,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
         grep_max_count: int | None = 1000,
+        read_limit: int = DEFAULT_READ_LIMIT,
         tools: list[FsToolName] | Literal["all"] | None = None,
         offload_binary_content: bool = False,
         permissions: list[FilesystemPermission] | None = None,
@@ -1926,6 +1982,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 very large repositories. The model can override it per call via
                 the tool's `max_count` argument. Set to `None` to disable the
                 default cap (return every match unless a per-call cap is given).
+            read_limit: Number of lines `read_file` returns from a text file
+                when the model does not pass `limit`.
+
+                A small value makes the model page through files in many calls,
+                and every extra call resends the conversation. Results larger
+                than `tool_token_limit_before_evict` are still truncated. Video
+                reads keep their 100-second default window.
             tools: Allowlist of tool names to expose to the model.
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
@@ -1969,12 +2032,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if isinstance(tools, list) and "read_file" not in tools:
             msg = "read_file must be included in tools; it is required by FilesystemMiddleware"
             raise ValueError(msg)
-        if max_execute_timeout <= 0:
-            msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
-            raise ValueError(msg)
-        if grep_max_count is not None and grep_max_count <= 0:
-            msg = f"grep_max_count must be positive or None, got {grep_max_count}"
-            raise ValueError(msg)
+        _validate_limits(max_execute_timeout=max_execute_timeout, grep_max_count=grep_max_count, read_limit=read_limit)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
         if callable(self.backend) and not isinstance(self.backend, BackendProtocol):
@@ -2008,6 +2066,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
         self._grep_max_count = grep_max_count
+        self._read_limit = read_limit
         if isinstance(tools, list):
             self._enabled_tools: frozenset[str] | None = frozenset(tools)
         elif tools == "all":
@@ -2156,9 +2215,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
         """Create the read_file tool."""
         video_enabled = video_dependencies_available()
-        default_description = READ_FILE_VIDEO_TOOL_DESCRIPTION if video_enabled else READ_FILE_TOOL_DESCRIPTION
+        default_description = _read_file_tool_description(self._read_limit, video_enabled=video_enabled)
         tool_description = self._custom_tool_descriptions.get("read_file") or default_description
-        args_schema = ReadVideoFileSchema if video_enabled else ReadFileSchema
+        args_schema = _read_file_args_schema(self._read_limit, video_enabled=video_enabled)
         token_limit = self._tool_token_limit_before_evict
 
         def _truncate(content: str, file_path: str, *, line_limit: int | None = None) -> str:
@@ -2272,7 +2331,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
             offset: int = DEFAULT_READ_OFFSET,
-            limit: int = DEFAULT_READ_LIMIT,
+            limit: int | None = None,
         ) -> ToolMessage | Command:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self.backend
@@ -2292,6 +2351,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            limit = _default_read_limit(validated_path, self._read_limit, video_enabled=video_enabled) if limit is None else limit
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
@@ -2299,7 +2359,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
             offset: int = DEFAULT_READ_OFFSET,
-            limit: int = DEFAULT_READ_LIMIT,
+            limit: int | None = None,
         ) -> ToolMessage | Command:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self.backend
@@ -2319,6 +2379,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            limit = _default_read_limit(validated_path, self._read_limit, video_enabled=video_enabled) if limit is None else limit
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 

@@ -868,6 +868,55 @@ class TestFilesystemMiddleware:
         with pytest.raises(ValueError, match="grep_max_count must be positive"):
             FilesystemMiddleware(backend=backend, grep_max_count=grep_max_count)
 
+    def test_read_limit_is_used_when_limit_is_omitted(self):
+        """`read_limit` sets how many lines `read_file` reads when the model passes no `limit`."""
+        backend, _ = _make_backend(files={"/a.txt": {"content": "\n".join(f"line {i}" for i in range(300))}})
+        middleware = FilesystemMiddleware(backend=backend, read_limit=250)
+        read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_tool.invoke({"file_path": "/a.txt", "runtime": _runtime()})
+
+        assert "line 249" in result.content
+        assert "line 250" not in result.content
+
+    def test_per_call_limit_overrides_read_limit(self):
+        """An explicit `limit` argument still wins over `read_limit`."""
+        backend, _ = _make_backend(files={"/a.txt": {"content": "\n".join(f"line {i}" for i in range(300))}})
+        middleware = FilesystemMiddleware(backend=backend, read_limit=250)
+        read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_tool.invoke({"file_path": "/a.txt", "limit": 5, "runtime": _runtime()})
+
+        assert "line 4" in result.content
+        assert "line 5" not in result.content
+
+    def test_default_read_limit_is_100_lines(self):
+        """Without `read_limit`, `read_file` keeps its 100-line default."""
+        backend, _ = _make_backend(files={"/a.txt": {"content": "\n".join(f"line {i}" for i in range(300))}})
+        middleware = FilesystemMiddleware(backend=backend)
+        read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_tool.invoke({"file_path": "/a.txt", "runtime": _runtime()})
+
+        assert "line 99" in result.content
+        assert "line 100" not in result.content
+
+    def test_read_limit_is_advertised_to_the_model(self):
+        """The tool description and `limit` schema default state the configured `read_limit`."""
+        backend, _ = _make_backend()
+        with patch("deepagents.middleware.filesystem.video_dependencies_available", return_value=False):
+            read_tool = next(tool for tool in FilesystemMiddleware(backend=backend, read_limit=2000).tools if tool.name == "read_file")
+
+        assert "reads up to 2000 lines" in read_tool.description
+        assert read_tool.args_schema.model_json_schema()["properties"]["limit"]["default"] == 2000
+
+    @pytest.mark.parametrize("read_limit", [0, -5])
+    def test_invalid_read_limit_raises(self, read_limit: int):
+        """A non-positive `read_limit` is rejected at construction."""
+        backend, _ = _make_backend()
+        with pytest.raises(ValueError, match="read_limit must be positive"):
+            FilesystemMiddleware(backend=backend, read_limit=read_limit)
+
     def test_default_grep_max_count_is_1000(self):
         """The documented default cap (1000) is forwarded when no override is given."""
         backend, _ = _make_backend()

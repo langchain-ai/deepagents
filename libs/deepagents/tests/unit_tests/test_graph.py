@@ -389,6 +389,55 @@ class TestToolDescriptionOverrideWiring:
             _HARNESS_PROFILES.update(original)
 
 
+class TestReadLimitWiring:
+    """`HarnessProfile.read_limit` reaches every `FilesystemMiddleware` the agent builds."""
+
+    def _filesystem_calls(self, model: str) -> list[Any]:
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+        with (
+            patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))),
+            patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]) as mock_fs,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
+            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(model=model)
+        return mock_fs.call_args_list
+
+    def test_profile_read_limit_is_passed_to_filesystem_middleware(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("testprov", HarnessProfile(read_limit=2000))
+            calls = self._filesystem_calls("testprov:some-model")
+            assert len(calls) == 2
+            assert all(call.kwargs["read_limit"] == 2000 for call in calls)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_model_profile_inherits_provider_read_limit(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("testprov", HarnessProfile(read_limit=500))
+            register_harness_profile("testprov:some-model", HarnessProfile(system_prompt_suffix="Be brief."))
+            assert _harness_profile_for_model(GenericFakeChatModel(messages=iter([])), "testprov:some-model").read_limit == 500
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_no_profile_read_limit_keeps_middleware_default(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("testprov", HarnessProfile(system_prompt_suffix="Be brief."))
+            calls = self._filesystem_calls("testprov:some-model")
+            assert all("read_limit" not in call.kwargs for call in calls)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
 class TestGeneralPurposeSubagentProfileWiring:
     """Tests for harness-level general-purpose subagent controls."""
 

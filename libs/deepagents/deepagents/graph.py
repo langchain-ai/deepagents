@@ -64,6 +64,7 @@ from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
+    HarnessProfile,
     _apply_profile_prompt,
     _harness_profile_for_model,
 )
@@ -284,6 +285,11 @@ _REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in 
 
 Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
 """
+
+
+def _read_limit_kwargs(profile: HarnessProfile) -> dict[str, int]:
+    """Return `FilesystemMiddleware` kwargs for the profile's `read_limit`, if it sets one."""
+    return {} if profile.read_limit is None else {"read_limit": profile.read_limit}
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -738,6 +744,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     permissions=subagent_permissions,
+                    **_read_limit_kwargs(_subagent_profile),
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -844,6 +851,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 permissions=permissions,
+                **_read_limit_kwargs(_profile),
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -909,6 +917,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             permissions=permissions,
+            **_read_limit_kwargs(_profile),
         ),
     ]
     sub_agent_middleware: SubAgentMiddleware | None = None

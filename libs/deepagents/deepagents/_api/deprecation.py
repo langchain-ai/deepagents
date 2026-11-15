@@ -6,12 +6,12 @@ change.
 Re-exports:
 - `deprecated`: decorator for callables, classes, and properties.
 - `warn_deprecated`: helper for parameter/value-level deprecations where the
-    callable itself isn't being deprecated. Wraps the upstream helper to
-    accept a `stacklevel` argument (the upstream version hardcodes
+    callable itself isn't being deprecated. Matches the upstream format with
+    a `stacklevel` argument (the upstream version hardcodes
     `stacklevel=4`, which mis-attributes warnings emitted directly from a
     deprecated method body).
 - `suppress_langchain_deprecation_warning`: context manager that silences
-    emissions from this module's helpers (use sparingly — it is type-wide).
+    emissions from this module's helpers (use sparingly).
 - `LangChainDeprecationWarning`: warning class emitted by the helpers above
     (subclass of `DeprecationWarning`).
 """
@@ -21,10 +21,11 @@ from __future__ import annotations
 import warnings
 
 from langchain_core._api.deprecation import (
+    _SUPPRESSING_LANGCHAIN_DEPRECATION_WARNING,
     LangChainDeprecationWarning,
+    LangChainPendingDeprecationWarning,
     deprecated,
     suppress_langchain_deprecation_warning,
-    warn_deprecated as _lc_warn_deprecated,
 )
 
 __all__ = [
@@ -52,13 +53,8 @@ def warn_deprecated(
 ) -> None:
     """Emit a deprecation warning with caller-controlled stack attribution.
 
-    `langchain_core.warn_deprecated` formats a standard message but hardcodes
-    `stacklevel=4` in its internal `warnings.warn` call. That value targets a
-    decorator-wrapped frame layout; when called directly from a deprecated
-    method's body the warning is attributed one frame too high (above the
-    user's call site). This wrapper captures the formatted upstream warning
-    and re-emits it with an explicit `stacklevel`, so the warning points at
-    the user's call site.
+    Formats the upstream message locally to support `stacklevel` without
+    capturing unrelated threads' warnings or changing their warning filters.
 
     Args:
         since: Release at which this API became deprecated.
@@ -77,24 +73,33 @@ def warn_deprecated(
             using the same convention as `warnings.warn` (`1` = this call,
             `2` = the caller of the method body that invoked us, etc.).
     """
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-        _lc_warn_deprecated(
-            since,
-            message=message,
-            name=name,
-            alternative=alternative,
-            alternative_import=alternative_import,
-            pending=pending,
-            obj_type=obj_type,
-            addendum=addendum,
-            removal=removal,
-            package=package,
-        )
-    if not captured:
+    if not message:
+        package_ = package or name.split(".", maxsplit=1)[0].replace("_", "-") if "." in name else "LangChain"
+        message = f"The {obj_type} `{name}`" if obj_type else f"`{name}`"
+        if pending:
+            message += " will be deprecated in a future version"
+        else:
+            message += f" was deprecated in {package_} {since}"
+            if removal:
+                message += f" and will be removed in {removal}"
+        if alternative_import:
+            alt_package = alternative_import.split(".", maxsplit=1)[0].replace("_", "-")
+            if alt_package == package_:
+                message += f". Use {alternative_import} instead."
+            else:
+                alt_module, alt_name = alternative_import.rsplit(".", 1)
+                message += (
+                    f". An updated version of the {obj_type} exists in the {alt_package} package and should be used instead. "
+                    f"To use it run `pip install -U {alt_package}` and import as `from {alt_module} import {alt_name}`."
+                )
+        elif alternative:
+            message += f". Use {alternative} instead."
+        if addendum:
+            message += f" {addendum}"
+    if _SUPPRESSING_LANGCHAIN_DEPRECATION_WARNING.get():
         return
-    record = captured[0]
-    warnings.warn(record.message, category=record.category, stacklevel=stacklevel + 1)
+    warning_cls = LangChainPendingDeprecationWarning if pending else LangChainDeprecationWarning
+    warnings.warn(warning_cls(message), stacklevel=stacklevel + 1)
 
 
 def reset_deprecation_dedupe(*targets: object) -> None:

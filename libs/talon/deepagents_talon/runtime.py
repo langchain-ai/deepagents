@@ -423,6 +423,8 @@ class DeepAgentRuntime:
         )
         self._tools_lock = asyncio.Lock()
         self.background = BackgroundSubagents(
+            state_path=(assistant_dir or TalonConfig.from_env(self.env).home)
+            / "background_subagents.json",
             inline_timeout=_inline_timeout_from_env(self.env, _INLINE_TIMEOUT_SECONDS),
             max_running=_positive_int_from_env(self.env, MAX_BACKGROUND_TASKS_ENV_KEY)
             or _MAX_RUNNING,

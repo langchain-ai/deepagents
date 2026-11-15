@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 from types import SimpleNamespace
 
@@ -1325,3 +1326,139 @@ async def test_listing_state_is_isolated_between_concurrent_turns():
     finally:
         release.set()
         await background.cancel()
+
+
+async def test_shutdown_records_only_running_jobs_and_isolates_owners(tmp_path):
+    @tool
+    async def task() -> str:
+        """Wait for cancellation."""
+        await asyncio.Event().wait()
+        return "done"
+
+    @tool("task")
+    async def completed() -> str:
+        """Finish immediately."""
+        return "finished"
+
+    path = tmp_path / "state" / "background.json"
+    background = BackgroundSubagents(state_path=path)
+    for owner in ("one", "two", "stopped", "explicit"):
+        await background.awrap_tool_call(
+            _request(owner, task, subagent_type="researcher", description="diagnose failure"),
+            _unused_handler,
+        )
+    await background.cancel("stopped")
+    explicit_id = next(key for key, job in background._jobs.items() if job.owner == "explicit")
+    await background.tools[1].ainvoke(
+        {"runtime": _request("explicit", task).runtime, "task_id": explicit_id}
+    )
+    await background.awrap_tool_call(_request("done", completed), _unused_handler)
+    await background._jobs[next(reversed(background._jobs))].worker
+    assert await background.cancel()
+    restarted = BackgroundSubagents(state_path=path)
+    assert restarted.owners() == {"one", "two"}
+    for owner in ("one", "two"):
+        runtime = _request(owner, task).runtime
+        listing, _, inspect, *_ = restarted.tools
+        jobs = await listing.ainvoke({"runtime": runtime})
+        assert len(jobs) == 1
+        job = jobs[0]
+        assert job["name"] == "researcher"
+        assert job["status"] == "cancelled_by_restart"
+        assert "restarted" in job["result"]
+        assert "relaunched" in job["result"]
+        detail = await inspect.ainvoke({"runtime": runtime, "task_id": job["task_id"]})
+        assert detail["status"] == job["status"]
+        assert detail["result"] == job["result"]
+        unrelated = _request("unrelated", task).runtime
+        assert await listing.ainvoke({"runtime": unrelated}) == []
+        assert "error" in await inspect.ainvoke({"runtime": unrelated, "task_id": job["task_id"]})
+    records = json.loads(path.read_text())
+    assert all(record["description"] == "diagnose failure" for record in records.values())
+    assert all(record["cancelled_at"] for record in records.values())
+    await restarted.cancel()
+    assert BackgroundSubagents(state_path=path).owners() == {"one", "two"}
+    restarted.acknowledge(restarted.results("one"))
+    assert BackgroundSubagents(state_path=path).owners() == {"two"}
+
+
+async def test_restart_notice_acknowledgement_and_requeue_survive_restart(tmp_path):
+    @tool
+    async def task() -> str:
+        """Wait for cancellation."""
+        await asyncio.Event().wait()
+        return "done"
+
+    path = tmp_path / "background.json"
+    background = BackgroundSubagents(state_path=path)
+    await background.awrap_tool_call(_request("chat", task), _unused_handler)
+    await background.cancel()
+    restarted = BackgroundSubagents(state_path=path)
+    pending = restarted.results("chat")
+    assert len(pending) == 1
+    for _ in range(4):
+        assert restarted.record_delivery_failure(pending) == []
+    assert BackgroundSubagents(state_path=path).results("chat") == pending
+    restarted.acknowledge(pending)
+    assert not BackgroundSubagents(state_path=path).results("chat")
+    restarted.requeue(pending)
+    assert BackgroundSubagents(state_path=path).results("chat") == pending
+    restarted.acknowledge(pending)
+    assert not BackgroundSubagents(state_path=path).results("chat")
+    assert not BackgroundSubagents(state_path=path).owners()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_runtime_delivers_restart_notice_on_next_turn(monkeypatch, failed):
+    entered = asyncio.Event()
+
+    async def child(_state):
+        entered.set()
+        await asyncio.Event().wait()
+        return {"messages": [AIMessage(content="never")]}
+
+    runtime = _runtime(monkeypatch, child, [_delegate(), AIMessage(content="Started")])
+    await runtime.start()
+    await runtime.invoke(AgentRequest("chat", "diagnose"))
+    await entered.wait()
+    await runtime.stop()
+
+    restarted = _runtime(monkeypatch, child, [AIMessage(content="Please relaunch the task")])
+    pending = restarted.background.results("chat")
+    assert len(pending) == 1
+    await restarted.start()
+    invoke = restarted._invoke_until_text
+
+    async def process(request, activity):
+        text = await invoke(request, activity)
+        if failed:
+            msg = "processing failed"
+            raise RuntimeError(msg)
+        return text
+
+    monkeypatch.setattr(restarted, "_invoke_until_text", process)
+    try:
+        unrelated = await restarted.invoke(AgentRequest("other", "hello")) if not failed else None
+        if unrelated is not None:
+            assert unrelated.background_results == ()
+        if failed:
+            with pytest.raises(RuntimeError, match="processing failed"):
+                await restarted.invoke(AgentRequest("chat", "status?"))
+            assert restarted.background.results("chat") == pending
+        else:
+            result = await restarted.invoke(AgentRequest("chat", "status?"))
+            assert set(result.background_results) == set(pending)
+            state = await restarted._graph.aget_state({"configurable": {"thread_id": "chat"}})
+            assert any(
+                "Talon restarted" in str(message.content) for message in state.values["messages"]
+            )
+            assert not restarted.background.results("chat")
+            restarted.background.requeue(result.background_results)
+            assert restarted.background.results("chat") == pending
+            await restarted.invoke(AgentRequest("chat", "status again"))
+            final = await restarted.invoke(AgentRequest("chat", "anything else"))
+            assert final.background_results == ()
+    finally:
+        await restarted.stop()
+    again = _runtime(monkeypatch, child, [AIMessage(content="hello")])
+    assert bool(again.background.results("chat")) is failed

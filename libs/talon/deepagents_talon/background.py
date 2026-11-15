@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
+import os
+import tempfile
 from contextlib import aclosing, contextmanager
 from copy import copy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
@@ -17,6 +22,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage, con
 from langchain_core.tools import tool
 from langgraph.types import Command
 from langgraph_sdk import get_client
+from pydantic import TypeAdapter
 
 from deepagents_talon.authorization import set_authorization_handler
 from deepagents_talon.subagent_control import _MAX_EVENTS, ACTIVE_CONTROL, SubagentControl
@@ -71,6 +77,7 @@ _INLINE_TIMEOUT_SECONDS = 600
 # degrades its latency.
 _MAX_INLINE_RUNNING = 4
 _MAX_RESULT_CHARACTERS = 64_000
+_RESTART_RESULT = "Talon restarted before this task completed. The task must be relaunched."
 _FAILED_RESULT = "Subagent failed before returning a result."
 _TIMED_OUT_RESULT = "Subagent ran out of time before returning a result."
 # Async task tools the main agent never sees, so approval gates on them can never fire.
@@ -127,9 +134,20 @@ def _track_consumed_results(owner: str, results: dict[str, str]) -> Generator[No
 
 
 @dataclass
+class _RestartRecord:
+    owner: str
+    name: str
+    description: str
+    cancelled_at: str
+    notified: bool = False
+
+
+@dataclass
 class _Job:
     owner: str
     name: str
+    description: str = ""
+    restart: _RestartRecord | None = None
     worker: asyncio.Task[None] | None = None
     result: str | None = None
     cancelled: bool = False
@@ -142,6 +160,8 @@ class _Job:
     def status(self) -> str:
         if self.worker is not None and not self.worker.done():
             return "cancelling" if self.cancelled else "running"
+        if self.restart is not None and not self.cancelled:
+            return "cancelled_by_restart"
         return "cancelled" if self.cancelled else "finished"
 
 
@@ -149,19 +169,20 @@ class BackgroundSubagents(AgentMiddleware):
     """Keep SDK task invocations alive independently of the main conversation turn."""
 
     def __init__(
-        self, inline_timeout: float = _INLINE_TIMEOUT_SECONDS, *, max_running: int = _MAX_RUNNING
+        self,
+        inline_timeout: float = _INLINE_TIMEOUT_SECONDS,
+        *,
+        max_running: int = _MAX_RUNNING,
+        state_path: Path | None = None,
     ) -> None:
-        """Keep task handles and results in memory only.
-
-        Args:
-            inline_timeout: Seconds a scheduled run may spend in one delegation.
-            max_running: Background worker limit shared across conversations and configured copies.
-        """
+        """Keep workers in memory and shutdown interruptions in optional persistent state."""
         if max_running <= 0:
             msg = "max_running must be positive"
             raise ValueError(msg)
         self._max_running = max_running
         self._jobs: dict[str, _Job] = {}
+        self._state_path = state_path
+        self._load_restarts()
         self._lock = asyncio.Lock()
         # Built here rather than per configured copy: `configured` shallow-copies this
         # middleware, so one ceiling covers every graph sharing these workers.
@@ -218,6 +239,43 @@ class BackgroundSubagents(AgentMiddleware):
             return job.status
 
         self.tools = [list_subagents, cancel_subagent, *self._control_tools()]
+
+    def _load_restarts(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        records = TypeAdapter(dict[str, _RestartRecord]).validate_json(
+            self._state_path.read_bytes()
+        )
+        for key, record in records.items():
+            self._jobs[key] = _Job(
+                record.owner,
+                record.name,
+                description=record.description,
+                restart=record,
+                result=_RESTART_RESULT,
+                notified=record.notified,
+            )
+
+    def _save_restarts(self) -> None:
+        if self._state_path is None:
+            return
+        records = {
+            key: asdict(replace(job.restart, notified=job.notified))
+            for key, job in self._jobs.items()
+            if job.restart is not None and not job.cancelled
+        }
+        if not records and not self._state_path.exists():
+            return
+        self._state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary = tempfile.mkstemp(prefix=".background-", dir=self._state_path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(records, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            Path(temporary).replace(self._state_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     def _control_tools(self) -> list[BaseTool]:
         @tool
@@ -336,6 +394,7 @@ class BackgroundSubagents(AgentMiddleware):
                 if job.notified or (job.cancelled and job.status == "cancelled")
             ]:
                 del self._jobs[key]
+            self._save_restarts()
             if (
                 len(self._jobs) >= _MAX_TASKS
                 or sum(
@@ -348,6 +407,7 @@ class BackgroundSubagents(AgentMiddleware):
                 )
             task_id = f"subagent-{uuid4().hex}"
             job = _Job(owner, str(request.tool_call["args"].get("subagent_type", "")))
+            job.description = str(request.tool_call["args"].get("description", ""))[:1000]
             job.tools = request.tool_call["args"].get("tools")
             job.control.supported = (
                 request.tool_call["name"] == "task" and job.name in self.messageable
@@ -450,7 +510,8 @@ class BackgroundSubagents(AgentMiddleware):
                 job.result = _result_text(result)
             job.result = (job.result or "Subagent returned no result.")[:_MAX_RESULT_CHARACTERS]
         except asyncio.CancelledError:
-            job.cancelled = True
+            if job.restart is None:
+                job.cancelled = True
             job.control.record("cancelled")
         except Exception:
             logger.exception("Background subagent %s failed", task_id)
@@ -508,18 +569,11 @@ class BackgroundSubagents(AgentMiddleware):
         }
 
     def record_delivery_failure(self, results: dict[str, str]) -> list[str]:
-        """Count one failed delivery and drop results the main agent cannot process.
-
-        Args:
-            results: Result IDs handed to a main-agent turn that then failed.
-
-        Returns:
-            Result IDs dropped after too many failed delivery attempts.
-        """
+        """Drop repeatedly failing results while retaining unacknowledged restart notices."""
         dropped = []
         for key in results:
             job = self._jobs.get(key)
-            if job is None or job.notified:
+            if job is None or job.notified or job.restart is not None:
                 continue
             job.deliveries += 1
             if job.deliveries < _MAX_DELIVERIES:
@@ -531,55 +585,45 @@ class BackgroundSubagents(AgentMiddleware):
         return dropped
 
     def requeue(self, results: Iterable[str]) -> None:
-        """Return acknowledged results to the pending set after an undelivered turn.
-
-        A turn that completed its model work acknowledges the results it consumed,
-        but the host may then discard its reply because a newer turn superseded it.
-        The user therefore never heard about work that is already marked delivered.
-        Clearing the flag offers it to the next turn instead; re-injection is
-        idempotent, because the result is carried as a message keyed by its own id.
-
-        Only the ids handed back are touched, so a result delivered by some earlier
-        turn is never resurrected. An id already pruned or cancelled is skipped:
-        there is nothing left to offer.
-
-        Args:
-            results: Result IDs whose turn produced a reply that was discarded.
-        """
+        """Persist requeued results when the host discards a successfully processed reply."""
         for key in results:
             job = self._jobs.get(key)
             if job is not None and not job.cancelled:
                 job.notified = False
+        self._save_restarts()
 
     def acknowledge(self, results: dict[str, str]) -> None:
-        """Mark results processed only after the main agent completes a turn.
-
-        Args:
-            results: Result IDs included in the completed main turn.
-        """
+        """Persist acknowledgement only after the main agent completes a turn."""
         for key in results:
             if key in self._jobs:
                 self._jobs[key].notified = True
+        self._save_restarts()
 
     async def cancel(self, owner: str | None = None) -> bool:
-        """Cancel a thread's workers and discard results, or clear all at shutdown.
-
-        Args:
-            owner: Conversation to stop; omit to shut down all workers.
-
-        Returns:
-            Whether every selected worker has stopped.
-        """
+        """Cancel a thread's work or persist running jobs before shutdown cancellation."""
         jobs = [job for job in self._jobs.values() if owner is None or job.owner == owner]
-        for job in jobs:
-            job.cancelled = True
+        if owner is None and self._state_path is not None:
+            for job in jobs:
+                if job.status == "running":
+                    job.restart = _RestartRecord(
+                        job.owner, job.name, job.description, datetime.now(UTC).isoformat()
+                    )
+                    job.result = _RESTART_RESULT
+                elif job.restart is None:
+                    job.cancelled = True
+            self._save_restarts()
+        else:
+            for job in jobs:
+                job.cancelled = True
+            self._save_restarts()
         return await self._cancel_jobs(jobs)
 
     async def _cancel_jobs(self, jobs: list[_Job]) -> bool:
         workers = []
         for job in jobs:
             if job.worker is not None and not job.worker.done():
-                job.cancelled = True
+                if job.restart is None:
+                    job.cancelled = True
                 job.worker.cancel()
                 workers.append(job.worker)
         if not workers:

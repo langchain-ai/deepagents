@@ -82,7 +82,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
     "baseten:deepseek-ai/DeepSeek-V4.1-Flash-1017": "DeepSeek V4.1 Flash 1017",
     "baseten:meta-models/muse-spark-open": "Muse Spark Open",
-    "baseten:moonshotai/Kimi-K3": "Kimi K3",
+    "baseten:moonshotai/Kimi-K3.1-Pro": "Kimi K3.1 Pro",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.3": "GLM 5.3",
     "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",

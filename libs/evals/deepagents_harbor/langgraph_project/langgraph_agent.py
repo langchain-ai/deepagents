@@ -508,7 +508,7 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
-    _register_bare_read_limit(_model_name(configurable))
+    _register_bare_read_limit(configurable.get("model") or os.environ.get("HARBOR_MODEL"))
     # Harbor runs each task in its own isolated container rooted at the workdir,
     # and tasks operate on the real sandbox paths, so path virtualization is
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
@@ -534,9 +534,9 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     )
 
 
-def _register_bare_read_limit(model_spec: str) -> None:
+def _register_bare_read_limit(model_spec: object) -> None:
     """Register the eval's `read_file` default for `model_spec`, if it has one."""
-    read_limit = _BARE_READ_LIMITS.get(model_spec)
+    read_limit = _BARE_READ_LIMITS.get(model_spec) if isinstance(model_spec, str) else None
     if read_limit is not None:
         register_harness_profile(model_spec, HarnessProfile(read_limit=read_limit))
 

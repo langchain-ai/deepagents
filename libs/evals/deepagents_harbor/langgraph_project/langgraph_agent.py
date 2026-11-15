@@ -54,6 +54,7 @@ Guidelines:
 _BARE_SYSTEM_PROMPTS: dict[str, str] = {
     "claude-opus-5-5": _PI_STYLE_PROMPT,
     "accounts/fireworks/models/glm-5p3": _PI_STYLE_PROMPT,
+    "accounts/fireworks/models/kimi-k3p1-pro": _PI_STYLE_PROMPT,
 }
 """Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
 

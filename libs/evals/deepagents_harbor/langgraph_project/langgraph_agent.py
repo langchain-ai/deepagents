@@ -62,6 +62,15 @@ profile, so the bare agent otherwise runs on tool descriptions alone. This
 prompt follows pi's short default prompt, with deepagents' tool names.
 """
 
+_MODEL_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
+    "accounts/fireworks/models/kimi-k3p1-pro": {"max_input_tokens": 1048576},
+}
+"""Eval-only profile fields for models LangChain has no profile for.
+
+Without `max_input_tokens`, summarization falls back to a fixed 170K-token
+trigger, far below these models' context windows.
+"""
+
 _MODEL_RETRY_ATTEMPTS = 3
 """Retries for a model call that fails mid-request (e.g. a dropped stream)."""
 
@@ -215,7 +224,11 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
         kwargs["use_responses_api"] = True
     _apply_glm_5_2_reasoning_default(name, kwargs)
     _apply_fireworks_defaults(name, kwargs)
-    return init_chat_model(name, **kwargs)
+    model = init_chat_model(name, **kwargs)
+    override = _MODEL_PROFILE_OVERRIDES.get(getattr(model, "model", ""))
+    if override:
+        model.profile = {**(model.profile or {}), **override}
+    return model
 
 
 def _skills(configurable: dict[str, object]) -> list[str] | None:

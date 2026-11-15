@@ -1170,19 +1170,27 @@ jobs:
               if [ "$HARBOR_AGENT_IMPL" = pi ]; then
                 agent_args+=(--agent-kwarg model_api=openai-responses --agent-kwarg max_output_tokens=262144)
                 # Pi assumes a 128K window for unrecognized models and compacts near 112K.
-                if [ "$HARBOR_MODEL" = fireworks:accounts/fireworks/models/glm-5p3 ]; then
-                  agent_args+=(--agent-kwarg context_window=1048573)
-                fi
+                case "$HARBOR_MODEL" in
+                  fireworks:accounts/fireworks/models/glm-5p3)
+                    agent_args+=(--agent-kwarg context_window=1048573) ;;
+                  fireworks:accounts/fireworks/models/kimi-k3p1-pro)
+                    agent_args+=(--agent-kwarg context_window=1048576) ;;
+                esac
               else
                 # Codex defaults the `openai` provider to remote compaction, which
                 # Fireworks lacks; a custom provider compacts locally instead.
-                codex_config=$(jq -cn --arg url "$FIREWORKS_BASE_URL/v1" '{
+                # Codex assumes a 258K window for unrecognized models.
+                codex_window=null
+                if [ "$HARBOR_MODEL" = fireworks:accounts/fireworks/models/kimi-k3p1-pro ]; then
+                  codex_window=1048576
+                fi
+                codex_config=$(jq -cn --arg url "$FIREWORKS_BASE_URL/v1" --argjson window "$codex_window" '{
                   model_provider: "fireworks",
                   model_providers: {fireworks: {
                     name: "Fireworks", base_url: $url, env_key: "OPENAI_API_KEY",
                     wire_api: "responses", capabilities: {remote_compaction: "unsupported"}
                   }}
-                }')
+                } + (if $window then {model_context_window: $window} else {} end)')
                 agent_args+=(--agent-kwarg "config=$codex_config")
               fi
               ;;
@@ -1197,10 +1205,13 @@ jobs:
               # Harbor forwards this from the host env; the CLI default is 32000.
               export CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536
               # Unrecognized model IDs otherwise get an assumed 200K window.
-              if [ "$HARBOR_MODEL" = fireworks:accounts/fireworks/models/glm-5p3 ]; then
-                agent_env_args+=(--agent-env CLAUDE_CODE_MAX_CONTEXT_TOKENS=1048573)
-                export CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000
-              fi
+              case "$HARBOR_MODEL" in
+                fireworks:accounts/fireworks/models/glm-5p3)
+                  agent_env_args+=(--agent-env CLAUDE_CODE_MAX_CONTEXT_TOKENS=1048573)
+                  export CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000 ;;
+                fireworks:accounts/fireworks/models/kimi-k3p1-pro)
+                  agent_env_args+=(--agent-env CLAUDE_CODE_MAX_CONTEXT_TOKENS=1048576) ;;
+              esac
               ;;
           esac
           uv run harbor run \

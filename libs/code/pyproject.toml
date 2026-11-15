@@ -131,7 +131,7 @@ openai = ["langchain-openai>=1.8.0,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.9,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.4.2,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
-vertex = ["langchain-google-vertexai>=3.2.5,<4.0.0"]
+vertex = ["langchain-google-vertexai>=3.3.0,<4.0.0"]
 xai = ["langchain-xai>=1.3.0,<2.0.0"]
 all-providers = [
     "deepagents-code[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,meta,mistralai,nvidia,ollama,openai,openrouter,perplexity,together,vertex,xai]",

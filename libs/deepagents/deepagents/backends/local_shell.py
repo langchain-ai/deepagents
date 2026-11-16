@@ -177,7 +177,7 @@ def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None, *,
                 logger.warning("Failed to drain output for local shell process %s", process.pid, exc_info=True)
         remaining = _PROCESS_REAP_TIMEOUT if _IS_WINDOWS else max(0, deadline - time.monotonic())
         reaped = _reap_process(process, timeout=remaining)
-        return terminated and reaped and not _IS_WINDOWS
+        return terminated and reaped
     finally:
         _close_process_pipes(process)
 
@@ -664,6 +664,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
             if not error.terminated:
                 msg = f"{msg}\n\nWarning: the command could not be stopped and may still be running. Re-running it may start a second copy."
+            elif _IS_WINDOWS:
+                # Windows cleanup stops only the shell, not processes it started.
+                msg = f"{msg}\n\nNote: the shell was stopped, but processes it started may still be running."
             return ExecuteResponse(
                 output=msg,
                 exit_code=124,  # Standard timeout exit code

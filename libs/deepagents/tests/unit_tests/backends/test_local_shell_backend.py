@@ -276,6 +276,26 @@ def test_local_shell_backend_timeout_reports_incomplete_cleanup(failure: str, ca
     assert "could not be stopped and may still be running" in result.output
 
 
+@pytest.mark.parametrize("is_windows", [True, False])
+def test_local_shell_backend_timeout_after_complete_cleanup(*, is_windows: bool) -> None:
+    """Test a stopped shell reports leftover processes only on Windows."""
+    process = MagicMock(pid=1234)
+    process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "_IS_WINDOWS", new=is_windows),
+        patch.object(local_shell_module, "signal", SIGKILL=sentinel.SIGKILL),
+        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
+        patch("subprocess.Popen", return_value=process),
+        patch.object(local_shell_module.os, "killpg", create=True),
+    ):
+        result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
+
+    assert result.exit_code == 124
+    assert "could not be stopped" not in result.output
+    assert ("processes it started may still be running" in result.output) is is_windows
+
+
 def test_local_shell_backend_execute_with_error() -> None:
     """Test executing a command that fails."""
     with tempfile.TemporaryDirectory() as tmpdir:

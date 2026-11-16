@@ -132,8 +132,8 @@ def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: boo
             else:
                 result = backend.execute("command", timeout=1)
                 assert result.exit_code == 124
-                assert "may still be running" in result.output
-                assert "Re-running it may start a second copy" in result.output
+                assert "processes it started may still be running" in result.output
+                assert "could not be stopped" not in result.output
         except BaseException as error:  # noqa: BLE001  # Report worker assertions and interruptions in the test thread.
             errors.append(error)
         finally:

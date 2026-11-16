@@ -5,7 +5,7 @@ description: Package roles, published Python and dependency contracts, developme
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-14T08:03:44.053Z
+    at: 2026-11-16T08:11:13.198Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -47,7 +47,7 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-16T08:11:13.198Z" }
 ---
 
 # Repository Architecture Overview
@@ -120,7 +120,7 @@ flowchart TD
 
 The source manifests now encode three distinct compatibility policies. Dcode pins `deepagents==0.7.38`: raise that pin in the change that starts requiring newer SDK behavior, because an editable checkout can otherwise hide an insufficient PyPI requirement. Dcode also requires ACP `>=0.0.13,<1.0.0` and QuickJS `>=0.3.12,<0.4.0`.
 
-Talon requires `deepagents>=0.7.38` and `deepagents-code>=0.2.7,<1.0.0`. Each of the five partner distributions—Daytona, Modal, QuickJS, Runloop, and Vercel—requires `deepagents>=0.7.38,<0.8.0`. These are lower-bound compatibility promises, not assertions that a checkout must resolve the SDK from PyPI at that floor. ACP deliberately declares `deepagents` without a version bound. Evals retains its independently chosen floors of `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`.
+Talon requires `deepagents>=0.7.38` and `deepagents-code>=0.2.8,<1.0.0`. Each of the five partner distributions—Daytona, Modal, QuickJS, Runloop, and Vercel—requires `deepagents>=0.7.38,<0.8.0`. These are lower-bound compatibility promises, not assertions that a checkout must resolve the SDK from PyPI at that floor. ACP deliberately declares `deepagents` without a version bound. Evals retains its independently chosen floors of `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`.
 
 The checkout graph is deliberately not identical to this dependency graph:
 

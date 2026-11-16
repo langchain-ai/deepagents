@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused package-local test routes and behavioral contracts for SDK delegation and storage, dcode headless execution, Talon conversation archives, Modal sandboxes, and release automation.
+- [Testing Guide](testing-guide.md) - Focused, hermetic test routes for dcode inference-host model catalogs and the Textual model selector. Covers host-authoritative discovery, safe metadata transport, policy and setup gates, and asynchronous selection and persistence behavior.

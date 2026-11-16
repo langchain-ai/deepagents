@@ -12,9 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from deepagents import create_deep_agent
+from deepagents import HarnessProfile, create_deep_agent, register_harness_profile
 from deepagents.backends import LocalShellBackend
-from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, runtime_state
@@ -41,27 +40,60 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
-_PI_STYLE_PROMPT = """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
+_KIMI_HARNESS_KEY = "fireworks:accounts/fireworks/models/kimi-k3p1-pro"
 
-Guidelines:
-- Use execute for shell commands and file operations like ls, rg, find.
-- Use read_file to examine files instead of cat or sed.
-- Use edit_file for precise changes (old_string must match exactly).
-- Use write_file only for new files or complete rewrites.
-- Be concise in your responses.
-- Show file paths clearly when working with files."""
-
-_BARE_SYSTEM_PROMPTS: dict[str, str] = {
-    "claude-opus-5-5": _PI_STYLE_PROMPT,
-    "accounts/fireworks/models/glm-5p3": _PI_STYLE_PROMPT,
-    "accounts/fireworks/models/kimi-k3p1-pro": _PI_STYLE_PROMPT,
+_SHORT_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "execute": (
+        "Run a shell command in the sandbox. Returns combined stdout/stderr and the exit code; very large output is truncated.\n"
+        "- Quote paths containing spaces. Chain commands with `&&` (or `;` when an earlier failure doesn't matter); "
+        "no newlines outside quoted strings.\n"
+        "- Prefer absolute paths over `cd`. Pass `timeout` (seconds) for long-running commands.\n"
+        "- The shell sees only the sandbox disk. Use read_file/grep/glob for paths outside it, such as /large_tool_results/."
+    ),
+    "ls": "List the files in a directory. The path must be absolute.",
+    "read_file": (
+        "Read a file. Text output starts with a `@@ ... @@` status header; everything after it is verbatim file content. "
+        "Never include the header in an edit.\n"
+        "- Reads up to 100 lines by default; use `offset`/`limit` for other ranges.\n"
+        "- Images, audio, video and PDFs return multimodal content (no `offset`/`limit`).\n"
+        "- Read a file before editing it. Batch several reads in one response when they may help."
+    ),
+    "edit_file": (
+        "Replace exact text in a file. Read the file first. `old_string` must match the file exactly, including "
+        "indentation, and be unique unless `replace_all` is true. Never include the read status header."
+    ),
+    "write_file": "Create a file, or replace its entire contents. Prefer edit_file for changes to an existing file.",
+    "delete": "Permanently delete a file or directory (directories recursively). This cannot be undone.",
+    "glob": (
+        "Find files matching a glob pattern; returns absolute paths. Supports `*`, `**`, `?`, `[abc]` and `{a,b}`. "
+        "A pattern without `/` matches file names at any depth; one with `/` matches the path relative to the search root; "
+        "a leading `/` anchors to the root. Dot-files match only when the pattern segment starts with `.`."
+    ),
+    "grep": (
+        "Search files for a LITERAL text pattern (not regex); run a separate search per string. "
+        "For regex, use `rg` through execute. Returns matching files, lines or counts per `output_mode`."
+    ),
+    "task": (
+        "Launch an ephemeral subagent for a complex, multi-step task.\n\n"
+        "Available agent types:\n{available_agents}\n\n"
+        "- The subagent sees only the prompt you give it: include all needed context and say what it should return.\n"
+        "- Its report is not shown to the user; relay what matters.\n"
+        "- Launch independent subagents in parallel with several tool calls in one message."
+    ),
 }
-"""Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
+"""Eval-only short tool descriptions for the bare graph on Kimi K3.1 Pro.
 
-`create_deep_agent` sends no system prompt for models without a harness
-profile, so the bare agent otherwise runs on tool descriptions alone. This
-prompt follows pi's short default prompt, with deepagents' tool names.
+They drop the SDK defaults' instructions to avoid shell `grep`/`find`/`cat` and
+to run `ls` before reading, and trim text the model doesn't need.
 """
+
+
+def _register_eval_harness_profiles() -> None:
+    """Register eval-only harness profiles (merging re-registration is idempotent)."""
+    register_harness_profile(
+        _KIMI_HARNESS_KEY, HarnessProfile(tool_description_overrides=_SHORT_TOOL_DESCRIPTIONS)
+    )
+
 
 _MODEL_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "accounts/fireworks/models/kimi-k3p1-pro": {"max_input_tokens": 1048576},
@@ -512,6 +544,7 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
+    _register_eval_harness_profiles()
     # Harbor runs each task in its own isolated container rooted at the workdir,
     # and tasks operate on the real sandbox paths, so path virtualization is
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
@@ -532,7 +565,6 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         backend=backend,
         tools=tools or None,
         skills=_skills(configurable),
-        system_prompt=_BARE_SYSTEM_PROMPTS.get(getattr(model, "model", "")),
         middleware=_bare_middleware(),
     )
 
@@ -540,15 +572,11 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
 def _bare_middleware() -> list[AgentMiddleware]:
     """Middleware the bare graph adds on top of `create_deep_agent`'s stack.
 
-    The retry runs outermost so a model call that fails mid-request is retried,
-    and the cache keep-alive sits inside it so its own pings are never retried.
-    `on_failure="error"` keeps an unrecoverable model error an errored trial
-    rather than a scored failure.
+    The retry wraps the whole model call, so a request that fails mid-stream is
+    retried from the start. `on_failure="error"` keeps an unrecoverable model
+    error an errored trial rather than a scored failure.
     """
-    return [
-        ModelRetryMiddleware(max_retries=_MODEL_RETRY_ATTEMPTS, on_failure="error"),
-        AnthropicCacheKeepaliveMiddleware(),
-    ]
+    return [ModelRetryMiddleware(max_retries=_MODEL_RETRY_ATTEMPTS, on_failure="error")]
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

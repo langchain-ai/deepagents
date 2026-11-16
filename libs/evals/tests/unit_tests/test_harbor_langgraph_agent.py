@@ -12,6 +12,7 @@ import pytest
 from deepagents_code.config import runtime_state
 from fastmcp import FastMCP
 from langchain.mcp import MCPAdapter
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.tools import BaseTool
 
 from deepagents_harbor.langgraph_project import langgraph_agent
@@ -25,6 +26,10 @@ _MODEL_IDENTITY_FIELDS = (
     "model_context_limit",
     "model_unsupported_modalities",
 )
+
+
+def _fake_model() -> GenericFakeChatModel:
+    return GenericFakeChatModel(messages=iter([]))
 
 
 @pytest.fixture(autouse=True)
@@ -710,7 +715,7 @@ async def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
 
     def fake_init_chat_model(model: str, **kwargs: object) -> object:
         captured_init.append({"model": model, "kwargs": kwargs})
-        return "chat-model"
+        return _fake_model()
 
     def fake_local_shell_backend(**kwargs: object) -> object:
         captured_backend.append(kwargs)
@@ -743,7 +748,8 @@ async def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     ]
     assert captured_backend == [{"root_dir": tmp_path, "inherit_env": False, "virtual_mode": False}]
     assert captured_create
-    assert captured_create[0]["model"] == "chat-model"
+    # Timed-out trials report tokens only through the usage log.
+    assert langgraph_agent._USAGE_LOG in captured_create[0]["model"].callbacks
     assert captured_create[0]["backend"] is backend
     # The bare path must not inject a harness system prompt, preserving the
     # prompt-free SDK default.
@@ -754,7 +760,7 @@ async def test_make_bare_graph_loads_task_skills(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured_create: list[dict[str, object]] = []
-    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: _fake_model())
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **k: captured_create.append(k))
 
     await langgraph_agent.make_bare_graph(
@@ -784,7 +790,7 @@ async def test_make_bare_graph_attaches_task_mcp_tools(
         return MCPAdapter(server)
 
     monkeypatch.setattr(langgraph_agent, "MCPAdapter", adapter)
-    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: _fake_model())
     tools: list[BaseTool] = []
     monkeypatch.setattr(
         langgraph_agent, "create_deep_agent", lambda **kwargs: tools.extend(kwargs["tools"])
@@ -810,7 +816,7 @@ async def test_make_bare_graph_attaches_task_mcp_tools(
 async def test_make_bare_graph_rejects_invalid_skills_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, skills_dir: object
 ) -> None:
-    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: _fake_model())
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **_k: object())
 
     with pytest.raises(ValueError, match="skills_dir"):
@@ -886,7 +892,7 @@ async def test_tau3_tools_remain_callable_after_discovery(monkeypatch):
         return MCPAdapter(server)
 
     monkeypatch.setattr(langgraph_agent, "MCPAdapter", adapter)
-    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: _fake_model())
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs["tools"])
     tools = await langgraph_agent.make_tau3_graph(
         {
@@ -952,7 +958,7 @@ def test_mcp_connections_empty_without_forwarded_servers() -> None:
 async def test_make_tau3_graph_requires_forwarded_servers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: _fake_model())
 
     with pytest.raises(ValueError, match="mcp_servers"):
         await langgraph_agent.make_tau3_graph({"configurable": {}})

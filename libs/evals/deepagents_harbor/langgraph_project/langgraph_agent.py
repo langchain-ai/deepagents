@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import logging
 import os
 import re
+import time
 import uuid
 from contextlib import contextmanager
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -20,7 +23,8 @@ from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.callbacks import BaseCallbackHandler, BaseCallbackManager
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -28,11 +32,83 @@ if TYPE_CHECKING:
     from langchain.agents.middleware import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import LLMResult
     from langchain_core.tools import BaseTool
 
     from deepagents_evals.routing.middleware import RoutingTurn
 
 logger = logging.getLogger(__name__)
+
+USAGE_LOG = Path("/logs/agent/usage.jsonl")
+"""Harbor downloads `/logs/agent` even when a trial times out, unlike the runner's result."""
+
+_USAGE_METADATA_PREFIXES = ("ls_model_name", "routing_", "orchestrator_")
+
+
+class UsageLog(BaseCallbackHandler):
+    """Append one JSON line per chat model call, so timed-out trials still report tokens.
+
+    Attached to model instances rather than graph middleware, so calls from the `task`
+    subagent and summarization are counted too.
+    """
+
+    def __init__(self) -> None:
+        """Track each call's routing metadata until it ends."""
+        self._metadata: dict[uuid.UUID, dict[str, Any]] = {}
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],  # noqa: ARG002  # Required callback signature.
+        messages: list[list[BaseMessage]],  # noqa: ARG002  # Required callback signature.
+        *,
+        run_id: uuid.UUID,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # Required callback signature.
+    ) -> None:
+        """Remember the model name and the routing tier or orchestrator phase."""
+        self._metadata[run_id] = {
+            key: value
+            for key, value in (metadata or {}).items()
+            if key.startswith(_USAGE_METADATA_PREFIXES)
+        }
+
+    def on_llm_end(self, response: LLMResult, *, run_id: uuid.UUID, **kwargs: Any) -> None:  # noqa: ARG002  # Required callback signature.
+        """Write the call's usage; skipped outside Harbor, where `/logs/agent` is absent."""
+        metadata = self._metadata.pop(run_id, {})
+        if not USAGE_LOG.parent.is_dir():
+            return
+        messages = [
+            getattr(gen, "message", None) for gen in chain.from_iterable(response.generations)
+        ]
+        with USAGE_LOG.open("a") as log:
+            for message in messages:
+                if isinstance(message, AIMessage):
+                    line = {
+                        "time": time.time(),
+                        "model": message.response_metadata.get("model_name"),
+                        "usage": message.usage_metadata,
+                        **metadata,
+                    }
+                    log.write(json.dumps(line) + "\n")
+
+    def on_llm_error(self, error: BaseException, *, run_id: uuid.UUID, **kwargs: Any) -> None:  # noqa: ARG002  # Required callback signature.
+        """Drop the failed call's metadata."""
+        self._metadata.pop(run_id, None)
+
+
+_USAGE_LOG = UsageLog()
+
+
+def _with_usage_log(model: BaseChatModel) -> BaseChatModel:
+    """The model with the shared usage logger; per-call routing copies keep it."""
+    callbacks = model.callbacks
+    if isinstance(callbacks, BaseCallbackManager):
+        callbacks = callbacks.copy()
+        callbacks.add_handler(_USAGE_LOG)
+    else:
+        callbacks = [*(callbacks or []), _USAGE_LOG]
+    return model.model_copy(update={"callbacks": callbacks})
+
 
 _MAX_ASSISTANT_ID_LENGTH = 64
 _ASSISTANT_ID_HASH_LENGTH = 12
@@ -475,7 +551,7 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
             MCP server is invalid.
     """
     configurable = _configurable(config)
-    model = _build_model(configurable)
+    model = _with_usage_log(_build_model(configurable))
     # Harbor runs each task in its own isolated container rooted at the workdir,
     # and tasks operate on the real sandbox paths, so path virtualization is
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
@@ -684,9 +760,10 @@ def _orchestrated() -> tuple[BaseChatModel, AgentMiddleware[Any, Any, Any]]:
     )
 
     config = load_config()
-    return config.executor, OrchestratorMiddleware(
-        config.planner,
-        config.executor,
+    executor = _with_usage_log(config.executor)
+    return executor, OrchestratorMiddleware(
+        _with_usage_log(config.planner),
+        executor,
         max_escalations=config.max_escalations,
         error_streak=config.error_streak,
     )
@@ -707,8 +784,8 @@ def _ladder(tools: Sequence[BaseTool]) -> tuple[BaseChatModel, AgentMiddleware[A
         if {"start_conversation", "send_message_to_user"} <= {tool.name for tool in tools}
         else read_human_turn
     )
-    return routing.anchor, LadderRoutingMiddleware(
-        routing.models,
+    return _with_usage_log(routing.anchor), LadderRoutingMiddleware(
+        [_with_usage_log(model) for model in routing.models],
         decision_model=make_decisions(routing.decision_model),
         granularity=routing.granularity,
         difficulty_limits=routing.difficulty_limits,

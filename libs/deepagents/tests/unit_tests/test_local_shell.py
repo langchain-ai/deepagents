@@ -85,9 +85,11 @@ class TestTimeoutErrorMessage:
         with (
             patch("subprocess.Popen") as popen,
             patch("deepagents.backends.local_shell.WindowsProcessReader", return_value=popen.return_value),
+            patch("deepagents.backends.local_shell.PosixProcessReader", return_value=popen.return_value),
             patch("deepagents.backends.local_shell._kill_and_reap"),
         ):
             popen.return_value.communicate.side_effect = subprocess.TimeoutExpired("cmd", 1)
+            popen.return_value.snapshot.return_value = ("", "")
             result = backend.execute("sleep 10")
             assert "timed out" in result.output.lower()
             assert "timeout parameter" in result.output.lower()
@@ -99,9 +101,11 @@ class TestTimeoutErrorMessage:
         with (
             patch("subprocess.Popen") as popen,
             patch("deepagents.backends.local_shell.WindowsProcessReader", return_value=popen.return_value),
+            patch("deepagents.backends.local_shell.PosixProcessReader", return_value=popen.return_value),
             patch("deepagents.backends.local_shell._kill_and_reap"),
         ):
             popen.return_value.communicate.side_effect = subprocess.TimeoutExpired("cmd", 5)
+            popen.return_value.snapshot.return_value = ("", "")
             result = backend.execute("sleep 10", timeout=5)
             assert "5" in result.output
             assert "custom timeout" in result.output.lower()

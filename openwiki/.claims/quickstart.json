@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:cfd6390b5785e26e502e4b593548fedea21c2f8320ea972820d7d4e2e9853b29",
+  "pageVersion": "sha256:73751ea115f7883f9270caae1d90eae69f7966352edeb2928340b34a0d2072a1",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -74,15 +74,11 @@
     },
     {
       "id": "claim_877ddb2adf2b4013aa3baed0790b81d2",
-      "statement": "Talon publishes direct requirements on `deepagents>=0.7.38` and `deepagents-code>=0.2.7,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
+      "statement": "Talon publishes direct requirements on `deepagents>=0.7.38` and `deepagents-code>=0.2.8,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/pyproject.toml#L22-L50",
-          "version": "repo-lines-v1:sha256:3c2726e769474e1085f16c75d6e621a364d9d69508e5262f74c6b59649ee534e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NGY3NjBkNTIwMzNjZGJmMGNiODVmYzMwNmI1MjJhNzA5NjBhZmFmMTg5ZmEyNjQ3OTlmYjAwODkyNzgxM2EifQ"
-        },
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L52-L78",
-          "version": "repo-lines-v1:sha256:b813ac87719df496bea254c93a3cc450418d2674907c63eb05c8084c971f0b80:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZTgxYzcxZjdmMzg3ZDI2ZTYxOGEzYjZiODNkODUwOWYwY2VmY2RkMzZjNTAzNzRmZTVjYzQxMmZiNDFlNDcifQ"
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:698bc6fc987e09a424a84a467f73c3fe1ac1b169b50b74f36dc012fef126bc35"
         }
       ]
     },
@@ -177,10 +173,44 @@
           "version": "repo-lines-v1:sha256:1d21a49e8b332c7607559dc50c6db630f62e6bbd32939bca2a87619142e4d368:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_fa860fb3e62b4d35b20bcd9290d8896e",
+      "statement": "dcode's unit-test target disables network sockets, while its `integration_test` target runs the integration-test directory without that socket restriction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/Makefile#L14-L39",
+          "version": "repo-lines-v1:sha256:5e9c8a781a2587711313141f3ca35ed5da71a807c6f74f9b59ad6d8b80a43bd9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMGRhNmZkYTVmZGRkMTM4ZjVmMjNhMGQ2ZDk3ODBhN2Y1OTJjMTQwYjdjODI5NjVmODJlODdlZTYxNWE0NDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YmM5MDIwNDM1ODU2Njg4YzU4MjkyNDAwODViMDI1Y2QyMWZjNmFiZDI0NThjNDM3ZTQ4Yjc3YzZiOTJhODIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eed40dbb3aec4c5b9ca8675175b7187e",
+      "statement": "QuickJS supports Python `>=3.11,<4.0`, publishes `deepagents>=0.7.38,<0.8.0`, and uses an editable local SDK source mapping during checkout development.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml#L21-L31",
+          "version": "repo-lines-v1:sha256:c5bdec43cddd3c15cc44a8aa73da52ec7c1aaf1ae2c2d8c35ec828d1816e9c01:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzOWJlNDk3OGJlOGQyMTNlNjQxZDczYjI0MTM4ZWMyZDc3ODlmNmZjZTVjY2U4OWQ2MDRmNzhjYWIyZTdhMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3NzQwZmI5YTRkMjJjOTg3Mzg0NTRlYTlkMTcwMzE3MjE3MzJiOGEzMzRmMjEyNDA0MWIyZWYxMTUwYWQ0MzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiNTg2MWJlYzAwZTYxNTcyYzY2ZGU5NDc1ZWQ3Nzc5ZWE2YzkxMDIyNWI4NjI2ODgzMjE4ODBkZWE5MWY5ZmIifQ"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml#L62-L69",
+          "version": "repo-lines-v1:sha256:bf6d9587134f2c2996c4adc8b69c89ef732008d09619031aaefdb1b91ceebedd:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjU5MTNhMGIyMTA1MTRkYWM5OTJmMTM3ZDRlYjJiMWRmNmIzMWM4MTg5YzcwMDI3NTkzNWZkYjkxZGY1YjBlNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2ZjNjk5ODcxZmJlMDliYzVhMGQxNjQ3YzhhODA5ZDA3N2E2MjEwYmI3NjgyNTA4MDE2NTI2YjJkZDUwMzdjZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGE2N2ZjNjQxZDQ1NTI1ODk3YzE0MWUyODlhYTJhNDk0ZWYxZWExZjNmZDZkMjg5MmY3ODg3N2Q0MWJlNmM5YiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_e06d25e7b88744fa8dbc79950be167f8",
+      "statement": "Talon's `media` and `media-cpu` extras conflict, and its source mappings use the CPU PyTorch index for the latter on Linux.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:698bc6fc987e09a424a84a467f73c3fe1ac1b169b50b74f36dc012fef126bc35"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-14T08:03:44.053Z"
+    "at": "2026-11-16T08:11:13.198Z"
   }
 }

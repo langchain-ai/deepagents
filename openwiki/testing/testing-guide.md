@@ -1,183 +1,138 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused package-local test routes and behavioral contracts for SDK delegation and storage, dcode headless execution, Talon conversation archives, Modal sandboxes, and release automation.
-tags: [testing, deepagents, dcode, talon, releases]
+description: Focused, hermetic test routes for dcode inference-host model catalogs and the Textual model selector. Covers host-authoritative discovery, safe metadata transport, policy and setup gates, and asynchronous selection and persistence behavior.
+tags: [testing, dcode, model-catalog, textual, model-selection]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-14T08:03:44.053Z
+    at: 2026-11-16T08:11:13.198Z
 sources:
-  - id: openwiki-source-d8e4ee8c2eab091950193178
-    resource: repo://.github/scripts/release/check_wheel_dep_freshness.py
-  - id: openwiki-source-750d05d3ff77bc37d6cb1a49
-    resource: repo://.github/scripts/tests/release/test_check_wheel_dep_freshness.py
-  - id: openwiki-source-1496fd17117e4ab18f9b8ca7
-    resource: repo://.github/scripts/tests/release/test_release_notes.py
-  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
-    resource: repo://libs/code/tests/unit_tests/test_agent.py
-  - id: openwiki-source-d86dd82872da8545a6c8d896
-    resource: repo://libs/code/tests/unit_tests/test_non_interactive.py
-  - id: openwiki-source-21e2b0401425a427d8cea9c1
-    resource: repo://libs/deepagents/deepagents/backends/store.py
-  - id: openwiki-source-e11958a6a68a079be57552fc
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
-  - id: openwiki-source-e370a5c066ded4e19606e62b
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_fork_payload.py
-  - id: openwiki-source-454da083c2cc29febd156c7e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-  - id: openwiki-source-fb60ee46c55b974b8341651c
-    resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-5e387cb8bab7ca8537e7d97c
-    resource: repo://libs/partners/modal/langchain_modal/sandbox.py
-  - id: openwiki-source-ac47f3f14a26a8141beddfc3
-    resource: repo://libs/partners/modal/tests/unit_tests/test_sandbox.py
-  - id: openwiki-source-68bbcf211edb7fd6a363bdf7
-    resource: repo://libs/talon/tests/unit_tests/test_archive.py
-  - id: openwiki-source-06d3e41642ffa8b7153931b6
-    resource: repo://libs/talon/tests/unit_tests/test_store_archive.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
+  - id: openwiki-source-8037e2358a2c4f9b2c722a11
+    resource: repo://AGENTS.md
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
+    resource: repo://libs/code/deepagents_code/client/remote_client.py
+  - id: openwiki-source-7e241f30f5c7753642ea34d5
+    resource: repo://libs/code/deepagents_code/model_api.py
+  - id: openwiki-source-5afb93f98c34330c27609db2
+    resource: repo://libs/code/deepagents_code/model_catalog.py
+  - id: openwiki-source-e9a7ab29b270179f4eea7107
+    resource: repo://libs/code/deepagents_code/tui/widgets/model_selector.py
+  - id: openwiki-source-006b62af9993da1b48c11de8
+    resource: repo://libs/code/Makefile
+  - id: openwiki-source-e012c5898b6bc6cb1317467d
+    resource: repo://libs/code/tests/unit_tests/test_model_catalog.py
+  - id: openwiki-source-669a6d1361755f2deb4515d2
+    resource: repo://libs/code/tests/unit_tests/test_model_metadata.py
+  - id: openwiki-source-841ecfa9478e29ef7405f93e
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_model_selector.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-16T08:11:13.198Z" }
 ---
 
 # Testing Guide
 
-Run the narrowest owning suite from the package being changed. Tests in this monorepo are intended to protect observable behavior rather than internal call order: unit tests are network-free, integration tests are networked, async tests use automatic asyncio mode, and unaccepted warnings fail the suite. Start with [Development](../operations/development.md) for setup and [SDK Construction and Execution](../architecture/sdk-construction-execution.md) for the graph boundary.
+Use this page for changes to dcode model discovery, the inference-host metadata boundary, or the `/model`-family selector. The tests protect a distributed contract: the Textual client renders and collects a choice, while the server workspace owns provider packages, credentials, policy, and canonical resolution. Do not replace these tests with live provider calls or assertions about incidental helper call order. For the design, see [Code agent architecture](../architecture/code-agent.md) and [Profiles and models](../concepts/profiles-models.md); for package setup, see [Development and release operations](../operations/development.md) and [Quickstart](../quickstart.md).
 
-## Focused routes
+## Run the focused routes
 
-Work inside the changed package, install dependencies explicitly, and let that package's `Makefile` supply the ordinary test invocation. `make test TEST_FILE=…` is the normal focused-file route; use direct `uv run --group test pytest …` only for a one-off node or parametrization. Finish a behavior-changing package change with its lint target.
+Work from `libs/code`. Synchronize the package environment before testing. The package `test` target runs pytest with xdist, coverage, benchmark suppression, and network sockets disabled except Unix sockets; use it rather than a bare pytest invocation for the normal focused path. Package guidance places deterministic, network-free coverage in `tests/unit_tests/`, enables asyncio automatically, and treats unaccepted warnings as errors.
 
 ```bash
-# Core SDK: graph, delegation, and StoreBackend
-cd libs/deepagents
+cd libs/code
 uv sync --all-groups
-make test TEST_FILE=tests/unit_tests/middleware/test_fork_payload.py
-make test TEST_FILE=tests/unit_tests/middleware/test_subagent_middleware_init.py
-make test TEST_FILE=tests/unit_tests/test_async_subagents.py
-make test TEST_FILE=tests/unit_tests/backends/test_store_backend.py
-make lint
 
-# dcode headless/client behavior
-cd ../code
-uv sync --all-groups
-make test TEST_FILE=tests/unit_tests/test_agent.py
-make test TEST_FILE=tests/unit_tests/test_non_interactive.py
-make lint
+# Catalog serialization, remote-host behavior, defaults, and metadata endpoints
+make test TEST_FILE=tests/unit_tests/test_model_catalog.py
+make test TEST_FILE=tests/unit_tests/test_model_metadata.py
 
-# Talon archive behavior
-cd ../talon
-uv sync --all-groups
-make test TEST_FILE=tests/unit_tests/test_archive.py
-make test TEST_FILE=tests/unit_tests/test_store_archive.py
-make lint
+# Textual interaction, filtering, setup prompts, and selector presentation
+make test TEST_FILE=tests/unit_tests/tui/widgets/test_model_selector.py
 
-# Modal adapter
-cd ../partners/modal
-uv sync --all-groups
-make test TEST_FILE=tests/unit_tests/test_sandbox.py
+# Finish a behavior-changing package change
 make lint
-
-# Release scripts run from the repository root
-cd ../../..
-uv run --group test pytest .github/scripts/tests/release/test_check_wheel_dep_freshness.py
-uv run --group test pytest .github/scripts/tests/release/test_release_notes.py
 ```
 
-Deep Agents and dcode unit targets run pytest with xdist, coverage, and sockets disabled except Unix sockets. Talon runs its WhatsApp bridge Node tests before its Python suite and gives Python tests a 10-second timeout. The Modal unit target disables network sockets but does not add coverage itself. Keep a test in `tests/unit_tests/` if it is deterministic and network-free; put a genuinely networked check in `tests/integration_tests/`.
+Run `test_model_catalog.py` when changing catalog models, client/host handoff, setup routing, default scopes, or stale-selection handling. Run `test_model_metadata.py` when changing request validation, workspace/environment resolution, endpoint failures, model switching, or role-specific metadata. Run `tui/widgets/test_model_selector.py` for keyboard and mouse interaction, searching, rendering, provider readiness, modal routing, and selector-local persistence UX. Usually run all three when an API payload, selection lifecycle, or default-saving behavior crosses the client/server boundary.
 
-## SDK delegation: test the payload boundary
+## Test the inference host, not the client environment
 
-A forked subagent continues the parent context rather than acting as a fresh isolated worker. The highest-value regression test invokes a real parent graph using provider HTTP stubs or fake chat models, then inspects the child request—not an implementation helper alone.
+A connected picker must obtain its catalog from the inference host. `RemoteAgent.aget_model_catalog()` binds the request to the current thread workspace, posts the role, recommendations, and active spec, waits at most 60 seconds, and validates the response as `ModelCatalog`. The server endpoint validates the compact request before it obtains the bound workspace, restores the workspace model environment, and runs discovery in a worker thread. Main catalog requests receive workspace profile overrides; auxiliary requests do not.
 
 ```mermaid
 sequenceDiagram
-    participant Parent
-    participant Task as task tool
-    participant Fork
-    participant Remote as remote async graph
-    Parent->>Task: delegate description
-    Task->>Fork: parent prefix and task
-    Fork-->>Task: child result
-    Task-->>Parent: correlated result
-    Task->>Remote: create thread and run
-    Remote-->>Task: thread ID and run ID
-    Task-->>Parent: tracked async task
+    participant Picker as Textual picker
+    participant Client as RemoteAgent
+    participant Host as Inference host
+    participant Workspace as Bound workspace
+    Picker->>Client: catalog with role and current spec
+    Client->>Host: POST thread models with workspace
+    Host->>Workspace: verify binding and load environment
+    Workspace-->>Host: policy profiles readiness
+    Host-->>Client: restricted JSON catalog
+    Client-->>Picker: validated catalog for rendering
+    Picker->>Client: resolve proposed selection
+    Client->>Host: POST thread model
+    Host-->>Picker: canonical metadata or failure
 ```
 
-*Fork delegation preserves a parent context prefix, while remote async delegation creates a separately tracked run.*
+*Discovery and proposed-model validation run in the workspace that will execute inference; the Textual client only receives validated presentation data.*
 
-### Synchronous forks
+Build a hermetic host fixture instead of depending on installed integrations, actual credentials, a local config file, or a network. The `model_api_client` fixture in `test_model_metadata.py` wires a real `RemoteAgent` to the real endpoint functions through mocked in-process HTTP. Its runtime fixture supplies a bound workspace, a server environment, and profile overrides. At the UI edge, pass an `AsyncMock` `catalog_loader` and `resolve_model` into `ModelSelectorScreen`; patch local `ModelConfig.load`, `load_model_catalog`, provider discovery, or readiness to fail if a remote picker tries to consult them.
 
-Use `middleware/test_fork_payload.py` when changing provider serialization, prompt composition, history transfer, cache controls, or tools. Test both Anthropic and OpenAI shapes where serialization is relevant. The child request must retain the parent system/tools prefix and inherited history, remove the in-flight `task` call, and put fork-specific instructions beside the delegated task rather than in the system prefix. This is the cache-reuse invariant: parent and fork prefixes—including tool ordering and cache-control placement—must remain equivalent.
+The essential assertions are:
 
-Use `middleware/test_subagent_middleware_init.py` for construction and policy checks:
+- A remote catalog drives highlighting, display-profile search, and selection even when all local provider access is forbidden.
+- Server discovery uses the saved workspace environment and filters profile extensions to the scalar fields the UI may render. It applies main profile overrides only for `purpose="main"`.
+- The strict catalog model rejects incoherent readiness and endpoint handlers reject malformed catalog or metadata requests with `422` before model construction.
+- Workspace conflicts remain `409`; unavailable runtime environment or unexpected discovery/resolution failure becomes `503`. The client should surface a host failure rather than quietly falling back to local discovery.
 
-- A fork may inherit parent memory and dynamic prompt middleware, but duplicate same-name prompt middleware must replace rather than append a second prompt mutation.
-- A fork cannot configure independent skills and refuses recursive `task` delegation. The refusal is a tool result so the child and parent can continue.
-- An isolated child remains independent: it can retain its own skills middleware and does not receive the parent memory middleware.
-- Dynamic response schemas are compiled for declarative subagents; a compiled runnable cannot be retrofitted with that response schema.
+### Catalog boundary fixtures and invariants
 
-When changing a shared sync/async path, cover both `invoke` and `ainvoke`. Keep the test at the parent graph boundary so it detects history duplication, dangling tool calls, prompt-prefix drift, or an incorrect correlated result.
+`load_model_catalog()` is the host-side unit under test. It collects available model specs, configured profiles, enabled providers, allow-list presentation data, and the active spec. It retains allowed, enabled recommendations and the current selection when ordinary profile discovery omitted them, but does not surface disabled providers or disallowed recommendations. A provider failure is isolated and logged so another provider can still populate the picker.
 
-### Remote async subagents
+Treat `ModelCatalog`, `CatalogProfile`, and `CatalogProvider` as a security boundary, not as general configuration serializers. Tests should verify that profiles keep only allowed scalar display fields and their override provenance; provider records may expose readiness state/source, environment-variable name, detail, labels, and a missing-package extra, but never credential values, constructor kwargs, or arbitrary profile/config extensions. A configured custom provider with no discovered models must still be present in provider readiness so a typed custom spec can lead to the appropriate setup prompt.
 
-`test_async_subagents.py` owns remote delegation, task bookkeeping, and context transfer. `AsyncSubAgentMiddleware` exposes five tools—start, check, update, cancel, and list—and stores task records keyed by child thread ID. A launch creates the remote thread and run, returns a `Command` with a correlated tool message, and merges the task state without discarding other tasks. Test duplicate agent names and invalid modes at initialization, default `x-auth-scheme` behavior, and custom-header preservation when changing configuration.
+## Selector flow: filter first, policy before setup
 
-For an isolated launch, the remote input is only a user task. For a fork launch, it is a snapshot of the eligible parent message history plus a final task message; it excludes private state and message artifacts. Test summary cutoffs, removal of the spawning call, and snapshot immutability if changing payload construction. Media is a special boundary: offloaded parent media must be rehydrated for a fork request, then re-offloaded under the child backend. It must not leak transient blob payload state into a checkpoint or reload media for unrelated/isolated post-approval tools.
+`ModelSelectorScreen` mounts its shell and focuses `#model-filter` before asynchronous data loading. It keeps text typed during loading, applies it after catalog arrival, and returns without updating if the modal has been dismissed. A load failure produces a retryable connection notification and does not cause remote mode to read client-local provider data.
 
-## StoreBackend: persistence and isolation
+The normal view starts with recommended models. A nonempty search spans the full installed list; recent and current choices remain available in the recommended view, while onboarding stays curated. Search matches raw specs plus friendly model and provider labels. Test selection by driving a real `textual.pilot` session—typing into the filter and pressing Enter—not only by calling action methods, because focus, priority bindings, dismissal, and the modal stack are observable behavior.
 
-`StoreBackend` adapts LangGraph `BaseStore` into the filesystem backend contract. It is persistent and cross-thread, but only within the caller-selected namespace. Test a real `InMemoryStore` for CRUD, path listing, literal grep, glob, pagination metadata, and both sync and async upload/download routes.
+There are two different no-result cases:
 
-The namespace factory is the security and tenancy boundary. Its tuple must be nonempty and use safe component characters; distinct namespaces must not see each other's files. A backend with no explicit store obtains one from graph execution. Conversely, an explicit store can be used outside a graph only when the namespace factory does not read runtime data; a runtime-dependent factory must fail with the actionable outside-graph error rather than an `AttributeError`.
+- Enter selects the highlighted row when one exists; filter text is not substituted for that row.
+- With no row, an explicitly host-recognized `provider:model` is checked against `models.allowed` **before** installation or credential setup. A rejected spec leaves the selector open, does not set `pending_install_extra`, and names the policy and permitted choices. This prevents an install/auth path from bypassing admission.
 
-Persistence compatibility matters more than a happy-path write:
+A colon alone does not prove the prefix is a provider: model identifiers can contain colons. In server-backed mode, bare names and ambiguous or unrecognized prefixes are dismissed for inference-host resolution, rather than canonicalized or rejected from client-local knowledge. Test both a host-known blocked spec and ambiguous identifiers such as Bedrock-style IDs so this distinction cannot regress.
 
-- UTF-8 uploads stay textual, while NUL-containing or non-UTF-8 bytes are base64 so a JSON-backed store can round-trip them byte for byte. Binary data must not be returned by grep or consume its match limit.
-- Existing legacy `list[str]` content reads as newline-joined text without a destructive read; write or edit migrates it to current string-plus-encoding form while retaining creation metadata. Invalid legacy list elements raise rather than silently coercing data.
-- Text reads use shared slicing semantics, including clamped negative offsets and empty non-positive limits. Binary/media reads bypass text slicing. Listings report UTF-8 byte size.
-- Filesystem middleware's large-result interception persists the full result at `/large_tool_results/<tool_call_id>` and gives the model a pointer rather than an oversized tool message.
+After an allowed explicit selection, missing package metadata opens `InstallProviderConfirmScreen`; missing credentials open `AuthPromptScreen`. Codex is different: it opens a confirmation gate before its ChatGPT OAuth screen, not the generic API-key prompt. Cancelling setup returns to the selector and refreshes its readiness display; confirming an installation records the pending extra and returns the original selection for the app to install and switch.
 
-## dcode headless execution
+## Defaults: validate asynchronously and persist the right preference
 
-The dcode tests protect CLI-agent construction and non-interactive execution separately. In `test_agent.py`, use fake models and patched paths to verify backend routing: local conversation-history archive writes are redirected to stable user data, while large tool results remain on the real filesystem under the advertised artifacts path. A resumed fallback archive path must stay resolvable even if a later session has a different artifacts root.
+A session choice, a default, and the currently running model are separate state transitions. `Ctrl+S` uses the screen's explicit `DefaultModelScope`; `MAIN_MODEL_DEFAULT_SCOPE`, classifier scope, and summarization scope have distinct load/save/clear functions. This is a guard against an auxiliary picker overwriting `[models].default`.
 
-The same file also tests process-level safeguards. Runtime model metadata is restored between tests; an unavailable provider while resolving retry ownership defers startup instead of aborting it; and the asynchronous approval-mode Store reader uses `aget` on an event loop rather than forbidden synchronous Store access.
+For a new default, the selector validates the captured spec asynchronously through `resolve_model` before writing. With a remote agent, that resolution runs on the server and returns canonical metadata; before the server connects, dcode only makes a local identity/policy check and does not construct a model. Tests must establish all of the following observable contracts:
 
-`test_non_interactive.py` owns the headless loop's user-visible policy. Assert shell approval decisions for absent allow lists, allow-listed commands and pipelines, dangerous syntax, and the explicit allow-all mode. Test output accounting with both message and custom usage deliveries so one model request is counted once. For server launch plumbing, test that `run_non_interactive` forwards its owned sandbox ID, `sandbox_type`, and profile overrides. Do not turn these into live provider or sandbox tests.
+- Keyboard navigation and Escape remain responsive while server resolution or synchronous file persistence is blocked. Use events to hold an async resolver or a thread-backed persistence function, then drive `textual.pilot` with a timeout.
+- Repeated `Ctrl+S` while work is pending does not start overlapping writes. A resolution error or save failure leaves the stored marker unchanged and reports an actionable failure.
+- If the selector is dismissed, a cancelled-but-late resolver result cannot save a default, mutate its default marker, or notify a no-longer-current screen.
+- A successful validation saves the canonical returned `provider:model`, not the user alias. It must not switch the active session model merely to validate the preference.
+- An install-required provider cannot be newly persisted, because it cannot work at a later launch; an already-stored unavailable value can still be cleared, which is the recovery path.
+- A summary or classifier scope changes only its own key. At application level, a newer choice or clear operation must win over an older asynchronous selection that completes late.
 
-## Talon archives: scoped, paginated, recoverable history
+## Metadata and active-state failure tests
 
-Talon's archive is persistent chat history and retrieval, not a prompt cache. `ArchiveScope` is host-supplied channel/chat identity; conversation tools obtain it from a trusted callback instead of model arguments. Tests must prove that a chat can search its sessions—including sessions before `/new`—without retrieving another channel or chat's history.
+`test_model_metadata.py` verifies the adjacent proposed-resolution endpoint and app state transitions. Keep endpoint payloads deliberately small and malformed cases explicit: unknown keys, non-string specs, invalid purpose values, auxiliary `extra_kwargs`, and invalid types should be rejected before `create_model()` is called. A server-side resolution is a proposal, not a switch: it constructs only enough to return model name, provider, context limit, unsupported modalities, and structured-output capability.
 
-Archive entries are bounded chunks (`CHUNK_SIZE` is 4000), cursor-paginated, and role/time-filterable. A test for a long transcript should page until exhaustion and reconstruct the exact content. Validate pagination bounds, reject a foreign-session cursor, require timezone-aware windows, and preserve the scan-limit continuation signal rather than silently claiming a complete search. Search responses expose semantic/indexing/pagination/scan status so callers can distinguish a complete miss from incomplete coverage.
+For a failed runtime switch, seed a complete existing state—selected override, parameter override, model name/provider, capability metadata, and switching flag—then make remote resolution fail. Assert every prior value is retained, no local construction occurs, recent-model storage is untouched, and the switching indicator is cleared. Conversely, test that a bare request adopts the provider returned by the server, not a provider guessed by the client.
 
-Use both in-memory and SQLite storage where the contract supports both. The important lifecycle cases are:
-
-- Checkpoint compaction may remove a message from active graph state without losing its originally archived transcript; repeated checkpoints do not duplicate it. Revisions retain distinct text but identical repeats do not.
-- Reset/clear removes checkpoints, pending writes, and archive entries for the selected scope, including reset-derived sessions and subagent namespaces, while leaving another channel untouched. It cancels an active turn before deletion.
-- Archive metadata writes and deletions are journaled/recoverable. A partial write or deletion can be retried after reopening; a session being deleted cannot be appended to and resurrected. Cancellation waits for a started metadata write before releasing the archive lock.
-- Vector indexing is asynchronous: append must not wait for inference, retrieval reports pending coverage, and a failed vector deletion must eventually recover without exposing deleted history. A missing vector store makes deletion fail rather than leaving a silently inconsistent archive.
-
-`test_store_archive.py` additionally guards compatibility and resource bounds: legacy Slack thread scopes may be read through their parent scope only under the defined compatibility rule, metadata and vector namespaces separate assistants, traversal detects corrupt ordering links, and scan budgets bound store reads while releasing locks for subsequent writes.
-
-## Modal sandbox error semantics
-
-`ModalSandbox` maps selected Modal filesystem exceptions to backend protocol errors on a per-file basis. Missing paths and not-a-directory map to `file_not_found`; permissions map to `permission_denied`; directory targets map to `is_directory`. Batch upload/download must continue after one mapped failure and retain the successful response for later items. Do not broaden the mapping casually: an unmapped error such as `SandboxFilesystemFileTooLargeError` must propagate, preserving diagnostics and preventing an unsupported failure from being misreported as a missing file. Also cover the absolute-path `invalid_path` precondition when changing file routing.
-
-## Release automation
-
-Run the two release test shims after changing wheel validation, release metadata, workflow YAML, JavaScript helpers, or release-please wiring.
-
-`test_check_wheel_dep_freshness.py` treats built-wheel `METADATA` as authoritative for name, version, Python requirement, extras, and dependency requirements. The checker compares each applicable dependency constraint with published PyPI metadata over supported CPython/platform/extra marker environments. It rejects direct URLs, no matching release, or a published Python-support gap across the wheel's declared range. A sibling package whose current `requires-python` is newer than the latest eligible published sibling is a hard release-order failure—not a warning; release that sibling first. The tests also preserve safe GitHub command output escaping.
-
-`test_release_notes.py` runs the native Node tests and inspects release workflows as security-sensitive configuration. Keep the curated-notes required check attached to the validated release PR head and component-agnostic across the release-please registry. Trusted helper paths must exist. Privileged draft/apply jobs must be gated by validation, use the release-bot environment and short-lived app token with narrow job permissions, and must not check out or shell-push untrusted release-branch content. Refresh/check cleanup must close interrupted in-progress checks without overwriting a completed validation result.
+Apply the same boundary to auxiliary model commands. Summary, auto-classifier, goal, and rubric choices resolve in the server environment without main profile overrides and update their own role-specific state, leaving the main model and its runtime metadata intact. A failed auxiliary resolution must leave all existing auxiliary selections and persistence bookkeeping unchanged.
 
 ## Completion checklist
 
-1. Run the owning focused test file(s) from the package and `make lint` after code changes.
-2. For fork/delegation work, assert the serialized parent/child boundary, not just middleware construction; run both sync and async coverage when shared.
-3. For persistence work, cover scope isolation, pagination and legacy data, plus failure/recovery behavior—not only CRUD.
-4. For dcode and sandbox work, use fakes/mocks at provider and sandbox boundaries and preserve error classification.
-5. For release changes, run both Python shims; they intentionally execute the Node release-note tests and validate workflow guardrails.
+1. Sync `libs/code`, run the narrowest owning test file, then `make lint`.
+2. Use in-process endpoint wiring, temporary paths, patched provider discovery, fake catalogs, and `textual.pilot`; do not require a provider account, network, or developer config.
+3. For catalog changes, assert workspace-environment authority, strict presentation-only payloads, main-versus-auxiliary profile behavior, and `409`/`422`/`503` failure distinctions.
+4. For selector changes, exercise the real focused filter/modal path and preserve policy rejection before install/auth, typed-spec ambiguity deferral, and readiness-specific prompt routing.
+5. For persistence or async changes, block the resolver/writer and prove responsiveness, canonical validation before write, scope isolation, and immunity to dismissed or stale results.

@@ -1,6 +1,6 @@
 # Files
 
-- [Deep Agents Code Architecture](code-agent.md) - dcode separates terminal presentation from a local agent server and starts that server with guarded local-process lifecycle management. This page explains startup readiness, server-owned model metadata, client rendering state, and resilient lazy tool-detail expansion.
+- [Deep Agents Code Architecture](code-agent.md) - dcode separates terminal presentation from an agent server. This page explains server-authoritative model metadata and catalog transport, workspace-bound discovery, picker behavior, and the client/server lifecycle around them.
 - [SDK Middleware Assembly](middleware-stack.md) - Explains how Deep Agents assembles the main and subagent middleware stacks, applies profile policy, and projects synchronous task results. Covers fork state and history, checkpoint and tracing metadata, and provider prompt-caching adapters.
 - [Repository Architecture Overview](overview.md) - Package roles, published Python and dependency contracts, development-only uv source wiring, lockfile closure, and release baselines for the Deep Agents monorepo.
 - [Runtime Behavior and Failure Boundaries](runtime-behavior.md) - Execution ownership, synchronous subagent delegation boundaries, persistence, retry, interruption, and delivery semantics across Deep Agents, dcode, and Talon.

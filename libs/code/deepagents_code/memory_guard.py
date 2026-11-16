@@ -28,7 +28,7 @@ import logging
 import os
 from difflib import SequenceMatcher
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit_payload
@@ -78,6 +78,29 @@ _DELETE_REJECTION_MESSAGE = (
 )
 """Error returned when a delete would remove a managed memory block."""
 
+_EXTENDED_LENGTH_PREFIX = "\\\\?\\"
+r"""Windows extended-length prefix (`\\?\`) that `resolve()` keeps when given one."""
+
+
+def _resolve(raw: str | Path) -> Path:
+    r"""Resolve `raw` to the absolute path used for guard matching.
+
+    On Windows, dcode gives file tools `//?/C:/...` paths, which resolve to
+    `\\?\C:\...` and would not compare equal to the plain `C:\...` path of the
+    same file. Dropping the prefix makes both forms match. Only drive paths get
+    that form, so other `\\?\` paths (UNC, volume GUID) are left as they are.
+
+    Returns:
+        The resolved path, without the extended-length prefix on a drive path.
+    """
+    resolved = Path(raw).expanduser().resolve()
+    text = str(resolved)
+    rest = text.removeprefix(_EXTENDED_LENGTH_PREFIX)
+    target = PureWindowsPath(rest)
+    if rest == text or not target.drive.endswith(":") or not target.root:
+        return resolved
+    return Path(rest)
+
 
 class _RestoreOutcome(Enum):
     """Result of attempting to restore a managed block after a tool call."""
@@ -120,7 +143,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         resolved: set[Path] = set()
         for raw in requested:
             try:
-                resolved.add(Path(raw).expanduser().resolve())
+                resolved.add(_resolve(raw))
             except OSError, RuntimeError, ValueError:
                 logger.warning(
                     "Could not resolve guarded memory path %r", raw, exc_info=True
@@ -150,7 +173,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         if not isinstance(file_path, str) or not file_path:
             return None
         try:
-            resolved = Path(file_path).expanduser().resolve()
+            resolved = _resolve(file_path)
         except OSError, RuntimeError, ValueError:
             # A guarded-tool call whose path won't resolve could be an attempt
             # to slip past the set-membership match, so leave a trail.

@@ -3974,6 +3974,63 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ManagedMemoryGuardMiddleware) for mw in middleware
             ), f"Expected managed memory guard on subagent {name!r}"
 
+    def test_memory_guard_sees_the_path_the_model_sent_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In every stack the guard wraps the Windows path rewrite."""
+        from deepagents_code.agent import WindowsToolPathMiddleware
+        from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
+
+        monkeypatch.setattr("deepagents_code.agent.sys.platform", "win32")
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch(
+                "deepagents_code.agent.credentials",
+                self._build_mock_settings(tmp_path),
+            ),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        kwargs = mock_create.call_args.kwargs
+        stacks = [kwargs["middleware"]] + [s["middleware"] for s in kwargs["subagents"]]
+        assert len(stacks) == 3
+        for stack in stacks:
+
+            def index(kind: type, stack: list[Any] = stack) -> int:
+                return next(i for i, m in enumerate(stack) if isinstance(m, kind))
+
+            assert index(ManagedMemoryGuardMiddleware) < index(
+                WindowsToolPathMiddleware
+            )
+
     def test_subagents_skip_managed_memory_guard_when_memory_disabled(
         self, tmp_path: Path
     ) -> None:

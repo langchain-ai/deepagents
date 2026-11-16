@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -142,6 +143,50 @@ def test_restore_does_not_follow_replaced_guarded_file_symlink(tmp_path) -> None
     assert result.status == "error"
     assert target.read_text(encoding="utf-8") == "do not overwrite\n"
     assert path.is_symlink()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="extended-length paths are Windows only"
+)
+def test_edit_through_extended_length_path_is_reverted(tmp_path) -> None:
+    """The `//?/C:/...` form dcode gives file tools on Windows is still guarded."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("Ada", "Mallory"),
+            encoding="utf-8",
+        )
+        return _success()
+
+    result = middleware.wrap_tool_call(
+        _request("edit_file", f"//?/{path.as_posix()}"), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "Mallory" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="extended-length paths are Windows only"
+)
+def test_delete_through_extended_length_path_is_rejected(tmp_path) -> None:
+    """Deleting the guarded file by its `//?/C:/...` form is blocked."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+    handler = cast("Any", lambda _request: pytest.fail("delete should not run"))
+
+    result = middleware.wrap_tool_call(
+        _request("delete", f"//?/{path.as_posix()}"), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert path.exists()
 
 
 def test_file_without_managed_block_passes_through(tmp_path) -> None:

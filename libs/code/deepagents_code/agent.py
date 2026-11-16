@@ -3014,9 +3014,6 @@ def create_cli_agent(
                 mcp_tools=mcp_tools,
             )
         )
-        # Inside the hooks wrapper, so hooks still see the path the model sent.
-        if rewrite_drive_paths:
-            middleware.append(WindowsToolPathMiddleware())
         if mcp_tools:
             from deepagents_code.config_manifest import resolve_mcp_tool_timeout
             from deepagents_code.mcp_middleware import mcp_tool_middleware
@@ -3034,6 +3031,10 @@ def create_cli_agent(
             middleware.append(
                 ManagedMemoryGuardMiddleware([get_user_agent_md_path(assistant_id)])
             )
+        # Inside the hooks wrapper and the memory guard, as in the main agent, so
+        # both still see the path the model sent.
+        if rewrite_drive_paths:
+            middleware.append(WindowsToolPathMiddleware())
         if enable_skills and skill_tools:
             middleware.insert(
                 0,

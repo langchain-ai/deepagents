@@ -285,11 +285,13 @@ def test_local_shell_backend_timeout_after_complete_cleanup(*, is_windows: bool)
     """Test a stopped shell reports leftover processes only on Windows."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
+    process.snapshot.return_value = ("", "")
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch.object(local_shell_module, "_IS_WINDOWS", new=is_windows),
         patch.object(local_shell_module, "signal", SIGKILL=sentinel.SIGKILL),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
+        patch.object(local_shell_module, "PosixProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True),
     ):

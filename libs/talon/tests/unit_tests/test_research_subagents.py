@@ -729,11 +729,10 @@ async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messa
 ):
     captured = {}
 
-    class Recorder:
-        async def ainvoke(self, payload, config=None):
-            captured["config"] = config
-            captured["payload"] = payload
-            return result
+    async def record(payload, config):
+        captured["config"] = config
+        captured["payload"] = payload
+        return result
 
     _write_agent(tmp_path)
     parent = ToolModel(
@@ -761,7 +760,7 @@ async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messa
         lambda *_args, **_kwargs: {
             "name": "researcher",
             "description": "x",
-            "runnable": Recorder(),
+            "runnable": RunnableLambda(record),
         },
     )
     try:
@@ -771,8 +770,66 @@ async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messa
     finally:
         await runtime.stop()
 
-    assert captured["config"] == {"recursion_limit": 500}
+    assert captured["config"]["recursion_limit"] == 500
+    assert captured["config"]["metadata"]["lc_subagent_tool_call_id"] == "task"
+    assert captured["config"]["metadata"]["lc_agent_name"] == "researcher"
+    assert captured["config"]["configurable"]["ls_agent_type"] == "subagent"
     assert f"<subagent_result>\n{expected}\n</subagent_result>" in results[0]
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        AIMessage(
+            content=[],
+            response_metadata={"model_provider": "anthropic", "stop_reason": "refusal"},
+        ),
+        AIMessage(
+            content="",
+            additional_kwargs={"refusal": "I can't help with that."},
+            response_metadata={"model_provider": "openai"},
+        ),
+    ],
+    ids=["anthropic", "openai"],
+)
+async def test_task_reports_model_refusals(tmp_path, monkeypatch, dynamic, background, refusal):
+    _write_agent(tmp_path)
+    child = ToolModel(responses=[refusal])
+    launch = {"tools": ["current_time"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Research", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        if background:
+            result = next(iter(runtime.background.results("chat").values()))
+        else:
+            result = next(
+                message.content
+                for message in parent._seen[-1]
+                if isinstance(message, ToolMessage) and message.name == "task"
+            )
+        assert "a model refused the request" in result
+        assert "Retrying the same request is unlikely to succeed" in result
+        assert "Subagent returned no result" not in result
+        assert len(child._seen) == 1
+    finally:
+        await runtime.stop()
 
 
 @pytest.mark.parametrize("dynamic", [False, True])

@@ -13,7 +13,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
 from langchain.tools import ToolRuntime  # noqa: TC002  # tool schemas inspect injected annotations
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -186,16 +186,31 @@ class TaskTools(AgentMiddleware):
             spec["tools"] = list(configured.values()) + [
                 available[name] for name in tools if name not in configured
             ]
-            agent = _compile_fresh(spec, self._model, self._interrupt_on, self._backend)["runnable"]
-            result = await agent.ainvoke(
-                {"messages": [HumanMessage(description)]},
-                {"recursion_limit": _FRESH_AGENT_RECURSION_LIMIT},
+            compiled = _compile_fresh(spec, self._model, self._interrupt_on, self._backend)
+
+            async def run(state: dict[str, object]) -> dict[str, object]:
+                result = await compiled["runnable"].ainvoke(
+                    state, {"recursion_limit": _FRESH_AGENT_RECURSION_LIMIT}
+                )
+                return {**result, "messages": result.get("messages") or []}
+
+            delegate = SubAgentMiddleware(
+                backend=self._backend,
+                subagents=[{**compiled, "runnable": RunnableLambda(run)}],
+            ).tools[0]
+            result = await delegate.ainvoke(
+                {
+                    "description": description,
+                    "subagent_type": subagent_type,
+                    "runtime": replace(runtime, context=None),
+                }
             )
-            if result.get("__interrupt__"):
-                return "Subagent needs tool approval; the protected action has not run."
-            messages = result.get("messages") or []
-            text = _result_text(messages[-1]) if messages else ""
-            return text or "Subagent returned no result."
+            if isinstance(result, Command) and isinstance(result.update, dict):
+                if result.update.get("__interrupt__"):
+                    return "Subagent needs tool approval; the protected action has not run."
+                messages = result.update.get("messages") or []
+                result = messages[-1] if messages else ""
+            return _result_text(result) or "Subagent returned no result."
 
         self._task = task
         return sorted(available)

@@ -79,7 +79,7 @@ Each matcher group has a `hooks` list of command handlers:
 - `argv` is optional; when set, the handler is executed directly from that argument list instead of through a shell.
 - `timeout` is optional seconds; when omitted, the event default applies (600s for most events, 30s for `UserPromptSubmit`).
 - `statusMessage` is optional UI status text while the handler runs.
-- `onError: "deny"` opts a matched `PreToolUse` handler into denying the call when it fails, times out, emits invalid output, or produces a protocol diagnostic. The default is `"continue"`; this option has no effect on other events. Empty output is valid and expresses no decision. This does not cover invalid or unloaded configuration, unmatched handlers, or malformed transport resumes. Configure it only on trusted handlers. Older dcode versions ignore this option and will not deny on errors, so upgrade before relying on it.
+- `onError: "deny"` opts a matched `PreToolUse` handler into denying the call when it fails, times out, emits invalid or truncated stdout, or returns output for a different event. Warnings such as unsupported fields or truncated stderr do not deny the call. The default is `"continue"`; this option has no effect on other events. Empty output and `permissionDecision: "defer"` express no decision. Unsupported input updates suppress that handler's `allow` or `ask` decision. This does not cover invalid or unloaded configuration, unmatched handlers, or malformed transport resumes. Configure it only on trusted handlers. Older dcode versions ignore this option and will not deny on errors, so upgrade before relying on it.
 - `async: true` is rejected; async command hooks are not supported.
 
 ## Examples

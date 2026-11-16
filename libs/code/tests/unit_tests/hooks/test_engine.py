@@ -541,6 +541,150 @@ async def test_pretool_error_policy_dominates_other_allows(
     assert decision.permission.behavior == ("deny" if deny_on_error else "allow")
 
 
+@pytest.mark.parametrize(
+    ("output", "stderr", "expected", "diagnostic"),
+    [
+        (
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "defer",
+                }
+            },
+            "",
+            "none",
+            "unsupported_field",
+        ),
+        (
+            {
+                "extra": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                },
+            },
+            "",
+            "allow",
+            "unsupported_field",
+        ),
+        (
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "updatedInput": {"path": "other"},
+                }
+            },
+            "",
+            "none",
+            "unsupported_field",
+        ),
+        (
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                }
+            },
+            "x" * 512,
+            "allow",
+            "stderr_truncated",
+        ),
+        (
+            {
+                "extra": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                },
+            },
+            "",
+            "deny",
+            "unsupported_field",
+        ),
+    ],
+)
+async def test_on_error_deny_ignores_benign_diagnostics(
+    tmp_path: Path,
+    output: dict[str, object],
+    stderr: str,
+    expected: str,
+    diagnostic: str,
+) -> None:
+    script = (
+        f"import sys; print({json.dumps(output)!r}); print({stderr!r}, file=sys.stderr)"
+    )
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "PreToolUse": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{sys.executable} -c {json.dumps(script)}",
+                                "onError": "deny",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call", name="read_file", args={}),
+        ),
+    )
+    decision = await HookEngine(snapshot, max_output_bytes=256).run(
+        invocation, transcript_path=_transcript_path(tmp_path)
+    )
+    assert isinstance(decision, PreToolUseDecision)
+    assert decision.permission.behavior == expected
+    assert diagnostic in {item.code for item in decision.diagnostics}
+
+
+async def test_on_error_deny_reports_failure_after_warning(tmp_path: Path) -> None:
+    script = "import sys; print('x' * 512, file=sys.stderr); raise SystemExit(1)"
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "PreToolUse": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{sys.executable} -c {json.dumps(script)}",
+                                "onError": "deny",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(id="call", name="read_file", args={}),
+        ),
+    )
+    decision = await HookEngine(snapshot, max_output_bytes=256).run(
+        invocation, transcript_path=_transcript_path(tmp_path)
+    )
+    assert isinstance(decision, PreToolUseDecision)
+    assert [item.code for item in decision.diagnostics] == [
+        "stderr_truncated",
+        "nonzero_exit",
+    ]
+    assert decision.permission.behavior == "deny"
+    assert decision.permission.reason is not None
+    assert "exited with status 1" in decision.permission.reason
+
+
 async def test_on_error_deny_covers_launch_truncation_and_projection(
     tmp_path: Path,
 ) -> None:

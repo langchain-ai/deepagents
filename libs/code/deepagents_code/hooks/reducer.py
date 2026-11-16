@@ -56,6 +56,20 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.runner import HandlerResult
 
 _PERMISSION_RANK = {"none": 0, "allow": 1, "ask": 2, "deny": 3}
+_HOOK_FAILURE_CODES = frozenset(
+    {
+        "invalid_command",
+        "launch_failed",
+        "timeout",
+        "io_failed",
+        "stdout_truncated",
+        "nonzero_exit",
+        "invalid_output",
+        "malformed_json",
+        "mismatched_output",
+        "projection_failed",
+    }
+)
 MAX_STOP_CONTINUATIONS = 8
 
 _UNSUPPORTED_SESSION_START_FIELDS = (
@@ -118,19 +132,19 @@ def reduce_hook_results(
                 )
         if result.output is not None:
             _merge_output(invocation, state, result.handler_id, result.output)
-        errors = (*result.diagnostics, *state.diagnostics[diagnostic_start:])
-        if (
-            result.deny_on_error
-            and invocation.event.event is HookEvent.PRE_TOOL_USE
-            and errors
-        ):
-            _merge_permission(
-                state,
-                PermissionEffect(
-                    behavior="deny",
-                    reason=f"Hook {result.handler_id} failed: {errors[0].message}",
-                ),
+        if result.deny_on_error and invocation.event.event is HookEvent.PRE_TOOL_USE:
+            errors = (*result.diagnostics, *state.diagnostics[diagnostic_start:])
+            failure = next(
+                (item for item in errors if item.code in _HOOK_FAILURE_CODES), None
             )
+            if failure is not None:
+                _merge_permission(
+                    state,
+                    PermissionEffect(
+                        behavior="deny",
+                        reason=f"Hook {result.handler_id} failed: {failure.message}",
+                    ),
+                )
     return _decision(invocation, state)
 
 

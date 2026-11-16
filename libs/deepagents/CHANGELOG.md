@@ -4,16 +4,14 @@
 
 ## [0.7.39](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.38...deepagents==0.7.39) (2026-11-16)
 
-
 ### Bug Fixes
 
-* **sdk:** store NUL-containing uploads as base64 in StoreBackend ([#7710](https://github.com/langchain-ai/deepagents/issues/7710)) ([e1c7735](https://github.com/langchain-ai/deepagents/commit/e1c7735f1044519db63d9ab511bf881a0a8efddc))
-* **sdk:** stream async subagent runs to apps that join them ([#7722](https://github.com/langchain-ai/deepagents/issues/7722)) ([62e422a](https://github.com/langchain-ai/deepagents/commit/62e422a0dda11d0da4449d7e252f1fca31eccefa))
-
+- Fixed streaming of asynchronous subagent runs to apps that join them ([#7722](https://github.com/langchain-ai/deepagents/pull/7722)).
+- Fixed uploads containing NUL bytes by storing them as base64 in `StoreBackend` ([#7710](https://github.com/langchain-ai/deepagents/pull/7710)).
 
 ### Performance Improvements
 
-* **sdk:** filter editable-install scan to `deepagents` records ([#7752](https://github.com/langchain-ai/deepagents/issues/7752)) ([8771981](https://github.com/langchain-ai/deepagents/commit/877198138d384ffbef0159bcc6d4b39d2461558c))
+- Limited editable-install scans to `deepagents` records ([#7752](https://github.com/langchain-ai/deepagents/pull/7752)).
 
 ## [0.7.38](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.37...deepagents==0.7.38) (2026-11-13)
 

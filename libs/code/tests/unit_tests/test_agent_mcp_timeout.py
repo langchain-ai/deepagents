@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -20,8 +20,11 @@ from deepagents_code.hooks.interrupt import (
 )
 from deepagents_code.hooks.models.domain import (
     HookEvent,
+    PermissionEffect,
     PostToolUseFailureDecision,
     PostToolUseFailureEvent,
+    PreToolUseDecision,
+    PreToolUseEvent,
 )
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 
@@ -126,6 +129,212 @@ async def test_delegated_mcp_call_times_out(
 
     assert cancelled.is_set(), [(m.type, m.content) for m in result["messages"]]
     assert result["messages"][-1].content == "parent recovered"
+
+
+@pytest.mark.parametrize("delegated", [False, True])
+@pytest.mark.parametrize("hook_behavior", ["allow", "deny", "none", "disabled"])
+async def test_headless_production_graph_gates_mcp_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    delegated: bool,
+    hook_behavior: Literal["allow", "deny", "none", "disabled"],
+) -> None:
+    calls: list[str] = []
+
+    @tool
+    def send_message() -> str:
+        """Simulate a mutating MCP call."""
+        calls.append("sent")
+        return "sent"
+
+    send_message.metadata = {
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": "slack",
+        "_deepagents_code_mcp_tool": "send_message",
+    }
+    monkeypatch.setenv("DEEPAGENTS_CODE_FORKED_SUBAGENTS", "0")
+    messages = []
+    if delegated:
+        messages.append(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {
+                            "description": "send message",
+                            "subagent_type": "general-purpose",
+                        },
+                        "id": "delegate",
+                    }
+                ],
+            )
+        )
+    messages.extend(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "send_message", "args": {}, "id": "mcp"}],
+            ),
+            AIMessage(content="finished"),
+        ]
+    )
+    if delegated:
+        messages.append(AIMessage(content="parent finished"))
+    model = _ToolCallingModel(
+        messages=iter(messages),
+        profile={"max_input_tokens": 200000},
+        disable_streaming=True,
+    )
+    graph, _ = create_cli_agent(
+        model,
+        "headless-mcp-test",
+        cwd=tmp_path,
+        tools=[send_message],
+        mcp_tools=[send_message],
+        interactive=False,
+        auto_approve=True,
+        enable_memory=False,
+        enable_skills=False,
+        enable_shell=False,
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "headless-mcp-test"}}
+    context = CLIContextSchema(
+        thread_id="headless-mcp-test",
+        hooks_snapshot_id="snap",
+        hooks_server_events=(
+            [] if hook_behavior == "disabled" else [HookEvent.PRE_TOOL_USE.value]
+        ),
+    )
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="send message")]},
+        config=config,
+        context=context,
+    )
+    while result.get("__interrupt__"):
+        request = parse_hook_interrupt_payload(result["__interrupt__"][0].value)
+        assert request is not None
+        event = request.invocation.event
+        assert isinstance(event, PreToolUseEvent)
+        behavior = (
+            hook_behavior
+            if event.call.id == "mcp" and hook_behavior != "disabled"
+            else "none"
+        )
+        response = HookInvocationResponse(
+            protocol_version=1,
+            invocation_id=request.invocation_id,
+            snapshot_id=request.snapshot_id,
+            decision=PreToolUseDecision(
+                event=HookEvent.PRE_TOOL_USE,
+                permission=PermissionEffect(behavior=behavior),
+            ),
+        )
+        result = await graph.ainvoke(
+            Command(resume=build_hook_resume_value(response)),
+            config=config,
+            context=context,
+        )
+    assert calls == (["sent"] if hook_behavior == "allow" else [])
+    if not delegated:
+        output = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+        assert output.status == ("success" if hook_behavior == "allow" else "error")
+
+
+async def test_headless_hook_allow_is_scoped_to_each_call_and_turn(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    @tool
+    def send_message(value: str) -> str:
+        """Simulate a mutating MCP call."""
+        calls.append(value)
+        return value
+
+    send_message.metadata = {
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": "slack",
+        "_deepagents_code_mcp_tool": "send_message",
+    }
+    model = _ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "send_message",
+                            "args": {"value": "allowed"},
+                            "id": "a",
+                        },
+                        {
+                            "name": "send_message",
+                            "args": {"value": "blocked"},
+                            "id": "b",
+                        },
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "send_message", "args": {"value": "later"}, "id": "a"}
+                    ],
+                ),
+                AIMessage(content="finished"),
+            ]
+        ),
+        profile={"max_input_tokens": 200000},
+        disable_streaming=True,
+    )
+    graph, _ = create_cli_agent(
+        model,
+        "headless-batch-test",
+        cwd=tmp_path,
+        tools=[send_message],
+        mcp_tools=[send_message],
+        interactive=False,
+        auto_approve=True,
+        enable_memory=False,
+        enable_skills=False,
+        enable_shell=False,
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "headless-batch-test"}}
+    context = CLIContextSchema(
+        thread_id="headless-batch-test",
+        hooks_snapshot_id="snap",
+        hooks_server_events=[HookEvent.PRE_TOOL_USE.value],
+    )
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="send messages")]},
+        config=config,
+        context=context,
+    )
+    while result.get("__interrupt__"):
+        request = parse_hook_interrupt_payload(result["__interrupt__"][0].value)
+        assert request is not None
+        event = request.invocation.event
+        assert isinstance(event, PreToolUseEvent)
+        behavior = "allow" if event.call.args.get("value") == "allowed" else "none"
+        response = HookInvocationResponse(
+            protocol_version=1,
+            invocation_id=request.invocation_id,
+            snapshot_id=request.snapshot_id,
+            decision=PreToolUseDecision(
+                event=HookEvent.PRE_TOOL_USE,
+                permission=PermissionEffect(behavior=behavior),
+            ),
+        )
+        result = await graph.ainvoke(
+            Command(resume=build_hook_resume_value(response)),
+            config=config,
+            context=context,
+        )
+    assert calls == ["allowed"]
+    outputs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert [m.status for m in outputs] == ["success", "error", "error"]
 
 
 async def test_mcp_timeout_triggers_failure_hook(

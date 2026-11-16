@@ -41,6 +41,7 @@ class HandlerResult:
     output: HookWireOutput | None = None
     diagnostics: tuple[HookDiagnostic, ...] = ()
     plain_output: str | None = None
+    deny_on_error: bool = False
 
 
 async def run_command_handler(

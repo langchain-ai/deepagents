@@ -4585,7 +4585,14 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
         self._tool_names = frozenset(tool_names)
 
     def _rejection(self, request: ToolCallRequest) -> ToolMessage | None:
+        from deepagents_code.hooks.server_middleware import hook_permission_behavior
+
         if request.tool_call["name"] not in self._tool_names:
+            return None
+        if (
+            hook_permission_behavior(request.state, _tool_call_id(request.tool_call))
+            == "allow"
+        ):
             return None
         return ToolMessage(
             content=(

@@ -103,6 +103,7 @@ def reduce_hook_results(
     plain_output_policy = get_event_spec(invocation.event.event).plain_output_policy
     for result in results:
         state.diagnostics.extend(result.diagnostics)
+        diagnostic_start = len(state.diagnostics)
         if result.plain_output is not None:
             if plain_output_policy is PlainOutputPolicy.CONTEXT:
                 state.context.append(result.plain_output)
@@ -117,6 +118,19 @@ def reduce_hook_results(
                 )
         if result.output is not None:
             _merge_output(invocation, state, result.handler_id, result.output)
+        errors = (*result.diagnostics, *state.diagnostics[diagnostic_start:])
+        if (
+            result.deny_on_error
+            and invocation.event.event is HookEvent.PRE_TOOL_USE
+            and errors
+        ):
+            _merge_permission(
+                state,
+                PermissionEffect(
+                    behavior="deny",
+                    reason=f"Hook {result.handler_id} failed: {errors[0].message}",
+                ),
+            )
     return _decision(invocation, state)
 
 

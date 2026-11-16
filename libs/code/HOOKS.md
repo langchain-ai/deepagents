@@ -44,7 +44,7 @@ For example, use `"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/format.sh\""`. Set
 
 Each top-level key under `"hooks"` is an event name. Values are lists of matcher groups. A group may omit `matcher` (or use `"*"`) to match all values for that event's matcher field. Events with no matcher field reject non-wildcard matchers at load time.
 
-Native tools are matched by their wire names (for example `execute` → `Bash`, `write_file` → `Write`).
+Native tools are matched by their wire names (for example `execute` → `Bash`, `write_file` → `Write`). MCP `PreToolUse` and post-tool hooks use `mcp__<server>__<original-tool-name>`, including when the model-facing name is shortened. `PermissionRequest` hooks still see the model-facing MCP name.
 
 | Event | Owner | Matcher field | Fires when |
 | --- | --- | --- | --- |
@@ -79,6 +79,7 @@ Each matcher group has a `hooks` list of command handlers:
 - `argv` is optional; when set, the handler is executed directly from that argument list instead of through a shell.
 - `timeout` is optional seconds; when omitted, the event default applies (600s for most events, 30s for `UserPromptSubmit`).
 - `statusMessage` is optional UI status text while the handler runs.
+- `onError: "deny"` opts a matched `PreToolUse` handler into denying the call when it fails, times out, emits invalid output, or produces a protocol diagnostic. The default is `"continue"`; this option has no effect on other events. Empty output is valid and expresses no decision. This does not cover invalid or unloaded configuration, unmatched handlers, or malformed transport resumes. Configure it only on trusted handlers. Older dcode versions ignore this option and will not deny on errors, so upgrade before relying on it.
 - `async: true` is rejected; async command hooks are not supported.
 
 ## Examples
@@ -133,6 +134,8 @@ Handlers communicate through:
 - **JSON stdout** (`HookWireOutput`): may set `continue` / `stopReason`, `systemMessage` (user-visible notice), `additionalContext` via `hookSpecificOutput`, and event-specific fields such as `permissionDecision` on `PreToolUse`.
 - **Non-JSON stdout**: becomes additional context for events whose plain-output policy is context (`SessionStart`, `UserPromptSubmit`); otherwise it is a diagnostic.
 - **Timeouts**: when a handler exceeds its timeout, it is terminated and recorded as a timeout diagnostic; it does not apply a successful decision.
+
+A `PreToolUse` handler with `onError: "deny"` denies on those failures rather than continuing. In headless mode, an explicit `PreToolUse` `allow` also permits that call through the MCP approval guard; absent an allow, mutating or unannotated MCP tools remain blocked. Hook `deny` takes precedence over `allow`. Other restrictions, including shell allow lists, still apply.
 
 ## Legacy configuration
 

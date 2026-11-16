@@ -81,7 +81,7 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.models.transport import HookInvocationRequest
 from deepagents_code.hooks.reducer import reduce_hook_results
-from deepagents_code.hooks.tools import to_wire_tool_name
+from deepagents_code.hooks.tools import to_wire_call
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -335,12 +335,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         self._cwd = cwd
         self._default_deadline = default_deadline
         self._emit_stop = emit_stop
-        self._mcp_servers = {
-            name: server
-            for tool in mcp_tools
-            if (name := getattr(tool, "name", None))
-            and isinstance(name, str)
-            and (server := _mcp_server_from_tool(tool)) is not None
+        self._mcp_tools = {
+            tool.name: tool for tool in mcp_tools if _mcp_server_from_tool(tool)
         }
 
     @override
@@ -565,7 +561,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         for tool_call in ai_message.tool_calls:
             call = _tool_call_data_from_call(
                 tool_call,
-                mcp_server=self._mcp_servers.get(str(tool_call.get("name") or "")),
+                tool=self._mcp_tools.get(str(tool_call.get("name") or "")),
             )
             duration_ms = pending.get(call.id)
             result = results.get(call.id)
@@ -617,7 +613,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         for index, tool_call in enumerate(message.tool_calls):
             call = _tool_call_data_from_call(
                 tool_call,
-                mcp_server=self._mcp_servers.get(str(tool_call.get("name") or "")),
+                tool=self._mcp_tools.get(str(tool_call.get("name") or "")),
             )
             behavior: PreToolBehavior = "none"
             reason: str | None = None
@@ -1187,16 +1183,13 @@ def _config_thread_id(config: Mapping[str, Any] | None) -> str | None:
 
 
 def _tool_call_data(request: ToolCallRequest) -> ToolCallData:
-    return _tool_call_data_from_call(
-        request.tool_call,
-        mcp_server=_mcp_server_from_tool(request.tool),
-    )
+    return _tool_call_data_from_call(request.tool_call, tool=request.tool)
 
 
 def _tool_call_data_from_call(
     tool_call: Mapping[str, object],
     *,
-    mcp_server: str | None,
+    tool: object | None,
 ) -> ToolCallData:
     raw_args = tool_call.get("args")
     args: dict[str, Any]
@@ -1208,8 +1201,17 @@ def _tool_call_data_from_call(
         id=str(tool_call.get("id") or ""),
         name=str(tool_call.get("name") or ""),
         args=cast("JsonObject", args),
-        mcp_server=mcp_server,
+        mcp_server=_mcp_server_from_tool(tool),
+        mcp_tool=_mcp_original_tool_name(tool),
     )
+
+
+def _mcp_original_tool_name(tool: object | None) -> str | None:
+    metadata = getattr(tool, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    value = metadata.get("_deepagents_code_mcp_tool")
+    return value if isinstance(value, str) and value else None
 
 
 def _mcp_server_from_tool(tool: object | None) -> str | None:
@@ -1218,7 +1220,12 @@ def _mcp_server_from_tool(tool: object | None) -> str | None:
     metadata = getattr(tool, "metadata", None)
     if not isinstance(metadata, Mapping):
         return None
-    for key in ("mcp_server", "mcp_server_name", "server_name"):
+    for key in (
+        "_deepagents_code_mcp_server",
+        "mcp_server",
+        "mcp_server_name",
+        "server_name",
+    ):
         value = metadata.get(key)
         if isinstance(value, str) and value:
             return value
@@ -1230,7 +1237,7 @@ def _denied_tool_message(
     permission: PermissionEffect,
 ) -> ToolMessage:
     reason = permission.reason or "Blocked by PreToolUse hook"
-    wire_name = to_wire_tool_name(call.name, mcp_server=call.mcp_server)
+    wire_name, _ = to_wire_call(call)
     return ToolMessage(
         content=f"{wire_name} blocked by hook: {reason}",
         name=call.name,

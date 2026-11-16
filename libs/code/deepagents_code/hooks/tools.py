@@ -96,16 +96,20 @@ def to_wire_tool_name(
     name: str,
     *,
     mcp_server: str | None = None,
+    mcp_tool: str | None = None,
 ) -> str:
     """Map a native tool name to the compatible wire tool name.
 
     Args:
         name: Native dcode or already-compatible tool name.
         mcp_server: Owning MCP server when known from tool metadata.
+        mcp_tool: Original MCP tool name when known from tool metadata.
 
     Returns:
         The Claude-compatible tool name used for matchers and wire payloads.
     """
+    if mcp_server is not None and mcp_tool is not None:
+        return format_mcp_wire_name(mcp_server, mcp_tool)
     if _MCP_WIRE_RE.fullmatch(name) is not None:
         return name
     if mcp_server is not None:
@@ -141,7 +145,9 @@ def to_wire_call(
     Returns:
         `(tool_name, tool_input)` for matchers and wire projection.
     """
-    name = to_wire_tool_name(call.name, mcp_server=call.mcp_server)
+    name = to_wire_tool_name(
+        call.name, mcp_server=call.mcp_server, mcp_tool=call.mcp_tool
+    )
     if call.mcp_server is not None or _MCP_WIRE_RE.fullmatch(call.name) is not None:
         return name, dict(call.args)
     return name, to_wire_tool_input(call.name, call.args)

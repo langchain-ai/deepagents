@@ -3296,20 +3296,22 @@ class TestWindowsToolPathMiddleware:
         self, tool: str, arg: str, drive_path: str
     ) -> None:
         """A path copied from `glob` output must not fail `validate_path`."""
+        from langchain_core.messages import ToolMessage
+
         from deepagents_code.agent import WindowsToolPathMiddleware
 
         seen: list[str] = []
 
-        def handler(request: ToolCallRequest) -> str:
+        def handler(request: ToolCallRequest) -> ToolMessage:
             path = request.tool_call["args"][arg]
             seen.append(validate_path(path))
-            return "ok"
+            return ToolMessage("ok", tool_call_id=request.tool_call["id"])
 
         result = WindowsToolPathMiddleware().wrap_tool_call(
             _tool_request(tool, {arg: drive_path, "other": 1}), handler
         )
 
-        assert result == "ok"
+        assert isinstance(result, ToolMessage)
         assert seen == ["//?/C:/Users/me/project/greet.bat"]
 
     async def test_async_rewrites_drive_paths(self) -> None:
@@ -3323,6 +3325,7 @@ class TestWindowsToolPathMiddleware:
             _tool_request("read_file", {"file_path": r"D:\data\notes.md"}), handler
         )
 
+        assert handler.await_args is not None
         request = handler.await_args.args[0]
         assert request.tool_call["args"] == {"file_path": "//?/D:/data/notes.md"}
 

@@ -2,6 +2,18 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.9](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.8...deepagents-code==0.2.9) (2026-11-16)
+
+
+### Features
+
+* **code:** refresh stable model recommendations ([#7734](https://github.com/langchain-ai/deepagents/issues/7734)) ([f7ea946](https://github.com/langchain-ai/deepagents/commit/f7ea946df33f3a18ab6b5ad1e85eee0375aaad77))
+
+
+### Performance Improvements
+
+* **code:** filter editable-SDK scan to `deepagents` records ([#7756](https://github.com/langchain-ai/deepagents/issues/7756)) ([27f9b48](https://github.com/langchain-ai/deepagents/commit/27f9b48ea6a4c5d023e9ca9a1b85f95d5f4221ca))
+
 ## [0.2.8](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.7...deepagents-code==0.2.8) (2026-11-13)
 
 ### Features

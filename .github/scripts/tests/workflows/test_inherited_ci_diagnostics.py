@@ -223,9 +223,12 @@ def test_detection_and_gate_preserve_parent_result(
             "NEEDS": json.dumps(needs),
             "SELECTION": json.dumps(
                 {
-                    job.removeprefix("lint-"): "false"
-                    for job in workflow["jobs"]
-                    if job.startswith("lint-")
+                    **{
+                        job.removeprefix("lint-"): "false"
+                        for job in workflow["jobs"]
+                        if job.startswith("lint-")
+                    },
+                    "talon-src": "false",
                 }
             ),
         },

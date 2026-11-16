@@ -98,6 +98,7 @@ jobs:
       deepagents: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.deepagents == 'true' }}
       code: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.code == 'true' }}
       talon: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.talon == 'true' }}
+      talon-src: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.talon-src == 'true' }}
       evals: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.evals == 'true' }}
       acp: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.acp == 'true' }}
       daytona: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.daytona == 'true' }}
@@ -219,6 +220,8 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            talon-src:
+              - 'libs/talon/**'
             evals:
               - 'libs/evals/**'
               - 'libs/deepagents/**'
@@ -620,6 +623,106 @@ jobs:
       - name: "🔍 Check workflow helper scripts"
         run: python -m pytest .github/scripts/tests -v
 
+  talon-failure-advisory:
+    name: "⚠️ talon failure advisory"
+    needs: [changes, lint-talon, test-talon]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.curated-apply-only != 'true' &&
+      needs.changes.outputs.talon-src == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      pull-requests: write
+    concurrency:
+      group: talon-ci-advisory-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: "Post, update, or delete the talon advisory comment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number;
+            if (!prNumber) {
+              core.warning('No PR number in payload; skipping talon advisory comment.');
+              return;
+            }
+            const STICKY_MARKER = '<!-- talon-ci-advisory -->';
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: prNumber, per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            const jobNames = ['lint-talon', 'test-talon'];
+            const jobResults = {
+              'lint-talon': '${{ needs.lint-talon.result }}',
+              'test-talon': '${{ needs.test-talon.result }}',
+            };
+            const failed = jobNames.filter(j => jobResults[j] === 'failure');
+
+            async function removeSticky() {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    owner, repo, comment_id: existing.id,
+                  });
+                  console.log('talon jobs green (or not run) — deleted advisory comment');
+                }
+              } catch (e) {
+                core.warning(`Could not clean up talon advisory comment for PR #${prNumber}: ${e.message}`);
+              }
+            }
+
+            if (failed.length === 0) {
+              await removeSticky();
+              return;
+            }
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              STICKY_MARKER,
+              '⚠️ **talon CI failure(s) were waived for this PR.**',
+              '',
+              `Failed job(s): ${failed.map(j => `\`${j}\``).join(', ')} ([workflow run](${runUrl}))`,
+              '',
+              "**Why:** this PR doesn't touch `libs/talon`, so talon failures are advisory during PR feedback to keep each fix scoped to one package. talon editable-installs `deepagents-code`, so its CI runs on every libs/code PR and can be broken by libs/code changes.",
+              '',
+              '**Required follow-up:** fix the breakage in a separate `fix(talon): ...` PR. Talon remains red at HEAD; merge-queue and main checks are strict, so the scoped fixes must be coordinated before the queue can pass.',
+            ].join('\n');
+
+            try {
+              const existing = await findStickyComment();
+              if (existing) {
+                if (existing.body !== body) {
+                  await github.rest.issues.updateComment({
+                    owner, repo, comment_id: existing.id, body,
+                  });
+                  console.log('Updated talon advisory comment');
+                } else {
+                  console.log('talon advisory comment already up to date');
+                }
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber, body,
+                });
+                console.log('Posted talon advisory comment');
+              }
+            } catch (commentErr) {
+              core.warning(`Could not post talon advisory comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+              await core.summary
+                .addHeading('talon CI failure(s) waived; advisory comment could not be posted')
+                .addRaw('Paste the following into the PR as a comment:')
+                .addCodeBlock(body, 'markdown')
+                .write();
+            }
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -760,6 +863,10 @@ jobs:
           event = os.environ["EVENT_NAME"]
           selection = json.loads(os.environ["SELECTION"])
           packages = "deepagents code talon evals acp daytona modal runloop vercel quickjs".split()
+          talon_changed = selection.get("talon-src")
+          if talon_changed not in {"true", "false"}:
+              sys.exit(f"Invalid selection: talon-src={talon_changed!r}")
+          waive_talon = event == "pull_request" and talon_changed == "false"
           expected = {"changes", "check-lockfiles", "check-release-options"}
           inherited = event == "pull_request" and os.environ["CURATED_APPLY_ONLY"] == "true"
           allowed_skips = set()
@@ -789,7 +896,10 @@ jobs:
                   sys.exit(f"Unknown job result: {job}={result!r}")
               if result == "skipped" and job not in allowed_skips:
                   sys.exit(f"Required job did not run: {job}")
+              if result == "failure" and waive_talon and job in {"lint-talon", "test-talon"}:
+                  print(f"::warning::Waiving {job}=failure under the single-package PR policy. Fix Talon in a separate fix(talon): ... PR; merge-queue and main checks remain strict.")
+                  continue
               if result not in {"success", "skipped"}:
                   sys.exit(f"Job did not pass: {job}={result}")
-          print("All required checks passed; only explicitly unselected checks may be skipped.")
+          print("All required checks passed or were explicitly waived under the single-package PR policy; only explicitly unselected checks may be skipped.")
           PYTHON

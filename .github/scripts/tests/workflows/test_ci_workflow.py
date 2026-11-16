@@ -223,9 +223,12 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
             ),
             "SELECTION": json.dumps(
                 {
-                    name.removeprefix("lint-"): "true"
-                    for name in workflow["jobs"]
-                    if name.startswith("lint-")
+                    **{
+                        name.removeprefix("lint-"): "true"
+                        for name in workflow["jobs"]
+                        if name.startswith("lint-")
+                    },
+                    "talon-src": "true",
                 }
             ),
         },
@@ -256,6 +259,7 @@ def test_full_suite_does_not_depend_on_path_selection(event: str) -> None:
 
 
 @pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
+@pytest.mark.parametrize("talon_changed", ["true", "false"])
 @pytest.mark.parametrize(
     ("job", "result", "selected", "curated", "passes"),
     [
@@ -266,8 +270,13 @@ def test_full_suite_does_not_depend_on_path_selection(event: str) -> None:
         ("test-code", None, "true", "false", False),
         ("test-code", "failure", "true", "false", False),
         ("test-code", "cancelled", "true", "false", False),
-        ("test-talon", "failure", "false", "false", False),
-        ("lint-talon", "failure", "false", "false", False),
+        ("test-talon", "failure", "true", "false", False),
+        ("lint-talon", "failure", "true", "false", False),
+        ("test-talon", "cancelled", "true", "false", False),
+        ("lint-talon", "cancelled", "true", "false", False),
+        ("test-talon", "skipped", "true", "false", False),
+        ("lint-talon", None, "true", "false", False),
+        ("test-talon", "unknown", "true", "false", False),
         ("test-code", "failure", "true", "true", False),
         ("test-code", "success", "false", "false", True),
         ("test-code", "skipped", "false", "false", True),
@@ -277,6 +286,7 @@ def test_full_suite_does_not_depend_on_path_selection(event: str) -> None:
 def test_ci_gate_requires_selected_checks(
     tmp_path: Path,
     event: str,
+    talon_changed: str,
     job: str,
     result: str | None,
     selected: str,
@@ -306,9 +316,12 @@ def test_ci_gate_requires_selected_checks(
             "NEEDS": json.dumps(needs),
             "SELECTION": json.dumps(
                 {
-                    name.removeprefix("lint-"): selected
-                    for name in workflow["jobs"]
-                    if name.startswith("lint-")
+                    **{
+                        name.removeprefix("lint-"): selected
+                        for name in workflow["jobs"]
+                        if name.startswith("lint-")
+                    },
+                    "talon-src": talon_changed,
                 }
             ),
         },
@@ -317,8 +330,127 @@ def test_ci_gate_requires_selected_checks(
         check=False,
         timeout=10,
     )
-    expected = passes and not (result == "skipped" and event != "pull_request")
+    waived = (
+        event == "pull_request"
+        and talon_changed == "false"
+        and job in {"lint-talon", "test-talon"}
+        and result == "failure"
+    )
+    expected = waived or (
+        passes and not (result == "skipped" and event != "pull_request")
+    )
     assert (completed.returncode == 0) == expected, completed.stdout + completed.stderr
+    assert ("::warning::Waiving" in completed.stdout) == waived
+
+
+@pytest.mark.parametrize("talon_changed", [None, "", "invalid"])
+def test_ci_gate_rejects_unknown_talon_scope(
+    tmp_path: Path, talon_changed: str | None
+) -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    selection = {
+        name.removeprefix("lint-"): "true"
+        for name in workflow["jobs"]
+        if name.startswith("lint-")
+    }
+    if talon_changed is not None:
+        selection["talon-src"] = talon_changed
+    needs = {
+        name: {"result": "success"} for name in workflow["jobs"]["ci_success"]["needs"]
+    }
+    needs["test-talon"]["result"] = "failure"
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EVENT_NAME": "pull_request",
+            "CHANGES_RESULT": "success",
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "CURATED_APPLY_ONLY": "false",
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(selection),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert completed.returncode == 1
+    assert "Invalid selection: talon-src=" in completed.stderr
+    assert "::warning::Waiving" not in completed.stdout
+
+
+@pytest.mark.parametrize("case", ["create", "update", "delete", "denied"])
+def test_talon_advisory_keeps_waived_failures_visible(case: str) -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    job = workflow["jobs"]["talon-failure-advisory"]
+    assert job["permissions"] == {"pull-requests": "write"}
+    assert "write" not in workflow["permissions"].values()
+    assert "talon-failure-advisory" not in workflow["jobs"]["ci_success"]["needs"]
+    assert "github.event_name == 'pull_request'" in job["if"]
+    assert "needs.changes.outputs.talon-src == 'false'" in job["if"]
+    outputs = workflow["jobs"]["changes"]["outputs"]
+    assert "steps.filter.outputs.talon-src == 'true'" in outputs["talon-src"]
+    filters = yaml.safe_load(
+        _find_step(workflow, job="changes", name="🔍 Check for changes")["with"][
+            "filters"
+        ]
+    )
+    assert filters["talon-src"] == ["libs/talon/**"]
+    script = job["steps"][0]["with"]["script"]
+    for name in ("lint-talon", "test-talon"):
+        script = script.replace(
+            "${{ needs." + name + ".result }}",
+            "success" if case == "delete" else "failure",
+        )
+    harness = """
+const result = {calls: [], warning: [], summary: ''};
+const context = {repo: {owner: 'langchain-ai', repo: 'deepagents'},
+  payload: {pull_request: {number: 123}}, serverUrl: 'https://github.com', runId: 456};
+const core = {warning: message => result.warning.push(message), summary: {
+  addHeading(text) { result.summary += text; return this; },
+  addRaw(text) { result.summary += text; return this; },
+  addCodeBlock(text) { result.summary += text; return this; }, async write() {},
+}};
+const github = {rest: {issues: {listComments: 'listComments'}},
+  async paginate() {
+    if (process.argv[1] === 'denied') throw new Error('permission denied');
+    return process.argv[1] === 'create' ? [] :
+      [{id: 789, body: '<!-- talon-ci-advisory -->old advisory'}];
+  },
+};
+for (const method of ['createComment', 'updateComment', 'deleteComment']) {
+  github.rest.issues[method] = async params => result.calls.push({method, ...params});
+}
+console.log = () => {};
+(async () => { SCRIPT })().then(() => process.stdout.write(JSON.stringify(result)));
+""".replace("SCRIPT", script)
+    completed = subprocess.run(
+        ["node", "-e", harness, case],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    result = json.loads(completed.stdout)
+    if case == "denied":
+        assert not result["calls"]
+        assert result["warning"]
+        message = result["summary"]
+    else:
+        assert len(result["calls"]) == 1
+        assert result["calls"][0]["method"] == case + "Comment"
+        if case == "delete":
+            return
+        message = result["calls"][0]["body"]
+    assert "lint-talon" in message and "test-talon" in message
+    assert "failure(s) were waived" in message
+    assert "fix(talon):" in message
+    assert "merge-queue and main checks are strict" in message
+    assert "https://github.com/langchain-ai/deepagents/actions/runs/456" in message
 
 
 def test_lockfile_workflow_checks_every_package() -> None:

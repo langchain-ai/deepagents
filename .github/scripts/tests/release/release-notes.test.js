@@ -960,7 +960,7 @@ test('prepare apply requires a new scoped draft when main changed the package', 
       stateFile: path.join(workspace.root, 'state.json'),
       ...BOT_AUTH,
     }),
-    /main has new libs\/code changes since this draft; run @release-bot draft before apply/,
+    /libs\/code may have changed on main since this draft, or the changes could not be verified; run @release-bot draft before apply/,
   );
 });
 
@@ -1961,6 +1961,7 @@ test('postApplyFailure posts once per head and requires the configured bot', asy
   assert.equal(run.calls.createComment.length, 1);
   assert.match(run.calls.createComment[0].body, /Applying curated release notes failed/);
   assert.match(run.calls.createComment[0].body, /boom/);
+  assert.match(run.calls.createComment[0].body, /Resolve the issue above, then run `@release-bot apply` again/);
   // Dedup: a second failure for the same head does not add another comment.
   await releaseNotes.postApplyFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH, message: 'boom again' });
   assert.equal(run.calls.createComment.length, 1);
@@ -1971,6 +1972,30 @@ test('postApplyFailure posts once per head and requires the configured bot', asy
     /GitHub App bot is someone-else \(7\)/,
   );
   assert.equal(wrong.calls.createComment.length, 0);
+});
+
+test('postApplyFailure explains how to refresh and apply a stale draft', async () => {
+  const run = makeGithub({ comments: [] });
+  await releaseNotes.postApplyFailure({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH,
+    message: 'libs/code may have changed on main since this draft, or the changes could not be verified; run @release-bot draft before apply',
+  });
+  const body = run.calls.createComment[0].body;
+  assert.match(body, /release PR refresh and lockfile updates finish/);
+  assert.match(body, /run `@release-bot draft`\. Review the regenerated notes, then run `@release-bot apply`/);
+  assert.match(body, /Details: libs\/code may have changed on main since this draft, or the changes could not be verified/);
+  assert.doesNotMatch(body, /run @release-bot draft before apply/);
+});
+
+test('postApplyFailure gives re-draft guidance when package comparison fails', async () => {
+  const run = makeGithub({ comments: [] });
+  await releaseNotes.postApplyFailure({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH,
+    message: 'Could not compare main revisions to scope libs/code changes; run @release-bot draft',
+  });
+  const body = run.calls.createComment[0].body;
+  assert.match(body, /Could not compare main revisions to scope libs\/code changes/);
+  assert.match(body, /run `@release-bot draft`\. Review the regenerated notes, then run `@release-bot apply`/);
 });
 
 test('postDraftFailure posts rerun guidance once per head', async () => {

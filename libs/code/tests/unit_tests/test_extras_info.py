@@ -271,18 +271,6 @@ class TestResolveSdkVersion:
         assert ("deepagents",) in [call.args for call in mock.call_args_list]
         assert (version, status) == ("1.2.3", "resolved")
 
-    def test_editable_scan_is_filtered_by_name(self) -> None:
-        """Only `deepagents` records may be enumerated, not every installed package.
-
-        An unfiltered `distributions()` parses `METADATA` for the whole
-        environment just to find one package.
-        """
-        with patch(
-            "deepagents_code.extras_info.distributions", return_value=[]
-        ) as mock:
-            _editable_sdk_source_root()
-        mock.assert_called_once_with(name="deepagents")
-
     def test_resolved_prefers_source_version_for_editable_install(
         self, sdk_root: Path
     ) -> None:

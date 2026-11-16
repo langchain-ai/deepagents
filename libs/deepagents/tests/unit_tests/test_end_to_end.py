@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import io
 import json
 import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -5587,6 +5588,40 @@ def test_file_reference_reaches_model_unchanged(file_block: dict[str, str]) -> N
 
     human_message = next(message for message in model.captured_messages[0] if isinstance(message, HumanMessage))
     assert human_message.content_blocks[0] == file_block
+
+
+def _encoded_image(size: tuple[int, int], image_format: str) -> str:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    buffer = io.BytesIO()
+    image_module.new("RGB", size).save(buffer, format=image_format)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+@pytest.mark.parametrize(
+    ("file_path", "image_format", "size"),
+    [("/wide.png", "PNG", (3024, 1720)), ("/tall.jpg", "JPEG", (1720, 3024)), ("/photo.webp", "WEBP", (4000, 4000))],
+)
+def test_oversized_image_read_is_downscaled(file_path: str, image_format: str, size: tuple[int, int]) -> None:
+    """Anthropic rejects images over 2000px once a request carries more than 20 of them."""
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    model = FixedGenericFakeChatModel(messages=iter([]))
+    _read_file_agent(model=model, file_path=file_path, file_content=_encoded_image(size, image_format))
+
+    block = _second_call_tool_message(model).content_blocks[0]
+    assert block["type"] == "image"
+    with image_module.open(io.BytesIO(base64.b64decode(block["base64"]))) as image:
+        assert image.format == image_format
+        assert max(image.size) == 2000
+        assert image.width / image.height == pytest.approx(size[0] / size[1], rel=0.01)
+
+
+def test_image_within_limit_reaches_model_unchanged() -> None:
+    content = _encoded_image((2000, 1000), "PNG")
+    model = FixedGenericFakeChatModel(messages=iter([]))
+    _read_file_agent(model=model, file_path="/small.png", file_content=content)
+
+    block = _second_call_tool_message(model).content_blocks[0]
+    assert block["base64"] == content
 
 
 def test_utf8_text_read_reaches_model_as_text() -> None:

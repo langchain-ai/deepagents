@@ -709,11 +709,29 @@ jobs:
             const normalize = require('./.github/scripts/release/normalize-release-labels.js');
             await normalize(github, context.repo.owner, context.repo.repo);
 
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        id: release
+      # Runs release-please from a pinned, patched npm package instead of
+      # googleapis/release-please-action. See .github/release-please/README.md.
+      - name: "📦 Setup pnpm"
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          package_json_file: .github/release-please/package.json
+
+      - name: "🟢 Setup Node"
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: "24"
+
+      # pnpm applies `patchedDependencies` from pnpm-workspace.yaml during
+      # install and fails if a patch no longer applies. `--ignore-scripts`
+      # keeps dependency install scripts out of a job with a write token.
+      - name: Install release-please
+        run: pnpm install --dir .github/release-please --frozen-lockfile --ignore-scripts
+
+      - name: Run release-please
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/release-please/run.mjs
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the

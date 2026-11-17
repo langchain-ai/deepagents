@@ -12,8 +12,11 @@
 import { appendFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 
 import { GitHub, Manifest, VERSION } from 'release-please';
+
+import { fetchOverrideBodies, gitMergeCommits } from './history.mjs';
 
 const require = createRequire(import.meta.url);
 const { CommitExclude } = require('release-please/build/src/util/commit-exclude');
@@ -56,12 +59,33 @@ async function main() {
   if (!owner || !repo) throw new Error(`GITHUB_REPOSITORY must be owner/repo, got ${JSON.stringify(repository)}`);
 
   const github = await GitHub.create({ owner, repo, token });
+  const targetBranch = github.repository.defaultBranch;
+
+  // Walk history from a local clone instead of release-please's GraphQL
+  // iterator: 10 commits per request makes the walk most of the run, it fails
+  // on GitHub timeouts, and its 500-commit cap hides commits of packages that
+  // haven't released in longer than that. Fetch first so the walk starts at the
+  // same branch tip the API reads.
+  const ref = `refs/remotes/origin/${targetBranch}`;
+  execFileSync('git', ['fetch', '--quiet', '--filter=blob:none', 'origin', `+refs/heads/${targetBranch}:${ref}`],
+    { stdio: 'inherit' });
+  const overrideBodies = await fetchOverrideBodies({ owner, repo, token });
+  console.log(`Found ${overrideBodies.size} merged PRs with BEGIN_COMMIT_OVERRIDE`);
+  github.mergeCommitIterator = (branch, options = {}) => {
+    if (branch !== targetBranch) throw new Error(`Unexpected commit walk on ${branch}`);
+    return gitMergeCommits(ref, { targetBranch: branch, overrideBodies, maxResults: options.maxResults });
+  };
+
   const manifest = await Manifest.fromManifest(
     github,
     github.repository.defaultBranch,
     CONFIG_FILE,
     MANIFEST_FILE,
   );
+  // The default cap (500) is a cost guard for the GraphQL walk. Locally the
+  // walk is cheap, and release-please stops once it reaches every package's
+  // last release commit.
+  manifest.commitSearchDepth = Number.MAX_SAFE_INTEGER;
 
   // The action also runs `createReleases()` first. It is a no-op here:
   // `skip-github-release` is set for every package, so each strategy returns no

@@ -743,6 +743,22 @@ When a `feat`/`fix` (etc.) also edits non-lockfile files under other managed pac
 
 `release_please_scope_check.yml` blocks bump-worthy multi-component real-file PRs the same way it blocks lockfile-only fan-out (same sticky / `ci:allow-lockfile-release` bypass). `pr_scope_file_check.yml` sticky copy also states this release-please consequence when title scope and package dirs disagree. See also [Lockfile churn fan-out](#lockfile-churn-fan-out).
 
+### Dependency bump in a package with path dependents
+
+Some packages are resolved from a local path by others (e.g. `libs/code`, `libs/evals`, and `libs/talon` resolve `langchain-quickjs` via `[tool.uv.sources]`). Changing that package's dependencies makes the dependents' `uv.lock` files stale, so `🔒 Check Lockfiles` requires relocking them in the same PR. A bump-worthy title then fans out to every dependent.
+
+When the change needs to release (e.g. `feat(quickjs)!: upgrade to quickjs-rs 0.3.0`), use one PR with exactly two commits and merge it with **Create a merge commit**, not squash:
+
+1. `feat(quickjs)!: ...`, touching only the package's own files.
+2. `chore(deps): ...`, with the dependents' relocks and any bound changes they need.
+
+release-please reads each commit on `main` and scopes it by that commit's own files, so only the package is released, and `main` stays green. The title-based fan-out and scope checks will flag the PR. Neither is required.
+
+> [!WARNING]
+> The merge commit's body is the PR title. release-please skips the `Merge pull request ...` header, but a conventional PR title **without** `!` is split out of the body and parsed as its own commit, attributed to every file in the PR. Keep the `!` title, or clear the body in the merge dialog.
+
+Example: [#7777](https://github.com/langchain-ai/deepagents/pull/7777).
+
 ### Releasing a new line ahead of its dependents
 
 Local development installs sibling packages as editable path dependencies via `[tool.uv.sources]`, which hides whether published dependency ranges would resolve for real users installing from PyPI. The `📦 Check Release Dependencies` workflow closes that gap on `release(...)` PRs: it strips local sources and runs `uv pip compile --no-sources --universal --prerelease allow --all-extras` against PyPI for each changed release manifest, failing when the public install graph is unsatisfiable.

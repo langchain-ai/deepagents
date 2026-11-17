@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, Literal
 
@@ -468,7 +469,9 @@ async def test_live_bindings_change_before_first_and_subsequent_eval(
     async def evaluate(code):
         if invoke_mode == "ainvoke":
             return await middleware.tools[0].ainvoke({"code": code, "runtime": runtime})
-        return middleware.tools[0].invoke({"code": code, "runtime": runtime})
+        return await asyncio.to_thread(
+            middleware.tools[0].invoke, {"code": code, "runtime": runtime}
+        )
 
     try:
         original = prepare([lookup])

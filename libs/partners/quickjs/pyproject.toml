@@ -102,6 +102,7 @@ addopts = "--strict-markers --strict-config --durations=5"
 testpaths = ["tests"]
 markers = [
     "requires: mark tests as requiring a specific library",
+    "worker_only: checks worker threads; skipped under inline execution",
     "compile: mark placeholder test used to compile integration tests without running them",
     "scheduled: mark tests to run in scheduled testing",
     "benchmark: mark benchmark tests",

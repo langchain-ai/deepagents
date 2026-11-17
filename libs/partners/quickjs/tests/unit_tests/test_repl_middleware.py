@@ -659,6 +659,7 @@ def test_clear_exception_references_removes_traceback_links() -> None:
     assert caught.__cause__ is None
 
 
+@pytest.mark.worker_only
 def test_per_thread_slot_has_own_worker_and_runtime() -> None:
     """Each thread_id gets its own ThreadWorker and Runtime — not shared."""
     reg = _Registry(
@@ -789,7 +790,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
         state = _new_slot_state(mw)
         slot_id = state["_quickjs_slot_id"]
         repl = mw._registry.get(slot_id)
-        repl.eval_sync("globalThis.counter = 10")
+        await repl.eval_async("globalThis.counter = 10")
         assert slot_id in mw._registry._slots
         update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
@@ -1688,13 +1689,15 @@ async def test_unbounded_timeout_outlives_a_short_deadline(
     bounded = CodeInterpreterMiddleware(timeout=0.1, subagents=False)
     unbounded = CodeInterpreterMiddleware(timeout=timeout, subagents=False)
     try:
-        outcome = bounded._registry.get("t").eval_sync(_SPIN_300_MS)
+        repl = bounded._registry.get("t")
+        outcome = await asyncio.to_thread(repl.eval_sync, _SPIN_300_MS)
         assert outcome.error_type == "Timeout"
         repl = unbounded._registry.get("t")
-        assert repl.eval_sync(_SPIN_300_MS).result == "42"
+        assert (await asyncio.to_thread(repl.eval_sync, _SPIN_300_MS)).result == "42"
         assert (await repl.eval_async(_SPIN_300_MS)).result == "42"
         unbounded._registry.reset_repl("t")
-        assert unbounded._registry.get("t").eval_sync(_SPIN_300_MS).result == "42"
+        repl = unbounded._registry.get("t")
+        assert (await asyncio.to_thread(repl.eval_sync, _SPIN_300_MS)).result == "42"
     finally:
         await bounded._registry.aevict("t")
         await unbounded._registry.aevict("t")

@@ -222,6 +222,11 @@ class CodeInterpreterMiddleware(
 
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.
+
+            Tools with `extras["defer_loading"]` stay callable from code but
+            are left out of the prompt's API reference until tool search
+            finds them. `ProviderToolSearchMiddleware` sets that flag per
+            model call, so list it before this middleware.
         fs: Backend for a Node-style `fs` global in code: `readFile`,
             `writeFile`, `readdir`, `access`, and `rm`, also under
             `fs.promises`. `None` (default) gives code no `fs`. `True` uses
@@ -636,7 +641,12 @@ class CodeInterpreterMiddleware(
                 "with create_deep_agent, or pass the backend as fs."
             )
             raise ValueError(msg)
-        request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
+        # Provider tool specs (e.g. a tool search tool) are dicts; skip them.
+        request_tools = [
+            tool
+            for tool in getattr(request, "tools", []) or []
+            if isinstance(tool, BaseTool)
+        ]
 
         subagent_section = ""
         if self._subagents and find_subagent_task_tool(request_tools) is not None:
@@ -659,8 +669,16 @@ class CodeInterpreterMiddleware(
         slot_id = self._slot_id(getattr(request, "state", {}))
         exposed_tools = tuple(exposed)
         self._ptc_tools_by_slot[slot_id] = exposed_tools
+        deferred = {
+            tool.name
+            for tool in (*request_tools, *exposed_tools)
+            if (tool.extras or {}).get("defer_loading") is True
+        }
         return self._with_fs(
-            prompt + render_ptc_prompt(exposed_tools, tool_name=self._tool_name)
+            prompt
+            + render_ptc_prompt(
+                exposed_tools, tool_name=self._tool_name, deferred=deferred
+            )
         )
 
     def _with_fs(self, prompt: str) -> str:

@@ -6,7 +6,6 @@ the REPL so one `eval` can orchestrate many tool invocations.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Literal
 from unittest.mock import patch
 
@@ -487,24 +486,6 @@ async def test_install_tools_skips_invalid_js_identifier_names(
     outcome = await repl.eval_async('typeof tools["123bad"]')
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "undefined"
-
-
-async def test_tools_namespace_assignment_escapes_malicious_tool_name(
-    repl: _ThreadREPL,
-) -> None:
-    from langchain_quickjs._repl import _render_tools_namespace_assignment
-
-    malicious = 'x"]; globalThis.__ptc_pwned = "yes"; //'
-    quoted = json.dumps(malicious)
-    js = _render_tools_namespace_assignment({malicious: "__console_log"})
-
-    outcome = await repl.eval_async(f"{js}; typeof globalThis.__ptc_pwned")
-    assert outcome.error_type is None, outcome.error_message
-    assert outcome.result == "undefined"
-
-    outcome2 = await repl.eval_async(f"{js}; typeof globalThis.tools[{quoted}]")
-    assert outcome2.error_type is None, outcome2.error_message
-    assert outcome2.result == "function"
 
 
 async def test_resolver_calls_unlisted_tools_with_shared_budget(

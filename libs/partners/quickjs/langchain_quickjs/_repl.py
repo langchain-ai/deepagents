@@ -7,7 +7,6 @@ without constructing an agent or wiring up LangGraph state.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import threading
@@ -343,60 +342,45 @@ def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
     )
 
 
-def _bridge_symbol_name(tool_name: str) -> str:
-    """Build a stable, JS-safe global symbol for one PTC bridge."""
-    # Keep only identifier-safe characters and salt with a short hash to
-    # avoid collisions when different source names sanitize similarly.
-    normalized = "".join(
-        c if c.isalnum() or c in {"_", "$"} else "_" for c in tool_name
-    )
-    if not normalized or normalized[0].isdigit():
-        normalized = f"_{normalized}"
-    digest = hashlib.sha256(tool_name.encode("utf-8")).hexdigest()[:8]
-    return f"__tools_{normalized}_{digest}"
-
-
-_RESOLVED_TOOL_SYMBOL = "__tools_resolved"
+_TOOLS_CALL = "__tools_call"
+_TOOLS_NAMES = "__tools_names"
 _UNRESOLVED_KEY = "__tools_unresolved"
 
 
-def _render_tools_namespace_assignment(
-    bridges: dict[str, str], *, resolves: bool = False
-) -> str:
-    """Return JS that atomically rebuilds `globalThis.tools` from bridges.
+def _render_tools_namespace(*, resolves: bool) -> str:
+    """Return JS that defines `globalThis.tools` as a proxy over the host.
 
-    With `resolves`, `tools` is a proxy: a name it has no bridge for is a
-    function that asks the resolver for the tool by that name. It throws a
-    `TypeError` when the resolver finds none, or when the tool it found raises
-    `UnresolvedToolError`.
+    Python owns the tool map: a call is `__tools_call(name, input)` and the
+    installed names come from `__tools_names()`, so changing the tool set
+    never touches the guest. With `resolves`, any other name is a function
+    that asks the resolver. `then` and `toJSON` stay undefined, so
+    `await tools` and `JSON.stringify(tools)` call no tool.
     """
-    statements = ["const installed = {};"]
-    for tool_name, bridge_symbol in sorted(bridges.items()):
-        quoted_tool_name = json.dumps(tool_name)
-        quoted_bridge_symbol = json.dumps(bridge_symbol)
-        statements.append(
-            f"installed[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
-        )
-    if resolves:
-        resolved = json.dumps(_RESOLVED_TOOL_SYMBOL)
-        unresolved = json.dumps(_UNRESOLVED_KEY)
-        statements.append(
-            "globalThis.tools = new Proxy(installed, { get(target, name) {"
-            " if (typeof name !== 'string' || name in target"
-            " || name === 'then' || name === 'toJSON')"
-            " return target[name];"
-            " return async (input) => {"
-            f" const result = await globalThis[{resolved}](name, input);"
-            " if (result !== null && typeof result === 'object'"
-            f" && Object.prototype.hasOwnProperty.call(result, {unresolved}))"
-            f" throw new TypeError(result[{unresolved}]);"
-            " return result;"
-            " };"
-            " } });"
-        )
-    else:
-        statements.append("globalThis.tools = installed;")
-    return "{ " + " ".join(statements) + " } undefined"
+    call = json.dumps(_TOOLS_CALL)
+    names = json.dumps(_TOOLS_NAMES)
+    unresolved = json.dumps(_UNRESOLVED_KEY)
+    callable_ = "true" if resolves else "has(name)"
+    return (
+        "{ const fn = (name) => async (input) => {"
+        f" const result = await globalThis[{call}](name, input);"
+        " if (result !== null && typeof result === 'object'"
+        f" && Object.prototype.hasOwnProperty.call(result, {unresolved}))"
+        f" throw new TypeError(result[{unresolved}]);"
+        " return result; };"
+        " const has = (name) => typeof name === 'string'"
+        f" && globalThis[{names}]().includes(name);"
+        " globalThis.tools = new Proxy({}, {"
+        " get(_, name) {"
+        " if (typeof name !== 'string' || name === 'then' || name === 'toJSON')"
+        " return undefined;"
+        f" return {callable_} ? fn(name) : undefined; }},"
+        " has(_, name) { return has(name); },"
+        f" ownKeys() {{ return globalThis[{names}](); }},"
+        " getOwnPropertyDescriptor(_, name) {"
+        " return has(name) ? { value: fn(name), enumerable: true,"
+        " configurable: true, writable: false } : undefined; },"
+        " }); } undefined"
+    )
 
 
 class _REPLOptions(TypedDict):
@@ -485,20 +469,11 @@ class _ThreadREPL:
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         self._prepared_for_eval = False
-        # PTC state. `_registered_tools` tracks which camel-case names
-        # have already had their host-function bridge installed on the
-        # QuickJS context. Host functions cannot be un-registered, so we
-        # never remove entries from here — changes to the exposed set
-        # are reflected by rewriting `globalThis.tools` (see
-        # install_tools) to include only the currently-active subset.
-        self._registered_tools: dict[str, BaseTool] = {}
-        self._bridge_symbols: dict[str, str] = {}
-        self._active_tool_names: frozenset[str] = frozenset()
-        # Tracks whether `globalThis.tools` has been assigned at least
-        # once. Distinct from `_active_tool_names` so the first call
-        # with an empty tool set still installs `tools = {}` (otherwise
-        # `typeof tools.X` throws ReferenceError instead of returning
-        # `"undefined"`).
+        # PTC tools by camel-case name. `install_tools` swaps this map; the
+        # guest reaches it through `__tools_call` / `__tools_names`.
+        self._tools: dict[str, BaseTool] = {}
+        # Whether `globalThis.tools` has been defined. Without PTC it stays
+        # undefined.
         self._tools_installed: bool = False
         # Mutable per-eval PTC state. Tracks call budget plus outer
         # runtime/loop dispatch context for bridge invocations. Allocated
@@ -514,8 +489,7 @@ class _ThreadREPL:
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
-        if self._resolve_tool is not None:
-            self._register_resolved_tool_bridge()
+        self._register_tools_bridge()
         if self._subagents_enabled:
             self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
             self._register_task_bridge()
@@ -561,17 +535,12 @@ class _ThreadREPL:
     def install_tools(self, tools: Sequence[BaseTool]) -> None:
         """Expose `tools` as `globalThis.tools.<camelCase>` in the REPL.
 
-        Idempotent per (camelName, tool identity). Safe to call on every
-        model-call turn; we diff against the current active set and only
-        (a) register new host-function bridges for tools we haven't seen
-        before and (b) rewrite `globalThis.tools` when the active-name
-        set changes. Hot path cost when nothing changes: one frozenset
-        equality check.
+        Swaps the Python-side tool map; the guest's `tools` proxy is
+        defined once and reads the map on every access.
         """
         self._worker.run_sync(self._ainstall_tools(tools))
 
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
-        ctx = self._require_ctx()
         name_to_tool: dict[str, BaseTool] = {}
         for tool in tools:
             camel = to_camel_case(tool.name)
@@ -583,36 +552,12 @@ class _ThreadREPL:
                 )
                 continue
             name_to_tool[camel] = tool
-        target_names = frozenset(name_to_tool)
-        if target_names == self._active_tool_names and self._tools_installed:
-            # Fast path: stable toolset, nothing to do. Keep the bridge's
-            # dispatch target pointer current in case tool objects rotate
-            # while keeping the same names. Guard with `_tools_installed`
-            # so the empty → empty transition on first call still installs
-            # a `tools = {}` global — otherwise `typeof tools.x` hits a
-            # ReferenceError instead of returning "undefined".
-            self._registered_tools.update(name_to_tool)
-            return
-
-        # Register host-function bridges for tools we haven't seen before.
-        for camel, tool in name_to_tool.items():
-            if camel not in self._registered_tools:
-                self._bridge_symbols[camel] = self._register_tool_bridge(camel)
-            self._registered_tools[camel] = tool
-
-        # Rewrite globalThis.tools. Building the object inside a single
-        # eval keeps assignments atomic from the model's point of view —
-        # there's no moment where tools is half-populated. The trailing
-        # `undefined` sidesteps the MarshalError on object returns
-        # (same trick as the console install).
-        bridges = {camel: self._bridge_symbols[camel] for camel in target_names}
-        ctx.eval(
-            _render_tools_namespace_assignment(
-                bridges, resolves=self._resolve_tool is not None
+        self._tools = name_to_tool
+        if not self._tools_installed:
+            self._require_ctx().eval(
+                _render_tools_namespace(resolves=self._resolve_tool is not None)
             )
-        )
-        self._active_tool_names = target_names
-        self._tools_installed = True
+            self._tools_installed = True
 
     @staticmethod
     def _validate_task_payload(
@@ -758,42 +703,19 @@ class _ThreadREPL:
 
         return await _on_outer_loop(_call, outer_loop)
 
-    def _register_tool_bridge(self, camel: str) -> str:
-        """Install a host-function bridge for one camel-cased tool name.
-
-        The bridge is async so `eval_async`'s driving loop can await
-        `tool.ainvoke` without blocking the event loop. We look the
-        tool up through `self._registered_tools` on every call so a
-        later `install_tools` that swaps the underlying object (same
-        name, different instance) is picked up without re-registration.
-        """
-        ctx = self._require_ctx()
-        registered = self._registered_tools
-
-        async def _bridge(raw_input: Any = None) -> Any:
-            tool = registered.get(camel)
-            if tool is None:
-                # Shouldn't happen — we only rewrite `globalThis.tools`
-                # with names currently in the map — but if a race causes
-                # it, fail loud.
-                msg = f"tool '{camel}' not registered"
-                raise RuntimeError(msg)
-            return await self._acall_tool(camel, tool, raw_input)
-
-        bridge_symbol = _bridge_symbol_name(camel)
-        ctx.register(bridge_symbol, _bridge, is_async=True)
-        return bridge_symbol
-
-    def _register_resolved_tool_bridge(self) -> None:
-        """Install the host function `tools.<name>` reaches for a name not installed."""
+    def _register_tools_bridge(self) -> None:
+        """Install the host functions behind the guest's `tools` proxy."""
         ctx = self._require_ctx()
         resolve_tool = self._resolve_tool
-        if resolve_tool is None:
-            return
 
-        async def _resolved(camel: str, raw_input: Any = None) -> Any:
+        def _names() -> list[str]:
+            return list(self._tools)
+
+        async def _call(camel: str, raw_input: Any = None) -> Any:
             missing = f"tools.{camel} is not a function"
-            tool = resolve_tool(camel)
+            tool = self._tools.get(camel)
+            if tool is None and resolve_tool is not None:
+                tool = resolve_tool(camel)
             if tool is None:
                 return {_UNRESOLVED_KEY: missing}
             try:
@@ -801,7 +723,8 @@ class _ThreadREPL:
             except UnresolvedToolError as exc:
                 return {_UNRESOLVED_KEY: str(exc) or missing}
 
-        ctx.register(_RESOLVED_TOOL_SYMBOL, _resolved, is_async=True)
+        ctx.register(_TOOLS_NAMES, _names)
+        ctx.register(_TOOLS_CALL, _call, is_async=True)
 
     async def _acall_tool(self, camel: str, tool: BaseTool, raw_input: Any) -> Any:
         """Call a tool within the eval's budget and outer runtime."""

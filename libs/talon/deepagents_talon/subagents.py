@@ -5,11 +5,15 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
+from deepagents.backends import StateBackend
+from deepagents.middleware.filesystem import FilesystemState
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
+from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
+from langchain.chat_models import init_chat_model
 from langchain.tools import ToolRuntime  # noqa: TC002  # tool schemas inspect injected annotations
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -19,6 +23,7 @@ from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_talon.background import _IN_SUBAGENT, _result_text
 from deepagents_talon.hooks import ACTIVE_HOOKS
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.model_selection import _summary_trim_limit
 from deepagents_talon.subagent_control import SubagentControlMiddleware
 
 if TYPE_CHECKING:
@@ -118,6 +123,7 @@ class TaskTools(AgentMiddleware):
     ) -> None:
         """Retain this graph's model and operator approval policy."""
         self._model = model
+        self._backend = backend
         self._interrupt_on = dict(interrupt_on or {})
         self.tools = (
             SubAgentMiddleware(
@@ -180,16 +186,31 @@ class TaskTools(AgentMiddleware):
             spec["tools"] = list(configured.values()) + [
                 available[name] for name in tools if name not in configured
             ]
-            agent = _compile_fresh(spec, self._model, self._interrupt_on)["runnable"]
-            result = await agent.ainvoke(
-                {"messages": [HumanMessage(description)]},
-                {"recursion_limit": _FRESH_AGENT_RECURSION_LIMIT},
+            compiled = _compile_fresh(spec, self._model, self._interrupt_on, self._backend)
+
+            async def run(state: dict[str, object]) -> dict[str, object]:
+                result = await compiled["runnable"].ainvoke(
+                    state, {"recursion_limit": _FRESH_AGENT_RECURSION_LIMIT}
+                )
+                return {**result, "messages": result.get("messages") or []}
+
+            delegate = SubAgentMiddleware(
+                backend=self._backend,
+                subagents=[{**compiled, "runnable": RunnableLambda(run)}],
+            ).tools[0]
+            result = await delegate.ainvoke(
+                {
+                    "description": description,
+                    "subagent_type": subagent_type,
+                    "runtime": replace(runtime, context=None),
+                }
             )
-            if result.get("__interrupt__"):
-                return "Subagent needs tool approval; the protected action has not run."
-            messages = result.get("messages") or []
-            text = _result_text(messages[-1]) if messages else ""
-            return text or "Subagent returned no result."
+            if isinstance(result, Command) and isinstance(result.update, dict):
+                if result.update.get("__interrupt__"):
+                    return "Subagent needs tool approval; the protected action has not run."
+                messages = result.update.get("messages") or []
+                result = messages[-1] if messages else ""
+            return _result_text(result) or "Subagent returned no result."
 
         self._task = task
         return sorted(available)
@@ -244,6 +265,7 @@ def _compile_fresh(
     spec: LocalSubAgent,
     model: str | BaseChatModel,
     interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    backend: BackendProtocol | None = None,
 ) -> CompiledSubAgent:
     available = _tool_map(spec.get("tools", []))
     approvals = {
@@ -268,11 +290,20 @@ def _compile_fresh(
             if hooks
             else []
         )
+        effective_model = spec.get("model", model)
+        if isinstance(effective_model, str):
+            effective_model = init_chat_model(effective_model)
+        summarization = create_summarization_middleware(
+            effective_model,
+            backend if backend is not None else StateBackend(),
+            trim_tokens_to_summarize=_summary_trim_limit(effective_model),
+        )
         graph = create_agent(
-            model=spec.get("model", model),
+            model=effective_model,
             tools=spec.get("tools", []),
             system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
-            middleware=[*middleware, *hook_middleware],
+            middleware=[summarization, *middleware, *hook_middleware],
+            state_schema=FilesystemState,
             checkpointer=InMemorySaver() if hooks else False,
         )
         if hooks is None:
@@ -308,6 +339,8 @@ def prepare_subagents(
     specs: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent],
     model: str | BaseChatModel,
     interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    *,
+    backend: BackendProtocol | None = None,
 ) -> tuple[list[SubAgent | CompiledSubAgent | AsyncSubAgent], list[Attachment]]:
     """Resolve exact attachments, compiling fresh roles without inherited middleware.
 
@@ -318,6 +351,7 @@ def prepare_subagents(
         specs: Loaded local, compiled, or remote definitions.
         model: Default model for fresh agents.
         interrupt_on: Operator approval policy retained by fresh agents.
+        backend: Storage for history evicted by fresh agents' summarization.
 
     Returns:
         SDK definitions and a safe inventory; opaque agents have unknown tools.
@@ -350,7 +384,9 @@ def prepare_subagents(
             )
             prepared.append(compiled)
         else:
-            prepared.append(original if opaque else _compile_fresh(spec, model, interrupt_on))
+            prepared.append(
+                original if opaque else _compile_fresh(spec, model, interrupt_on, backend)
+            )
     return prepared, inventory
 
 

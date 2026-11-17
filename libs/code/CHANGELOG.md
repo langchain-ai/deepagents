@@ -2,6 +2,26 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.9](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.8...deepagents-code==0.2.9) (2026-11-16)
+
+### Features
+
+- Updated stable model recommendations ([#7734](https://github.com/langchain-ai/deepagents/pull/7734)).
+
+### Performance Improvements
+
+- Limited editable-SDK scanning to `deepagents` records ([#7756](https://github.com/langchain-ai/deepagents/pull/7756)).
+
+## [0.2.8](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.7...deepagents-code==0.2.8) (2026-11-13)
+
+### Features
+
+- Set `DEEPAGENTS_CODE=1` in the local shell environment. ([#7701](https://github.com/langchain-ai/deepagents/pull/7701))
+
+### Bug Fixes
+
+- Replace unencodable characters in redirected output. ([#7717](https://github.com/langchain-ai/deepagents/pull/7717))
+
 ## [0.2.7](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.6...deepagents-code==0.2.7) (2026-11-10)
 
 ### Features

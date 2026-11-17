@@ -290,7 +290,7 @@ function curatedSectionFor(override, currentHeading) {
 // rather than reconstructed by each caller.
 function staleDraftReason(override, packagePath) {
   return override.mainHead
-    ? `main has new ${packagePath} changes since this draft`
+    ? `${packagePath} may have changed on main since this draft, or the changes could not be verified`
     : 'the release branch was rewritten after drafting';
 }
 
@@ -927,7 +927,7 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
 async function postFailure({ github, owner, repo, number, head, appSlug, login, id, message, markerBase, headline, remediation }) {
   await authenticatedBot(github, appSlug, login, id);
   const marker = `${markerBase}\nhead: ${head}\n-->`;
-  const body = [marker, headline, '', remediation, '', `Details: ${message}`].join('\n');
+  const body = [marker, headline, '', `Details: ${message}`, '', remediation].join('\n');
   const comments = await listComments(github, owner, repo, number);
   const existing = comments.find(comment => matchesBot(comment, login, id) && (comment.body ?? '').startsWith(marker));
   if (!existing) await createComment(github, owner, repo, number, body);
@@ -943,11 +943,16 @@ async function postDraftFailure({ github, owner, repo, number, head, appSlug, lo
 }
 
 async function postApplyFailure({ github, owner, repo, number, head, appSlug, login, id, message }) {
+  const needsDraft = message.endsWith(`; run ${COMMAND_MENTION} draft before apply`)
+    || message.endsWith(`; run ${COMMAND_MENTION} draft`);
+  const reason = needsDraft ? message.slice(0, message.lastIndexOf(';')) : message;
   return postFailure({
-    github, owner, repo, number, head, appSlug, login, id, message,
+    github, owner, repo, number, head, appSlug, login, id, message: reason,
     markerBase: APPLY_FAILURE_MARKER,
     headline: 'Applying curated release notes failed.',
-    remediation: `Resolve the issue below, then run \`${COMMAND_MENTION} apply\` again (run \`${COMMAND_MENTION} draft\` first if the changelog changed).`,
+    remediation: needsDraft
+      ? `Once the release PR refresh and lockfile updates finish, run \`${COMMAND_MENTION} draft\`. Review the regenerated notes, then run \`${COMMAND_MENTION} apply\`.`
+      : `Resolve the issue above, then run \`${COMMAND_MENTION} apply\` again.`,
   });
 }
 

@@ -10,15 +10,19 @@ from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.store.memory import InMemoryStore
 
 from deepagents_talon.archive import (
     CHUNK_SIZE,
     ArchiveScope,
+    ScanLimitError,
+    TranscriptFilter,
     conversation_tools,
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
+from deepagents_talon.store_archive import StoreConversationArchive
 from tests.archive_helpers import make_runtime, make_saver
 from tests.conftest import RecordingChannel
 
@@ -385,3 +389,90 @@ async def test_listing_counts_messages_and_excludes_its_own_tool_results(tmp_pat
         assert sessions[0]["message_count"] == 2
         assert sessions[0]["preview"] == "List my sessions"
         assert (await saver.archive.search_page(WHATSAPP, query="private"))["results"] == []
+
+
+def _review_tools(archive):
+    return {tool.name: tool for tool in conversation_tools(archive, lambda: WHATSAPP)}
+
+
+async def _review_archive():
+    archive = StoreConversationArchive(InMemoryStore(), namespace=("review",))
+    await archive.append(
+        WHATSAPP,
+        "day",
+        "2026-11-11T09:00:00+00:00",
+        [HumanMessage("before window", id="h0"), AIMessage("old reply", id="a0")],
+    )
+    await archive.append(
+        WHATSAPP,
+        "day",
+        "2026-11-12T09:00:00+00:00",
+        [
+            HumanMessage("that sounds synthetic", id="h1"),
+            ToolMessage("x" * 9000, tool_call_id="call", id="t1"),
+            AIMessage("revised draft", id="a1"),
+        ],
+    )
+    await archive.append(
+        WHATSAPP, "other", "2026-11-12T10:00:00+00:00", [HumanMessage("other", id="o1")]
+    )
+    return archive
+
+
+async def test_read_conversation_filters_a_review_window_by_role():
+    tools = _review_tools(await _review_archive())
+    page = await tools["read_conversation"].ainvoke(
+        {
+            "session_id": "day",
+            "limit": 20,
+            "since": "2026-11-12T00:00:00Z",
+            "until": "2026-11-12T23:59:59Z",
+            "roles": ["human", "ai"],
+        }
+    )
+    assert [(entry["role"], entry["text"]) for entry in page] == [
+        ("human", "that sounds synthetic"),
+        ("ai", "revised draft"),
+    ]
+
+
+async def test_read_conversation_rejects_a_cursor_from_another_session():
+    archive = await _review_archive()
+    tools = _review_tools(archive)
+    foreign = (await archive.entries(WHATSAPP, session_id="other"))[0]["cursor"]
+    result = await tools["read_conversation"].ainvoke({"session_id": "day", "after": foreign})
+    assert f"Cursor {foreign} is not a chunk of session 'day'" in result
+
+
+async def test_read_conversation_rejects_naive_window_bounds():
+    tools = _review_tools(await _review_archive())
+    result = await tools["read_conversation"].ainvoke(
+        {"session_id": "day", "since": "2026-11-12T00:00:00"}
+    )
+    assert "timezone offset" in result
+
+
+async def test_filtered_read_resumes_past_the_scan_budget():
+    archive = StoreConversationArchive(InMemoryStore(), namespace=("filtered",))
+    await archive.append(
+        WHATSAPP,
+        "long",
+        "2026-11-12T09:00:00+00:00",
+        [ToolMessage("noise", tool_call_id=str(i), id=f"t{i}") for i in range(600)]
+        + [HumanMessage("the feedback", id="h")],
+    )
+    where = TranscriptFilter(frozenset({"human"}))
+    with pytest.raises(ScanLimitError) as error:
+        await archive.entries(WHATSAPP, session_id="long", where=where)
+    assert error.value.resume
+    page = await archive.entries(WHATSAPP, session_id="long", after=error.value.resume, where=where)
+    assert [entry["text"] for entry in page] == ["the feedback"]
+
+
+async def test_list_conversations_filters_sessions_active_in_a_window():
+    tools = _review_tools(await _review_archive())
+    listing = tools["list_conversations"]
+    recent = await listing.ainvoke({"since": "2026-11-12T09:30:00Z"})
+    assert [item["session_id"] for item in recent] == ["other"]
+    early = await listing.ainvoke({"until": "2026-11-11T12:00:00Z"})
+    assert [item["session_id"] for item in early] == ["day"]

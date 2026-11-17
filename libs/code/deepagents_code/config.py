@@ -2466,9 +2466,11 @@ def _compute_charset_mode() -> CharsetMode:
     if mode == "ascii":
         return CharsetMode.ASCII
 
-    encoding = getattr(sys.stdout, "encoding", "") or ""
-    if "utf" in encoding.lower():
-        return CharsetMode.UNICODE
+    # A stream that names its encoding decides: Git Bash exports a UTF-8
+    # `LANG`, yet Windows encodes redirected output with the ANSI code page.
+    encoding = getattr(sys.stdout, "encoding", None)
+    if encoding:
+        return CharsetMode.UNICODE if "utf" in encoding.lower() else CharsetMode.ASCII
     lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
     return CharsetMode.UNICODE if "utf" in lang.lower() else CharsetMode.ASCII
 

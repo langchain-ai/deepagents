@@ -119,6 +119,38 @@ def _install_termination_signal_handlers() -> None:
             signal.signal(signum, _handle_termination_signal)
 
 
+def _make_stdio_encoding_safe() -> None:
+    """Prevent `UnicodeEncodeError` from killing a command mid-output.
+
+    Output redirected to a pipe or file is encoded with the locale encoding,
+    which on Windows is the ANSI code page (e.g. cp1252) unless UTF-8 mode is
+    on. Its default error handler raises on any character that encoding lacks,
+    so the first one, whether a glyph or text such as a thread name or skill
+    description, crashes the command. Reconfiguring the streams with
+    `errors="replace"` degrades unencodable characters to "?" instead. The
+    stream encoding itself is left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # Streams replaced by non-reconfigurable objects (e.g. a plain
+        # StringIO or a captured buffer) are left as-is.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except ValueError, OSError, TypeError:
+            # Closed, detached, or otherwise non-reconfigurable stream (a
+            # duck-typed `reconfigure` with a different signature raises
+            # `TypeError`) — leave it as-is. This is a best-effort hardening
+            # step; it must never itself crash the command.
+            logger.debug(
+                "Could not reconfigure %s error handler",
+                getattr(stream, "name", stream),
+                exc_info=True,
+            )
+            continue
+
+
 def build_version_text() -> str:
     """Build the plain-text output for the `--version` CLI flag.
 
@@ -5532,6 +5564,10 @@ def cli_main() -> None:
         KeyboardInterrupt: Re-raised out of the TUI teardown block so the
             outer handler can print the interruption notice and exit 130.
     """
+    # Every command can print text the stdout encoding lacks, so this runs
+    # before the first write, including the `--version` fast path below.
+    _make_stdio_encoding_safe()
+
     # Fix for gRPC fork issue on macOS
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":

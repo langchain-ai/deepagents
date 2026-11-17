@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents monorepo change to its owning independently versioned package, focused validation path, and generated lockfile closure. Covers current SDK and dcode pins, Talon capabilities, and CI lockfile ownership.
+- [Repository Quickstart](quickstart.md) - Route Deep Agents monorepo work to the package that owns the contract, then use its local uv and Make workflow. Follow the published-metadata, local-source, and lockfile boundaries when changing dependencies.
 
 # Directories
 

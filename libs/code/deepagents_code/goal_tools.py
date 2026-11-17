@@ -36,6 +36,7 @@ from deepagents_code.goal_state_limits import (
     validate_goal_status_note,
 )
 from deepagents_code.goal_state_notice import (
+    anchor_summarization_event,
     build_goal_state_notice,
     goal_notice_size_error,
     goal_state_fingerprint,
@@ -381,7 +382,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         # predicate in `app.py`. A malformed event diverges deliberately: `app.py`
         # collapses it to `0`, while here it forces a fresh notice and clears the
         # event.
-        event = values.get("_summarization_event")
+        event = anchor_summarization_event(values.get("_summarization_event"), messages)
         cutoff = validated_summarization_cutoff(
             event,
             message_count=len(messages),
@@ -489,7 +490,13 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             `_summarization_event` — a state override nulling that event.
         """
         values = cast("dict[str, Any]", request.state)
-        event = values.get("_summarization_event")
+        raw_event = values.get("_summarization_event")
+        event = anchor_summarization_event(raw_event, request.messages)
+        if event is not raw_event:
+            # Inner SDK releases without `cutoff_message_id` slice by the
+            # stored index, so hand them the anchored event.
+            values = {**values, "_summarization_event": event}
+            request = request.override(state=cast("AgentState[Any]", values))
         cutoff = validated_summarization_cutoff(
             event,
             message_count=len(request.messages),

@@ -54,7 +54,7 @@ jobs:
         if: steps.release-pr.outputs.is_release == 'true'
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.14"
+          python-version: "3.15"
           enable-cache: "false"
 
       - name: "🧭 Resolve release package"
@@ -121,8 +121,8 @@ jobs:
           if [ "$PACKAGE_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          # setup-uv exports UV_PYTHON for the version it installed (3.14),
-          # which overrides VIRTUAL_ENV and makes `uv pip` demand a 3.14 venv
+          # setup-uv exports UV_PYTHON for the version it installed (3.15),
+          # which overrides VIRTUAL_ENV and makes `uv pip` demand a 3.15 venv
           # even though the release package targets $PYTHON_VERSION.
           env -u UV_PYTHON VIRTUAL_ENV="$VENV_PATH" uv pip install "${INSTALL_ARGS[@]}"
 

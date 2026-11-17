@@ -6,6 +6,7 @@ import contextlib
 import logging
 import os
 import shlex
+import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
@@ -49,7 +50,28 @@ def resolve_editor() -> list[str] | None:
             return ["notepad"]
         return ["vi"]
     tokens = shlex.split(editor)
+    if tokens and sys.platform == "win32":
+        tokens[0] = _find_windows_launcher(tokens[0])
     return tokens or None
+
+
+def _find_windows_launcher(name: str) -> str:
+    """Return the path Windows should launch for an editor command.
+
+    `CreateProcess` only appends `.exe` to a bare name, but editors like VS Code
+    install a `code.cmd` launcher, and `shutil.which` honors PATHEXT. It also
+    checks the current directory first, so that match is skipped for a bare
+    name: a `code.cmd` inside a project must not stand in for the editor.
+
+    Returns:
+        The resolved launcher path, or `name` unchanged when there is none.
+    """
+    resolved = shutil.which(name)
+    if resolved is None:
+        return name
+    if Path(name).name == name and Path(resolved).parent == Path():
+        return name
+    return resolved
 
 
 def editor_display_name() -> str | None:

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import pathlib
+import shutil
+import sys
 from unittest.mock import MagicMock, patch
 
-from deepagents_code.editor import open_in_editor
+import pytest
+
+from deepagents_code.editor import ExternalEditorError, open_in_editor
 
 
 class TestResolveEditor:
@@ -43,3 +47,43 @@ class TestOpenInEditor:
         ):
             result = open_in_editor("text")
         assert result == "edited"
+
+    @pytest.mark.parametrize(
+        ("found", "opens"),
+        [("C:/VS Code/bin/code.CMD", True), ("./code.CMD", False)],
+        ids=["launcher-on-path", "launcher-in-project"],
+    )
+    def test_windows_launches_editor_found_on_path(
+        self, monkeypatch: pytest.MonkeyPatch, found: str, *, opens: bool
+    ) -> None:
+        """`EDITOR=code` opens VS Code's `code.cmd` launcher on Windows.
+
+        Windows only starts a bare name as an `.exe`, so the stand-in for
+        `subprocess.run` starts a launcher only by the path `shutil.which` found.
+        A `code.cmd` in the project folder must never run in place of the editor.
+        """
+        launched: list[list[str]] = []
+
+        def fake_which(name: str) -> str | None:
+            return found if name == "code" else None
+
+        def fake_run(cmd: list[str], **_: object) -> MagicMock:
+            if cmd[0] != found:
+                raise FileNotFoundError(2, "The system cannot find the file specified")
+            launched.append(cmd)
+            pathlib.Path(cmd[-1]).write_text("edited", encoding="utf-8")
+            return MagicMock(returncode=0)
+
+        monkeypatch.setenv("EDITOR", "code")
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(shutil, "which", fake_which)
+        monkeypatch.setattr("deepagents_code.editor.subprocess.run", fake_run)
+
+        if opens:
+            assert open_in_editor("text", raise_on_error=True) == "edited"
+            assert launched[0][:2] == [found, "--wait"]
+        else:
+            with pytest.raises(ExternalEditorError):
+                open_in_editor("text", raise_on_error=True)
+            assert launched == []

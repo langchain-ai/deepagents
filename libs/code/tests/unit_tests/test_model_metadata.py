@@ -546,8 +546,8 @@ async def test_connecting_model_choices_report_queue_and_startup_failure(
 
         assert app._startup_failure_widget is not None
         failure = str(app._startup_failure_widget._content)
-        assert "Queued changes were not applied" in failure
-        assert "Reissue those commands to try again" in failure
+        assert "Commands you ran while the server was starting" in failure
+        assert "Run them again once it is up" in failure
         assert app._model_override == "custom:old"
         assert app._summarization_model_override == "custom:old"
         assert app._auto_classifier_model == "custom:old"

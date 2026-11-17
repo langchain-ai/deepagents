@@ -1,11 +1,11 @@
 ---
 type: channel admission and turn routing
-title: Talon Channel Admission and Pairing
-description: How Talon admits provider events, grants and revokes paired-sender access, constructs trusted conversation identities, and delivers or cancels channel turns.
-tags: [talon, channels, admission-control, pairing, discord, slack, telegram, media, security]
+title: Talon Channel Admission
+description: How Talon channel adapters admit provider events and how TalonHost binds those events to safe conversations, approvals, interactive questions, runtime turns, cancellation, and delivery.
+tags: [talon, channels, admission-control, pairing, approvals, questions, turn-routing, security]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-11-10T08:04:01.717Z
 sources:
   - id: openwiki-source-0ad7ce4799b63dc215741642
     resource: repo://libs/talon/deepagents_talon/channels/base.py
@@ -23,22 +23,36 @@ sources:
     resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-26b7e102f81f5c7bcfdc2424
     resource: repo://libs/talon/deepagents_talon/pairing.py
+  - id: openwiki-source-7d5b64d12a06c1e53f89d47c
+    resource: repo://libs/talon/deepagents_talon/questions.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-d41d7ef7f9d2f53eb0bd40e8
+    resource: repo://libs/talon/deepagents_talon/speech.py
   - id: openwiki-source-94758cb9b3302b8f80f516f9
     resource: repo://libs/talon/tests/channels/test_discord.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-1dcbe1149c3884ccb5b7db9b
+    resource: repo://libs/talon/tests/test_speech.py
+  - id: openwiki-source-3d684c645b34f5e3a3092ca9
+    resource: repo://libs/talon/tests/unit_tests/test_questions.py
+  - id: openwiki-source-24a3ab902230428c874f14d8
+    resource: repo://libs/talon/tests/unit_tests/test_speech.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
-Talon channel adapters are the policy boundary between provider events and an agent turn. They normalize provider-local identifiers into `ChannelMessage` or `ChannelReaction`, apply their provider's exposure and pairing rules, and dispatch only admitted events to the callback installed by `TalonHost`. The host then owns commands, the trusted agent conversation key, authorization/approval binding, turn replacement, and delivery.
+Talon channel adapters are the policy boundary between provider events and an agent turn. An adapter normalizes a provider event into `ChannelMessage` or `ChannelReaction`, applies provider-specific addressing, exposure, and pairing policy, and dispatches only admitted events to the callback installed by `TalonHost`. The host owns conversation identity, commands, pending interaction state, runtime invocation, cancellation, and delivery.
 
-> **Security boundary:** admission controls who may invoke a configured personal agent; it is not tenant isolation or execution containment. In particular, `open` means arbitrary external senders can invoke an agent with the host's configured credentials and local access. Pairing grants invocation access, not operator authority.
+> **Security boundary:** admission controls who may invoke a configured personal agent; it is not tenant isolation or execution containment. `open` lets arbitrary external senders invoke an agent with the host's configured credentials and local access. Pairing grants invocation, not operator authority. Media preparation and voice transcription happen after admission and never authorize a sender.
 
-See [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [the Talon integration](/openwiki/integrations/talon.md), and [security operations](/openwiki/operations/security.md).
+See [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [MCP](/openwiki/integrations/mcp.md), and [the Talon integration](/openwiki/integrations/talon.md).
 
-## Adapter contract and lifecycle
+## Contract and startup lifecycle
 
-`ChannelAdapter` provides a transport-neutral lifecycle and delivery surface: `start`, `stop`, host message-handler registration, text/media send and edit, typing, and status. `ChannelMessage` and `ChannelReaction` retain channel-specific conversation, sender, and message identifiers plus metadata. Reactions are optional through `ReactionChannelAdapter`; an adapter with no registered host handler logs and drops the event rather than guessing a destination.
+`ChannelAdapter` is the transport-neutral lifecycle and delivery contract: `start`, `stop`, host message-handler registration, text/media send and edit, typing, and status. `ChannelMessage` and `ChannelReaction` carry stable, channel-specific conversation and sender identifiers plus adapter metadata. `ReactionChannelAdapter` is optional; only adapters implementing it receive the host's reaction callback.
 
-The host starts the runtime, binds each channel's callbacks before starting that channel, and starts the scheduler last. Startup failure unwinds started components in reverse order. Shutdown cancels host work first, then stops channels, the scheduler, and the runtime.
+The host starts the runtime first, binds callbacks before it starts each channel, then starts the scheduler. A failed start unwinds the started scheduler/channels and runtime; shutdown cancels work before stopping channels, scheduler, and runtime.
 
 ```mermaid
 sequenceDiagram
@@ -48,87 +62,68 @@ sequenceDiagram
     participant Host
     participant Runtime
 
-    Sender->>Adapter: provider event
-    Adapter->>Policy: address and exposure check
+    Sender->>Adapter: provider message or reaction
+    Adapter->>Policy: addressing exposure pairing
     alt rejected
         Policy-->>Adapter: reject
         Adapter->>Adapter: optional pairing offer
-    else admitted
+    else admitted message
         Policy-->>Adapter: admit
-        Adapter->>Host: ChannelMessage or ChannelReaction
-        Host->>Host: command, approval, or turn replacement
-        Host->>Runtime: trusted agent request
-        Runtime-->>Host: result
-        Host-->>Adapter: send to origin conversation
+        Adapter->>Adapter: prepare inbound media
+        Adapter->>Host: ChannelMessage
+        Host->>Host: command pending state or replace turn
+        Host->>Runtime: invoke trusted request
+        Runtime-->>Host: result or interaction request
+        Host-->>Adapter: progress final or prompt
+    else admitted reaction
+        Policy-->>Adapter: admit
+        Adapter->>Host: ChannelReaction
+        Host->>Host: settle matching approval only
     end
 ```
 
-*Provider adapters decide whether an event enters Talon; the host owns the resulting work and state.*
+*Inbound provider policy precedes attachment work and host routing; the host is the only component that creates the runtime request.*
 
-## Exposure, addressing, and identity
+## Admission and provider routing
 
-`ChannelExposure` defaults to `self` and is read from `DEEPAGENTS_TALON_<PROVIDER>_EXPOSURE`.
+`ChannelExposure` defaults to `self`: a message must be marked `from_self` or have a configured operator ID. In `allowlist`, configured conversation IDs or text glob patterns are admitted. `open` admits every message, but configuration requires an explicit risk acknowledgement and logs the arbitrary-sender risk. Provider adapters perform these checks before preparing inbound media; Slack and Telegram also independently gate reactions, and Telegram derives `from_self` from the bot identity.
 
-| Mode | Admission rule |
-| --- | --- |
-| `self` | Admit `metadata["from_self"] is true` or a configured `*_OPERATOR_ID`. Discord, Slack, and Telegram require an operator ID in this mode. |
-| `allowlist` | Admit configured `*_ALLOWLIST_CHATS` conversation IDs or text matching `*_MENTION_PATTERNS`. |
-| `open` | Admit every message, but require `*_OPEN_ACK=allow-arbitrary-senders` and emit a risk warning. |
+Discord adds an addressing gate for guild traffic: a human message must mention the bot or integration role unless `DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS` permits that channel. Exposure still applies. Once a top-level guild message is admitted, Discord opens a public thread for the turn and falls back to the parent channel if thread creation fails. Its command registry is shared with the host: hidden commands can still be typed but are neither in help nor registered as Discord application commands. An application interaction is normalized to a `ChannelMessage`, admitted before it is deferred, and routed through a task-local interaction sink.
 
-`*_ALLOWLIST_USERS` additionally admits named users in direct/private chats in allowlist mode. Discord admits threads whose parent is an allowlisted channel; Slack recognizes the parent portion of its thread conversation ID. These static identities do not become operators merely because they are admitted.
+Pairing is a separate, revocable admission route. It grants a normal sender access but never operator authority: configured operators and allowlisted IDs remain authoritative, `/pair` is handled outside the model, and only an explicitly configured operator may administer it. Pairing records are provider-scoped, codes expire after one hour and are consumed on approval, and corrupt or unreadable persisted state fails closed for paired senders. Revocation removes future paired access and makes a running host cancel the sender's tracked conversations and pause provider-scoped cron jobs.
 
-Discord has a separate **addressing** gate before exposure: it ignores Gateway messages authored by the bot, and a guild message must mention the bot or integration role. `DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS` may make mentions optional for named guild channels or `*`, but only for human messages; it does not weaken exposure. An admitted top-level guild message opens a public thread and routes the turn there; thread-creation failure falls back to the parent channel. Existing thread messages retain their thread conversation and may gain bounded thread context.
+## Host-owned routing and metadata
 
-Slack and Telegram do not use Discord's mention/thread-opening gate. Their adapters build messages from their native events, apply exposure or pairing, and only then collect thread context or download attachments. Telegram derives `from_self` by comparing the incoming sender with the bot identity. In all three providers, reaction events must independently pass adapter admission before they reach the host.
+For every non-`/help` message, `TalonHost.receive_message` derives a provider-qualified conversation root from the trusted adapter/provider identity and the adapter's channel conversation ID. It locks work by that root and derives the agent conversation ID, including any persisted reset suffix. This prevents equal raw IDs on different providers from sharing a runtime thread.
 
-## Pairing: revocable sender access
+Adapter metadata is input context, not authority. Before calling the runtime, the host composes metadata from host-owned `channel`, `sender_id`, and `message_id`, then adapter message metadata, then route metadata; the host's fields cannot be overwritten by channel metadata. It also adds host-owned history scope, origin conversation ID, interruption status, model/effort selected by commands, and the computed `tool_approval_operator` flag as appropriate. Channel metadata therefore cannot select the runtime conversation or model, nor grant tool-approval authority.
 
-Pairing is opt-in through `DEEPAGENTS_TALON_<PROVIDER>_PAIRING`; it is available for Discord, Slack, and Telegram, is invalid with `open` exposure, and is provider-scoped in `pairing.json`. A rejected direct/private sender can receive a one-hour code; approval consumes the code and admits that sender in any chat visible to that adapter. `*_PAIRING_REPLY=disabled` records the request but withholds the automatic code reply. Discord only offers from a DM, Slack can open a DM for a rejected non-DM sender, and Telegram offers after ordinary admission fails.
+Within the per-conversation lock, commands have precedence. The host then handles a pending tool-approval response, authorization callback, or interactive question reply before interpreting an ordinary message as a replacement agent turn. This ordering lets a prompt wait for its intended participant without allowing a reply to accidentally start another agent invocation.
 
-```mermaid
-flowchart TD
-    Inbound["Rejected inbound message"] --> Pairing{"Pairing enabled"}
-    Pairing -->|no| Drop["Drop event"]
-    Pairing -->|yes| Direct{"Direct or private chat"}
-    Direct -->|no| ProviderDM["Slack may open a DM"]
-    Direct -->|yes| Request["Persist provider-scoped code"]
-    ProviderDM --> Request
-    Request --> Operator["Configured operator approves code"]
-    Operator --> Paired["Sender admitted on this provider"]
-    Paired --> Revoke["Operator revokes sender"]
-    Revoke --> Stop["Cancel tracked work and pause sender jobs"]
-```
+## Approval reactions and interactive questions
 
-*Pairing stores a provider-scoped admission record, while revocation affects both future admission and host-tracked work.*
+A reaction being admitted by an adapter is not an approval. The host finds pending approval state only by the provider-qualified conversation/agent thread, then accepts only the configured decision emoji on the prompt message from the sender who initiated the run. Text approvals are bound to that sender too. Mismatches are ignored and audited rather than resolving a pending action.
 
-Environment-configured operators and allowlisted IDs remain authoritative: they neither receive codes nor can pairing revoke them. `/pair` never reaches the model. It requires a sender explicitly present in the configured operator IDs—not merely `from_self`—and is DM-only except that an operator may approve a code outside a DM. On revocation, the host cancels tracked conversations for that sender and pauses their provider-scoped cron jobs; a revoked in-flight scheduled run fails without delivery.
+The `ask_user` tool is a distinct clarification mechanism, explicitly not tool approval. Runtime invocation scopes a request's `question_handler` in a context variable and serializes parallel question batches. The tool is unavailable to subagents or when no handler exists; cancelled or unanswered questions tell the model not to assume an answer.
 
-The store locks every read-modify-write mutation and atomically replaces the JSON file. Admission reads cache a file identity including inode, so a CLI atomic replacement is visible; unreadable or invalid store state fails closed for paired users while static environment identities keep their configured access. The stopped-host `deepagents-talon pairing` CLI can list, approve, revoke, and pause matching jobs, but it only changes persistence and cannot cancel work held by a running host.
+For an attended channel turn with an identified sender, the host's handler stores a `QuestionSession` for the agent conversation, sends one formatted question at a time, and accepts replies only from that sender. A session supports numbered choices, an `Other` answer, notes, multi-select, `back`, `next`, and `cancel`; answers are limited to 2,000 characters. A failed prompt or follow-up send resolves the handler with no answers so the model is not left waiting. Voice replies to a pending question may be transcribed before parsing, while host checks the same pending session again after transcription to reject a reply whose question closed meanwhile.
 
-## Host-owned conversations, commands, and cancellation
+Unattended work cannot solicit a person. Background-delivery turns and cron-triggered runtime requests receive no question handler. They also withhold channel approval and authorization handlers; tool-approval authority is false for those turns.
 
-Apart from `/help`, `TalonHost.receive_message` combines a trusted provider key and adapter-provided conversation ID into a conversation root, uses that root for locking and persisted reset state, and derives the active agent conversation ID from it. Adapter metadata becomes request context, but cannot choose the host conversation or model. The host first handles its commands, pending tool-approval replies, and authorization callbacks; only ordinary messages replace or start an agent turn.
+## Replacement, cancellation, and delivery
 
-The shared command registry is the source for typed command parsing, `/help`, and visible Discord application commands. Hidden commands remain accepted when typed but are excluded from help and registration. Discord application interactions are converted into the same `ChannelMessage` form, must pass admission before deferral, and use a task-local response sink so an interaction receives only its own output. Slack command handling similarly checks admission before revealing whether a command exists.
+Each conversation root is serialized. A new ordinary input replaces an active turn: the host increments its generation, cancels the task, and attempts runtime recovery within the same 30-second budget. If cancellation or recovery times out, the agent conversation is blocked rather than allowing potentially inconsistent concurrent turns; a recovery exception permits the replacement but marks its request with `interruption_recovery: failed`.
 
-Each conversation root is serialized. A new ordinary input replaces an active turn: the host increments its generation, cancels the task, and attempts runtime recovery within the same 30-second budget. On timeout it blocks further work for that agent conversation rather than running potentially inconsistent turns concurrently. A completed turn delivers only if its generation is still current; stale or cancelled undelivered results requeue their consumed background-subagent results.
+Result settlement re-enters the conversation lock and compares the turn generation and current agent conversation ID. A stale or cancelled undelivered result is dropped, and its consumed background-subagent result IDs are requeued. Progress sends use the same current-turn checks. Current final text and extracted Markdown media references are sent back to the originating adapter conversation; retryable send failures use exponential backoff.
 
-Approval is not implied by reaction admission. The host only acts on a pending provider-qualified request that matches conversation, prompt message ID, initiating sender, and decision emoji; text approval replies are likewise sender-bound. This prevents an admitted participant from deciding another sender's pending action.
+For ordinary channel turns, the host transcribes eligible downloaded voice, audio, or video before optional runtime inbound-media preparation and model-content construction. It appends a successful transcript to an existing caption (or supplies the empty body), marks `voice_transcribed`, and otherwise keeps the original admitted message. Background-delivery turns skip this preprocessing. Adapters normalize successful local media paths and MIME metadata; failed preparation keeps a deliverable message with `has_media` false and `media_error`. Outbound media validation confines the resolved path to a trusted root and requires a regular file, matching type, and size cap.
 
-## Media and outbound delivery
+## Focused tests and operating guidance
 
-Adapters prepare inbound media only after admission. Shared metadata uses `has_media`, `media_paths`, `media_path`, aligned `media_mime_types`, and `voice_path` for voice files; a failed or oversized download preserves delivery of the message while setting `has_media` false and `media_error`. Discord downloads the first non-document attachment (and carries document references); Slack can download multiple files; Telegram downloads the identified media file. The host may then make prepared media available to a media-capable runtime.
-
-For outbound media, the shared validator resolves paths beneath the trusted root selected from `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, then `DEEPAGENTS_TALON_WORKSPACE`, then the current directory. It requires a regular file, a compatible inferred media type, and the configured maximum byte size. This protects the attachment transport boundary; it does not authorize a sender or sandbox the runtime.
-
-The host sends result text and extracted Markdown media references to the originating adapter conversation. `send_with_retry` converts send exceptions into failed results and retries retryable failures twice with exponential backoff. Progress and final delivery both check that the turn remains active/current, preventing replaced work from sending into a newer conversation state.
-
-## Operational guidance and focused tests
+`libs/talon/tests/test_host.py` covers host startup, routing, cancellation/recovery, generation suppression, approval reactions, and metadata boundaries. `libs/talon/tests/test_runtime.py` covers runtime request scoping. `libs/talon/tests/unit_tests/test_questions.py` covers question schema and parsing, serialization, sender binding, failed delivery, voice replies, stale question replies, and the no-question invariant for cron/background work. Provider suites cover their adapter admission and media paths.
 
 1. Prefer `self` or explicit allowlists. Treat `open` as arbitrary invocation, not a sandbox.
-2. Configure an operator ID before using `self` exposure on Discord, Slack, or Telegram.
-3. Keep Discord mentions required unless a deliberately chosen channel is listed in `DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS`; this is an addressing setting, not access control.
-4. Enable pairing only for people who should be able to invoke the agent wherever the provider can see them. Use host `/pair revoke` to stop live work as well as future admission.
-5. Set an intentional outbound-media root and byte cap separately from inbound-media storage.
-
-`libs/talon/tests/channels/test_base.py` exercises exposure, media validation, dispatch, and retry behavior. Provider suites in `test_discord.py`, `test_slack.py`, and `test_telegram.py` cover admission, pairing offers, reactions, commands, thread/context routing, and media failure paths. `test_host.py` covers command precedence, conversation identity, generation-based suppression, cancellation/recovery, approvals, and delivery; pairing behavior is covered by the pairing test suites.
+2. Treat provider conversation IDs and all adapter metadata as untrusted input. Preserve host ownership of conversation IDs, model selection, and authority flags when adding adapters or route metadata.
+3. Do not implement a new reaction type as a generic approval. Bind it to the originating provider, conversation, prompt message, sender, and decision.
+4. Keep interactive questions available only on attended, sender-identified turns. A new asynchronous turn type must explicitly decide whether it is attended; cron and background delivery must remain handler-free.
+5. On changes to cancellation behavior, retain generation checks and the blocked-on-timeout invariant so a late result cannot leak into a replacement conversation.

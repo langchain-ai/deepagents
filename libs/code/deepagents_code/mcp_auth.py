@@ -2002,19 +2002,56 @@ async def _run_device_flow(
     raise RuntimeError(msg)
 
 
-def format_login_failure(exc: BaseException) -> str:
+def _slack_mcp_setup_failure(exc: BaseException) -> str | None:
+    """Return safe setup guidance for Slack's disabled-app rejection, if present."""
+    from mcp.shared.exceptions import MCPError
+
+    visited: set[int] = set()
+    stack = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, MCPError) and (
+            match := re.fullmatch(
+                r"App is not enabled for Slack MCP server access\. "
+                r"Please enable it here: "
+                r"https://api\.slack\.com/apps/(A[A-Z0-9]+)/app-assistant",
+                current.message,
+            )
+        ):
+            return (
+                "Slack MCP access is disabled for this app. Ask an app owner to "
+                "enable 'Slack Model Context Protocol (MCP) Server' under Agents "
+                f"at https://api.slack.com/apps/{match[1]}/app-assistant, "
+                "then retry login."
+            )
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            stack.append(cause)
+    return None
+
+
+def format_login_failure(
+    exc: BaseException, *, include_login_hint: bool = False
+) -> str:
     """Return a token-safe single-line summary of an OAuth-login exception.
 
     OAuth handshakes commonly surface as `ExceptionGroup` (anyio task
     groups) or as MCP-SDK errors whose `args`/`repr` may include an
     `OAuthToken`. Never call `str()`/`repr()` on the raw exception for
     display or logging — instead, prefer a known-safe nested
-    `MCPReauthRequiredError` message, fall back to the messages of our
+    `MCPReauthRequiredError` message or recognized Slack setup guidance,
+    fall back to the messages of our
     own loopback-related exception types, and degrade to a class-name
     chain for anything else.
 
     Args:
         exc: Root exception caught from the login worker.
+        include_login_hint: Add recovery guidance only during an explicit login.
 
     Returns:
         A user-displayable string that is safe to log and to render.
@@ -2022,6 +2059,9 @@ def format_login_failure(exc: BaseException) -> str:
     reauth = find_reauth_required(exc)
     if reauth is not None:
         return str(reauth)
+    slack_setup = _slack_mcp_setup_failure(exc)
+    if slack_setup is not None:
+        return slack_setup
 
     from deepagents_code.mcp_oauth_ui import MCPLoginAbortedError
     from deepagents_code.mcp_tools import MCPConfigError
@@ -2055,7 +2095,48 @@ def format_login_failure(exc: BaseException) -> str:
             )
             break
         current = current.__cause__ or current.__context__
-    return " -> ".join(parts) if parts else type(exc).__name__
+    chain = " -> ".join(parts) if parts else type(exc).__name__
+    return f"{_login_failure_hint(exc)} ({chain})" if include_login_hint else chain
+
+
+def _login_failure_hint(exc: BaseException) -> str:
+    """Return safe recovery guidance for nested transport failures."""
+    pending = [exc]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, (httpx.HTTPStatusError, httpx2.HTTPStatusError)):
+            status = current.response.status_code
+            if status in {401, 403}:
+                return (
+                    "Authorization was rejected. Check the MCP app's credentials "
+                    "and access permissions, then retry login."
+                )
+            return (
+                f"The MCP authorization service returned HTTP {status}. "
+                "Check the server configuration and retry login."
+            )
+        if isinstance(
+            current, (httpx.TimeoutException, httpx2.TimeoutException, TimeoutError)
+        ):
+            return "MCP login timed out. Check your connection and retry login."
+        if isinstance(current, (httpx.TransportError, httpx2.TransportError)):
+            return (
+                "Could not connect during MCP login. Check your connection "
+                "and MCP server URL, then retry login."
+            )
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(reversed(current.exceptions))
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            pending.append(cause)
+    return (
+        "MCP login failed. Retry login; if it keeps failing, "
+        "check the MCP server's OAuth configuration."
+    )
 
 
 def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:

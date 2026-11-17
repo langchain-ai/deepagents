@@ -698,6 +698,44 @@ class TestRunMCPLogin:
         # into the user-facing output, since its `args` could carry tokens.
         assert "provider offline" not in captured_err
 
+    async def test_slack_setup_error_returns_remediation_without_traceback(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        from deepagents_code.client.commands.mcp import run_mcp_login
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"slack":{"transport":"http",'
+            '"url":"https://mcp.slack.com/mcp","auth":"oauth"}}}'
+        )
+        error = MCPError(
+            code=-32000,
+            message=(
+                "App is not enabled for Slack MCP server access. "
+                "Please enable it here: "
+                "https://api.slack.com/apps/A0CCRHL9PGS/app-assistant"
+            ),
+            data={"access_token": "SECRET"},
+        )
+        for failure in (error, ExceptionGroup("SECRET", [error])):
+            with patch(
+                "deepagents_code.mcp_auth.login", new=AsyncMock(side_effect=failure)
+            ):
+                exit_code = await run_mcp_login(
+                    server="slack", config_path=str(config_path)
+                )
+            captured = capsys.readouterr()
+            assert exit_code == 1
+            assert "Login failed: Slack MCP access is disabled" in captured.err
+            assert (
+                "https://api.slack.com/apps/A0CCRHL9PGS/app-assistant" in captured.err
+            )
+            assert "SECRET" not in captured.err
+            assert "Traceback" not in captured.err
+            assert "Logged in" not in captured.out
+
     async def test_login_http_error_returns_exit_1(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

@@ -1131,7 +1131,7 @@ jobs:
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           # Branch-, agent-, category- and slug-scoped so the aggregate job globs
           # only this run's own shards, grouped per (branch, agent config, category).
@@ -1340,7 +1340,7 @@ jobs:
         # because prep restricts agent_impl to the upstream enum and cat-slug
         # validates category before this step; don't reorder past those guards.
         # Attribution is read from summary.json downstream, not this name.
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}-{2}-{3}', steps.branch-slug.outputs.slug, matrix.agent_impl, matrix.category, steps.slug.outputs.slug) }}
           path: _shards

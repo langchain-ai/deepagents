@@ -1,218 +1,155 @@
 ---
 type: runtime integration
 title: Talon Runtime Integration
-description: Talon is an experimental local host for Deep Agents channels and schedules. It assembles request-scoped graphs, hooks, approvals, persistence, and delivery for a single operator.
-tags: [talon, runtime, channels, hooks, approvals, persistence, mcp, scheduling]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-30T08:04:27.172Z
+description: Talon composes a channel-owning host with a replaceable Deep Agents runtime. This page covers per-invocation hooks and approvals, MCP and tool attachment, fresh subagents, delegation, and lifecycle boundaries.
+tags: [talon, runtime, host, subagents, hooks, mcp, scheduling]
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
-  - id: openwiki-source-995d5d95882808a64071f617
-    resource: repo://libs/talon/deepagents_talon/archive_saver.py
-  - id: openwiki-source-c2be68f237284dc06b9c12f7
-    resource: repo://libs/talon/deepagents_talon/checkpoint_backends.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-470e982344d3fb19aa4cd0a7
-    resource: repo://libs/talon/deepagents_talon/history_backends.py
-  - id: openwiki-source-d8846ad7008aa3a1566511a7
-    resource: repo://libs/talon/deepagents_talon/hook_transcripts.py
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
   - id: openwiki-source-cbf86ab9c145113d54045954
     resource: repo://libs/talon/deepagents_talon/hooks.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
-  - id: openwiki-source-111101dcd1462ff54277b1fc
-    resource: repo://libs/talon/deepagents_talon/mcp_config.py
-  - id: openwiki-source-82cac27adeecff8a900a40fa
-    resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-d98b6d615a63b95a7c893810
+    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
+  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
+    resource: repo://libs/talon/deepagents_talon/model_selection.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-2d1f686d24d8182f60108ae7
     resource: repo://libs/talon/deepagents_talon/subagents.py
-  - id: openwiki-source-267468fe937003d4716fe6c2
-    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-  - id: openwiki-source-be74a45799832a98450c95f0
-    resource: repo://libs/talon/HOOKS.md
-  - id: openwiki-source-4d6726e17c8a0c78539a7d33
-    resource: repo://libs/talon/tests/test_runtime.py
-  - id: openwiki-source-c0f076507fca2b1a9eaae92f
-    resource: repo://libs/talon/tests/unit_tests/test_hook_transcripts.py
   - id: openwiki-source-7dcd7e37c18e77553a46cce3
     resource: repo://libs/talon/tests/unit_tests/test_hooks.py
-  - id: openwiki-source-5dbe50a53795f3db46509bac
-    resource: repo://libs/talon/tests/unit_tests/test_skill_mcp.py
-  - id: openwiki-source-242a21b2da46507f58415265
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
+  - id: openwiki-source-a4cc4beb110c42a169caf195
+    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-17T08:03:47.818Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 ---
 
 # Talon Runtime Integration
 
-> **Experimental, single-operator software.** Talon is an alpha local runtime, not a production or multi-tenant security boundary. Admitting a sender effectively gives that sender access to the operator's agent, model credentials, configured MCP tools, and, without a sandbox, host resources. Approvals, redaction, hooks, and an opt-in execution sandbox are useful controls, not channel-administrator isolation, complete HITL policy, or MCP containment. See [channel admission](../concepts/talon-channel-admission.md), [runtime behavior](../architecture/runtime-behavior.md), and [security](../operations/security.md).
+Talon is an experimental local host for long-running Deep Agents channels and schedules. Its boundary is deliberate: channel adapters admit and translate provider events; `TalonHost` owns routing, interactive callbacks, delivery, and shutdown; `DeepAgentRuntime` owns graph construction, checkpointed execution, and process-local background jobs. Adapters do not invoke the runtime directly.
 
-Talon separates transport, coordination, and execution:
+See [Subagents and skills](../concepts/subagents-skills.md), [Talon channel admission](../concepts/talon-channel-admission.md), [Talon scheduling](../concepts/talon-scheduling.md), [MCP integration](mcp.md), and [Security](../operations/security.md).
 
-- **Channel adapters** admit and deliver provider-specific messages; they do not invoke an agent graph.
-- **`TalonHost`** binds channel callbacks, serializes and supersedes conversation work, fixes reply routing, and confirms final delivery.
-- **`DeepAgentRuntime`** builds Deep Agents graphs and binds request-local state. It can publish replacement graphs between turns, but cannot choose a channel destination from model input.
+## Composition and ownership
 
-## Startup, shutdown, and state
+The `deepagents-talon` CLI is the production composition root. For a configured model it loads MCP tools, opens checkpoint and history resources, and constructs `DeepAgentRuntime` with the assistant directory, async-subagent loader, cron store, sandbox backend when configured, and `talon_mcp_middleware()`. It gives the runtime and adapters to `TalonHost`. A `PersistentCronScheduler` exists only when channels exist, and calls back through the host to execute and deliver jobs.
 
-Run from `libs/talon` (or add `--directory libs/talon` from the repository root):
-
-```bash
-uv sync --group test
-AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon --once
-```
-
-The CLI prepares assistant state and retention cleanup, selects enabled channels and a cron store, then selects a runtime. A configured model opens the optional sandbox, checkpoint and history resources, wraps the saver in `ConversationSaver`, loads MCP capabilities, and creates `DeepAgentRuntime`. Without a model, it uses `EchoAgentRuntime`, which is useful for channel wiring but has no persistent history tools. `--once` starts and immediately stops the assembled host.
+`AgentRequest` is the host-to-runtime contract: it contains the host-resolved conversation ID, text, trusted metadata, selected model/effort, and optional approval, authorization, progress, breakout, and question handlers. `AgentResult` carries output and acknowledged background IDs. The runtime can acknowledge that the model consumed a result, but the host alone knows whether its channel reply was delivered and must requeue IDs when it was not.
 
 ```mermaid
 flowchart TD
-    Config["Read TalonConfig"] --> Home["Prepare assistant home and cleanup"]
-    Home --> Channels["Select channels and cron store"]
-    Channels --> Model{"Model configured"}
-    Model -- "no" --> Echo["EchoAgentRuntime"]
-    Model -- "yes" --> Sandbox["Open optional sandbox"]
-    Sandbox --> Stores["Open checkpoint and history stores"]
-    Stores --> MCP["Load MCP provider and tools"]
-    MCP --> Runtime["Build DeepAgentRuntime"]
-    Echo --> Host["Create TalonHost"]
-    Runtime --> Host
-    Host --> Start["Start runtime channels and scheduler"]
-    Start --> Stop["Cancel work and stop components"]
+    CLI["CLI composition root"] --> MCP["MCP tool provider"]
+    CLI --> Host["TalonHost"]
+    CLI --> Runtime["DeepAgentRuntime"]
+    MCP --> Runtime
+    Host --> Channel["Channel adapters"]
+    Host --> Scheduler["Persistent cron scheduler"]
+    Channel --> Host
+    Scheduler --> Host
+    Host --> Request["AgentRequest with handlers"]
+    Request --> Runtime
+    Runtime --> Hooks["Turn hook session"]
+    Runtime --> Graph["Deep Agents graph"]
+    Hooks --> Graph
+    Graph --> Result["AgentResult"]
+    Result --> Host
+    Host --> Channel
 ```
 
-This is the CLI-owned resource lifetime and host-managed process lifecycle. The host starts the runtime before channels and the scheduler. A partial start unwinds in reverse order; shutdown cancels active work and continues stopping every component even when one stop fails. `DeepAgentRuntime.stop()` does not close its resources if background workers outlive cancellation, because closing a live checkpointer risks incomplete writes; the host still continues shutdown of other components.
+*Channels and the scheduler enter through the host. Hooks and interactive authority are bound only while the runtime executes one request.*
 
-Conversation coordination is in memory. A conversation-root lock serializes work, a newer message can interrupt active work, `/stop` cancels, and `/new` starts fresh context. Talon waits up to 30 seconds for cancellation rather than running a replacement beside a stuck task. Durable checkpoints, history, hook transcripts, approvals, cron jobs, and MCP configuration are separate state owners.
+### Lifecycle
 
-## Turn, graph, and approval path
+`TalonHost.start()` ensures the home directory, starts the runtime, binds and starts channels, then starts the scheduler. A failed partial start is unwound in reverse order. Shutdown cancels the background dispatcher and active conversation work before stopping channels in reverse order, scheduler, and runtime; a component-stop failure is logged without preventing remaining cleanup.
 
-The host prepares inbound media before model content, merges inbound metadata before trusted route metadata, and supplies closures whose reply destination cannot be redirected by model arguments. An interactive `AgentRequest` carries request-scoped progress, approval, and authorization handlers; scheduled and background turns intentionally omit interactive approval and authorization.
+`DeepAgentRuntime.stop()` cancels background workers before closing its graph/checkpointer. If a worker outlives cancellation, it raises and leaves those resources open rather than allow a worker to write through a closed checkpointer.
+
+## Graph assembly, reload, and attachments
+
+At start, the runtime resolves subagents, reads a `ToolApprovalStore` snapshot, and builds a graph. It creates a catalog from filesystem and ordinary runtime tools, removes MCP tools marked `skillOnly` from the main tool list, attaches approval-management and `get_agent_tools`, resolves local frontmatter tool names exactly against that catalog, then configures background delegation against the resolved agents.
+
+The graph includes filesystem support, selected-model summarization and selection, progress, human-in-the-loop approval, server hooks, `TaskTools`, background delegation, optional context-size tools, skills, and caller-supplied middleware. `get_agent_tools` reports configured attachments separately from names selectable per task; opaque compiled or remote agents report unknown tools. Saved MCP/subagent changes require reload, and running turns/tasks retain their original graph and capabilities.
+
+Before an invocation, the runtime refreshes supplied tools, then holds its tools lock while reading approval policy and rebuilding only if that snapshot changed. It publishes a replacement graph only after construction succeeds and places the selected graph and approval snapshot in context variables. Consequently, failed reloads preserve the prior graph and an in-flight turn cannot gain or lose capabilities mid-execution.
+
+Selected model choice is also turn-scoped. An unavailable saved selection falls back to the default, and summarization caches a selected-model-specific summarizer while subagents use their startup summarizer.
+
+## Hooks, approvals, and MCP are invocation capabilities
+
+The runtime loads `hooks.json` from the trusted assistant home at the beginning of every invocation. It opens it without following symlinks and accepts only a regular file. Missing configuration means no hooks; malformed content becomes diagnostics and an empty hook snapshot so the turn can continue. Workspace/project hooks are deliberately excluded because the workspace is untrusted. Legacy configuration is migrated where safe and emits deprecation diagnostics.
+
+A `TalonHooks` session owns that turn's snapshot, transcript runtime, prompt identity, and completed hook responses. It accepts only `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, and `Stop` server events. Resume validates interrupt ID uniqueness and verifies snapshot, thread, and prompt identities before fulfilling an invocation; duplicate fulfillment is cached. The runtime resets `ACTIVE_HOOKS` in `finally`, so a concurrent or later turn does not inherit this session.
+
+A hook denial blocks its tool call before ordinary approval. A hook allow does **not** bypass Talon approval: `hook_approval_required` still asks for approval unless the hook denied that specific call. This preserves host ownership of user interaction. `APPROVAL_OPERATOR` is enabled only for a host-designated operator request that is neither cron nor background delivery; authorization, question, breakout, progress, history, hook, pending-result, model, and cron state are likewise installed only for the invocation and reset afterward.
+
+Talon wires one `talon_mcp_middleware()` into the main `DeepAgentRuntime` and installs the same middleware in freshly compiled local subagents, so both paths receive the MCP adapter behavior. It preserves marked MCP schemas for OpenAI Responses calls, normalizes optional empty-string arguments, scopes authorization to the tool-call ID, and returns a correlated, data-safe `ToolMessage` for `MCPError`. Talon has no elicitation UI, so MCP elicitation interrupts are resumed as cancellation.
+
+## Fresh local subagents and task tool replacement
+
+Talon replaces the SDK `SubAgentMiddleware` with `TaskTools` under the same middleware name, preventing duplicate `task` tools. The replacement accepts a `tools` list only for a named local subagent. Every name must be unique and present in the current selectable catalog; selected tools augment, rather than replace, its configured tools for that task. The subagent is freshly compiled with a fresh message state: it does not inherit parent history, memory, skills, or delegation tools.
+
+Fresh local agents receive `talon_mcp_middleware()`, control middleware, only the approval rules applicable to their resolved tools, and `HumanInTheLoopMiddleware` only when such rules exist. For a hook-enabled parent turn, each local execution gets a child hook session with the same immutable snapshot but new thread/prompt/agent identities and a separate transcript. It does not emit `Stop`; it can resume its own hook interrupts and preserves the parent's working directory. This lets concurrent local tasks remain isolated while applying the parent turn's hook policy.
+
+A precompiled runnable is opaque. If any approval policy is active, Talon substitutes a refusal rather than execute it; otherwise it may run with task-only state. Remote `AsyncSubAgent` definitions are likewise opaque and stream the configured remote graph with the task description as user input, requesting cancellation on disconnect. `fork` mode is rejected for every subagent source.
 
 ```mermaid
 sequenceDiagram
-    participant Adapter as Channel adapter
+    participant Main as Main agent
+    participant Tasker as TaskTools
+    participant Worker as BackgroundSubagents
+    participant Local as Fresh local agent
+    participant Hooker as Child hook session
+    participant Remote as Remote graph
     participant Host as TalonHost
-    participant Runtime as DeepAgentRuntime
-    participant Graph as Captured graph
-    Adapter->>Host: ChannelMessage
-    Host->>Runtime: Prepare inbound media
-    Host->>Host: Build trusted request and handlers
-    Host->>Runtime: AgentRequest
-    Runtime->>Runtime: Refresh tools and approval snapshot
-    Runtime->>Runtime: Load turn hook snapshot
-    Runtime->>Graph: Invoke captured graph
-    Graph-->>Runtime: AgentResult
-    Runtime-->>Host: Final text and result IDs
-    Host->>Adapter: Deliver final text or media
-    Host->>Runtime: Record confirmed delivery
-```
 
-This shows an interactive turn. The runtime binds the captured graph, selected model, approval snapshot, history, cron origin, authorization handler, progress handler, hook adapter, and message state with context variables, then resets them even on failure or cancellation. The final-reply route remains a host responsibility.
-
-Graph construction includes filesystem middleware, clock and breakout tools, optional progress, archive, cron, approval, subagent, web, and help capabilities, configured runtime tools, and middleware. Tool assembly distinguishes **eager** from **skill-only** MCP tools.
-
-```mermaid
-flowchart TD
-    Input["Runtime tools"] --> Classify{"MCP tool marked skill only"}
-    Classify -- "no" --> Main["Main graph tool catalog"]
-    Classify -- "yes" --> Skill["Skill middleware tool catalog"]
-    Main --> Approvals["Add approval tools and interrupt policy"]
-    Skill --> Skills["Resolve skills and disclosure state"]
-    Approvals --> Agent["Create Deep Agents graph"]
-    Skills --> Agent
-```
-
-A `skillOnly: true` MCP tool is removed from the eager catalog and supplied to skill middleware; it is disclosed when the corresponding skill is read or pinned. `get_agent_tools` reports active attachments, saved-but-inactive changes, and capabilities retained by the current or running task.
-
-`DEEPAGENTS_TALON_VERBOSITY` accepts only `1`, `2`, and `3`: level 1 omits `send_message`; level 2 allows two interim messages per invocation; level 3 has no fixed budget. `ProgressMessages` forwards visible main-agent narration immediately before a tool call only when the message has calls and does not explicitly call `send_message`; subagent narration is excluded. Progress budgets and handlers are invocation-local, whereas final replies are separately delivered and recorded only after successful delivery.
-
-With a remote sandbox, documents are staged only after inbound-root, regular-file, symlink, and size checks. The model sees document path notices rather than inline contents, and eligible images become bounded base64 blocks. Markdown media from a final response becomes channel media only after outbound-root containment checks.
-
-`tools.json` is a bounded, validated, non-symlink exact-name mapping from tool name to boolean. Its byte-hash revision makes `ToolApprovalStore` updates lock-protected compare-and-swap operations. Before each invocation captures its graph, the runtime rereads the policy under the tools lock; a changed policy builds a graph before publishing it. A read or construction failure blocks that turn while retaining the old graph and snapshot. Active turns retain their captured graph and policy.
-
-The same construct-before-publish rule applies to runtime-tool refresh, explicit MCP reload, subagent reload, and helper-model changes. A failed reload retains the previous graph; successful replacement affects later turns, not active work or already delegated tasks. This is availability-preserving, not immediate capability revocation.
-
-## Command hooks
-
-Talon adapts the shared `deepagents-code` command-hook engine. Configure trusted assistant-level hooks in `$DEEPAGENTS_TALON_HOME/$DEEPAGENTS_TALON_ASSISTANT_ID/hooks.json`; defaults make this `~/.deepagents/default/hooks.json`. The adapter supports `PreToolUse`, `PostToolUse`, and `PostToolUseFailure` for the main agent and fresh local subagents, plus `Stop` for the main agent. Commands receive JSON on stdin and return decisions on stdout; shell calls use the compatible `Bash` tool name and `tool_input.command`.
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "Bash",
-      "hooks": [{"type": "command", "command": "/absolute/path/check-command", "timeout": 10}]
-    }]
-  }
-}
-```
-
-Hooks execute on the **host**, even when the controlled tool runs in a remote sandbox. Install only commands trusted with host execution. The shared engine provides environment filtering, timeouts, output limits, and cancellation cleanup. Workspace `.deepagents/hooks.json`, Claude Code settings, plugin hooks, and client lifecycle hooks are deliberately excluded; Talon loads only the assistant's `hooks.json` at the start of each turn. Edits therefore apply to later turns, while active work retains its loaded snapshot. `updatedInput` is currently ignored, so hook-driven command rewriting is unsupported.
-
-```mermaid
-sequenceDiagram
-    participant Runtime as DeepAgentRuntime
-    participant Graph as Agent graph
-    participant Hooks as TalonHooks
-    participant Command as Host hook command
-    participant Approval as Talon approval
-    Runtime->>Hooks: Load assistant snapshot for turn
-    Runtime->>Graph: Invoke with hook context
-    Graph-->>Runtime: Hook or approval interrupts
-    Runtime->>Hooks: Validate and fulfill hook interrupts
-    Hooks->>Command: Run JSON hook on host
-    Command-->>Hooks: Allow or deny decision
-    Hooks-->>Runtime: Resume values and remaining interrupts
-    alt Approval remains
-        Runtime->>Approval: Ask request-bound handler
-        Approval-->>Runtime: Approve or reject
+    Main->>Tasker: task with optional exact tools
+    Tasker->>Worker: delegated task
+    alt attended turn
+        Worker-->>Main: task id
+        Worker->>Local: fresh task
+        Local->>Hooker: tool hook events
+        Worker->>Remote: remote stream when selected
+        Worker-->>Host: owner result ready
+        Host->>Main: unattended delivery turn
+    else cron turn
+        Worker->>Local: inline with timeout
+        Local->>Hooker: tool hook events
+        Worker->>Remote: inline remote stream
+        Worker-->>Main: result or safe error
     end
-    Runtime->>Graph: Resume graph
 ```
 
-Hook interrupts are fulfilled before normal tool-approval interrupts. A hook denial suppresses the protected call and thus does not need approval; a hook **allow does not bypass Talon approvals**. Remaining protected calls still use the request-bound approval handler, while cron, unattended background delivery, and channels without one are auto-denied.
+*Local tasks have a child hook session derived from the current invocation. Attended tasks detach for host delivery; scheduled tasks wait inline because no interactive follow-up is available.*
 
-Each turn receives a hook context with a snapshot ID, conversation thread ID, and prompt ID. The adapter validates those identities and interrupt IDs before it executes or reuses a hook response, records committed graph messages before fulfillment, and bounds the combined hook/approval resume loop. Concurrent turns therefore retain separate hook context and transcript projections.
+## Delegation and delivery behavior
 
-Fresh local subagents inherit the parent turn's hook snapshot—including background workers and dynamically attached tools—but receive new thread and prompt identities, an `agent_id`, and their configured agent type. Their hooks have isolated transcripts and omit `Stop`; opaque compiled and remote agents do not receive this adapter. Fresh local subagents also retain their normal approval restrictions, so hooks cannot authorize a protected action.
+For attended turns, `BackgroundSubagents` makes in-memory, conversation-owned jobs and enforces a process-shared running limit. Workers clear approval-operator and authorization-handler authority, block nested delegation, bound result text, and convert timeout, failure, remote error, and approval interrupt into safe results. Listing, inspection, cancellation, and control are limited to the owning conversation; queued guidance is available only to Talon-built local agents.
 
-## Persistence and erasure
+The host dispatches eligible completed results using an unattended `background_delivery` request, which has no approval, authorization, or question handlers. It requeues result IDs if it cannot deliver the reply and limits failed delivery retries. For cron requests, delegation runs inline under a separate semaphore and timeout; nested delegation remains refused and failure becomes a safe tool error rather than an escaping graph retry.
 
-Talon validates assistant IDs, creates restrictive assistant-local state directories, and installs defaults without overwriting an existing `tools.json`. Checkpoint and history selection are independent: checkpoint URIs choose a LangGraph saver, history opens an assistant-namespaced archive, and `ConversationSaver` combines them. The checkpoint factory supports built-in SQLite/file, PostgreSQL, and MongoDB schemes before trusted entry-point plugins; setup errors are credential-safe configuration errors.
+## Operations and validation
 
-`ConversationSaver` checkpoints first and then archives committed message revisions. There is no transaction across those stores: an archive failure propagates after the checkpoint write, and retrying the same write repairs the idempotent archive. Cancellation waits for both writes to finish, preventing reset from racing an incomplete archive write.
+The package is alpha/experimental, requires Python 3.14, and exposes the `deepagents-talon` command. Relevant configuration includes the assistant manifest/home, model and context settings, optional sandbox, MCP configuration, `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, and `DEEPAGENTS_TALON_VERBOSITY`. Validate a normal attended turn and a cron turn separately: their authority and delegation lifecycle intentionally differ.
 
-Hook transcript projections belong to the durable parent conversation, not only a generated child session. They are stored beneath a hashed conversation owner directory, with serialization across loading, recording, materialization, and erasure. Deleting history or selected conversations first revokes transcript writers with a marker, removes current and legacy projections and backups without following symlinks, then deletes checkpoint and archive state. A failure leaves ownership registrations for retry; stale parent or child writers reject further writes after revocation.
+When changing this integration:
 
-The host records final replies in history only after channel delivery succeeds. On supersession, pre-delivery cancellation, or delivery failure, it requeues background-result IDs carried by `AgentResult`. A post-start dispatcher finds idle current conversations with pending results, starts a synthetic follow-up with the original reply route and progress handler but no interactive approval or authorization handler, and applies exponential retry backoff capped at 60 seconds.
+- Keep the host as the sole owner of provider delivery and interactive callback lifetime.
+- Treat hooks, approval authority, authorization, questions, and progress handlers as per-invocation capabilities; never leak them to a background worker or delivery turn.
+- Build replacement graphs before publishing them and preserve per-invocation graph/policy snapshots.
+- Keep task attachment catalog-based, exact-name, and fresh-context; do not give a role parent history, all tools, or an approval bypass.
+- Treat compiled and remote agents as opaque policy boundaries.
+- Preserve trusted-home-only hook loading and child-session isolation for local agents.
 
-## MCP configuration and authorization
-
-Talon reads `~/.deepagents/.mcp.json` by default, or the path in `DEEPAGENTS_TALON_MCP_CONFIG`. Loaded tools are renamed `<server>_<tool>`, tagged as Talon MCP tools, and a failed server contributes status rather than preventing tools from other servers from loading. The provider adds status, reload, redacted configuration, and conditional OAuth-authentication capabilities; it serializes refreshes, and the runtime keeps the active graph if automatic refresh fails.
-
-`MCPConfigStore` offers redacted, revisioned configuration management over regular non-symlink files, with bounded locking and atomic updates. This is not a secrecy boundary: the default execution-capable local shell can use absolute paths to bypass management tools and filesystem permissions. Keep credentials as environment references or use an OS, keyring, or sandbox boundary unavailable to the agent process. When an unapproved update reuses a hidden value, only tool-filter changes are accepted so a credential cannot silently be redirected.
-
-MCP middleware applies only to marked tools: it normalizes optional empty string arguments, binds a tool-call ID into authorization context, and turns MCP protocol errors into sanitized tool messages. Fresh local subagents receive the same middleware. OAuth authorization uses a request-bound channel handler; unattended cron and background work have none, so operators must use interactive chat or:
+Focused tests in `tests/unit_tests/test_hooks.py` cover hook wire payloads, denial versus approval, failure events, trusted file loading and symlink resistance, diagnostics/legacy migration, reload between turns, and local-subagent snapshot/transcript isolation. `tests/unit_tests/test_research_subagents.py` covers fresh context, explicit attachments, dynamic tool selection, MCP protections, and approval enforcement for opaque agents.
 
 ```bash
-deepagents-talon mcp config
-deepagents-talon mcp login <server>
+pytest tests/unit_tests/test_hooks.py tests/unit_tests/test_research_subagents.py
 ```
-
-## Focused verification
-
-From `libs/talon`, run the runtime and hook coverage with the existing MCP, persistence, and media safeguards:
-
-```bash
-uv sync --group test
-uv run --group test pytest tests/test_runtime.py tests/unit_tests/test_hooks.py tests/unit_tests/test_hook_transcripts.py tests/test_mcp_middleware.py tests/unit_tests/test_mcp_config.py tests/unit_tests/test_skill_mcp.py tests/unit_tests/test_tool_approval_runtime.py tests/test_media.py tests/unit_tests/test_attachments.py tests/unit_tests/test_messaging.py tests/unit_tests/test_verbosity.py
-```
-
-The hook tests exercise wire payloads, pre-hook blocking, preserved Talon approval after hook allow, workspace-hook exclusion, snapshot reload between turns, isolated concurrent contexts, and local-subagent inheritance. Transcript tests cover scoped deletion, restart retry after each cleanup-stage failure, serialization against an in-flight write, and symlink resistance. See the [testing guide](../testing/testing-guide.md) for repository-wide conventions.

@@ -5864,10 +5864,13 @@ def cli_main() -> None:
                 from acp import run_agent as run_acp_agent
                 from deepagents_acp.server import AgentServerACP
             except ImportError as exc:
+                from deepagents_code.update_check import upgrade_command
+
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: uv tool install --reinstall -U deepagents-code "
-                    "--with deepagents-acp\n"
+                    "This usually means an incompatible deepagents-acp or "
+                    "agent-client-protocol version is installed. "
+                    f"Upgrade with: {upgrade_command()}\n"
                 )
                 sys.stderr.write(msg)
                 sys.stderr.flush()

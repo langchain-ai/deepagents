@@ -857,7 +857,7 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.4.0,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.43,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.38.1,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.38.2,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.14,<1.0.0" },
     { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.17" },
     { name = "markdownify", specifier = ">=1.2.3" },
@@ -2128,7 +2128,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.38.1"
+version = "0.38.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -2139,9 +2139,9 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/6b/39b5a0a20ef05a12033f89d326ac2cd37645a5c32024e8d8a9e2692430f5/langgraph_runtime_inmem-0.38.1.tar.gz", hash = "sha256:8dac68cf9fbeb7f6204ac4384d69ce800bc83e3be6c407e614c954e1e0c1eda7", size = 145079, upload-time = "2026-11-16T02:50:34.273Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/57/64a2928b85972991f91b9be905fcef99dfd635971cab40d6bc7208b8d951/langgraph_runtime_inmem-0.38.2.tar.gz", hash = "sha256:380699c1947afc63aee4a83db2a5c4593fe23067619672834ce7d7ca3e013312", size = 145079, upload-time = "2026-11-17T01:04:46.958Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/5a/9b4a03c77c5c976dcfdfa62eb9d5c33a0bb502166ee9da03b7b87e8af15a/langgraph_runtime_inmem-0.38.1-py3-none-any.whl", hash = "sha256:12c0ec2630bf566f89776a7f6da34144fe72d7d38d6d837ffcf1afe73b154df8", size = 64991, upload-time = "2026-11-16T02:50:32.735Z" },
+    { url = "https://files.pythonhosted.org/packages/96/ea/dfbe75214a4950f6a504cb9a667c3d5d3571b79e50909a15602b614adcba/langgraph_runtime_inmem-0.38.2-py3-none-any.whl", hash = "sha256:9223ae012b3bfaeb1216c6f94c98a12a94ba8ebe06f372c42db393fb55ea3bb7", size = 64993, upload-time = "2026-11-17T01:04:45.611Z" },
 ]
 
 [[package]]

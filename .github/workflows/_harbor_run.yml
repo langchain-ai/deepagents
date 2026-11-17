@@ -1099,6 +1099,10 @@ jobs:
             --verifier-env "DRBENCH_JUDGE_MODEL=${HARBOR_DRBENCH_JUDGE_RESOLVED:-$HARBOR_DRBENCH_JUDGE}"
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
+            # APEX-Agents graders read a LiteLLM model string from GRADING_MODEL and
+            # otherwise use each task's default judge (a Vercel AI Gateway model we
+            # hold no key for). Bare OpenAI names get the `openai/` route.
+            --verifier-env "GRADING_MODEL=$( [[ "$HARBOR_JUDGE_MODELS" == */* ]] && echo "$HARBOR_JUDGE_MODELS" || echo "openai/$HARBOR_JUDGE_MODELS" )"
           )
           # Harbor applies OPENAI_BASE_URL (forwarded or in its own env) to every
           # provider, and pi treats it as a custom endpoint, so only OpenAI models on

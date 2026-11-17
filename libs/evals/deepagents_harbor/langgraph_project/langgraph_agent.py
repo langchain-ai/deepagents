@@ -12,8 +12,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from deepagents import HarnessProfile, create_deep_agent, register_harness_profile
+from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, runtime_state
@@ -40,90 +41,11 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
-_KIMI_HARNESS_KEY = "fireworks:accounts/fireworks/models/kimi-k3p1-pro"
-
-_SHORT_TOOL_DESCRIPTIONS: dict[str, str] = {
-    "execute": (
-        "Run a shell command in the sandbox. Returns combined stdout/stderr and the exit code; very large output is truncated.\n"
-        "- Quote paths containing spaces. Chain commands with `&&` (or `;` when an earlier failure doesn't matter); "
-        "no newlines outside quoted strings.\n"
-        "- Prefer absolute paths over `cd`. Pass `timeout` (seconds) for long-running commands.\n"
-        "- The shell sees only the sandbox disk. Use read_file/grep/glob for paths outside it, such as /large_tool_results/."
-    ),
-    "ls": "List the files in a directory. The path must be absolute.",
-    "read_file": (
-        "Read a file. Text output starts with a `@@ ... @@` status header; everything after it is verbatim file content. "
-        "Never include the header in an edit.\n"
-        "- Reads up to 2000 lines by default; use `offset`/`limit` for other ranges.\n"
-        "- Images, audio, video and PDFs return multimodal content (no `offset`/`limit`).\n"
-        "- Read a file before editing it. Batch several reads in one response when they may help."
-    ),
-    "edit_file": (
-        "Replace exact text in a file. Read the file first. `old_string` must match the file exactly, including "
-        "indentation, and be unique unless `replace_all` is true. Never include the read status header."
-    ),
-    "write_file": "Create a file, or replace its entire contents. Prefer edit_file for changes to an existing file.",
-    "delete": "Permanently delete a file or directory (directories recursively). This cannot be undone.",
-    "glob": (
-        "Find files matching a glob pattern; returns absolute paths. Supports `*`, `**`, `?`, `[abc]` and `{a,b}`. "
-        "A pattern without `/` matches file names at any depth; one with `/` matches the path relative to the search root; "
-        "a leading `/` anchors to the root. Dot-files match only when the pattern segment starts with `.`."
-    ),
-    "grep": (
-        "Search files for a LITERAL text pattern (not regex); run a separate search per string. "
-        "For regex, use `rg` through execute. Returns matching files, lines or counts per `output_mode`."
-    ),
-    "task": (
-        "Launch an ephemeral subagent for a complex, multi-step task.\n\n"
-        "Available agent types:\n{available_agents}\n\n"
-        "- The subagent sees only the prompt you give it: include all needed context and say what it should return.\n"
-        "- Its report is not shown to the user; relay what matters.\n"
-        "- Launch independent subagents in parallel with several tool calls in one message."
-    ),
-}
-"""Eval-only short tool descriptions for the bare graph on Kimi K3.1 Pro.
-
-They drop the SDK defaults' instructions to avoid shell `grep`/`find`/`cat` and
-to run `ls` before reading, and trim text the model doesn't need.
-"""
-
-
-_AGENT_PROMPT = """You are an expert agent. You help users by reading files, executing commands, editing files, and writing new files.
-
-Guidelines:
-- Use execute for shell commands and file operations like ls, rg, find.
-- Use read_file to examine files instead of cat or sed.
-- Use edit_file for precise changes (old_string must match exactly).
-- Use write_file only for new files or complete rewrites.
-- Be concise in your responses.
-- Show file paths clearly when working with files."""
-
-_BARE_SYSTEM_PROMPTS: dict[str, str] = {"accounts/fireworks/models/kimi-k3p1-pro": _AGENT_PROMPT}
-"""Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
-
-A Pi-style prompt that describes a general agent rather than a coding assistant.
-Models without an entry get no system prompt.
-"""
-
-
-def _register_eval_harness_profiles() -> None:
-    """Register eval-only harness profiles (merging re-registration is idempotent)."""
-    register_harness_profile(
-        _KIMI_HARNESS_KEY, HarnessProfile(tool_description_overrides=_SHORT_TOOL_DESCRIPTIONS)
-    )
-
-
-_MODEL_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
-    "accounts/fireworks/models/kimi-k3p1-pro": {"max_input_tokens": 1048576},
-}
-"""Eval-only profile fields for models LangChain has no profile for.
-
-Without `max_input_tokens`, summarization falls back to a fixed 170K-token
-trigger, far below these models' context windows.
-"""
-
 _MODEL_RETRY_ATTEMPTS = 3
 """Retries for a model call that fails mid-request (e.g. a dropped stream)."""
+
+_KEEPALIVE_MAX_PINGS = 12
+"""Cache keep-alive pings per batch of tool calls (12 x 4 min, up from the default 6)."""
 
 # Streaming makes the read timeout an idle timeout rather than a cap on the
 # whole generation; seconds are (connect, read).
@@ -275,11 +197,7 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
         kwargs["use_responses_api"] = True
     _apply_glm_5_2_reasoning_default(name, kwargs)
     _apply_fireworks_defaults(name, kwargs)
-    model = init_chat_model(name, **kwargs)
-    override = _MODEL_PROFILE_OVERRIDES.get(getattr(model, "model", ""))
-    if override:
-        model.profile = {**(model.profile or {}), **override}
-    return model
+    return init_chat_model(name, **kwargs)
 
 
 def _skills(configurable: dict[str, object]) -> list[str] | None:
@@ -562,7 +480,6 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
-    _register_eval_harness_profiles()
     # Harbor runs each task in its own isolated container rooted at the workdir,
     # and tasks operate on the real sandbox paths, so path virtualization is
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
@@ -583,7 +500,6 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         backend=backend,
         tools=tools or None,
         skills=_skills(configurable),
-        system_prompt=_BARE_SYSTEM_PROMPTS.get(getattr(model, "model", "")),
         middleware=_bare_middleware(),
     )
 
@@ -591,11 +507,17 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
 def _bare_middleware() -> list[AgentMiddleware]:
     """Middleware the bare graph adds on top of `create_deep_agent`'s stack.
 
-    The retry wraps the whole model call, so a request that fails mid-stream is
-    retried from the start. `on_failure="error"` keeps an unrecoverable model
-    error an errored trial rather than a scored failure.
+    The retry runs outermost so a model call that fails mid-request is retried
+    from the start, and the cache keep-alive sits inside it so its own pings are
+    never retried. `on_failure="error"` keeps an unrecoverable model error an
+    errored trial rather than a scored failure. The keep-alive only pings
+    Anthropic models; `_KEEPALIVE_MAX_PINGS` lets it cover tool calls of up to
+    about 48 minutes.
     """
-    return [ModelRetryMiddleware(max_retries=_MODEL_RETRY_ATTEMPTS, on_failure="error")]
+    return [
+        ModelRetryMiddleware(max_retries=_MODEL_RETRY_ATTEMPTS, on_failure="error"),
+        AnthropicCacheKeepaliveMiddleware(max_pings=_KEEPALIVE_MAX_PINGS),
+    ]
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

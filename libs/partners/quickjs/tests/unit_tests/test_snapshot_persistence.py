@@ -378,7 +378,7 @@ async def test_first_eval_initializes_runtime_and_current_tools(
     )
     result = await _invoke(agent, invoke_mode, {})
     assert _results(result) == ["<result>available</result>"]
-    assert all(s.repl is None for s in middleware._registry._slots.values())
+    assert all(s._ctx is None for s in middleware._registry._slots.values())
 
 
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
@@ -485,4 +485,4 @@ async def test_live_bindings_change_before_first_and_subsequent_eval(
         assert result.content == "<result>undefined</result>"
     finally:
         middleware.after_agent(state, None)
-    assert all(s.repl is None for s in middleware._registry._slots.values())
+    assert all(s._ctx is None for s in middleware._registry._slots.values())

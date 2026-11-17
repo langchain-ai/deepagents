@@ -402,11 +402,12 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = middleware._registry.acquire(slot_id)
+            slot = middleware._registry.acquire(
+                slot_id, fresh=middleware._mode == "call"
+            )
             try:
                 outcome = slot.eval_sync(
                     code,
-                    fresh=middleware._mode == "call",
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
@@ -424,11 +425,12 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = await middleware._registry.aacquire(slot_id)
+            slot = await middleware._registry.aacquire(
+                slot_id, fresh=middleware._mode == "call"
+            )
             try:
                 outcome = await slot.eval_async(
                     code,
-                    fresh=middleware._mode == "call",
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),

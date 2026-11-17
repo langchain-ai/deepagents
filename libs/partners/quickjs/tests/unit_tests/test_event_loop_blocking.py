@@ -13,13 +13,14 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from quickjs_rs import Runtime
 
 from langchain_quickjs import CodeInterpreterMiddleware
-from langchain_quickjs._repl import _Registry, _Slot, _ThreadREPL
+from langchain_quickjs._repl import _Registry, _ThreadREPL
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
+
+    from quickjs_rs import Runtime
 
 SLOW = 0.3
 # A loop that never waits on the worker stays well under SLOW.
@@ -76,12 +77,15 @@ def slow_build(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Make Runtime creation block its worker thread for SLOW seconds."""
     calls: list[str] = []
 
-    def _create_runtime(self: _Slot) -> Runtime:
-        calls.append(threading.current_thread().name)
-        time.sleep(SLOW)
-        return Runtime(memory_limit=64 * 1024 * 1024)
+    original = _ThreadREPL._ensure_runtime
 
-    monkeypatch.setattr(_Slot, "_create_runtime", _create_runtime)
+    def _ensure_runtime(self: _ThreadREPL) -> Runtime:
+        if self._runtime is None:
+            calls.append(threading.current_thread().name)
+            time.sleep(SLOW)
+        return original(self)
+
+    monkeypatch.setattr(_ThreadREPL, "_ensure_runtime", _ensure_runtime)
     return calls
 
 
@@ -98,9 +102,7 @@ async def test_first_eval_build_does_not_block_loop(slow_build: list[str]) -> No
 async def test_concurrent_first_evals_build_one_runtime(slow_build: list[str]) -> None:
     registry = _registry()
     slot = registry.get("shared-1")
-    outcomes = await asyncio.gather(
-        *(slot.eval_async(f"{i} + 1", fresh=True) for i in range(3))
-    )
+    outcomes = await asyncio.gather(*(slot.eval_async(f"{i} + 1") for i in range(3)))
     assert [o.result for o in outcomes] == ["1", "2", "3"]
     assert slow_build == ["quickjs-worker-shared-1"]
     await registry.aevict("shared-1")
@@ -110,19 +112,22 @@ async def test_fresh_context_does_not_block_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _registry()
-    slot = registry.get("fresh-01")
-    await slot.eval_async("1")
-    original = _ThreadREPL._init
+    original = _ThreadREPL._context
 
-    def _slow_init(self: _ThreadREPL) -> None:
-        time.sleep(SLOW)
-        original(self)
+    def _slow_context(self: _ThreadREPL) -> Any:
+        if self._ctx is None:
+            time.sleep(SLOW)
+        return original(self)
 
-    monkeypatch.setattr(_ThreadREPL, "_init", _slow_init)
-    gap, outcome = await _max_gap(slot.eval_async("1 + 1", fresh=True))
+    monkeypatch.setattr(_ThreadREPL, "_context", _slow_context)
+    repl = await registry.aacquire("fresh-01", fresh=True)
+    gap, outcome = await _max_gap(repl.eval_async("1 + 1"))
     assert gap < MAX_GAP
     assert outcome.result == "2"
-    await registry.aevict("fresh-01")
+    gap, _ = await _max_gap(registry.arelease(repl))
+    assert gap < MAX_GAP
+    assert repl._runtime is None
+    assert registry.get_if_exists("fresh-01") is None
 
 
 @pytest.mark.parametrize("mode", ["thread", "turn"])
@@ -133,17 +138,17 @@ async def test_after_agent_does_not_block_loop(
     slot_id = f"after-{mode}"
     slot = mw._registry.get(slot_id)
     await slot.eval_async("globalThis.x = 1")
-    original = _ThreadREPL._aclose
+    original = _ThreadREPL._aend_turn
 
-    async def _slow_aclose(self: _ThreadREPL) -> None:
+    async def _slow_aend_turn(self: _ThreadREPL) -> None:
         time.sleep(SLOW)  # noqa: ASYNC251  # blocks the worker thread on purpose
         await original(self)
 
-    monkeypatch.setattr(_ThreadREPL, "_aclose", _slow_aclose)
+    monkeypatch.setattr(_ThreadREPL, "_aend_turn", _slow_aend_turn)
     state: dict[str, Any] = {"_quickjs_slot_id": slot_id}
     gap, _ = await _max_gap(mw.aafter_agent(state, None))  # type: ignore[arg-type]
     assert gap < MAX_GAP
-    assert slot.repl is None
+    assert slot._ctx is None
     await mw._registry.aevict(slot_id)
 
 
@@ -159,7 +164,7 @@ async def test_aevict_does_not_block_loop() -> None:
             time.sleep(SLOW)  # noqa: ASYNC251  # blocks the worker thread on purpose
             raise
 
-    lingering = slot.worker.run_async(_linger())
+    lingering = slot._worker.run_async(_linger())
     gap, _ = await _max_gap(registry.aevict("evict-01"))
     assert gap < MAX_GAP
     assert registry.get_if_exists("evict-01") is None

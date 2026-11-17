@@ -17,6 +17,7 @@ from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.update_check import (
     UPDATE_LOCK_CONTENDED_MESSAGE,
     ExtraInstallOutcome,
+    InstallOutcome,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +74,39 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "curl -LsSf https://langch.in/dcode" in joined
         assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
         assert "quickjs" in joined
+
+
+async def test_install_slash_deferral_shows_guidance_instead_of_failure() -> None:
+    """On Windows the guidance names the command; it is not a failed install."""
+    guidance = (
+        "Quit every dcode session, then run from your shell: "
+        'uv tool install --reinstall -U "deepagents-code[quickjs]==1.0.0"'
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(False, guidance, deferred=True),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        assert not list(app.query(ErrorMessage))
+        app_msgs = [str(m._content) for m in app.query(AppMessage)]
+        assert guidance in app_msgs
 
 
 async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> None:
@@ -233,7 +267,7 @@ async def test_install_slash_package_confirm_runs(
             patch(
                 "deepagents_code.update_check.perform_install_package",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=InstallOutcome(True, ""),
             ) as perform_mock,
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value=True)
@@ -379,7 +413,7 @@ async def test_install_package_prompt_responsive_through_message_pump(
             patch(
                 "deepagents_code.update_check.perform_install_package",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=InstallOutcome(True, ""),
             ) as perform_mock,
         ):
             # Submit through the message pump, exactly as the ChatInput widget

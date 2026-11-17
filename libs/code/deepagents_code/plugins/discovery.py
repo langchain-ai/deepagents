@@ -214,19 +214,45 @@ def _remote_marketplace_source(record: MarketplaceRecord) -> MarketplaceSource |
             return None
 
 
-def _load_record_marketplace(
-    record: MarketplaceRecord, *, refresh_missing: bool
+def load_record_marketplace(
+    record: MarketplaceRecord, *, refresh_missing: bool = False
 ) -> PluginMarketplace:
-    """Load a configured marketplace, optionally re-fetching a missing clone.
+    """Load a cached catalog, fetching the default on first browse.
 
     Returns:
         Parsed marketplace.
+
+    Raises:
+        MarketplaceError: If fetching is blocked by offline mode or a plugin mutation.
     """
     location = Path(record.install_location)
+    refresh_missing = refresh_missing or (
+        record.name == "langchain-plugins"
+        and record.source_type == "github"
+        and record.source == "langchain-ai/langchain-plugins"
+    )
     source = _remote_marketplace_source(record) if refresh_missing else None
     if source is not None and not location.exists():
-        marketplace, _ = materialize_marketplace_source(source)
-        return marketplace
+        from deepagents_code._env_vars import OFFLINE, is_env_truthy
+
+        if is_env_truthy(OFFLINE):
+            msg = f"Marketplace {record.name!r} is not cached; connect to browse it"
+            raise MarketplaceError(msg)
+        from filelock import Timeout
+
+        try:
+            with plugin_mutation_lock(timeout=0):
+                if location.exists():
+                    return load_marketplace_location(location)
+                marketplace, location = materialize_marketplace_source(source)
+                save_marketplace_record(replace(record, install_location=str(location)))
+                return marketplace
+        except Timeout as exc:
+            msg = (
+                "Another plugin operation is in progress; "
+                "retry browsing when it finishes"
+            )
+            raise MarketplaceError(msg) from exc
     return load_marketplace_location(location)
 
 
@@ -244,7 +270,7 @@ def _resolve_marketplace_and_entry(
     if record is None:
         msg = f"Marketplace {marketplace_name!r} is not configured"
         raise MarketplaceError(msg)
-    marketplace = _load_record_marketplace(record, refresh_missing=refresh_missing)
+    marketplace = load_record_marketplace(record, refresh_missing=refresh_missing)
     entry = next(
         (plugin for plugin in marketplace.plugins if plugin.name == plugin_name),
         None,
@@ -572,7 +598,13 @@ def _collect_updates(
             and plugin_id in installed
             and installed[plugin_id].version is not None
         ]
-        if not plugin_ids and not refresh_all:
+        if not plugin_ids and (
+            not refresh_all
+            or (
+                record.name == "langchain-plugins"
+                and not Path(record.install_location).exists()
+            )
+        ):
             continue
         marketplace = _refresh_marketplace(
             record, include_local=include_local, errors=errors
@@ -816,7 +848,7 @@ def list_available_plugins() -> tuple[tuple[str, str, bool], ...]:
     rows: list[tuple[str, str, bool]] = []
     for name, record in sorted(records.items()):
         try:
-            marketplace = load_marketplace_location(Path(record.install_location))
+            marketplace = load_record_marketplace(record)
         except MarketplaceError as exc:
             rows.append((f"<marketplace:{name}>", str(exc), False))
             continue

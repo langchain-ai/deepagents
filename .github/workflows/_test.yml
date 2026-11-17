@@ -96,7 +96,7 @@ jobs:
 
       - name: "🟩 Set up Node for Talon"
         if: inputs.working-directory == 'libs/talon'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: "24"
 
@@ -283,7 +283,7 @@ jobs:
         if: >-
           steps.ripgrep-install.outputs.timed-out == 'true' ||
           steps.ripgrep-strict.outputs.timed-out == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           # Whichever install step reported `timed-out` is the one that set
           # `artifact`/`marker`; the other's outputs are empty here, because the

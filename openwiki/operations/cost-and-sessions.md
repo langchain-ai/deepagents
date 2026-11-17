@@ -6,44 +6,30 @@ tags: [dcode, sessions, cost-tracking, tracing, sqlite, offload]
 sources:
   - id: openwiki-source-d4716b8ae162796c2c7ad991
     resource: repo://libs/code/deepagents_code/_js_cost.py
-  - id: openwiki-source-b07cec8e891bf1f14e503026
-    resource: repo://libs/code/deepagents_code/_langsmith_runtime.py
   - id: openwiki-source-dc8749c06f6da0ecc0666f26
     resource: repo://libs/code/deepagents_code/_session_stats.py
-  - id: openwiki-source-1b65375bb7d7df74863a3f36
-    resource: repo://libs/code/deepagents_code/_trace_redaction.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-7f6b98925b5f1ba065df3a04
-    resource: repo://libs/code/deepagents_code/config.py
+  - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
+    resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
     resource: repo://libs/code/deepagents_code/cost_tracking.py
   - id: openwiki-source-ea1089f0d7536fbc96c64866
     resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-0f8622164498a685abc913d5
-    resource: repo://libs/code/deepagents_code/sessions.py
-  - id: openwiki-source-91c9283d1547adfffd627c43
-    resource: repo://libs/code/deepagents_code/thread_ownership.py
   - id: openwiki-source-29a60a7d68da0bf4ec625403
     resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
-  - id: openwiki-source-84638d6cd0c222d6264dbef8
-    resource: repo://libs/code/tests/unit_tests/test_js_cost_sync.py
+  - id: openwiki-source-a1c23c211325ea69f28f8ca0
+    resource: repo://libs/code/tests/unit_tests/test_cost_tracking.py
   - id: openwiki-source-8574be7f7f29e3e1dd328837
     resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
-  - id: openwiki-source-ceb0295160537174ea07a3f2
-    resource: repo://libs/code/tests/unit_tests/test_langsmith_runtime.py
-  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
-    resource: repo://libs/code/tests/unit_tests/test_sessions.py
-  - id: openwiki-source-6d493572634f1b686d52ef11
-    resource: repo://libs/code/tests/unit_tests/test_trace_redaction.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
+  - id: openwiki-source-595131cfca9034bbbf74e8b2
+    resource: repo://libs/code/tests/unit_tests/test_session_stats.py
+  - id: openwiki-source-aa6b9c0110321dc7ac0b8725
+    resource: repo://libs/code/tests/unit_tests/tui/test_textual_adapter.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-28T08:04:17.781Z
+    at: 2026-11-11T08:04:08.950Z
 ---
 
 # dcode Costs, Traces, and Session Operations
@@ -67,9 +53,11 @@ flowchart TD
 
 *The verified JavaScript path persists local child receipts before the outer `js_eval` call aggregates them into a parent transfer; the parent checkpoint ledger—not the UI—owns the resulting total.*
 
-`SessionStats` is deliberately separate process-local telemetry. It revises an earlier streaming contribution when cumulative usage, a completed response, or a better model identity arrives, preventing one model call from becoming multiple display requests. Its totals and provisional nested `model_usage` events provide live feedback; they do not replace durable checkpoint cost.
+`SessionStats` is deliberately separate process-local telemetry. It revises an earlier streaming contribution when cumulative usage, a completed response, or a better model identity arrives, preventing one model call from becoming multiple display requests. The request ledger prefers a model-invocation identity and retains message aliases, while callers finalize open records at a stream-round boundary so replayed chunks after HITL resume are not merged again. Its totals and provisional nested `model_usage` events provide live feedback; they do not replace durable checkpoint cost.
 
-Pricing is best effort. Unsupported models and malformed usage yield no estimate instead of interrupting model work. The breakdown still records total and priced request counts, token categories, and completeness flags, making partial attribution visible instead of treating an unpriceable request as zero cost.
+Usage is classified consistently for the display breakdown: a non-root namespace is `subagent`; root requests tagged `lc_source="summarization"` are `offload`; those tagged `lc_source="auto_mode_classifier"` are `auto`; other root requests are `assistant`. Per-model rows use the `(provider, model)` pair, so one model served through different providers does not collapse into a single row.
+
+Pricing is best effort. Unsupported models and malformed usage yield no estimate instead of interrupting model work. The breakdown still records total and priced request counts, token categories, and completeness flags, making partial attribution visible instead of treating an unpriceable request as zero cost. Pricing is lazy: the first usable estimate imports `genai-prices` and may start one daemon updater for an hourly upstream catalog refresh. `DEEPAGENTS_CODE_OFFLINE`, `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0`, or `[update].prices_auto_update = false` prevents that refresh; a failed refresh keeps the prior snapshot. On a catalog miss, dcode tries user `~/.deepagents/prices.json` overrides before its bundled overrides, while upstream catalog rates retain precedence.
 
 ### Prepared side-operation charges
 
@@ -151,13 +139,17 @@ The runtime override is **server-only** and process-global: do not install it in
 
 ## UI and hook lifecycle
 
-The Textual adapter contains callbacks, not accounting ownership. The app wires graph-owned absolute `_on_session_cost` updates to `_set_session_cost`, provisional request estimates to `_add_provisional_cost`, usage updates to display refresh, and stream completion to the thread-turn completion handler. Only a validated main-graph absolute cost event reaches the durable-total callback; callback failures are contained so UI display cannot break streaming. Nested `model_usage` events feed provisional `SessionStats` handling.
+The Textual adapter contains callbacks, not accounting ownership. The app wires graph-owned absolute `_on_session_cost` updates to `_set_session_cost`, provisional request estimates to `_add_provisional_cost`, usage updates to display refresh, and stream completion to the thread-turn completion handler. Only a validated main-graph absolute cost event reaches the durable-total callback; callback failures are contained so UI display cannot break streaming. Nested `model_usage` events feed provisional `SessionStats` handling, and are ignored when malformed, from another active thread, or at an unknown event version.
+
+Headless/non-interactive streaming maintains the same process-local `SessionStats` and request ledger across resume passes. It classifies every streamed message before presentation filters, so hidden subagent, offload, and Auto classifier usage contributes to its usage report even though their text is not printed. Finalizing the ledger at each pass makes replayed chunks idempotent after a HITL resume; this is client reporting rather than a replacement for the graph checkpoint total.
 
 Session hooks are separate from checkpoint persistence. The adapter invokes `on_session_start(COMPACT)` after automatic compaction, while the app awaits `on_session_end(CLEAR)` before dropping the old transcript and switching to a newly reserved thread. Hooks may stop the relevant lifecycle operation. UI resets, spinners, cached rows, and cost widgets remain transient client state and must never be treated as a durable thread transition.
 
 ## Focused verification
 
-- Run `tests/unit_tests/test_cost_tracking.py` for middleware drains, pricing/breakdown completeness, and `PreparedOperationCost` settlement.
+- Run `tests/unit_tests/test_cost_tracking.py` for middleware drains, pricing/breakdown completeness, pricing-catalog refresh gates, and `PreparedOperationCost` settlement.
+- Run `tests/unit_tests/test_session_stats.py` after changing stream identities, chunks versus completed messages, replay/resume boundaries, model re-pricing, usage-kind classification, or provisional nested-usage validation.
+- Run `tests/unit_tests/tui/test_textual_adapter.py` after changing stream event routing. It covers forwarding versioned absolute cost with optional breakdown and using nested usage only for provisional display.
 - Run `tests/unit_tests/test_js_cost_tracking.py` after interpreter dispatch, receipt namespaces, cancellation, replay, nested transfers, or SQLite resume changes; run `test_js_cost_sync.py` for the intentional synchronous pass-through. `test_agent.py` covers interpreter installation and remote-sandbox rejection, while `test_app.py` covers checkpoint-to-display session-cost synchronization.
 - Run `tests/unit_tests/test_thread_ownership.py` after lease, token, writer-guard, cancellation, or owned-saver changes. It covers cross-process exclusion, stale writers after release or takeover, and cancellation that must wait for mutation cleanup.
 - Run `tests/unit_tests/test_sessions.py` and `test_app_thread_ownership.py` after changing names, listing caches, deletion, or checkpoint fencing.

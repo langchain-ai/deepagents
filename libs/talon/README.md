@@ -27,7 +27,7 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home's `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
 ## Checkpoint backends
 
@@ -253,7 +253,7 @@ A new message in a conversation cancels the active turn, records an interruption
 
 ## Local Agent Activity Logs
 
-Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. “Thinking” events report model-call lifecycle activity and do not expose hidden chain-of-thought.
+Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. "Thinking" events report model-call lifecycle activity and do not expose hidden chain-of-thought.
 
 ## Tool Approvals
 
@@ -322,9 +322,14 @@ persist its parent directory rather than bind-mounting a single `tools.json`:
 updates use atomic file replacement. These controls are not a sandbox boundary.
 A shell running as the same UID can bypass the tool API and edit the file directly;
 filesystem isolation must be enforced separately. Talon-built local subagents inherit
-this policy for their attached tools. Local tool gates do not enforce policy inside
-opaque remote or precompiled graphs: `start_async_task` gates delegation, not the
-remote graph's internal calls.
+this policy for their attached tools. Delegation to embedding-supplied precompiled
+subagents is refused whenever any tool approval is enabled, including the default
+policy: Talon cannot verify their internal tool calls or retrofit approval middleware.
+The parent conversation and policy-management tools remain available. Supply a fresh
+subagent definition with explicit tools instead. Precompiled subagents can run when
+no approvals are enabled. Local tool gates do not enforce policy
+inside opaque remote graphs: `start_async_task` gates delegation, not the remote
+graph's internal calls.
 
 ## WhatsApp
 
@@ -725,7 +730,21 @@ edits; `list_subagents` shows launch-time additions.
 `task` launches local subagents and `start_async_task` launches remote subagents.
 In a chat conversation both return immediately. The user can continue chatting while
 the main agent uses `list_subagents` to inspect work and `cancel_subagent` to cancel
-it. When work finishes, its result is passed to the main agent for processing on the
+it. `inspect_subagent(task_id, limit=10)` returns recent timestamped model/tool lifecycle
+metadata and message receipts, without tool payloads or model reasoning. It retains
+50 events and 20 message receipts per worker. Remote and precompiled workers expose
+lifecycle events only.
+
+`message_subagent(task_id, message)` queues guidance for a Talon-built local worker's
+next model step, preserving its task context and approval restrictions. Messages are
+limited to 2,000 characters; a full inbox rejects new messages rather than dropping
+queued ones. The returned receipt starts as `queued`; inspection reports `consumed`
+once the instruction is added to the worker's conversation, not an acknowledgment
+that it was followed. Messages do not interrupt an in-flight model request or tool;
+use `cancel_subagent` for a hard stop. Remote and precompiled workers do not support
+messaging. All management tools are scoped to the owning conversation.
+
+When work finishes, its result is passed to the main agent for processing on the
 next idle turn, then the main agent replies to the channel.
 
 Workers and pending results live only in memory and are discarded on restart.
@@ -742,7 +761,8 @@ and limits each run to one hour. Completed results are capped at 64,000 characte
 A scheduled run is already unattended, so it does not delegate in the background.
 Both tools run the subagent to completion and return its result, and the run acts on
 that result in the turn that asked for it; there is no follow-up turn and no separate
-delivery. `list_subagents` and `cancel_subagent` are hidden from a scheduled run,
+delivery. Background management tools (`list_subagents`, `inspect_subagent`,
+`message_subagent`, and `cancel_subagent`) are hidden from a scheduled run,
 which owns no background work to inspect. Subagents launched in one assistant message
 still run concurrently, and a scheduled run no longer competes with chat for the four
 worker slots.
@@ -899,5 +919,6 @@ make test
 
 ## Resources
 
+- [Changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/talon/CHANGELOG.md) — Release history
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

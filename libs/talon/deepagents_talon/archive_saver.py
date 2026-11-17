@@ -18,7 +18,7 @@ from deepagents_talon.archive import ArchiveScope
 from deepagents_talon.hook_transcripts import erase_hook_transcripts
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection, Mapping, Sequence
+    from collections.abc import AsyncGenerator, AsyncIterator, Collection, Mapping, Sequence
     from pathlib import Path
 
     from langchain_core.messages import MessageLikeRepresentation
@@ -89,7 +89,7 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         return clone
 
     @asynccontextmanager
-    async def protect_session(self, session: str) -> AsyncIterator[None]:
+    async def protect_session(self, session: str) -> AsyncGenerator[None]:
         """Protect a running graph from conversation-tool deletion.
 
         Args:

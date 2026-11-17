@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import os
+import sys
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -145,6 +147,33 @@ class TestDetectCharsetMode:
     )
     def test_prefixed_env_var_overrides_canonical(self) -> None:
         """The prefixed variant wins over the canonical one, matching runtime."""
+        assert _detect_charset_mode() == CharsetMode.UNICODE
+
+    def test_stream_encoding_outranks_lang(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test for #7692: a cp1252 stdout gets ASCII glyphs.
+
+        Git Bash exports `LANG=en_US.UTF-8`, but Windows still encodes output
+        redirected to a pipe or file with the ANSI code page.
+        """
+        monkeypatch.delenv("DEEPAGENTS_CODE_UI_CHARSET_MODE", raising=False)
+        monkeypatch.delenv("UI_CHARSET_MODE", raising=False)
+        monkeypatch.setenv("LANG", "en_US.UTF-8")
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        monkeypatch.setattr(sys, "stdout", stdout)
+
+        assert _detect_charset_mode() == CharsetMode.ASCII
+
+    def test_lang_decides_without_stream_encoding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stdout that names no encoding still follows a UTF-8 `LANG`."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_UI_CHARSET_MODE", raising=False)
+        monkeypatch.delenv("UI_CHARSET_MODE", raising=False)
+        monkeypatch.setenv("LANG", "en_US.UTF-8")
+        monkeypatch.setattr(sys, "stdout", io.StringIO())
+
         assert _detect_charset_mode() == CharsetMode.UNICODE
 
 

@@ -1,0 +1,449 @@
+"""Tests for `dcode completion` script generation."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from typing import TYPE_CHECKING
+
+import pytest
+
+from deepagents_code.completion import (
+    _WORD_RE,
+    SHELLS,
+    CommandSpec,
+    OptionSpec,
+    _fish_quote,
+    build_spec,
+    program_arg,
+    render_script,
+    run_completion_command,
+)
+from deepagents_code.main import build_parser, parse_args
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def _find(root: CommandSpec, path: str) -> CommandSpec | None:
+    """Return the command level at *path*, if any."""
+    if root.path == path:
+        return root
+    for child in root.subcommands:
+        found = _find(child, path)
+        if found is not None:
+            return found
+    return None
+
+
+def _flags(level: CommandSpec) -> dict[str, OptionSpec]:
+    """Map every flag spelling at *level* to its option spec."""
+    return {flag: option for option in level.options for flag in option.flags}
+
+
+@pytest.fixture(scope="module")
+def root() -> CommandSpec:
+    """The completion tree for the real CLI parser."""
+    return build_spec(build_parser())
+
+
+class TestBuildSpec:
+    def test_top_level_commands(self, root: CommandSpec) -> None:
+        names = [child.names[0] for child in root.subcommands]
+        for expected in (
+            "help",
+            "agents",
+            "skills",
+            "threads",
+            "completion",
+            "doctor",
+            "tools",
+        ):
+            assert expected in names
+
+    def test_aliases_share_a_level(self, root: CommandSpec) -> None:
+        plugin = _find(root, "plugin")
+        assert plugin is not None
+        assert plugin.names == ("plugin", "plugins")
+
+        auth_remove = _find(root, "auth remove")
+        assert auth_remove is not None
+        assert auth_remove.names == ("remove", "rm", "delete")
+
+    def test_nested_options_and_choices(self, root: CommandSpec) -> None:
+        threads_list = _find(root, "threads list")
+        assert threads_list is not None
+        sort = _flags(threads_list)["--sort"]
+        assert sort.choices == ("created", "updated")
+        assert sort.takes_value is True
+
+        threads_delete = _find(root, "threads delete")
+        assert threads_delete is not None
+        assert [positional.name for positional in threads_delete.positionals] == [
+            "thread_id"
+        ]
+
+    def test_every_real_candidate_is_shell_safe(self, root: CommandSpec) -> None:
+        # Scripts drop words that fail `_WORD_RE`; a real flag, command, or
+        # choice failing it would silently vanish from completion.
+        levels = [root]
+        words: list[str] = []
+        while levels:
+            level = levels.pop()
+            levels.extend(level.subcommands)
+            words.extend(name for child in level.subcommands for name in child.names)
+            for option in level.options:
+                words.extend(option.flags)
+                words.extend(option.choices)
+            for positional in level.positionals:
+                words.extend(positional.choices)
+        assert [word for word in words if not _WORD_RE.match(word)] == []
+
+    def test_completion_shell_choices(self, root: CommandSpec) -> None:
+        completion = _find(root, "completion")
+        assert completion is not None
+        shell = next(
+            positional
+            for positional in completion.positionals
+            if positional.name == "shell"
+        )
+        assert shell.choices == SHELLS
+        assert "--prog" in _flags(completion)
+
+
+class TestRenderScript:
+    @pytest.mark.parametrize("shell", SHELLS)
+    def test_renders_registered_programs(self, shell: str, root: CommandSpec) -> None:
+        script = render_script(shell, root, ("dcode", "deepagents-code"))
+        assert "dcode" in script
+        assert "deepagents-code" in script
+
+    def test_zsh_uses_compdef(self, root: CommandSpec) -> None:
+        script = render_script("zsh", root, ("dcode", "deepagents-code"))
+        assert script.startswith("#compdef dcode deepagents-code")
+        assert "compdef _dcode_completion dcode deepagents-code" in script
+
+    def test_fish_registers_both_scripts(self, root: CommandSpec) -> None:
+        script = render_script("fish", root, ("dcode", "deepagents-code"))
+        assert "complete -c dcode " in script
+        assert "complete -c deepagents-code " in script
+
+    def test_custom_program_replaces_defaults(self, root: CommandSpec) -> None:
+        script = render_script("bash", root, ("mydcode",))
+        assert "_dcode_completion mydcode" in script
+        assert "deepagents-code" not in script
+
+    def test_unknown_shell_rejected(self, root: CommandSpec) -> None:
+        with pytest.raises(ValueError, match="unsupported shell"):
+            render_script("powershell", root, ("dcode",))
+
+    def test_unsafe_program_rejected(self, root: CommandSpec) -> None:
+        with pytest.raises(ValueError, match="invalid program name"):
+            render_script("bash", root, ("dcode; rm -rf /",))
+
+    @pytest.mark.parametrize("shell", SHELLS)
+    def test_scripts_parse(self, shell: str, root: CommandSpec, tmp_path) -> None:
+        executable = shutil.which(shell)
+        if executable is None:
+            pytest.skip(f"{shell} is not installed")
+        script_path = tmp_path / f"dcode.{shell}"
+        script_path.write_text(render_script(shell, root, ("dcode", "deepagents-code")))
+
+        result = subprocess.run(
+            [executable, "-n", str(script_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    def test_fish_quote_escapes_quotes_and_backslashes(self) -> None:
+        # Help text reaches fish inside single quotes; an unescaped `'` would
+        # end the string and break the whole script.
+        assert _fish_quote("it's a \\ path") == "'it\\'s a \\\\ path'"
+
+
+@pytest.fixture(scope="module")
+def bash_script(tmp_path_factory, root: CommandSpec) -> Path:
+    """The generated bash script, written once per module."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not installed")
+    path = tmp_path_factory.mktemp("completion") / "dcode.bash"
+    path.write_text(render_script("bash", root, ("dcode", "deepagents-code")))
+    return path
+
+
+class TestBashCompletion:
+    def _complete(self, script_path: Path, words: list[str], cword: int) -> list[str]:
+        array = " ".join(shlex.quote(word) for word in words)
+        script = "\n".join(
+            [
+                f"source {shlex.quote(str(script_path))}",
+                f"COMP_WORDS=({array})",
+                f"COMP_CWORD={cword}",
+                "COMPREPLY=()",
+                "_dcode_completion",
+                (
+                    'for candidate in "${COMPREPLY[@]}"; do'
+                    ' printf "%s\\n" "$candidate"; done'
+                ),
+            ]
+        )
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.split()
+
+    def test_root_candidates(self, bash_script) -> None:
+        candidates = self._complete(bash_script, ["dcode", ""], 1)
+        for expected in ("threads", "completion", "agents", "--model", "-h"):
+            assert expected in candidates
+
+    def test_subcommand_candidates(self, bash_script) -> None:
+        candidates = self._complete(bash_script, ["dcode", "threads", ""], 2)
+        assert set(candidates) >= {"list", "ls", "delete", "--json"}
+
+    def test_fixed_choice_value(self, bash_script) -> None:
+        candidates = self._complete(
+            bash_script,
+            ["dcode", "threads", "list", "--sort", ""],
+            4,
+        )
+        assert candidates == ["created", "updated"]
+
+    def test_required_value_is_not_treated_as_subcommand(self, bash_script) -> None:
+        # The value is a command name, so the scan must skip it to stay at root.
+        candidates = self._complete(
+            bash_script,
+            ["dcode", "--model", "threads", ""],
+            3,
+        )
+        assert "completion" in candidates
+        assert "list" not in candidates
+
+    @pytest.mark.parametrize(
+        ("words", "cword"),
+        [
+            # Bash 4+ splits `--sort=c` at `=`; bash 3.2 keeps one word.
+            (["dcode", "threads", "list", "--sort", "=", "c"], 5),
+            (["dcode", "threads", "list", "--sort=c"], 3),
+        ],
+    )
+    def test_equals_form_value(self, bash_script, words, cword) -> None:
+        assert self._complete(bash_script, words, cword) == ["created"]
+
+    def test_flag_value_lookup_is_per_command(self, bash_script) -> None:
+        # `--project` takes a value under `auth set` but is a switch under
+        # `skills list`, so only `auth set` should wait for a value.
+        skills = self._complete(
+            bash_script, ["dcode", "skills", "list", "--project", ""], 4
+        )
+        assert "--json" in skills
+        auth = self._complete(bash_script, ["dcode", "auth", "set", "--project", ""], 4)
+        assert auth == []
+
+    def test_registers_both_command_names(self, bash_script) -> None:
+        script = (
+            f"source {shlex.quote(str(bash_script))}\ncomplete -p dcode deepagents-code"
+        )
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count("-F _dcode_completion") == 2
+
+    def test_nested_level_flags(self, bash_script) -> None:
+        candidates = self._complete(bash_script, ["dcode", "threads", "list", "--"], 3)
+        assert "--sort" in candidates
+        assert "--json" in candidates
+
+    def test_alias_reaches_nested_group(self, bash_script) -> None:
+        candidates = self._complete(
+            bash_script, ["dcode", "plugins", "marketplace", ""], 3
+        )
+        assert set(candidates) >= {"list", "ls", "add", "remove"}
+
+    def test_positional_choices(self, bash_script) -> None:
+        candidates = self._complete(bash_script, ["dcode", "completion", ""], 2)
+        assert set(candidates) >= set(SHELLS)
+
+    def test_free_form_value_falls_back_to_files(self, bash_script) -> None:
+        assert (
+            self._complete(bash_script, ["dcode", "threads", "list", "--limit", ""], 4)
+            == []
+        )
+
+
+@pytest.fixture(scope="module")
+def zsh_script(tmp_path_factory, root: CommandSpec) -> Path:
+    """The generated zsh script, saved under the name `fpath` autoloads."""
+    if shutil.which("zsh") is None:
+        pytest.skip("zsh is not installed")
+    path = tmp_path_factory.mktemp("zfunc") / "_dcode"
+    path.write_text(render_script("zsh", root, ("dcode", "deepagents-code")))
+    return path
+
+
+class TestZshCompletion:
+    """Run the script the way `compinit` does, not just the syntax check."""
+
+    def _run(
+        self,
+        script_path: Path,
+        body: list[str],
+        home: Path,
+        words: tuple[str, ...] = ("dcode", "thr"),
+    ) -> str:
+        lines = [
+            f"fpath=({shlex.quote(str(script_path.parent))} $fpath)",
+            "autoload -Uz compinit",
+            "compinit -u",
+            'compadd() { print -r -- "COMPADD:$*" }',
+            "_files() { print -r -- FILES }",
+            f"words=({' '.join(shlex.quote(word) for word in words)})",
+            f"CURRENT={len(words)}",
+            *body,
+        ]
+        result = subprocess.run(
+            ["zsh", "-f", "-c", "\n".join(lines)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "HOME": str(home), "ZDOTDIR": str(home)},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def test_autoload_completes_on_every_tab(self, zsh_script, tmp_path) -> None:
+        # The first TAB autoloads `_dcode` from `fpath`; later TABs reach
+        # whatever `compinit` maps `dcode` to once the script registers itself.
+        second_tab = '"${_comps[dcode]}"'
+        output = self._run(zsh_script, ["_dcode", second_tab, second_tab], tmp_path)
+        assert output.count("COMPADD:") == 3
+        assert "COMPADD:--" in output
+
+    @pytest.mark.parametrize(
+        ("words", "expected"),
+        [
+            (("dcode", "threads", "list", "--sort", ""), "COMPADD:-- created updated"),
+            (("dcode", "plugins", "marketplace", ""), "add"),
+            (("dcode", "threads", "list", "--limit", ""), "FILES"),
+        ],
+    )
+    def test_nested_levels(self, zsh_script, tmp_path, words, expected) -> None:
+        output = self._run(zsh_script, ["_dcode"], tmp_path, words)
+        assert expected in output
+
+    def test_sourcing_registers_without_completing(self, zsh_script, tmp_path) -> None:
+        output = self._run(
+            zsh_script,
+            [
+                f"source {shlex.quote(str(zsh_script))}",
+                'print -r -- "comps=${_comps[dcode]:-<unset>}"',
+            ],
+            tmp_path,
+        )
+        assert "COMPADD:" not in output
+        assert "comps=_dcode_completion" in output
+
+
+@pytest.fixture(scope="module")
+def fish_script(tmp_path_factory, root: CommandSpec) -> Path:
+    """The generated fish script, written once per module."""
+    if shutil.which("fish") is None:
+        pytest.skip("fish is not installed")
+    path = tmp_path_factory.mktemp("fish") / "dcode.fish"
+    path.write_text(render_script("fish", root, ("dcode",)))
+    return path
+
+
+class TestFishCompletion:
+    def _complete(self, script_path: Path, line: str, home: Path) -> list[str]:
+        script = (
+            f"source {shlex.quote(str(script_path))}; complete -C {shlex.quote(line)}"
+        )
+        result = subprocess.run(
+            ["fish", "--no-config", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(home)},
+        )
+        assert result.returncode == 0, result.stderr
+        return [row.split("\t", 1)[0] for row in result.stdout.splitlines()]
+
+    def test_fixed_choice_value(self, fish_script, tmp_path) -> None:
+        candidates = self._complete(fish_script, "dcode threads list --sort ", tmp_path)
+        assert candidates == ["created", "updated"]
+
+    def test_nested_name_does_not_match_top_level(self, fish_script, tmp_path) -> None:
+        # `mcp config` must not pick up top-level `config`'s subcommands.
+        nested = self._complete(fish_script, "dcode mcp config ", tmp_path)
+        assert "get" not in nested
+        top_level = self._complete(fish_script, "dcode config ", tmp_path)
+        assert {"get", "path"} <= set(top_level)
+
+    def test_alias_reaches_nested_group(self, fish_script, tmp_path) -> None:
+        candidates = self._complete(fish_script, "dcode plugins marketplace ", tmp_path)
+        assert {"list", "add", "remove"} <= set(candidates)
+
+
+class TestProgramArg:
+    def test_accepts_command_names(self) -> None:
+        assert program_arg("dcode") == "dcode"
+        assert program_arg("my.dcode+dev") == "my.dcode+dev"
+
+    @pytest.mark.parametrize("value", ["", "-dcode", "dcode shell", "dcode;ls"])
+    def test_rejects_unsafe_names(self, value: str) -> None:
+        with pytest.raises(argparse.ArgumentTypeError, match="invalid command name"):
+            program_arg(value)
+
+
+class TestRunCompletionCommand:
+    def test_writes_script_to_stdout(self, capsys) -> None:
+        assert run_completion_command(argparse.Namespace(shell="bash")) == 0
+        assert capsys.readouterr().out.startswith("# bash completion for dcode")
+
+    def test_custom_program(self, capsys) -> None:
+        args = argparse.Namespace(shell="bash", prog=["mydcode"])
+        assert run_completion_command(args) == 0
+        output = capsys.readouterr().out
+        assert "mydcode" in output
+        assert "deepagents-code" not in output
+
+    def test_missing_shell_shows_help_in_terminal(self, monkeypatch) -> None:
+        calls: list[str] = []
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr(
+            "deepagents_code.ui.show_completion_help",
+            lambda: calls.append("help"),
+        )
+
+        assert run_completion_command(argparse.Namespace()) == 0
+        assert calls == ["help"]
+
+    def test_missing_shell_fails_when_redirected(self, capsys) -> None:
+        assert run_completion_command(argparse.Namespace()) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "missing shell" in captured.err
+
+
+class TestParserIntegration:
+    def test_invalid_shell_rejected(self, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["deepagents", "completion", "powershell"])
+
+        with pytest.raises(SystemExit):
+            parse_args()

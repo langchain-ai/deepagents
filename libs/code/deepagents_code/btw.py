@@ -43,6 +43,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deepagents_code._tool_free import tool_free_model, tool_free_settings
+from deepagents_code.goal_state_notice import anchor_summarization_event
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -310,7 +311,7 @@ def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:
         if isinstance(raw, list)
         else []
     )
-    event = state.get("_summarization_event")
+    event = anchor_summarization_event(state.get("_summarization_event"), messages)
     if isinstance(event, dict):
         cutoff = event.get("cutoff_index")
         summary = event.get("summary_message")

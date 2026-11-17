@@ -303,6 +303,14 @@ test('response text permits only pull request links and no commit hashes', () =>
   }
 });
 
+test('response text writes the plain quotes and spaces the text-hygiene hooks require', () => {
+  const payload = content => ({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+  assert.equal(
+    draft.responseText('openai', payload(structured('Keep the parent\u2019s \u201Ccache\u201D\u00A0prefix'))),
+    '### Features\n\n- Keep the parent\'s "cache" prefix\n',
+  );
+});
+
 test('response text rejects multiline entries', () => {
   const payload = content => ({ choices: [{ message: { content }, finish_reason: 'stop' }] });
   for (const entry of [

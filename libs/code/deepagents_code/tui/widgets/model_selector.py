@@ -76,60 +76,62 @@ from the per-provider sections below.
 
 
 _RECOMMENDED_MODELS: dict[str, str] = {
-    "anthropic:claude-opus-4-8": "Claude Opus 4.8",
-    "anthropic:claude-opus-5": "Claude Opus 5",
-    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
-    "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
-    "baseten:deepseek-ai/DeepSeek-V4.1-Flash": "DeepSeek V4.1 Flash",
-    "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
+    "anthropic:claude-fable-5-2": "Claude Fable 5.2",
+    "anthropic:claude-opus-5-5": "Claude Opus 5.5",
+    "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
     "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
-    "baseten:moonshotai/Kimi-K3": "Kimi K3",
+    "baseten:deepseek-ai/DeepSeek-V4.1-Flash-1017": "DeepSeek V4.1 Flash 1017",
+    "baseten:meta-models/muse-spark-open": "Muse Spark Open",
+    "baseten:moonshotai/Kimi-K3.1-Pro": "Kimi K3.1 Pro",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.3": "GLM 5.3",
     "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",
-    "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": (
-        "DeepSeek V4 Flash 0731"
+    "fireworks:accounts/fireworks/models/deepseek-v4p1-flash-1017": (
+        "DeepSeek V4.1 Flash 1017"
     ),
-    "fireworks:accounts/fireworks/models/deepseek-v4p1-flash": "DeepSeek V4.1 Flash",
-    "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
-    "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "fireworks:accounts/fireworks/models/glm-5p3": "GLM 5.3",
     "fireworks:accounts/fireworks/models/glm-5p3-flash": "GLM 5.3 Flash",
-    "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
-    "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
-    "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
-    "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
-    "meta:muse-spark-1.2": "Muse Spark 1.2",
-    "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
-    "ollama:deepseek-v4.1-flash:cloud": "DeepSeek V4.1 Flash",
-    "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
-    "ollama:glm-5.3:cloud": "GLM 5.3",
+    "fireworks:accounts/fireworks/models/kimi-k3p1-pro": "Kimi K3.1 Pro",
+    "fireworks:accounts/fireworks/models/minimax-m3p1-flash": "MiniMax M3.1 Flash",
+    "fireworks:accounts/fireworks/models/muse-spark-open": "Muse Spark Open",
+    "fireworks:accounts/fireworks/models/qwen3p8-max": "Qwen 3.8 Max",
+    "google_genai:gemini-4-argon": "Gemini 4 Argon",
+    "google_genai:gemini-4-carbon": "Gemini 4 Carbon",
+    "google_genai:gemini-4-hydrogen": "Gemini 4 Hydrogen",
+    "meta:muse-spark-1.3": "Muse Spark 1.3",
+    "ollama:deepseek-v4-pro:0813-cloud": "DeepSeek V4 Pro 0813",
+    "ollama:deepseek-v4.1-flash:1017-cloud": "DeepSeek V4.1 Flash 1017",
     "ollama:glm-5.3-flash:cloud": "GLM 5.3 Flash",
-    "ollama:minimax-m3:cloud": "MiniMax-M3",
-    "openai:gpt-5.6-luna": "GPT-5.6 Luna",
-    "openai:gpt-5.6-sol": "GPT-5.6 Sol",
-    "openai:gpt-5.6-terra": "GPT-5.6 Terra",
+    "ollama:glm-5.3:cloud": "GLM 5.3",
+    "ollama:minimax-m3.1-flash:cloud": "MiniMax M3.1 Flash",
+    "ollama:mistral-large-4:cloud": "Mistral Large 4",
+    "ollama:muse-spark-open:cloud": "Muse Spark Open",
     "openai:gpt-6-astra": "GPT-6 Astra",
-    "openai_codex:gpt-5.6-luna": "GPT-5.6 Luna",
-    "openai_codex:gpt-5.6-sol": "GPT-5.6 Sol",
-    "openai_codex:gpt-5.6-terra": "GPT-5.6 Terra",
-    "openrouter:anthropic/claude-opus-4.8": "Claude Opus 4.8",
-    "openrouter:anthropic/claude-sonnet-5": "Claude Sonnet 5",
-    "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
-    "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
-    "openrouter:deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
-    "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "openai:gpt-6-luna": "GPT-6 Luna",
+    "openai:gpt-6.1-sol": "GPT-6.1 Sol",
+    "openai:gpt-6.1-terra": "GPT-6.1 Terra",
+    "openai_codex:gpt-6-astra": "GPT-6 Astra",
+    "openai_codex:gpt-6-luna": "GPT-6 Luna",
+    "openai_codex:gpt-6.1-sol": "GPT-6.1 Sol",
+    "openai_codex:gpt-6.1-terra": "GPT-6.1 Terra",
+    "openrouter:anthropic/claude-fable-5.2": "Claude Fable 5.2",
+    "openrouter:anthropic/claude-opus-5.5": "Claude Opus 5.5",
+    "openrouter:anthropic/claude-sonnet-5.5": "Claude Sonnet 5.5",
     "openrouter:deepseek/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
-    "openrouter:google/gemini-3.7-flash": "Gemini 3.7 Flash",
-    "openrouter:moonshotai/kimi-k3": "Kimi K3",
+    "openrouter:deepseek/deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash 1017",
+    "openrouter:google/gemini-4-argon": "Gemini 4 Argon",
+    "openrouter:google/gemini-4-carbon": "Gemini 4 Carbon",
+    "openrouter:google/gemini-4-hydrogen": "Gemini 4 Hydrogen",
+    "openrouter:meta/muse-spark-open": "Muse Spark Open",
+    "openrouter:minimax/minimax-m3.1-flash": "MiniMax M3.1 Flash",
+    "openrouter:mistralai/mistral-large-4-0": "Mistral Large 4",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
-    "openrouter:openrouter/fusion": "OpenRouter Fusion",
-    "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
+    "openrouter:qwen/qwen3.8-max-0902": "Qwen 3.8 Max",
     "openrouter:z-ai/glm-5.3": "GLM 5.3",
     "openrouter:z-ai/glm-5.3-flash": "GLM 5.3 Flash",
-    "xai:grok-4.5": "Grok 4.5",
+    "xai:grok-4.7": "Grok 4.7",
 }
-"""Hand-curated frontier-tier models promoted across the UI, mapped to a
+"""Hand-curated stable models promoted across the UI, mapped to a
 human-readable display name.
 
 Used by the onboarding picker (`curated=True`) and by the in-`/model`
@@ -150,6 +152,8 @@ credentials for.
 
 AUXILIARY_RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
+    "meta:muse-ember-1.0": "Muse Ember 1.0",
+    "openrouter:anthropic/claude-haiku-5.5": "Claude Haiku 5.5",
     **_RECOMMENDED_MODELS,
 }
 """Sidecar recommendations without changing the main-agent recommendations."""
@@ -596,10 +600,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._resolve_model = resolve_model
         self._catalog: ModelCatalog | None = None
         self._catalog_config: ModelConfig | None = None
-        # Standard /model defaults to the curated recommended subset so users
-        # face less decision fatigue; onboarding (`curated=True`) already
-        # constrains the list via `_curated`, so leaving this False there
-        # avoids double-flagging in `_apply_subset`.
         self._recommended_only = not curated
         # Rows show friendly display names by default; Ctrl+N flips every row
         # to its raw `provider:model` spec (mirrors the `/theme` picker's
@@ -701,7 +701,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
             if self._default_scope is not None:
                 parts.append(f"Ctrl+S {self._default_scope.hint}")
-            parts.extend(("Ctrl+R recommended", names_hint, "Esc close"))
+            recommendations_hint = (
+                "Ctrl+R all models" if self._recommended_only else "Ctrl+R recommended"
+            )
+            parts.extend((recommendations_hint, names_hint, "Esc close"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -2502,6 +2505,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         info = self.query_one("#model-selector-info", Static)
         info.update(self._info_line_content())
+        if not self._help_error_shown:
+            self._stop_help_restore_timer()
+            self._restore_help_text()
 
         await self._update_display()
 

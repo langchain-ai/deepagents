@@ -5,6 +5,11 @@ concrete lower bound (`>=` or `~=`) in `[project.dependencies]`,
 `[project.optional-dependencies]`, or `[dependency-groups]`, this rewrites that
 lower bound in place to the newest stable PyPI release that still has at least
 one non-yanked file *and* remains within the requirement's existing range.
+With `--check-resolution`, uv checks the combined bumps and affected reverse
+dependents before writing. If they conflict, dependency-wide bumps are tried in
+name order against the accepted set; incompatible bumps retain their old floors
+and appear in the summary. Tool errors and an unresolvable baseline fail closed.
+
 Upper bounds, extras, and environment markers are preserved. Exact pins (`==`)
 are left alone — raising a floor only applies to range floors. A bound already
 ahead of the latest stable release (intentional prerelease coordination) is
@@ -34,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import tomllib
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -614,6 +620,110 @@ def lock_dirs_for(
     return stale_lock_dirs(changed_manifests)
 
 
+def _resolves(manifests: Collection[str], *, skip_dependents: bool) -> bool:
+    """Check universal resolution without changing lockfiles; fail on tool errors."""
+    for directory in lock_dirs_for(manifests, skip_dependents=skip_dependents):
+        result = subprocess.run(
+            [
+                "uv",
+                "lock",
+                "--dry-run",
+                "--directory",
+                str(REPO_ROOT / directory),
+                "--python",
+                python_version(REPO_ROOT / directory),
+                "--color",
+                "never",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+        if result.returncode:
+            if "No solution found when resolving dependencies" in result.stderr:
+                _notice(result.stderr)
+                return False
+            msg = f"Could not check resolution for {directory}: {result.stderr}"
+            raise RuntimeError(msg)
+    return True
+
+
+def _compatible_plans(
+    plans: Sequence[ManifestPlan], *, skip_dependents: bool
+) -> tuple[list[ManifestPlan], list[RequirementEdit]]:
+    """Keep jointly resolvable bumps, restoring original manifests on every exit."""
+    originals = {
+        plan.manifest_path: (REPO_ROOT / plan.manifest_path).read_text(encoding="utf-8")
+        for plan in plans
+    }
+    try:
+        for plan in plans:
+            (REPO_ROOT / plan.manifest_path).write_text(plan.new_text, encoding="utf-8")
+        if _resolves(originals, skip_dependents=skip_dependents):
+            return list(plans), []
+        for path, text in originals.items():
+            (REPO_ROOT / path).write_text(text, encoding="utf-8")
+        if not _resolves(originals, skip_dependents=skip_dependents):
+            msg = (
+                "Existing requirements do not resolve; "
+                "cannot safely select minimum bumps."
+            )
+            raise RuntimeError(msg)
+        return _select_resolvable_bumps(
+            plans, originals, skip_dependents=skip_dependents
+        )
+    finally:
+        for path, text in originals.items():
+            (REPO_ROOT / path).write_text(text, encoding="utf-8")
+
+
+def _select_resolvable_bumps(
+    plans: Sequence[ManifestPlan],
+    originals: Mapping[str, str],
+    *,
+    skip_dependents: bool,
+) -> tuple[list[ManifestPlan], list[RequirementEdit]]:
+    """Try each dependency across manifests against all previously accepted bumps."""
+    accepted: list[RequirementEdit] = []
+    skipped: list[RequirementEdit] = []
+    grouped: dict[str, list[RequirementEdit]] = {}
+    for plan in plans:
+        for edit in plan.edits:
+            grouped.setdefault(edit.dependency_name, []).append(edit)
+    for name, edits in sorted(grouped.items()):
+        before = {
+            path: (REPO_ROOT / path).read_text(encoding="utf-8") for path in originals
+        }
+        for path, text in before.items():
+            replacements = {
+                edit.old_requirement: edit.new_requirement
+                for edit in edits
+                if edit.manifest_path == path
+            }
+            (REPO_ROOT / path).write_text(
+                _apply_replacements(text, replacements, path), encoding="utf-8"
+            )
+        if _resolves(originals, skip_dependents=skip_dependents):
+            accepted.extend(edits)
+        else:
+            _notice(
+                f"Skipping {name}: raised minimums conflict with the dependency graph."
+            )
+            skipped.extend(edits)
+            for path, text in before.items():
+                (REPO_ROOT / path).write_text(text, encoding="utf-8")
+    return [
+        ManifestPlan(
+            path,
+            (REPO_ROOT / path).read_text(encoding="utf-8"),
+            tuple(edit for edit in accepted if edit.manifest_path == path),
+        )
+        for path in originals
+        if any(edit.manifest_path == path for edit in accepted)
+    ], skipped
+
+
 def _edit_markdown(edit: RequirementEdit) -> str:
     """Render the affected package and any extras or marker on its dependency."""
     project = tomllib.loads(
@@ -690,6 +800,7 @@ def _run(
     narrow_to: frozenset[str] | None = None,
     *,
     skip_dependent_locks: bool = False,
+    check_resolution: bool = False,
 ) -> int:
     """Raise in-scope lower bounds for `package`, writing manifests and outputs.
 
@@ -768,8 +879,21 @@ def _run(
         if plan.edits:
             plans.append(plan)
 
+    skipped: list[RequirementEdit] = []
+    if check_resolution and plans:
+        plans, skipped = _compatible_plans(plans, skip_dependents=skip_dependent_locks)
+    skipped_summary = (
+        edits_markdown(skipped, heading="### Skipped incompatible minimum bumps")
+        if skipped
+        else ""
+    )
     all_edits = [edit for plan in plans for edit in plan.edits]
     if not all_edits:
+        if skipped:
+            print(skipped_summary)
+            _write_output("changed", "false")
+            _write_output("summary", skipped_summary)
+            return 1 if fetch_failures or plan_failures else 0
         if fetch_failures or plan_failures:
             _error(
                 f"No minimums could be raised for {package} and some inputs "
@@ -819,6 +943,8 @@ def _run(
     summary = edits_markdown(
         all_edits, heading=f"Raised {len(all_edits)} dependency {noun}:"
     )
+    if skipped_summary:
+        summary += "\n\n" + skipped_summary
     if fetch_failures or plan_failures:
         summary += "\n\n" + failures_markdown(fetch_failures, plan_failures)
     print(summary)
@@ -885,6 +1011,11 @@ def main() -> int:
         ),
     )
     parser.add_argument("--skip-dependent-locks", action="store_true")
+    parser.add_argument(
+        "--check-resolution",
+        action="store_true",
+        help="Skip minimum bumps that uv cannot resolve, including reverse dependents.",
+    )
     args = parser.parse_args()
     try:
         dependencies = _parse_dependency_csv(args.dependencies)
@@ -893,6 +1024,7 @@ def main() -> int:
             args.package,
             dependencies,
             skip_dependent_locks=args.skip_dependent_locks,
+            check_resolution=args.check_resolution,
         )
     except Exception as err:  # noqa: BLE001  # fail closed on script defects
         _error(f"Raising dependency minimums failed unexpectedly: {err}")

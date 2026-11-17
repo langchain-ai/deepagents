@@ -45,7 +45,7 @@ TOOLCHAIN_TOOLS: tuple[str, ...] = ("python", "python3", "git", "node")
 
 SYSTEM_READONLY_PATHS: dict[str, tuple[str, ...]] = {
     # `/dev` is deliberately absent: listing it on macOS overrides the
-    # baseline read-write rule for /dev/null (see EXECUTOR_CONTRACT.md).
+    # baseline read-write rule for /dev/null (observed with mxc-sdk 1.0.1).
     "darwin": (
         "/bin",
         "/sbin",

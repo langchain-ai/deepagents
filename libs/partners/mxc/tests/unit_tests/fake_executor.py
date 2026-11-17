@@ -1,7 +1,7 @@
 """A stand-in for the MXC executor, used by unit tests.
 
 Invoked as `python fake_executor.py --config <file> [--dry-run]`. It mimics
-the observed contract (see EXECUTOR_CONTRACT.md):
+the behavior observed from the real executors:
 
 - `--dry-run` prints `Dry run completed. Result: validation passed` and exits 0.
 - A `process.commandLine` containing `FAKE_EXEC_TIMEOUT` sleeps past the

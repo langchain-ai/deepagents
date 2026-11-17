@@ -1,4 +1,4 @@
-"""Output and denial mapping, driven by the cases recorded in EXECUTOR_CONTRACT.md.
+"""Output and denial mapping, driven by output observed from the real MXC executors.
 
 No MXC executor is needed: `MXCSandbox` only requires `executor_path` to be an
 existing file at construction time, and the probe runs lazily on `execute`.

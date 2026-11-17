@@ -32,16 +32,6 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_mxc"]
 
-[tool.hatch.build.targets.sdist]
-include = [
-    "langchain_mxc/",
-    "tests/",
-    "examples/",
-    "README.md",
-    "EXECUTOR_CONTRACT.md",
-    "LICENSE",
-]
-
 [project.urls]
 Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/mxc"
 Repository = "https://github.com/langchain-ai/deepagents"
@@ -58,11 +48,6 @@ test = [
     "ruff>=0.15.20,<1.0.0",
     "ty>=0.0.54,<1.0.0",
     "langchain-tests>=1.1.9",
-]
-examples = [
-    "langchain-anthropic",
-    # tiktoken (a langchain-openai dependency) has no Windows ARM64 wheel.
-    "langchain-openai ; sys_platform != 'win32' or platform_machine != 'ARM64'",
 ]
 
 [tool.uv]
@@ -89,7 +74,6 @@ line-length = 150
 
 [tool.ruff.format]
 docstring-code-format = true
-exclude = ["*.md"]  # README examples are aligned by hand
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -140,4 +124,3 @@ filterwarnings = [
 
 [tool.ruff.lint.extend-per-file-ignores]
 "tests/**/*.py" = ["D", "S101", "ANN", "PLR2004", "SLF001", "S108"]
-"examples/**/*.py" = ["D", "INP001", "T201", "S101", "PLR2004"]

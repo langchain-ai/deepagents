@@ -7,8 +7,8 @@ operating system's own sandboxing mechanism, runs the workload and passes the
 workload's stdout, stderr and exit code back.
 
 Everything this module assumes about the executor's behaviour was observed by
-running it; see `EXECUTOR_CONTRACT.md` at the package root. In short there are
-three kinds of result:
+running `@microsoft/mxc-sdk` 1.0.1 on Windows, macOS and Linux. There are three
+kinds of result:
 
 1. the workload ran: exit code and streams are the workload's own;
 2. the request was rejected before a sandbox existed: exit 1, empty stdout,
@@ -333,8 +333,8 @@ def kill_process_tree(pid: int) -> None:
     """Kill `pid` and every descendant, including their process groups.
 
     The executor starts the workload shell in a process group of its own, so
-    killing the executor alone leaves the workload running (verified; see
-    `EXECUTOR_CONTRACT.md`).
+    killing the executor alone leaves the workload running (verified on macOS
+    and Linux).
     """
     if sys.platform == "win32":
         subprocess.run(  # noqa: S603 - fixed argv; the pid is an int
@@ -487,10 +487,7 @@ def _parse_envelope(line: str) -> tuple[str | None, str] | None:
 
 
 def classify_result(result: ExecutorResult) -> Outcome:  # noqa: C901, PLR0911 - one flat branch per observed executor outcome
-    """Classify an executor result per the observed contract.
-
-    See the module docstring and `EXECUTOR_CONTRACT.md`.
-    """
+    """Classify an executor result per the observed contract described in the module docstring."""
     stdout = result.stdout_text
     stderr = result.stderr_text
 
@@ -573,7 +570,7 @@ _DRY_RUN_FAILED = "validation failed"
 def _dry_run_failure_reason(result: ExecutorResult) -> str:
     """Extract the reason from a failed `--dry-run`.
 
-    Observed forms (see `EXECUTOR_CONTRACT.md`): a policy the backend cannot
+    Observed forms: a policy the backend cannot
     enforce exits 255 with `Dry run completed. Result: validation failed: <reason>`
     on **stdout**; a malformed request or a missing backend exits 1 with the
     reason on stderr.

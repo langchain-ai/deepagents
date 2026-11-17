@@ -48,7 +48,7 @@ TIMEOUT_EXIT_CODE = 124
 
 BLOCKED_HINT = "Blocked by sandbox policy: {what}. Ask the user to grant access if this is needed."
 
-# Observed denial text (see EXECUTOR_CONTRACT.md). The first form is what
+# Observed denial text. The first form is what
 # shells and coreutils print (`cat: /path: Operation not permitted`), the
 # second is Python's (`PermissionError: [Errno 1] Operation not permitted: '/path'`).
 _DENIAL_WORDS = r"(?:Operation not permitted|Permission denied|Access is denied)"

@@ -3,9 +3,6 @@ type: operator workflow guide
 title: Run a dcode Session
 description: Choose dcode's ACP, interactive, or headless execution surface and operate headless sessions with safe approval, streaming, interruption, resume, statistics, and shutdown behavior.
 tags: [dcode, cli, sessions, headless, acp, server-lifecycle]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
 sources:
   - id: openwiki-source-526a6c8ea414f4f02ee9c4a9
     resource: repo://libs/code/deepagents_code/_run_queue_wakeup.py
@@ -39,7 +36,10 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_remote_client.py
   - id: openwiki-source-0c1ad33c13d023a3467dbca9
     resource: repo://libs/code/tests/unit_tests/test_startup_fast_paths.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-14T08:03:44.053Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
 ---
 
 # Run a dcode Session
@@ -130,11 +130,17 @@ Permission-request hooks override the middleware shortcuts so gated calls reach 
 
 `--quiet` routes status, headers, tool notices, HITL decisions, and errors to stderr so response text remains usable on stdout; it still emits the thread identifier for later resume. Normal streaming writes response chunks immediately. `--no-stream` buffers response text until completion, while reasoning stays on stderr and is not folded into the final response. In a non-quiet session, the runner records invocation statistics and, when enabled, prints a usage table with wall-clock duration; a completed background LangSmith thread-link lookup can also be shown without delaying completion.
 
+After a startup command has finished, a non-quiet MCP-enabled run starts a best-effort MCP metadata-preload task. It runs concurrently with thread reservation, policy setup, and server startup. Once the server session is ready, the runner awaits that task only to display the loaded-tool count; preload creation or completion errors are logged and do not prevent the task from running. Quiet or `--no-mcp` runs do not create this display-oriented preload.
+
 ```mermaid
 flowchart TD
-    Begin["Select or resume thread"] --> Policy["Resolve shell allow list and hooks"]
+    Begin["Select or resume thread"] --> Command["Run startup command when configured"]
+    Command --> Preload["Start MCP metadata preload when eligible"]
+    Preload --> Reserve["Reserve a resumed thread"]
+    Reserve --> Policy["Resolve shell allow list and hooks"]
     Policy --> Session["Start server session and stream initial turn"]
-    Session --> Event["Receive messages updates or custom events"]
+    Session --> Metadata["Collect MCP preload result when present"]
+    Metadata --> Event["Receive messages updates or custom events"]
     Event --> Output{"Text event"}
     Output -->|yes stream| WriteNow["Write response chunk to stdout"]
     Output -->|yes no stream| Buffer["Buffer response text"]
@@ -148,11 +154,11 @@ flowchart TD
     Interrupt -->|budget exhausted| Limit["Return exit code 124"]
 ```
 
-*Headless streaming sends text incrementally unless `--no-stream` is selected; interrupts resume the same run only while the total-turn budget permits it.*
+*The MCP preload is started before server setup and overlaps it; text streams incrementally unless `--no-stream` is selected, and interrupts resume only while the total-turn budget permits it.*
 
 The initial stream counts as turn 1 and each HITL resume consumes another turn. If `--max-turns` is omitted, an internal safety default bounds the loop. The runner checks the limit before another resume, returns exit code 124 when it is exhausted, and asks the operator to adjust the task or shell allow-list. It streams `messages`, `updates`, and `custom` events with subgraphs, reconciles tool lifecycle events, and keeps a request ledger so replayed chunks do not double-count usage. On cancellation or error it ends the hook session, drains pending hook tasks without replacing the selected exit code, and releases a resumed thread's ownership lease.
 
-`--startup-cmd` is local pre-agent shell work, not prompt context. Its output follows normal console routing; launch failure, a 60-second timeout, and nonzero exit warn but do not abort the task. Cancellation terminates and reaps it.
+`--startup-cmd` is local pre-agent shell work, not prompt context. After a resume target has passed lookup and directory checks (and before MCP preload, thread reservation, and local-server startup), the runner executes it. Its output follows normal console routing and it restores the project LangSmith environment for the child process; launch failure, a 60-second timeout, and nonzero exit warn but do not abort the task. Cancellation terminates and reaps it. Because reservation happens later, cancellation during this command leaves a resumed thread unreserved.
 
 ## Resume and failure handling
 
@@ -181,4 +187,4 @@ make test TEST_FILE=tests/unit_tests/test_remote_client.py
 make test TEST_FILE=tests/unit_tests/test_server_manager.py
 ```
 
-Protect mode routing before stdin processing, headless-only argument errors, shell allow-list policy, quiet/no-stream routing, hook trust, HITL turn accounting, and exit code 124. For startup changes, cover health plus graph readiness and cancellation cleanup. For resumes and workspace work, cover no-fallback resume behavior, ownership reservation, server-side workspace claims, 409 conflicts, cancellation, and the single recovery-write retry.
+Protect mode routing before stdin processing, headless-only argument errors, shell allow-list policy, quiet/no-stream routing, hook trust, HITL turn accounting, and exit code 124. For headless startup changes, cover the order of resume validation, `--startup-cmd`, MCP preload, reservation, and server launch—especially cancellation before a lease is acquired. For server changes, cover health plus graph readiness and cancellation cleanup. For resumes and workspace work, cover no-fallback resume behavior, ownership reservation, server-side workspace claims, 409 conflicts, cancellation, and the single recovery-write retry.

@@ -3,37 +3,15 @@ type: protocol integration
 title: Agent Client Protocol Integration
 description: How deepagents-acp projects LangGraph agents into editor-facing ACP sessions, including streaming, recovery, and permission decisions. It also describes dcode's in-process ACP server, resolved approval modes, MCP startup boundaries, and session ownership fencing.
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
-sources:
-  - id: openwiki-source-532ea636a0657c1d2714bd7a
-    resource: repo://libs/acp/CHANGELOG.md
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-1ffb4d0f447fcc4e9ca248ef
-    resource: repo://libs/acp/deepagents_acp/utils.py
-  - id: openwiki-source-bb78950c8b36b7b9f6746e96
-    resource: repo://libs/acp/pyproject.toml
-  - id: openwiki-source-8134f31fb22085cb0e6b4054
-    resource: repo://libs/acp/README.md
-  - id: openwiki-source-f188d13aef04b643ced86520
-    resource: repo://libs/acp/tests/unit_tests/test_execute_permissions.py
-  - id: openwiki-source-4d4186e9d62fb4abe495cdd0
-    resource: repo://libs/code/deepagents_code/acp.py
-  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
-    resource: repo://libs/code/deepagents_code/client/remote_client.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-91c9283d1547adfffd627c43
-    resource: repo://libs/code/deepagents_code/thread_ownership.py
-  - id: openwiki-source-7ba50bd13eb62341a2061ef9
-    resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-e0e6f6b6ce0dbf7a671d682f
-    resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
-  - id: openwiki-source-a5e918d96b1dae3f7adec3f5
-    resource: repo://libs/code/tests/unit_tests/test_thread_ownership.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+    at: 2026-11-17T08:03:47.818Z
+sources:
+  - id: openwiki-source-bb78950c8b36b7b9f6746e96
+    resource: repo://libs/acp/pyproject.toml
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 ---
 
 # Agent Client Protocol Integration
@@ -47,7 +25,7 @@ There are two integration paths:
 
 ## Distribution and transport boundaries
 
-`deepagents-acp` 0.0.13 is an alpha package requiring Python 3.11 or later (below Python 4), `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. `deepagents-code` 0.2.7 requires Python 3.14 (below 3.15) and depends on `deepagents-acp>=0.0.13,<1.0.0`; deploy dcode ACP with dcode's stricter Python floor. ACP 0.0.13 narrowed reusable shell authorization to exact commands and preserved local-context prompts through compaction.
+`deepagents-acp` 0.0.13 is an alpha package requiring Python 3.11 or later (below Python 4), `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. `deepagents-code` 0.2.9 requires Python 3.14 (below 3.15) and depends on `deepagents-acp>=0.0.13,<1.0.0`; deploy dcode ACP with dcode's stricter Python floor. ACP 0.0.13 narrowed reusable shell authorization to exact commands and preserved local-context prompts through compaction.
 
 A normal terminal dcode session follows a separate transport. Its Textual client uses `RemoteAgent`, which lazily creates a `RemoteGraph` for HTTP/SSE communication with the local LangGraph server. ACP mode instead invokes `run_agent` with an adapter and factory in the same process.
 
@@ -118,7 +96,7 @@ Always-allow decisions are in-memory and limited to one ACP session. Non-`execut
 
 ## Dcode ACP startup and policy boundaries
 
-`cli_main` checks raw argv for `--acp` before Textual dependency checks. In ACP mode, it resolves the effective approval mode rather than trusting raw approval flags, then applies ACP-specific guards: YOLO requires the acknowledgement previously recorded through the interactive TUI, and `--auto-classifier-model` is valid only in resolved Auto mode. ACP dependencies are imported lazily; a missing `acp` or `deepagents-acp` prints an install hint and exits 1. `--no-mcp` and `--mcp-config` are mutually exclusive and exit 2.
+`cli_main` checks raw argv for `--acp` before Textual dependency checks. The managed-configuration health gate runs before ACP dispatch; an unenforceable managed policy is reported to stderr and exits with status 78. In ACP mode, it resolves the effective approval mode rather than trusting raw approval flags, then applies ACP-specific guards: YOLO requires the acknowledgement previously recorded through the interactive TUI, and `--auto-classifier-model` is valid only in resolved Auto mode. ACP dependencies are imported lazily; a missing `acp` or `deepagents-acp` prints an install hint and exits 1. `--no-mcp` and `--mcp-config` are mutually exclusive and exit 2.
 
 Before opening the ACP server, dcode resolves the initial model and available model selectors, built-in web tools, configured MCP tools, subagents, and a checkpointer. Its per-session graph factory takes the session cwd and selected model and passes the resolved approval settings to `create_cli_agent`. In Auto mode, a specialized ACP adapter wraps each graph stream to store trusted Auto approval state, attach textual-prompt metadata, and provide `CLIContextSchema` with Auto settings.
 

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # uses it to keep `__version__` in sync with `pyproject.toml` on every release
 # PR. Without it, `__version__` silently drifts behind the package version. See
 # `.github/RELEASING.md` > Version Bumping.
-__version__ = "0.7.38"  # x-release-please-version
+__version__ = "0.7.39"  # x-release-please-version
 
 
 def _distribution_name(dist: Distribution) -> str:
@@ -135,7 +135,7 @@ def _is_under(root: Path, candidate: Path) -> bool:
 def _is_editable_install() -> bool:
     """Whether the `deepagents` package being imported is an editable install.
 
-    Scans every installed distribution named `deepagents` for PEP 610
+    Scans the installed distributions named `deepagents` for PEP 610
     `direct_url.json` with `dir_info.editable: true`, and reports `True` only for
     a record whose source root actually contains the module this code is running
     from.
@@ -166,7 +166,15 @@ def _is_editable_install() -> bool:
         # attributed to it, so report the plain release version.
         return False
     try:
-        for dist in distributions():
+        # `name=` matches on directory names, so only `deepagents` records have
+        # their metadata read. An unfiltered scan parses `METADATA` for every
+        # installed package, which is slow enough on large or cold environments
+        # to stall the first `create_deep_agent()` call (e.g. tripping Temporal's
+        # 2s workflow deadlock detector). It still yields *every* matching record
+        # across `sys.path`, so the shadowing `*.egg-info` case above is handled.
+        for dist in distributions(name="deepagents"):
+            # Redundant with the filter for stdlib finders; kept for third-party
+            # finders that may ignore `name`.
             if _distribution_name(dist) != "deepagents":
                 continue
             source_root = _editable_source_root(dist)

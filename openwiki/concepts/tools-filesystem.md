@@ -1,7 +1,7 @@
 ---
 type: architecture concept
-title: Tools and Filesystem Access
-description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, search deadlines, content lifecycle, media reads, and containment boundaries.
+title: Tools and Filesystem
+description: Deep Agents exposes filesystem tools through capability-aware middleware and pluggable backends. This page documents delete semantics, bounded glob execution, permission-aware resolved paths, and error handling across local, store, and composite backends.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
 sources:
   - id: openwiki-source-a1549ea98d425efea270be93
@@ -10,14 +10,20 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/filesystem.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-21e2b0401425a427d8cea9c1
+    resource: repo://libs/deepagents/deepagents/backends/store.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-7b8607fdda73d9d47ee17387
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  - id: openwiki-source-e11958a6a68a079be57552fc
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
+  - id: openwiki-source-851e3a9c96663d8db5ca3dec
+    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-10T08:04:01.717Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+    at: 2026-11-14T08:03:44.053Z
 ---
 
 # Tools and Filesystem Access
@@ -120,6 +126,14 @@ Search has deliberate cross-route semantics. With `path` omitted or `/`, `grep` 
 
 File operations route individually, but `execute` does not: a composite always delegates execution to its default backend. Consequently, a route prefix is a file-tool addressing mechanism, not evidence that the default shell can access the same path.
 
+### Store-backed files and delete
+
+`StoreBackend` persists file records in a LangGraph `BaseStore` under a namespace supplied by a factory. The factory receives the graph `Runtime` when available; an explicit store is optional, but without one the backend must run in graph execution so it can obtain the configured store. Namespace components are validated as nonempty safe strings, rejecting wildcard syntax and path separators before any store lookup.
+
+A store delete is recursive by key prefix: it removes the exact key and keys below `file_path.rstrip("/") + "/"`, but treats wildcard-looking characters in the requested path literally. It returns a not-found error when no exact or descendant key exists and submits all matching removals in one synchronous or asynchronous `batch` call. This makes a store "directory" a logical prefix, not a separately stored directory object.
+
+Store glob uses the shared glob dialect and returns a structured error for a refused pattern. Store grep is literal and ignores binary uploads: uploads retain valid UTF-8 without NUL as text, while other bytes are base64 encoded so JSON-backed stores can retain them and download can restore the original bytes. Legacy list-of-string content remains readable for compatibility and is normalized to string content on a subsequent write or edit.
+
 ## Direct filesystem access and permission policy
 
 `FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible paths use virtual absolute form and do not reveal the host root. The implementation also detects symlink loops, avoids following a final symlink when the platform supports `O_NOFOLLOW`, and reports batch upload/download failures per input with normalized error codes.
@@ -130,27 +144,33 @@ File operations route individually, but `execute` does not: a composite always d
 
 The backend-level `grep` is a literal substring search, not a regex facility. It first uses `rg` when available with fixed-string mode, streams JSON matches, drains stderr concurrently, and stops only after observing a match beyond a total `max_count` cap; therefore exactly `max_count` matches can still be complete, while a result marked `truncated=True` is incomplete. One synchronous search phase has a 15-second deadline. A watchdog kills a stalled `rg`: if it already emitted matches, those partial results are returned as truncated; with no output it falls back to Python. An unavailable or unexecutable `rg`, and a hard nonzero exit, also trigger the fallback (discarding any hard-error partial output). The Python fallback has its own 15-second budget, skips files over `max_file_size_mb`, and returns previously found matches with an error when a walk or file read fails partway through. The asynchronous wrapper allows 35 seconds so a timed-out ripgrep phase can be followed by the fallback phase. Both paths preserve the searched symlink spelling in results where possible but filter results whose resolved target lies outside the requested search root. In virtual mode, agent-visible fallback errors are sanitized so the physical root and embedded host paths do not leak.
 
-`glob` and grep's `glob` filter share one matcher. A pattern without `/` matches a basename at any depth; a pattern with `/` is evaluated relative to the search root; `**` is supported; and a leading `/` anchors to that root. Brace expansion is supported. Dot names require an explicit dot in the matching segment, and `**` does not descend into dot-directories—so `*.yml` can match a nested file beneath `.github`, while `**/*.yml` does not. Traversal segments (`..`) and patterns refused by the matcher return a structured glob error rather than escaping the backend. Local `glob` walks entries under a five-second backend budget, returns sorted regular-file matches collected before expiry with `truncated=True` and reason `budget`, and treats a mid-walk failure as an error rather than benign truncation. The middleware adds a longer outer `GLOB_TIMEOUT`, uses a bounded shared worker pool for synchronous calls so abandoned workers cannot queue without limit, and returns a tool error when that outer deadline expires.
+`glob` and grep's `glob` filter share one matcher. A pattern without `/` matches a basename at any depth; a pattern with `/` is evaluated relative to the search root; `**` is supported; and a leading `/` anchors to that root. Brace expansion is supported. Dot names require an explicit dot in the matching segment, and `**` does not descend into dot-directories—so `*.yml` can match a nested file beneath `.github`, while `**/*.yml` does not. Traversal segments (`..`) and patterns refused by the matcher return a structured glob error rather than escaping the backend. Local `glob` checks its five-second walk budget at every visited entry, returns sorted regular-file matches collected before expiry with `truncated=True` and reason `budget`, and reports a mid-walk failure as an error rather than benign truncation.
 
-`FilesystemPermission` rules classify operations as `read` or `write` and have `allow`, `deny`, or `interrupt` mode. Patterns must be absolute and may not contain `..` or `~`. For ordinary exact operations, declaration order is significant: the first matching rule decides. Middleware checks both the requested normalized path and, for `FilesystemBackend` including routed composites, its symlink-resolved target; an unresolved target is refused when rules are configured. List and search results filter denied entries, including aliases that resolve to denied targets.
+The middleware imposes a separate 10-second `GLOB_TIMEOUT`. A synchronous call runs in a bounded shared worker pool: a worker that times out may continue until its backend returns, but holds its slot, and later calls fail promptly rather than queueing without limit. The asynchronous path separately waits on and cancels its backend task on deadline. In either mode, a deadline returns an error tool message; a backend exception is surfaced as `glob failed`, while a returned `GlobResult.error` is passed through. Thus timeout is not a successful partial response at the middleware layer—only a backend result explicitly marked `truncated` is.
 
-`interrupt` is not enforced inside a filesystem tool. During `create_deep_agent` assembly, `_fs_interrupt` turns interrupt rules into `HumanInTheLoopMiddleware` predicates. Exact tools (`read_file`, `write_file`, `edit_file`) prompt only for matching paths unless a matching deny wins. Bulk tools (`ls`, `glob`, `grep`, and `delete`) prompt if their target subtree could overlap an interrupt rule; an omitted path or current-directory alias is treated as root. The glob predicate also examines absolute patterns and conservatively prompts for relative patterns containing `..`, preventing a benign `path` argument from bypassing a protected target.
+`FilesystemPermission` rules classify operations as `read` or `write` and have `allow`, `deny`, or `interrupt` mode. Patterns must be absolute and may not contain `..` or `~`. For ordinary exact operations, declaration order is significant: the first matching rule decides. Middleware checks both the requested normalized path and, for `FilesystemBackend` including routed composites, its symlink-resolved target; with rules configured, a target that cannot be resolved is refused. List, glob, and grep results filter denied entries, including aliases that resolve to denied targets.
+
+A pathless `glob` is authorized against `/`, not paths named by its pattern; if `/` is denied, middleware explains that the caller must use an explicit allowed `path`. For an explicit base path, glob also checks its resolved target before it starts. Returned glob entries are filtered afterward, including entries whose resolved target is denied or whose `interrupt` approval would have fallen outside the scope that was approved.
+
+`interrupt` is not enforced inside a filesystem tool. During `create_deep_agent` assembly, `_fs_interrupt` turns interrupt rules into `HumanInTheLoopMiddleware` predicates. Exact tools (`read_file`, `write_file`, `edit_file`) prompt only for matching requested or resolved paths unless a matching deny wins. Bulk tools (`ls`, `glob`, `grep`, and `delete`) prompt if their target subtree could overlap an interrupt rule; an omitted path or current-directory alias is treated as root. The glob predicate also examines absolute patterns and conservatively prompts for relative patterns containing `..`, preventing a benign `path` argument from bypassing a protected target.
 
 ```mermaid
 flowchart TD
-    Call["Filesystem tool call"] --> Validate["Normalize and validate path"]
-    Validate --> Scope{"Exact or bulk scope"}
-    Scope -->|Exact| Match["Check requested and resolved paths"]
-    Scope -->|Bulk| Overlap["Check possible subtree overlap"]
-    Overlap --> Interrupt["HITL predicate may pause"]
-    Match --> Deny{"Deny rule"}
-    Deny -->|Yes| Refuse["Permission error"]
-    Deny -->|No| Operation["Backend operation"]
-    Interrupt --> Operation
-    Operation --> Filter["Filter denied bulk results"]
+    Call["Filesystem tool call"] --> Hitl{"Interrupt predicate applies"}
+    Hitl -->|Yes| Pause["Pause for approval"]
+    Hitl -->|No| Validate["Normalize and validate path"]
+    Pause --> Validate
+    Validate -->|Invalid| Invalid["Error tool message"]
+    Validate -->|Valid| Check["Check requested and resolved paths"]
+    Check -->|Denied or unresolved| Refuse["Permission error"]
+    Check -->|Allowed| Backend["Backend operation"]
+    Backend -->|Exception or result error| Failure["Error tool message"]
+    Backend -->|Successful bulk result| Filter["Filter denied results"]
+    Backend -->|Successful exact result| Result["Tool result"]
+    Filter --> Result
 ```
 
-This policy flow shows the boundary: graph assembly owns approval predicates, while filesystem middleware denies calls and filters results. A recursive or ambiguous delete is stricter: it fails closed if a deny-write pattern could overlap its subtree, while a confirmed leaf uses the normal first-match rule.
+This flow distinguishes graph-level approval from tool-level validation and policy. It also preserves failure semantics: backend errors and the middleware glob deadline are errors, while a successful backend glob may carry an explicitly truncated partial result. A recursive or ambiguous delete is stricter: it fails closed if a deny-write pattern could overlap its subtree, while a confirmed leaf uses the normal first-match rule.
 
 ## Execution is a separate trust boundary
 

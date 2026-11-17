@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Literal
+from unittest.mock import patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -19,6 +20,7 @@ from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
 from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs._prompt import _tool_block_key
 from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
@@ -1003,3 +1005,47 @@ def test_recursive_model_back_reference_renders_unknown() -> None:
     body = _ptc_body([tool])
     assert "  children?: { value: number; children?: unknown[] }[];" in body
     assert "): Promise<{ value: number; children?: unknown[] }>" in body
+
+
+class _LookupArgs(BaseModel):
+    key: str = Field(description="Key to look up.")
+
+
+def _lookup_tool() -> BaseTool:
+    def _fn(key: str) -> str:
+        return key
+
+    return StructuredTool.from_function(
+        name="lookup",
+        description="Look up a key.",
+        func=_fn,
+        args_schema=_LookupArgs,
+    )
+
+
+def test_render_ptc_prompt_reuses_blocks_across_tool_instances() -> None:
+    """Tools rebuilt per run (same name, schema, return type) render once."""
+    first = render_ptc_prompt([_lookup_tool()])
+    with patch(
+        "langchain_quickjs._prompt._safe_json_schema", side_effect=AssertionError
+    ):
+        assert render_ptc_prompt([_lookup_tool()]) == first
+
+
+def test_render_ptc_prompt_keys_dict_schemas_by_content() -> None:
+    """MCP-style dict schemas share the `dict` class but must not collide."""
+
+    def _mcp_tool(prop: str) -> BaseTool:
+        return StructuredTool(
+            name="mcp",
+            description="An MCP tool.",
+            args_schema={
+                "type": "object",
+                "properties": {prop: {"type": "string"}},
+                "required": [prop],
+            },
+            func=lambda **_: "ok",
+        )
+
+    assert _tool_block_key(_mcp_tool("query")) == _tool_block_key(_mcp_tool("query"))
+    assert _tool_block_key(_mcp_tool("query")) != _tool_block_key(_mcp_tool("path"))

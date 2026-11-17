@@ -351,7 +351,7 @@ def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
     assert outcome.result == "undefined"
 
 
-def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
+def test_registry_end_turn_keeps_worker_and_runtime() -> None:
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -359,17 +359,58 @@ def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
         max_stdout_chars=4000,
     )
     try:
-        repl = reg.get("thread-a")
-        old_runtime = reg._slots["thread-a"].runtime
-        repl.eval_sync("globalThis.answer = 42")
-        reg.reset_repl("thread-a")
-        replaced = reg.get("thread-a")
-        outcome = replaced.eval_sync("typeof answer")
-        assert replaced is not repl
-        assert reg._slots["thread-a"].runtime is old_runtime
+        slot = reg.get("thread-a")
+        slot.eval_sync("globalThis.answer = 42")
+        runtime = slot.runtime
+        reg.end_turn("thread-a")
+        assert slot.repl is None
+        outcome = slot.eval_sync("typeof answer")
+        assert reg.get("thread-a") is slot
+        assert slot.runtime is runtime
     finally:
         reg.close()
     assert outcome.result == "undefined"
+
+
+def test_fresh_eval_gets_its_own_context_on_the_warm_runtime() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    try:
+        slot = reg.get("thread-a")
+        slot.eval_sync("globalThis.answer = 42")
+        runtime = slot.runtime
+        assert slot.eval_sync("typeof answer", fresh=True).result == "undefined"
+        assert slot.eval_sync("answer").result == "42"
+        assert slot.runtime is runtime
+    finally:
+        reg.close()
+
+
+def test_registry_closes_least_recently_used_slot_over_cap() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        max_slots=1,
+    )
+    try:
+        old = reg.get("thread-a")
+        old.eval_sync("1")
+        busy = reg.acquire("thread-b")
+        assert list(reg._slots) == ["thread-b"]
+        assert old.runtime is None
+        reg.get("thread-c")
+        assert busy.retired
+        assert busy.eval_sync("1 + 1").result == "2"
+        reg.release(busy)
+        assert busy.runtime is None
+    finally:
+        reg.close()
 
 
 # ---------------------------------------------------------------------------
@@ -622,8 +663,8 @@ def test_registry_get_if_exists_does_not_create_slot() -> None:
 
 def test_middleware_del_closes_runtime() -> None:
     mw = CodeInterpreterMiddleware()
-    # Force a slot to exist
-    _ = mw._registry.get("t")
+    # Force a slot with a Runtime to exist
+    mw._registry.get("t").eval_sync("1")
     slots = list(mw._registry._slots.values())
     assert len(slots) == 1
     rt = slots[0].runtime
@@ -668,8 +709,8 @@ def test_per_thread_slot_has_own_worker_and_runtime() -> None:
         max_stdout_chars=4000,
     )
     try:
-        reg.get("thread-a")
-        reg.get("thread-b")
+        reg.get("thread-a").eval_sync("1")
+        reg.get("thread-b").eval_sync("1")
         slot_a = reg._slots["thread-a"]
         slot_b = reg._slots["thread-b"]
         assert slot_a.worker is not slot_b.worker
@@ -689,16 +730,13 @@ def test_evict_closes_and_removes_slot() -> None:
         max_stdout_chars=4000,
     )
     try:
-        reg.get("thread-a")
-        rt = reg._slots["thread-a"].runtime
-        repl = reg._slots["thread-a"].repl
-        with (
-            patch.object(repl, "close", wraps=repl.close) as repl_close_spy,
-            patch.object(rt, "close", wraps=rt.close) as close_spy,
-        ):
+        slot = reg.get("thread-a")
+        slot.eval_sync("1")
+        rt = slot.runtime
+        with patch.object(rt, "close", wraps=rt.close) as close_spy:
             reg.evict("thread-a")
-        assert repl_close_spy.called
         assert close_spy.called
+        assert slot.repl is None
         assert "thread-a" not in reg._slots
     finally:
         reg.close()
@@ -714,11 +752,13 @@ def test_evict_returns_fresh_slot_on_next_get() -> None:
     )
     try:
         first = reg.get("thread-a")
-        first_runtime = reg._slots["thread-a"].runtime
+        first.eval_sync("1")
+        first_runtime = first.runtime
         reg.evict("thread-a")
         second = reg.get("thread-a")
+        second.eval_sync("1")
         assert second is not first
-        assert reg._slots["thread-a"].runtime is not first_runtime
+        assert second.runtime is not first_runtime
     finally:
         reg.close()
 
@@ -747,16 +787,13 @@ async def test_aevict_closes_and_removes_slot() -> None:
         max_stdout_chars=4000,
     )
     try:
-        reg.get("thread-a")
-        rt = reg._slots["thread-a"].runtime
-        repl = reg._slots["thread-a"].repl
-        with (
-            patch.object(repl, "aclose", wraps=repl.aclose) as repl_close_spy,
-            patch.object(rt, "close", wraps=rt.close) as close_spy,
-        ):
+        slot = reg.get("thread-a")
+        await slot.eval_async("1")
+        rt = slot.runtime
+        with patch.object(rt, "close", wraps=rt.close) as close_spy:
             await reg.aevict("thread-a")
-        assert repl_close_spy.called
         assert close_spy.called
+        assert slot.repl is None
         assert "thread-a" not in reg._slots
     finally:
         reg.close()
@@ -777,7 +814,7 @@ def test_after_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_id not in mw._registry._slots
+        assert mw._registry._slots[slot_id].repl is None
     finally:
         mw._registry.close()
 
@@ -796,7 +833,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_id not in mw._registry._slots
+        assert mw._registry._slots[slot_id].repl is None
     finally:
         mw._registry.close()
 
@@ -817,24 +854,19 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
             store=None,
         )
         assert tool.coroutine is not None
-        first_repl = mw._registry.get(slot_id)
-        first_runtime = mw._registry._slots[slot_id].runtime
         first = await tool.coroutine(
             runtime=runtime,
             code="globalThis.answer = 42; answer",
         )
         assert "<result>42</result>" in first.content
-        after_first = mw._registry.get_if_exists(slot_id)
-        assert after_first is not None
-        assert after_first is not first_repl
-        assert mw._registry._slots[slot_id].runtime is first_runtime
+        slot = mw._registry._slots[slot_id]
+        first_runtime = slot.runtime
+        assert slot.repl is None
 
         second = await tool.coroutine(runtime=runtime, code="typeof answer")
         assert "<result>undefined</result>" in second.content
-        after_second = mw._registry.get_if_exists(slot_id)
-        assert after_second is not None
-        assert after_second is not after_first
-        assert mw._registry._slots[slot_id].runtime is first_runtime
+        assert slot.repl is None
+        assert slot.runtime is first_runtime
     finally:
         mw._registry.close()
 
@@ -1529,10 +1561,7 @@ async def test_async_task_global_limits_concurrency_per_repl(
         else CodeInterpreterMiddleware(max_subagent_concurrency=limit)
     )
     expected_limit = 32 if limit is None else limit
-    repl = middleware._registry.get("concurrency")
-    if reset:
-        middleware._registry.reset_repl("concurrency")
-        repl = middleware._registry.get("concurrency")
+    slot = middleware._registry.get("concurrency")
 
     class _CountingRunner:
         def __init__(self) -> None:
@@ -1577,7 +1606,7 @@ async def test_async_task_global_limits_concurrency_per_repl(
     )
 
     try:
-        outcome = await repl.eval_async(
+        outcome = await slot.eval_async(
             "const calls = [];"
             "for (let i = 0; i < 64; i++) {"
             "  calls.push(task({"
@@ -1586,6 +1615,7 @@ async def test_async_task_global_limits_concurrency_per_repl(
             "}"
             "(await Promise.all(calls)).length",
             outer_runtime=_subagent_runtime(runnable),
+            fresh=reset,
         )
     finally:
         await middleware._registry.aevict("concurrency")
@@ -1690,11 +1720,10 @@ async def test_unbounded_timeout_outlives_a_short_deadline(
     try:
         outcome = bounded._registry.get("t").eval_sync(_SPIN_300_MS)
         assert outcome.error_type == "Timeout"
-        repl = unbounded._registry.get("t")
-        assert repl.eval_sync(_SPIN_300_MS).result == "42"
-        assert (await repl.eval_async(_SPIN_300_MS)).result == "42"
-        unbounded._registry.reset_repl("t")
-        assert unbounded._registry.get("t").eval_sync(_SPIN_300_MS).result == "42"
+        slot = unbounded._registry.get("t")
+        assert slot.eval_sync(_SPIN_300_MS).result == "42"
+        assert (await slot.eval_async(_SPIN_300_MS)).result == "42"
+        assert slot.eval_sync(_SPIN_300_MS, fresh=True).result == "42"
     finally:
         await bounded._registry.aevict("t")
         await unbounded._registry.aevict("t")

@@ -11,18 +11,19 @@ import asyncio
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
-from typing import Any
+from typing import Any, NotRequired
 
 import pytest
 from deepagents import create_deep_agent
 from deepagents.middleware import FilesystemMiddleware
-from langchain.agents import create_agent
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents import AgentState, create_agent
+from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.types import Command
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
@@ -264,27 +265,53 @@ async def test_quickjs_async_parallel_agents() -> None:
         assert result["messages"][-1].content == f"done-{index}"
 
 
-async def test_deepagent_applies_ptc_tool_state_updates() -> None:
-    """`Command` state updates from `tools.*` calls are applied to the graph."""
+class _ClaimState(AgentState):
+    claims: NotRequired[dict[str, str]]
+
+
+class _ClaimMiddleware(AgentMiddleware):
+    state_schema = _ClaimState
+
+
+@tool("write_claim")
+def write_claim(claim_id: str, value: str, runtime: ToolRuntime) -> Command:
+    """Store a claim in graph state."""
+    claims = {**(runtime.state.get("claims") or {}), claim_id: value}
+    message = ToolMessage(content="stored", tool_call_id=runtime.tool_call_id)
+    return Command(update={"claims": claims, "messages": [message]})
+
+
+@tool("read_claim")
+def read_claim(claim_id: str, runtime: ToolRuntime) -> str:
+    """Read a claim from graph state."""
+    return (runtime.state.get("claims") or {}).get(claim_id, "missing")
+
+
+async def test_ptc_state_updates_apply_and_are_readable_in_same_eval() -> None:
+    """`tools.*` state updates land in the graph and later calls see them."""
     code = (
         "await tools.writeTodos({todos: [{content: 'a', status: 'pending'}]});\n"
-        "await tools.writeTodos({todos: [{content: 'b', status: 'pending'}]});\n"
+        "await tools.writeClaim({claim_id: 'c1', value: 'v1'});\n"
         "await tools.writeFile({file_path: '/one.txt', content: '1'});\n"
         "await tools.writeFile({file_path: '/two.txt', content: '2'});\n"
-        "'ok'"
+        "await tools.readClaim({claim_id: 'c1'})"
     )
     agent = create_agent(
         model=FakeChatModel(messages=_script(code)),
         middleware=[
             TodoListMiddleware(),
             FilesystemMiddleware(),
-            CodeInterpreterMiddleware(ptc=["write_todos", "write_file"]),
+            _ClaimMiddleware(),
+            CodeInterpreterMiddleware(
+                ptc=["write_todos", "write_file", write_claim, read_claim]
+            ),
         ],
     )
     result = await agent.ainvoke({"messages": [HumanMessage(content="Plan")]})
 
-    _assert_result_contains(_eval_tool_message(result).content, "ok")
-    assert result["todos"] == [{"content": "b", "status": "pending"}]
+    _assert_result_contains(_eval_tool_message(result).content, "v1")
+    assert result["todos"] == [{"content": "a", "status": "pending"}]
+    assert result["claims"] == {"c1": "v1"}
     assert {"/one.txt", "/two.txt"} <= set(result["files"])
     assert [m.name for m in result["messages"] if isinstance(m, ToolMessage)] == [
         "eval"

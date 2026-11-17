@@ -21,6 +21,7 @@ from langchain_core.tools.base import (
     _is_injected_arg_type,
     get_all_basemodel_annotations,
 )
+from langgraph._internal._constants import CONF, CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.errors import GraphInterrupt
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from langgraph.types import Command
@@ -92,8 +93,6 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
-    state_update: dict[str, Any] = field(default_factory=dict)
-    """Graph state updates from `Command`s returned by `tools.*` calls."""
 
 
 class _SnapshotRestoreError(RuntimeError):
@@ -138,7 +137,6 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
-    state_update: dict[str, Any] = field(default_factory=dict)
     task_dispatch_count: int = 0
     """Ordinal for the next `task()` dispatch in this eval.
 
@@ -162,28 +160,6 @@ class _PTCState:
             attempted=normalized_limit + 1,
             function_name=function_name,
         )
-
-
-def _merge_state_update(update: dict[str, Any], result: object) -> dict[str, Any]:
-    """Fold the state updates of `Command`s in a tool result into *update*.
-
-    `messages` are left out: JS already sees the tool's content, and the
-    eval's own `ToolMessage` is what lands in history. Dict values are
-    merged so repeated writes to keyed channels (`files`, `async_tasks`)
-    all survive; other values take the latest write.
-    """
-    entries = result if isinstance(result, list) else [result]
-    merged = dict(update)
-    for entry in entries:
-        if not isinstance(entry, Command) or not isinstance(entry.update, dict):
-            continue
-        for key, value in entry.update.items():
-            if key == "messages":
-                continue
-            prior = merged.get(key)
-            both_dicts = isinstance(prior, dict) and isinstance(value, dict)
-            merged[key] = {**prior, **value} if both_dicts else value
-    return merged
 
 
 class _ConsoleBuffer:
@@ -299,12 +275,13 @@ def _inject_tool_args_for_ptc(
     injected = _get_all_injected_args(tool)
     if not injected or outer_runtime is None:
         return enriched
+    state = _fresh_state(outer_runtime)
 
     # Build a ToolRuntime matching the outer one but with a fresh
     # tool_call_id. `type(outer_runtime)` rather than a literal import
     # so the shape stays in lockstep with whatever langgraph ships.
     derived = type(outer_runtime)(
-        state=outer_runtime.state,
+        state=state,
         tool_call_id=tool_call_id,
         config=outer_runtime.config,
         context=outer_runtime.context,
@@ -322,15 +299,48 @@ def _inject_tool_args_for_ptc(
         for arg_name, state_field in injected.state.items():
             if state_field:
                 enriched[arg_name] = (
-                    outer_runtime.state.get(state_field)
-                    if isinstance(outer_runtime.state, dict)
-                    else getattr(outer_runtime.state, state_field, None)
+                    state.get(state_field)
+                    if isinstance(state, dict)
+                    else getattr(state, state_field, None)
                 )
             else:
-                enriched[arg_name] = outer_runtime.state
+                enriched[arg_name] = state
     if injected.store and outer_runtime.store is not None:
         enriched[injected.store] = outer_runtime.store
     return enriched
+
+
+def _fresh_state(outer_runtime: Any) -> Any:
+    """Read the eval step's state with earlier PTC writes applied.
+
+    Same channel read `ToolNode` uses to hydrate tool state, so a tool sees
+    what earlier `tools.*` calls in this eval wrote.
+    """
+    read = outer_runtime.config.get(CONF, {}).get(CONFIG_KEY_READ)
+    if read is None:
+        return outer_runtime.state
+    return read(list(read.args[1]), fresh=True)
+
+
+def _send_state_updates(outer_runtime: Any, result: object) -> None:
+    """Write `Command` updates from a PTC call as channel writes on the eval's step.
+
+    `messages` are left out: they belong to the synthetic PTC tool call,
+    which has no matching tool call in history. JS sees their content.
+    """
+    send = (
+        outer_runtime.config.get(CONF, {}).get(CONFIG_KEY_SEND)
+        if outer_runtime is not None
+        else None
+    )
+    if send is None:
+        return
+    entries = result if isinstance(result, list) else [result]
+    for entry in entries:
+        if isinstance(entry, Command) and isinstance(entry.update, dict):
+            writes = [(k, v) for k, v in entry.update.items() if k != "messages"]
+            if writes:
+                send(writes)
 
 
 def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
@@ -737,13 +747,7 @@ class _ThreadREPL:
                 outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
-            current = self._ptc_state
-            if current is None:
-                msg = "PTC bridge called outside active eval"
-                raise ConcurrentEvalError(msg)
-            self._ptc_state = replace(
-                current, state_update=_merge_state_update(current.state_update, result)
-            )
+            _send_state_updates(state.outer_runtime, result)
             return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -941,8 +945,6 @@ class _ThreadREPL:
             outcome.error_message = e.error_message
             _clear_exception_references(e)
         finally:
-            if self._ptc_state is not None:
-                outcome.state_update = self._ptc_state.state_update
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome

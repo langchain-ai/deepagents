@@ -69,15 +69,6 @@ _DEFAULT_TOOL_NAME = "eval"
 PersistenceMode = Literal["thread", "turn", "call"]
 
 
-def _with_state_update(
-    message: ToolMessage, outcome: EvalOutcome
-) -> ToolMessage | Command:
-    """Apply state updates from `tools.*` calls alongside the eval's message."""
-    if not outcome.state_update:
-        return message
-    return Command(update={**outcome.state_update, "messages": [message]})
-
-
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
@@ -382,9 +373,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
-            return _with_state_update(
-                _make_tool_output(outcome, runtime.tool_call_id), outcome
-            )
+            return _make_tool_output(outcome, runtime.tool_call_id)
 
         async def async_eval(
             runtime: ToolRuntime[None, Any],
@@ -405,9 +394,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
-            return _with_state_update(
-                _make_tool_output(outcome, runtime.tool_call_id), outcome
-            )
+            return _make_tool_output(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
             name=tool_name,

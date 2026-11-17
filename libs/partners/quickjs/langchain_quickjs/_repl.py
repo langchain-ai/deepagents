@@ -663,9 +663,10 @@ class _ThreadREPL:
         async def _call(camel: str, raw_input: Any = None) -> Any:
             tool = self._tools.get(camel)
             if tool is None:
-                # A function captured before `install_tools` dropped it.
-                msg = f"tool '{camel}' not registered"
-                raise RuntimeError(msg)
+                # A function captured before `install_tools` dropped it. Fail
+                # the eval as calling a missing `tools.*` would, not the run.
+                msg = f"tools.{camel} is no longer available"
+                raise _TaskBridgeError(TypeError(msg))
             if self._ptc_state is None:
                 msg = "PTC bridge called outside active eval"
                 raise ConcurrentEvalError(msg)

@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -617,6 +618,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         context = _hook_context(runtime.context, None, self._cwd)
         outcomes: dict[str, _PreToolState] = {}
         tool_calls = [dict(call) for call in message.tool_calls]
+        # Outcomes are keyed by call id, so an explicit allow cannot be trusted
+        # when a provider reuses one id for several calls in a message.
+        call_ids = Counter(str(call.get("id") or "") for call in message.tool_calls)
         for index, tool_call in enumerate(message.tool_calls):
             call = _tool_call_data_from_call(
                 tool_call,
@@ -706,7 +710,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 outcomes[call.id] = {
                     "behavior": behavior,
                     "context": hook_context,
-                    "hook_allowed": hook_allowed,
+                    "hook_allowed": hook_allowed and call_ids[call.id] == 1,
                 }
         update: dict[str, Any] = {_PRE_TOOL_STATE_KEY: outcomes}
         if tool_calls != message.tool_calls:

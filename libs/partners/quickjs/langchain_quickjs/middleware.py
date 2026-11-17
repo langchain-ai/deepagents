@@ -276,8 +276,10 @@ class CodeInterpreterMiddleware(
             left behind when a run errors, is cancelled, has its stream closed,
             or pauses on an interrupt that is never resumed. Slots in use by
             an eval are never closed. A closed slot's next eval starts from the
-            last persisted snapshot. Expiry is checked whenever a slot is
-            acquired or evicted. Defaults to 3600 seconds (1 hour); `None` disables.
+            last persisted snapshot, so a run resumed from an interrupt after
+            `idle_ttl` loses the JS state from that turn's earlier evals.
+            Expiry is checked whenever a slot is acquired or evicted. Defaults
+            to 3600 seconds (1 hour); `None` disables.
 
     Example:
         ```python

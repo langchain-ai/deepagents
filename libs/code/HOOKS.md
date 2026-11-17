@@ -44,7 +44,7 @@ For example, use `"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/format.sh\""`. Set
 
 Each top-level key under `"hooks"` is an event name. Values are lists of matcher groups. A group may omit `matcher` (or use `"*"`) to match all values for that event's matcher field. Events with no matcher field reject non-wildcard matchers at load time.
 
-Native tools are matched by their wire names (for example `execute` → `Bash`, `write_file` → `Write`). MCP `PreToolUse` and post-tool hooks use `mcp__<server>__<original-tool-name>`, including when the model-facing name is shortened. `PermissionRequest` hooks still see the model-facing MCP name.
+Native tools are matched by their wire names (for example `execute` → `Bash`, `write_file` → `Write`). MCP `PreToolUse`, `PostToolUse`, and `PostToolUseFailure` hooks use `mcp__<server>__<original-tool-name>`, even when the model-facing name is sanitized or shortened. `PermissionRequest` hooks still see the model-facing name (`<server>_<tool>`, possibly sanitized or hash-suffixed), not the `mcp__` form.
 
 | Event | Owner | Matcher field | Fires when |
 | --- | --- | --- | --- |
@@ -135,7 +135,7 @@ Handlers communicate through:
 - **Non-JSON stdout**: becomes additional context for events whose plain-output policy is context (`SessionStart`, `UserPromptSubmit`); otherwise it is a diagnostic.
 - **Timeouts**: when a handler exceeds its timeout, it is terminated and recorded as a timeout diagnostic; it does not apply a successful decision.
 
-A `PreToolUse` handler with `onError: "deny"` denies on those failures rather than continuing. In headless mode, an explicit `PreToolUse` `allow` also permits that call through the MCP approval guard; absent an allow, mutating or unannotated MCP tools remain blocked. Hook `deny` takes precedence over `allow`. Other restrictions, including shell allow lists, still apply.
+A `PreToolUse` handler with `onError: "deny"` denies on those failures rather than continuing. In headless mode, an explicit `PreToolUse` `allow` also permits that call through the MCP approval guard; absent an allow, mutating or unannotated MCP tools remain blocked. An `ask` does not count as an allow there, because headless mode has no reviewer. Hook `deny` takes precedence over `allow`. Other restrictions, including shell allow lists, still apply.
 
 ## Legacy configuration
 

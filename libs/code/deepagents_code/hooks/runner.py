@@ -42,6 +42,7 @@ class HandlerResult:
     diagnostics: tuple[HookDiagnostic, ...] = ()
     plain_output: str | None = None
     deny_on_error: bool = False
+    """Whether a `PreToolUse` failure from this handler denies the call."""
 
 
 async def run_command_handler(

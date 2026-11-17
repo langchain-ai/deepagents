@@ -100,8 +100,11 @@ def to_wire_tool_name(
 ) -> str:
     """Map a native tool name to the compatible wire tool name.
 
+    When both `mcp_server` and `mcp_tool` are set, they take precedence and
+    `name` is ignored, because the model-facing MCP name may be shortened.
+
     Args:
-        name: Native dcode or already-compatible tool name.
+        name: Native dcode, model-facing MCP, or already-compatible tool name.
         mcp_server: Owning MCP server when known from tool metadata.
         mcp_tool: Original MCP tool name when known from tool metadata.
 

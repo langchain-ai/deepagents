@@ -103,6 +103,10 @@ class ToolCallData(_DomainModel):
     args: JsonObject
     mcp_server: str | None = None
     mcp_tool: str | None = None
+    """Original server-side MCP tool name.
+
+    `name` is the model-facing name, which may be sanitized or hash-shortened.
+    """
 
 
 class AgentIdentity(_DomainModel):

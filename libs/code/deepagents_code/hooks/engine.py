@@ -79,6 +79,9 @@ class HookEngine:
                 severity="warning",
                 message=f"Could not project hook invocation: {exc}",
             )
+            # No handler ran, so attach the failure to the first deny-on-error
+            # handler. Its result carries the diagnostic, which is then left
+            # out of `diagnostics=` so the reducer does not record it twice.
             fail_closed = next(
                 (handler for handler in match.handlers if handler.on_error == "deny"),
                 None,

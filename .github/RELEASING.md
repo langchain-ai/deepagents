@@ -757,8 +757,6 @@ release-please reads each commit on `main` and scopes it by that commit's own fi
 > [!WARNING]
 > The merge commit's body is the PR title. release-please skips the `Merge pull request ...` header, but a conventional PR title **without** `!` is split out of the body and parsed as its own commit, attributed to every file in the PR. Keep the `!` title, or clear the body in the merge dialog.
 
-Example: [#7777](https://github.com/langchain-ai/deepagents/pull/7777).
-
 ### Releasing a new line ahead of its dependents
 
 Local development installs sibling packages as editable path dependencies via `[tool.uv.sources]`, which hides whether published dependency ranges would resolve for real users installing from PyPI. The `📦 Check Release Dependencies` workflow closes that gap on `release(...)` PRs: it strips local sources and runs `uv pip compile --no-sources --universal --prerelease allow --all-extras` against PyPI for each changed release manifest, failing when the public install graph is unsatisfiable.

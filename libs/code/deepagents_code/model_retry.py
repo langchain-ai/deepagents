@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+import string
 import time
 import uuid
 from contextlib import contextmanager
@@ -37,6 +38,7 @@ from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit
 from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.exceptions import ModelError
 from langchain_core.runnables.config import var_child_runnable_config
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.errors import GraphBubbleUp
 from langgraph.pregel._messages import (  # noqa: PLC2701  # not publicly re-exported
     StreamMessagesHandler,
@@ -47,12 +49,15 @@ from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
     MODEL_RETRIES_ATTR,
 )
+from deepagents_code.output_truncation import _final_ai_message, _model_name
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator, Mapping
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.messages import AIMessage
+    from langchain_core.tools import BaseTool
     from langgraph.pregel.protocol import StreamChunk
 
 logger = logging.getLogger(__name__)
@@ -137,6 +142,60 @@ _CALL_ID_MAX_LENGTH = 64
 _CALL_ID_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 )
+
+
+class MissingToolArgumentsError(ValueError):
+    """The model returned tool calls without their required arguments."""
+
+
+def _missing_tool_arguments(
+    message: AIMessage, tools: list[BaseTool | dict[str, Any]]
+) -> dict[str, list[str]]:
+    schemas = {}
+    for tool in tools:
+        schema = convert_to_openai_tool(tool)
+        if schema.get("type") == "function":
+            function = schema["function"]
+            schemas[function["name"]] = function.get("parameters", {})
+    missing = {}
+    for call in message.tool_calls:
+        required = schemas.get(call["name"], {}).get("required", [])
+        fields = [name for name in required if name not in call["args"]]
+        if fields:
+            missing[call["name"]] = fields
+    return missing
+
+
+def _check_tool_arguments(response: ModelResponse, request: ModelRequest) -> None:
+    if not getattr(request, "tools", None):
+        return
+    message = _final_ai_message(response)
+    if message is None or not message.tool_calls:
+        return
+    missing = _missing_tool_arguments(message, request.tools)
+    if not missing:
+        return
+    model = _model_name(message, request.model)
+    formats = [
+        {
+            "length": len(call["id"] or ""),
+            "hex": all(c in string.hexdigits for c in (call["id"] or "")),
+        }
+        for call in message.tool_calls
+    ]
+    logger.warning(
+        "Model %r returned tool calls missing required arguments: %s; "
+        "lc_gateway_metadata present=%s; call-id formats=%s",
+        model,
+        missing,
+        "lc_gateway_metadata" in message.response_metadata,
+        formats,
+    )
+    msg = (
+        f"Model {model!r} returned tool calls missing required arguments: {missing}. "
+        "No tools were executed from this reply."
+    )
+    raise MissingToolArgumentsError(msg)
 
 
 def _google_api_core_status_code(exc: Exception) -> int | None:
@@ -445,6 +504,9 @@ def _direct_model_error_retryability(
         Whether the exception is retryable, or `None` when it has no direct
         signal and its group members or chain should be inspected.
     """
+    if isinstance(exc, MissingToolArgumentsError):
+        return True
+
     if isinstance(exc, ModelError):
         return exc.is_retryable
 
@@ -1217,6 +1279,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             self._emit_stream_event(request, event)
             with _track_message_streams(stream_tracker):
                 result = handler(request)
+            _check_tool_arguments(result, request)
             event = build_attempt_event(call_id, current_attempt, phase="complete")
             if activity is not None:
                 from deepagents_code.cost_tracking import cache_token_counts
@@ -1272,6 +1335,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             self._emit_stream_event(request, event)
             with _track_message_streams(stream_tracker):
                 result = await handler(request)
+            _check_tool_arguments(result, request)
             event = build_attempt_event(call_id, current_attempt, phase="complete")
             if activity is not None:
                 from deepagents_code.cost_tracking import cache_token_counts

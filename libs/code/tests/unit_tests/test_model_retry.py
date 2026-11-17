@@ -14,6 +14,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware import AgentState, wrap_tool_call
 from langchain_core.exceptions import (
     ContextOverflowError,
     ModelAuthenticationError,
@@ -21,18 +22,33 @@ from langchain_core.exceptions import (
     ModelPermissionDeniedError,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.tools import tool
 from langgraph.errors import GraphBubbleUp
+
+from deepagents_code.local_context import _FORKED_CONTEXT_KEY
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
-    from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain.agents.middleware.types import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallRequest,
+    )
     from langchain_core.callbacks import (
         AsyncCallbackManagerForLLMRun,
         CallbackManagerForLLMRun,
     )
+    from langgraph.types import Command
 
 from deepagents_code import model_retry
 from deepagents_code.config import MODEL_RETRIES_ATTR
@@ -876,3 +892,166 @@ def test_sync_model_call_is_retried_after_streaming(
 
 class _UnrelatedAPIConnectionError(Exception):
     """Same class name, different package: must not be classified transient."""
+
+
+class _ToolReplyState(AgentState):
+    _deepagents_forked_context: bool
+
+
+class _ToolReplyModel(FakeMessagesListChatModel):
+    attempts: int = 0
+
+    def bind_tools(self, tools: object, **kwargs: Any) -> _ToolReplyModel:  # noqa: ARG002  # fake model uses prebuilt replies
+        return self
+
+    def _generate(self, *args: Any, **kwargs: Any) -> ChatResult:
+        self.attempts += 1
+        return super()._generate(*args, **kwargs)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("forked", [False, True])
+@pytest.mark.parametrize("malformed_count", [0, 1, 2])
+async def test_missing_arguments_never_reach_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    asynchronous: bool,
+    forked: bool,
+    malformed_count: int,
+) -> None:
+    """Retry incomplete replies before either approval or tool execution."""
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(model_retry.time, "sleep", lambda *_: None)
+    executed: list[str] = []
+    classified: list[dict[str, Any]] = []
+
+    @tool
+    def execute(command: str) -> str:
+        """Execute a command."""
+        executed.append(command)
+        return "done"
+
+    @wrap_tool_call
+    def classify(
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        classified.append(request.tool_call["args"])
+        return handler(request)
+
+    @wrap_tool_call
+    async def aclassify(
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        classified.append(request.tool_call["args"])
+        return await handler(request)
+
+    malformed = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "execute", "args": {}, "id": "a" * 32},
+            {"name": "execute", "args": {}, "id": "b" * 32},
+        ],
+    )
+    valid = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "execute", "args": {"command": "pwd"}, "id": "call_valid"},
+        ],
+    )
+    model = _ToolReplyModel(
+        responses=[
+            *([malformed] * malformed_count),
+            valid,
+            AIMessage(content="finished"),
+        ]
+    )
+    agent = create_agent(
+        model,
+        state_schema=_ToolReplyState,
+        tools=[execute],
+        middleware=[
+            CodeModelRetryMiddleware(max_retries=1),
+            aclassify if asynchronous else classify,
+        ],
+    )
+    state = {"messages": [HumanMessage("run commands")]}
+    if forked:
+        state[_FORKED_CONTEXT_KEY] = True
+
+    async def invoke() -> dict[str, Any]:
+        if asynchronous:
+            return await agent.ainvoke(state)
+        return agent.invoke(state)
+
+    if malformed_count == 2:
+        with pytest.raises(
+            model_retry.MissingToolArgumentsError, match="missing required arguments"
+        ):
+            await invoke()
+        assert executed == []
+        assert classified == []
+        assert model.attempts == 2
+    else:
+        result = await invoke()
+        assert result["messages"][-1].content == "finished"
+        assert executed == ["pwd"]
+        assert classified == [{"command": "pwd"}]
+        assert model.attempts == malformed_count + 2
+
+
+@pytest.mark.parametrize(
+    ("required", "arguments", "expected"),
+    [
+        ([], {}, {}),
+        (["command"], {}, {"execute": ["command"]}),
+        (["command"], {"command": "pwd"}, {}),
+        (["command", "directory"], {"command": "pwd"}, {"execute": ["directory"]}),
+    ],
+)
+def test_required_argument_schema(
+    required: list[str],
+    arguments: dict[str, str],
+    expected: dict[str, list[str]],
+) -> None:
+    message = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "execute", "args": arguments, "id": "call_1"},
+        ],
+    )
+    schema = {
+        "type": "function",
+        "function": {
+            "name": "execute",
+            "parameters": {"type": "object", "required": required},
+        },
+    }
+    assert model_retry._missing_tool_arguments(message, [schema]) == expected
+
+
+def test_optional_tool_arguments_execute_without_retry() -> None:
+    executed: list[str] = []
+
+    @tool
+    def status(detail: str = "brief") -> str:
+        """Return status information."""
+        executed.append(detail)
+        return "ready"
+
+    model = _ToolReplyModel(
+        responses=[
+            AIMessage(
+                content="", tool_calls=[{"name": "status", "args": {}, "id": "call_1"}]
+            ),
+            AIMessage(content="finished"),
+        ]
+    )
+    agent = create_agent(
+        model, tools=[status], middleware=[CodeModelRetryMiddleware(max_retries=0)]
+    )
+    result = agent.invoke({"messages": [HumanMessage("status")]})
+    assert result["messages"][-1].content == "finished"
+    assert executed == ["brief"]
+    assert model.attempts == 2

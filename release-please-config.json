@@ -181,6 +181,7 @@
       "release-type": "python",
       "package-name": "langchain-quickjs",
       "component": "langchain-quickjs",
+      "release-as": "0.4.0",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [

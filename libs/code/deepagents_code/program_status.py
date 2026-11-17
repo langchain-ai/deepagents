@@ -562,21 +562,18 @@ class AgentStatusTracker:
     def _unblock(self, token: int) -> None:
         """Forget the prompt registered under `token`; unknown tokens are ignored.
 
-        A user who answered a prompt has seen the last outcome, so it reverts
-        to `idle` (the spec's state after a cancel).
+        A user who closed a prompt has seen a `done` outcome, so it reverts to
+        `idle`. An error stays: closing a prompt, such as cancelling a sign-in,
+        does not fix it. `clear_error` or new work removes it.
         """
         blockers = self._activity.blockers
         remaining = tuple(entry for entry in blockers if entry[0] != token)
         if remaining == blockers:
             return
-        self._apply(
-            replace(
-                self._activity,
-                blockers=remaining,
-                outcome=TurnOutcome.IDLE,
-                detail="",
-            )
-        )
+        activity = replace(self._activity, blockers=remaining)
+        if activity.outcome is not TurnOutcome.ERROR:
+            activity = replace(activity, outcome=TurnOutcome.IDLE, detail="")
+        self._apply(activity)
 
     def track[T](
         self, future: asyncio.Future[T], kind: BlockedKind, msg: str = ""

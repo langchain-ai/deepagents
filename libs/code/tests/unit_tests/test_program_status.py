@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import re
 from typing import TYPE_CHECKING
 
@@ -373,6 +374,25 @@ class TestAgentStatusTracker:
         with tracker.blocked(BlockedKind.AUTH, "Sign in"):
             pass
         assert self.states(sink) == ["idle", "done", "blocked:auth", "idle"]
+
+    @pytest.mark.parametrize("cancelled", [False, True])
+    def test_closing_a_prompt_keeps_an_error(
+        self, tracker: AgentStatusTracker, sink: _Sink, *, cancelled: bool
+    ) -> None:
+        tracker.set_outcome(TurnOutcome.ERROR, "Server failed to start")
+        with (
+            pytest.raises(asyncio.CancelledError)
+            if cancelled
+            else contextlib.nullcontext(),
+            tracker.blocked(BlockedKind.AUTH, "Sign in"),
+        ):
+            if cancelled:
+                raise asyncio.CancelledError
+        assert sink.decoded[-1] == {
+            "state": "error",
+            "app": "deepagents-code",
+            "msg": "Server failed to start",
+        }
 
     async def test_new_conversation_drops_transcript_prompts_only(
         self, tracker: AgentStatusTracker, sink: _Sink

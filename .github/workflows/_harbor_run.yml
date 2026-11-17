@@ -401,7 +401,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks' || startsWith(inputs.judge_models, 'fireworks_ai/')) && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -538,6 +538,9 @@ jobs:
               echo "::error::judge_models must be a single openrouter/<vendor>/<model> slug: $HARBOR_JUDGE_MODELS"
               exit 1
             fi
+          fi
+          if [[ "$HARBOR_JUDGE_MODELS" == fireworks_ai/* ]]; then
+            [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY")
           fi
 
           if [ ${#missing[@]} -gt 0 ]; then
@@ -731,7 +734,7 @@ jobs:
           # Harvey LAB verifiers judge with Claude regardless of the model under test.
           ANTHROPIC_API_KEY: ${{ (startsWith(matrix.model, 'anthropic:') || startsWith(matrix.dataset || inputs.dataset, 'harveyai/')) && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks' || startsWith(inputs.judge_models, 'fireworks_ai/')) && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -1104,6 +1107,14 @@ jobs:
             # hold no key for). Bare OpenAI names get the `openai/` route.
             --verifier-env "GRADING_MODEL=$( [[ "$HARBOR_JUDGE_MODELS" == */* ]] && echo "$HARBOR_JUDGE_MODELS" || echo "openai/$HARBOR_JUDGE_MODELS" )"
           )
+          # A Fireworks judge (LiteLLM `fireworks_ai/...`, e.g. APEX's default DeepSeek
+          # model) reads the Fireworks key under either name.
+          if [[ "$HARBOR_JUDGE_MODELS" == fireworks_ai/* ]]; then
+            verifier_env_args+=(
+              --verifier-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
+              --verifier-env 'FIREWORKS_AI_API_KEY=${FIREWORKS_API_KEY}'
+            )
+          fi
           # Harbor applies OPENAI_BASE_URL (forwarded or in its own env) to every
           # provider, and pi treats it as a custom endpoint, so only OpenAI models on
           # non-pi agents get it. Verifiers get it as a literal before the unset.

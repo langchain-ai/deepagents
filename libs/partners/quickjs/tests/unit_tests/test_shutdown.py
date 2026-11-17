@@ -52,6 +52,7 @@ _EXIT_SCRIPT = textwrap.dedent(
 
 
     scenario = sys.argv[1]
+    execution = sys.argv[2]
     messages = [
         AIMessage(
             content="",
@@ -72,7 +73,9 @@ _EXIT_SCRIPT = textwrap.dedent(
     agent = create_deep_agent(
         model=FakeChatModel(messages=iter(messages)),
         tools=[ask_human, broken_tool],
-        middleware=[CodeInterpreterMiddleware(ptc=[], timeout=5.0)],
+        middleware=[
+            CodeInterpreterMiddleware(ptc=[], timeout=5.0, execution=execution)
+        ],
         checkpointer=InMemorySaver(),
     )
     try:
@@ -128,9 +131,9 @@ _CONFIG = {"configurable": {"thread_id": "t1"}}
 
 
 @pytest.mark.parametrize("scenario", ["complete", "interrupt", "error"])
-def test_process_exits_after_run(scenario: str) -> None:
+def test_process_exits_after_run(scenario: str, execution: str) -> None:
     proc = subprocess.run(  # noqa: S603  # fixed script run with this interpreter
-        [sys.executable, "-c", _EXIT_SCRIPT, scenario],
+        [sys.executable, "-c", _EXIT_SCRIPT, scenario, execution],
         cwd=_PACKAGE_ROOT,
         capture_output=True,
         text=True,
@@ -141,6 +144,7 @@ def test_process_exits_after_run(scenario: str) -> None:
     assert "exiting" in proc.stdout
 
 
+@pytest.mark.worker_only
 def test_garbage_collection_releases_interpreters() -> None:
     before = _worker_threads()
     middleware = CodeInterpreterMiddleware(ptc=[])

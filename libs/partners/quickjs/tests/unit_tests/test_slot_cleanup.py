@@ -2,14 +2,12 @@
 
 A run that raises, is cancelled, or has its stream closed skips
 `after_agent`, so its REPL slot stays registered. The next run on the thread
-must not reuse that slot's JS state (it was never checkpointed), and idle
-slots must not accumulate forever.
+must not reuse that slot's JS state (it was never checkpointed).
 """
 
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
@@ -20,7 +18,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
 
-from langchain_quickjs import CodeInterpreterMiddleware, _repl
+from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._repl import _Registry
 from tests._common import FakeChatModel
 
@@ -187,92 +185,13 @@ async def test_resume_after_interrupt_keeps_live_slot(mode: InvokeMode) -> None:
     assert mw._registry._slots == {}
 
 
-class _Clock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
-    """Fake `time.monotonic` as seen by `_repl` only.
-
-    Swaps the module's `time` reference rather than patching the global
-    `time.monotonic`, which the QuickJS worker loops also rely on.
-    """
-    fake = _Clock()
-    monkeypatch.setattr(_repl, "time", SimpleNamespace(monotonic=fake))
-    return fake
-
-
-def _registry(idle_ttl: float | None = 60.0) -> _Registry:
+def _registry() -> _Registry:
     return _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
-        idle_ttl=idle_ttl,
     )
-
-
-def test_idle_slot_expires_on_next_acquire_for_another_thread(clock: _Clock) -> None:
-    reg = _registry()
-    try:
-        slot = reg.acquire("idle")
-        reg.release(slot)
-
-        clock.now += 59
-        reg.release(reg.acquire("other"))
-        assert "idle" in reg._slots
-
-        clock.now += 2
-        with patch.object(reg, "_close_slot", wraps=reg._close_slot) as close_spy:
-            reg.release(reg.acquire("other"))
-        close_spy.assert_called_once_with(slot)
-        assert "idle" not in reg._slots
-    finally:
-        reg.close()
-
-
-async def test_idle_slot_expires_on_aevict(clock: _Clock) -> None:
-    reg = _registry()
-    try:
-        await reg.arelease(await reg.aacquire("idle"))
-        clock.now += 61
-        await reg.aevict("unrelated")
-        assert "idle" not in reg._slots
-    finally:
-        reg.close()
-
-
-def test_leased_slot_is_never_expired(clock: _Clock) -> None:
-    reg = _registry()
-    try:
-        slot = reg.acquire("busy")
-        clock.now += 3600
-        reg.release(reg.acquire("other"))
-        assert reg._slots["busy"] is slot
-    finally:
-        reg.close()
-
-
-def test_eval_longer_than_ttl_is_not_closed(clock: _Clock) -> None:
-    reg = _registry(idle_ttl=1.0)
-    try:
-        slot = reg.acquire("long")
-        slot.repl.eval_sync("var x = 1")
-        # 10x the TTL passes mid-eval while other threads hit the registry.
-        clock.now += 10
-        reg.evict("other")
-        reg.release(reg.acquire("other"))
-        assert slot.repl.eval_sync("x + 1").result == "2"
-        reg.release(slot)  # release refreshes last_used
-        reg.release(reg.acquire("other"))
-        assert reg._slots["long"] is slot
-    finally:
-        reg.close()
 
 
 def test_evicting_a_busy_slot_defers_close_to_release() -> None:
@@ -286,17 +205,6 @@ def test_evicting_a_busy_slot_defers_close_to_release() -> None:
             assert slot.repl.eval_sync("1 + 1").result == "2"
             reg.release(slot)
         close_spy.assert_called_once_with(slot)
-    finally:
-        reg.close()
-
-
-def test_idle_ttl_none_disables_expiry(clock: _Clock) -> None:
-    reg = _registry(idle_ttl=None)
-    try:
-        reg.release(reg.acquire("kept"))
-        clock.now += 10**9
-        reg.release(reg.acquire("other"))
-        assert "kept" in reg._slots
     finally:
         reg.close()
 
@@ -328,9 +236,3 @@ async def test_abefore_agent_closes_stale_slot() -> None:
         assert mw._registry.get_if_exists("stale") is None
     finally:
         mw._registry.close()
-
-
-@pytest.mark.parametrize("bad", [0, -1.0])
-def test_idle_ttl_must_be_positive(bad: float) -> None:
-    with pytest.raises(ValueError, match="idle_ttl"):
-        CodeInterpreterMiddleware(idle_ttl=bad)

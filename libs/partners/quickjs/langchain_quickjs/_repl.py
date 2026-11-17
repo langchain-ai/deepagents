@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, get_type_hints
@@ -1000,7 +999,6 @@ class _Slot:
     # Evals (or snapshots) currently using the slot. A leased slot is never
     # closed; eviction marks it `retired` and the last release closes it.
     leases: int = 0
-    last_used: float = 0.0
     retired: bool = False
 
 
@@ -1010,9 +1008,7 @@ class _Registry:
 
     Each LangGraph `thread_id` gets its own `_Slot` (worker + Runtime
     + Context). Eviction is driven externally via `evict(thread_id)` —
-    typically from the middleware's `after_agent` hook. When `idle_ttl` is
-    set, every `acquire`/`evict` also closes slots that have sat unleased for
-    longer than that, so slots abandoned by failed runs don't pile up.
+    typically from the middleware's `after_agent` hook.
     """
 
     memory_limit: int
@@ -1022,7 +1018,6 @@ class _Registry:
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
-    idle_ttl: float | None = None
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -1035,7 +1030,6 @@ class _Registry:
         if slot is None:
             slot = self._build_slot_locked(thread_id)
             self._slots[thread_id] = slot
-        slot.last_used = time.monotonic()
         return slot
 
     def acquire(self, thread_id: str) -> _Slot:
@@ -1044,22 +1038,13 @@ class _Registry:
         A leased slot is never closed. Pair with `release`.
         """
         with self._lock:
-            expired = self._pop_expired_locked()
             slot = self._get_or_build_locked(thread_id)
             slot.leases += 1
-        for stale in expired:
-            self._close_slot(stale)
-        return slot
+            return slot
 
     async def aacquire(self, thread_id: str) -> _Slot:
-        """Async variant of `acquire`: closes expired slots on their workers."""
-        with self._lock:
-            expired = self._pop_expired_locked()
-            slot = self._get_or_build_locked(thread_id)
-            slot.leases += 1
-        for stale in expired:
-            await self._aclose_slot(stale)
-        return slot
+        """Async variant of `acquire`."""
+        return self.acquire(thread_id)
 
     def lease_if_exists(self, thread_id: str) -> _Slot | None:
         """Lease the slot for `thread_id` without creating one."""
@@ -1082,19 +1067,7 @@ class _Registry:
     def _release_locked(self, slot: _Slot) -> bool:
         with self._lock:
             slot.leases -= 1
-            slot.last_used = time.monotonic()
             return slot.retired and slot.leases == 0
-
-    def _pop_expired_locked(self) -> list[_Slot]:
-        if self.idle_ttl is None or not self._slots:
-            return []
-        cutoff = time.monotonic() - self.idle_ttl
-        expired_ids = [
-            thread_id
-            for thread_id, slot in self._slots.items()
-            if slot.leases == 0 and slot.last_used <= cutoff
-        ]
-        return [self._slots.pop(thread_id) for thread_id in expired_ids]
 
     def _pop_for_close_locked(self, thread_id: str) -> _Slot | None:
         """Remove a slot; return it if it can close now, else retire it."""
@@ -1113,27 +1086,21 @@ class _Registry:
             return slot.repl if slot is not None else None
 
     def evict(self, thread_id: str) -> None:
-        """Close and remove the slot for `thread_id` and any expired slots.
+        """Close and remove the slot for `thread_id`. No-op if absent.
 
         A leased slot is removed now and closed when its last lease ends.
         """
         with self._lock:
             slot = self._pop_for_close_locked(thread_id)
-            to_close = self._pop_expired_locked()
         if slot is not None:
-            to_close.append(slot)
-        for stale in to_close:
-            self._close_slot(stale)
+            self._close_slot(slot)
 
     async def aevict(self, thread_id: str) -> None:
-        """Async variant of `evict`: closes runtimes via their worker loops."""
+        """Async variant of `evict`: closes the runtime via the worker loop."""
         with self._lock:
             slot = self._pop_for_close_locked(thread_id)
-            to_close = self._pop_expired_locked()
         if slot is not None:
-            to_close.append(slot)
-        for stale in to_close:
-            await self._aclose_slot(stale)
+            await self._aclose_slot(slot)
 
     def reset_repl(self, thread_id: str) -> None:
         """Replace the slot REPL while keeping its worker and runtime alive."""

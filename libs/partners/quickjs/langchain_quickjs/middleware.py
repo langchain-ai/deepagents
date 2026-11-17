@@ -71,7 +71,6 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
-_DEFAULT_IDLE_TTL = 3600.0
 
 PersistenceMode = Literal["thread", "turn", "call"]
 
@@ -271,15 +270,6 @@ class CodeInterpreterMiddleware(
                 where the checkpointer is not fully trusted. Use the same key across
                 all processes that share a thread, and rotate it by starting fresh
                 threads.
-        idle_ttl: Seconds a REPL slot may sit unused before it is closed.
-            Slots are normally closed in `after_agent`; this bounds the ones
-            left behind when a run errors, is cancelled, has its stream closed,
-            or pauses on an interrupt that is never resumed. Slots in use by
-            an eval are never closed. A closed slot's next eval starts from the
-            last persisted snapshot, so a run resumed from an interrupt after
-            `idle_ttl` loses the JS state from that turn's earlier evals.
-            Expiry is checked whenever a slot is acquired or evicted. Defaults
-            to 3600 seconds (1 hour); `None` disables.
 
     Example:
         ```python
@@ -313,7 +303,6 @@ class CodeInterpreterMiddleware(
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
-        idle_ttl: float | None = _DEFAULT_IDLE_TTL,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -322,9 +311,6 @@ class CodeInterpreterMiddleware(
             raise ValueError(msg)
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
-            raise ValueError(msg)
-        if idle_ttl is not None and not idle_ttl > 0:
-            msg = "`idle_ttl` must be > 0 or None"
             raise ValueError(msg)
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
@@ -360,7 +346,6 @@ class CodeInterpreterMiddleware(
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
-            idle_ttl=idle_ttl,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}

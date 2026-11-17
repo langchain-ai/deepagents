@@ -48,7 +48,12 @@ from langchain_quickjs._format import (
     format_handle,
     stringify,
 )
-from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
+from langchain_quickjs._ptc import (
+    ToolResolver,
+    UnresolvedToolError,
+    is_valid_js_identifier,
+    to_camel_case,
+)
 from langchain_quickjs._subagent import (
     call_subagent_task_tool,
     find_subagent_task_tool,
@@ -351,18 +356,47 @@ def _bridge_symbol_name(tool_name: str) -> str:
     return f"__tools_{normalized}_{digest}"
 
 
-def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
-    """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = ["globalThis.tools = {};"]
+_RESOLVED_TOOL_SYMBOL = "__tools_resolved"
+_UNRESOLVED_KEY = "__tools_unresolved"
+
+
+def _render_tools_namespace_assignment(
+    bridges: dict[str, str], *, resolves: bool = False
+) -> str:
+    """Return JS that atomically rebuilds `globalThis.tools` from bridges.
+
+    With `resolves`, `tools` is a proxy: a name it has no bridge for is a
+    function that asks the resolver for the tool by that name. It throws a
+    `TypeError` when the resolver finds none, or when the tool it found raises
+    `UnresolvedToolError`.
+    """
+    statements = ["const installed = {};"]
     for tool_name, bridge_symbol in sorted(bridges.items()):
         quoted_tool_name = json.dumps(tool_name)
         quoted_bridge_symbol = json.dumps(bridge_symbol)
         statements.append(
-            "globalThis.tools"
-            f"[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
+            f"installed[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
         )
-    statements.append("undefined")
-    return " ".join(statements)
+    if resolves:
+        resolved = json.dumps(_RESOLVED_TOOL_SYMBOL)
+        unresolved = json.dumps(_UNRESOLVED_KEY)
+        statements.append(
+            "globalThis.tools = new Proxy(installed, { get(target, name) {"
+            " if (typeof name !== 'string' || name in target"
+            " || name === 'then' || name === 'toJSON')"
+            " return target[name];"
+            " return async (input) => {"
+            f" const result = await globalThis[{resolved}](name, input);"
+            " if (result !== null && typeof result === 'object'"
+            f" && Object.prototype.hasOwnProperty.call(result, {unresolved}))"
+            f" throw new TypeError(result[{unresolved}]);"
+            " return result;"
+            " };"
+            " } });"
+        )
+    else:
+        statements.append("globalThis.tools = installed;")
+    return "{ " + " ".join(statements) + " } undefined"
 
 
 class _REPLOptions(TypedDict):
@@ -372,6 +406,7 @@ class _REPLOptions(TypedDict):
     max_ptc_calls: int | None
     subagents_enabled: bool
     max_subagent_concurrency: int
+    resolve_tool: ToolResolver | None
 
 
 class _ThreadREPL:
@@ -393,6 +428,7 @@ class _ThreadREPL:
         max_ptc_calls: int | None = 256,
         subagents_enabled: bool = True,
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+        resolve_tool: ToolResolver | None = None,
     ) -> None:
         self._setup(
             worker,
@@ -403,6 +439,7 @@ class _ThreadREPL:
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents_enabled,
             max_subagent_concurrency=max_subagent_concurrency,
+            resolve_tool=resolve_tool,
         )
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
@@ -430,9 +467,11 @@ class _ThreadREPL:
         max_ptc_calls: int | None,
         subagents_enabled: bool,
         max_subagent_concurrency: int,
+        resolve_tool: ToolResolver | None,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
+        self._resolve_tool = resolve_tool
         # The Context-level `timeout` is used as the cumulative budget
         # for sync evals. Async evals pass `timeout=` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
@@ -475,6 +514,8 @@ class _ThreadREPL:
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
+        if self._resolve_tool is not None:
+            self._register_resolved_tool_bridge()
         if self._subagents_enabled:
             self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
             self._register_task_bridge()
@@ -565,7 +606,11 @@ class _ThreadREPL:
         # `undefined` sidesteps the MarshalError on object returns
         # (same trick as the console install).
         bridges = {camel: self._bridge_symbols[camel] for camel in target_names}
-        ctx.eval(_render_tools_namespace_assignment(bridges))
+        ctx.eval(
+            _render_tools_namespace_assignment(
+                bridges, resolves=self._resolve_tool is not None
+            )
+        )
         self._active_tool_names = target_names
         self._tools_installed = True
 
@@ -733,34 +778,55 @@ class _ThreadREPL:
                 # it, fail loud.
                 msg = f"tool '{camel}' not registered"
                 raise RuntimeError(msg)
-            if self._ptc_state is None:
-                msg = "PTC bridge called outside active eval"
-                raise ConcurrentEvalError(msg)
-            state = self._ptc_state.consume_call_budget(
-                function_name=f"tools.{camel}",
-                max_ptc_calls=self._max_ptc_calls,
-            )
-            self._ptc_state = state
-            payload = _normalize_tool_input(raw_input)
-            call_id = _synth_tool_call_id(tool.name)
-            # Inject runtime/state/store ourselves. The bridge uses `arun`
-            # rather than the tool-call envelope path so the result can be
-            # unwrapped back to native JS-visible values after the standard
-            # tool lifecycle callbacks have fired.
-            args = _inject_tool_args_for_ptc(
-                tool, payload, state.outer_runtime, call_id
-            )
-            result = await self._ainvoke_tool_on_outer_loop(
-                tool,
-                {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
-                outer_runtime=state.outer_runtime,
-                outer_loop=state.outer_loop,
-            )
-            return coerce_tool_output_for_ptc(result)
+            return await self._acall_tool(camel, tool, raw_input)
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)
         return bridge_symbol
+
+    def _register_resolved_tool_bridge(self) -> None:
+        """Install the host function `tools.<name>` reaches for a name not installed."""
+        ctx = self._require_ctx()
+        resolve_tool = self._resolve_tool
+        if resolve_tool is None:
+            return
+
+        async def _resolved(camel: str, raw_input: Any = None) -> Any:
+            missing = f"tools.{camel} is not a function"
+            tool = resolve_tool(camel)
+            if tool is None:
+                return {_UNRESOLVED_KEY: missing}
+            try:
+                return await self._acall_tool(camel, tool, raw_input)
+            except UnresolvedToolError as exc:
+                return {_UNRESOLVED_KEY: str(exc) or missing}
+
+        ctx.register(_RESOLVED_TOOL_SYMBOL, _resolved, is_async=True)
+
+    async def _acall_tool(self, camel: str, tool: BaseTool, raw_input: Any) -> Any:
+        """Call a tool within the eval's budget and outer runtime."""
+        if self._ptc_state is None:
+            msg = "PTC bridge called outside active eval"
+            raise ConcurrentEvalError(msg)
+        state = self._ptc_state.consume_call_budget(
+            function_name=f"tools.{camel}",
+            max_ptc_calls=self._max_ptc_calls,
+        )
+        self._ptc_state = state
+        payload = _normalize_tool_input(raw_input)
+        call_id = _synth_tool_call_id(tool.name)
+        # Inject runtime/state/store ourselves. The bridge uses `arun`
+        # rather than the tool-call envelope path so the result can be
+        # unwrapped back to native JS-visible values after the standard
+        # tool lifecycle callbacks have fired.
+        args = _inject_tool_args_for_ptc(tool, payload, state.outer_runtime, call_id)
+        result = await self._ainvoke_tool_on_outer_loop(
+            tool,
+            {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
+            outer_runtime=state.outer_runtime,
+            outer_loop=state.outer_loop,
+        )
+        return coerce_tool_output_for_ptc(result)
 
     def _register_fs_bridge(self) -> None:
         ctx = self._require_ctx()
@@ -1147,6 +1213,7 @@ class _Registry:
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
+    resolve_tool: ToolResolver | None = None
     max_slots: int = _MAX_SLOTS
     _slots: OrderedDict[str, _Slot] = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -1277,6 +1344,7 @@ class _Registry:
             "max_ptc_calls": self.max_ptc_calls,
             "subagents_enabled": self.subagents_enabled,
             "max_subagent_concurrency": self.max_subagent_concurrency,
+            "resolve_tool": self.resolve_tool,
         }
 
     def close(self) -> None:

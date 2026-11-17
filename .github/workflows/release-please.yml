@@ -743,15 +743,41 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/release-please/run.mjs
 
+  # Labeling runs beside `update-lockfiles` instead of inside `release-please`,
+  # so the ~8 s of label API calls stay off the path to the lockfile refresh and
+  # release-notes dispatch. Nothing later in this workflow reads these labels.
+  label-release-prs:
+    name: Label release PRs
+    # Same dependency and skip-gate handling as `update-lockfiles` below; see
+    # the comment there (#5161/#5169).
+    needs: [detect-release-commit, guard-pending-release, release-please]
+    if: |
+      !cancelled() &&
+      needs.detect-release-commit.result == 'success' &&
+      needs.guard-pending-release.result == 'success' &&
+      needs.release-please.result == 'success' &&
+      needs.release-please.outputs.prs != '[]' &&
+      needs.release-please.outputs.prs != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
       # shared labelPR() helper so labeling logic stays in one place.
       - name: Label release PRs
-        if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          RELEASE_PRS: ${{ steps.release.outputs.prs }}
+          RELEASE_PRS: ${{ needs.release-please.outputs.prs }}
         with:
           script: |
             let prs;

@@ -507,7 +507,9 @@ async def test_pretool_error_policy_dominates_other_allows(
     failing = {
         "type": "command",
         "command": f"{sys.executable} -c {json.dumps(script)}",
-        "timeout": 0.25,
+        # Only the sleep case should time out; a short timeout on the others
+        # turns slow interpreter startup into a spurious `timeout` code.
+        "timeout": 0.25 if error == "timeout" else 30,
         "onError": "deny" if deny_on_error else "continue",
     }
     allow_output = json.dumps(

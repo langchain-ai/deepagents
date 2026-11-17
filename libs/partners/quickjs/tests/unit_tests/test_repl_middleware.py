@@ -872,26 +872,38 @@ def test_repl_detects_closed_context(repl: _ThreadREPL) -> None:
     assert repl.is_closed
 
 
-async def test_cancelled_eval_waits_for_worker_unwinding(repl: _ThreadREPL) -> None:
-    started = threading.Event()
-    unwound = threading.Event()
+async def test_cancelled_tool_call_unwinds_before_close(repl: _ThreadREPL) -> None:
+    tool_started = threading.Event()
 
-    async def evaluate(*args: object, **kwargs: object) -> None:
-        started.set()
+    async def _slow() -> str:
+        tool_started.set()
+        await asyncio.sleep(10)
+        return "ok"
+
+    tool = StructuredTool.from_function(
+        name="slow", description="Sleeps.", coroutine=_slow
+    )
+    errors: list[BaseException] = []
+    aeval_async = repl._aeval_async
+
+    async def evaluate(*args: Any, **kwargs: Any) -> object:
         try:
-            await asyncio.Event().wait()
-        finally:
-            await asyncio.sleep(0.05)
-            unwound.set()
+            return await aeval_async(*args, **kwargs)
+        except BaseException as e:
+            errors.append(e)
+            raise
 
     with patch.object(repl, "_aeval_async", side_effect=evaluate):
-        task = asyncio.create_task(repl.eval_async("1"))
-        assert await asyncio.to_thread(started.wait, 2)
+        task = asyncio.create_task(
+            repl.eval_async("await tools.slow({})", tools=[tool])
+        )
+        assert await asyncio.to_thread(tool_started.wait, 2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 2)
-        assert unwound.is_set()
-    assert (await repl.eval_async("1 + 1")).result == "2"
+            await task
+        # Closing right away must not race the eval's cancellation unwinding.
+        await repl.aclose()
+    assert [type(e) for e in errors] == [asyncio.CancelledError]
 
 
 async def test_cancelled_eval_does_not_wait_for_busy_worker(

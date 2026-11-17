@@ -280,6 +280,7 @@ class ProgramStatusReporter:
         self._sent: dict[str | None, str] = {}
         self._lock = threading.Lock()
         self._atexit_registered = not clear_on_exit
+        self._warned = False
 
     @property
     def enabled(self) -> bool:
@@ -334,12 +335,19 @@ class ProgramStatusReporter:
         return self.report(ProgramStatus(ProgramState.CLEAR, record_id=record_id))
 
     def _send(self, sequence: str) -> bool:
-        """Return whether `sequence` was written; never raises."""
+        """Return whether `sequence` was written; never raises.
+
+        The default writer handles its own I/O errors, so an exception here is
+        a bug. Warn on the first one so it is visible, then log at debug to
+        avoid one warning per UI update.
+        """
         try:
             write = self._write or _default_write()
             return write(sequence)
-        except Exception:
-            logger.debug("OSC 7501 write failed", exc_info=True)
+        except Exception:  # noqa: BLE001  # status output must never break the app
+            log = logger.debug if self._warned else logger.warning
+            self._warned = True
+            log("OSC 7501 write failed", exc_info=True)
             return False
 
     def _remember(self, status: ProgramStatus, sequence: str) -> None:

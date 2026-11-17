@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import logging
 import re
 from typing import TYPE_CHECKING
 
@@ -200,6 +201,18 @@ class TestReporter:
 
         reporter = ProgramStatusReporter(write=boom)
         assert reporter.report(ProgramStatus(ProgramState.IDLE)) is False
+
+    def test_writer_exception_warns_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def boom(_sequence: str) -> bool:
+            raise TypeError
+
+        reporter = ProgramStatusReporter(write=boom)
+        with caplog.at_level(logging.DEBUG, logger=program_status.__name__):
+            reporter.report(ProgramStatus(ProgramState.IDLE))
+            reporter.report(ProgramStatus(ProgramState.WORKING))
+        assert [r.levelno for r in caplog.records] == [logging.WARNING, logging.DEBUG]
 
     def test_clear_is_noop_until_something_was_reported(self, sink: _Sink) -> None:
         reporter = ProgramStatusReporter(write=sink)

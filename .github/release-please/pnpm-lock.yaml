@@ -163,7 +163,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  release-please@17.6.0: 067b30e2755db577f33dc76d03808faf4dc59b7f3e259e09757f52f6517b278d
+  release-please@17.6.0: 8de3da962db3dbca0a356870f1b56fe9a4874d346c31518e8f5af3e72b585b31
 
 importers:
 
@@ -171,7 +171,7 @@ importers:
     dependencies:
       release-please:
         specifier: 17.6.0
-        version: 17.6.0(patch_hash=067b30e2755db577f33dc76d03808faf4dc59b7f3e259e09757f52f6517b278d)(supports-color@7.2.0)
+        version: 17.6.0(patch_hash=8de3da962db3dbca0a356870f1b56fe9a4874d346c31518e8f5af3e72b585b31)(supports-color@7.2.0)
 
 packages:
 
@@ -1355,7 +1355,7 @@ snapshots:
       indent-string: 4.0.0
       strip-indent: 3.0.0
 
-  release-please@17.6.0(patch_hash=067b30e2755db577f33dc76d03808faf4dc59b7f3e259e09757f52f6517b278d)(supports-color@7.2.0):
+  release-please@17.6.0(patch_hash=8de3da962db3dbca0a356870f1b56fe9a4874d346c31518e8f5af3e72b585b31)(supports-color@7.2.0):
     dependencies:
       '@conventional-commits/parser': 0.4.1
       '@google-automations/git-file-utils': 3.2.1

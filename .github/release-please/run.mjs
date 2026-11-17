@@ -17,6 +17,7 @@ import { GitHub, Manifest, VERSION } from 'release-please';
 
 const require = createRequire(import.meta.url);
 const { CommitExclude } = require('release-please/build/src/util/commit-exclude');
+const { TagName } = require('release-please/build/src/util/tag-name');
 
 const CONFIG_FILE = 'release-please-config.json';
 const MANIFEST_FILE = '.release-please-manifest.json';
@@ -29,6 +30,11 @@ function assertPatched() {
     .excludeCommits({ pkg: [commit] });
   if (kept.pkg.length !== 0) {
     throw new Error('the commit-exclude.js change in the release-please patch is not applied: exclude-paths ignores file paths');
+  }
+
+  const tag = TagName.parse('deepagents-code==0.2.7');
+  if (tag?.component !== 'deepagents-code' || tag.separator !== '==') {
+    throw new Error('the tag-name.js change in the release-please patch is not applied: `==` tags parse with the wrong component');
   }
 }
 

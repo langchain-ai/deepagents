@@ -107,13 +107,6 @@ class TestEncode:
         status = ProgramStatus(ProgramState.WORKING, record_id="task/1")
         assert _decode(encode_program_status(status))["id"] == "task/1"
 
-    def test_clear_omits_title_and_msg(self) -> None:
-        status = ProgramStatus(ProgramState.CLEAR, title="t", msg="m")
-        assert _decode(encode_program_status(status)) == {
-            "state": "clear",
-            "app": "deepagents-code",
-        }
-
     def test_empty_text_fields_are_omitted(self) -> None:
         status = ProgramStatus(ProgramState.DONE, title=" \n ", msg="")
         assert set(_decode(encode_program_status(status))) == {"state", "app"}
@@ -140,6 +133,12 @@ class TestEncode:
 
 
 class TestValidation:
+    def test_clear_rejects_text(self) -> None:
+        with pytest.raises(ValueError, match="clear"):
+            ProgramStatus(ProgramState.CLEAR, title="x")
+        with pytest.raises(ValueError, match="clear"):
+            ProgramStatus(ProgramState.CLEAR, msg="x")
+
     def test_kind_requires_blocked(self) -> None:
         with pytest.raises(ValueError, match="kind"):
             ProgramStatus(ProgramState.WORKING, kind=BlockedKind.AUTH)

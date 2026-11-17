@@ -119,11 +119,14 @@ class ProgramStatus:
         """Reject combinations the protocol would silently ignore.
 
         Raises:
-            ValueError: If `kind`, `progress`, or `record_id` is invalid for
-                this report.
+            ValueError: If `kind`, `progress`, `title`, `msg`, or `record_id`
+                is invalid for this report.
         """
         if self.kind is not None and self.state is not ProgramState.BLOCKED:
             msg = f"kind is only valid with state=blocked, not {self.state}"
+            raise ValueError(msg)
+        if self.state is ProgramState.CLEAR and (self.title or self.msg):
+            msg = "title and msg are not valid with state=clear"
             raise ValueError(msg)
         if self.progress is not None:
             _check_progress(self.state, self.progress)
@@ -199,8 +202,6 @@ def _pairs(status: ProgramStatus, app: str) -> list[str]:
     if status.progress is not None:
         pairs.append(f"progress={status.progress}")
     pairs.append(f"app={app}")
-    if status.state is ProgramState.CLEAR:
-        return pairs
     title = sanitize_text(status.title, MAX_TITLE_BYTES)
     if title:
         pairs.append(f"title={_b64(title)}")

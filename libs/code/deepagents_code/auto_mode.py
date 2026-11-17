@@ -4570,7 +4570,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
 
 class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, Any]):
-    """Reject dynamically gated MCP calls when no approval UI exists."""
+    """Reject dynamically gated MCP calls when no approval UI exists.
+
+    A call passes only when a `PreToolUse` hook explicitly allowed it. A hook
+    denial is reported with the hook's own reason.
+    """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
     """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
@@ -4585,13 +4589,22 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
         self._tool_names = frozenset(tool_names)
 
     def _rejection(self, request: ToolCallRequest) -> ToolMessage | None:
+        from deepagents_code.hooks.server_middleware import (
+            hook_denial_message,
+            hook_explicitly_allowed,
+        )
+
         if request.tool_call["name"] not in self._tool_names:
             return None
+        if hook_explicitly_allowed(request.state, _tool_call_id(request.tool_call)):
+            return None
+        if (denial := hook_denial_message(request)) is not None:
+            return denial
         return ToolMessage(
             content=(
                 "This MCP action requires approval, but the current headless runtime "
-                "has no approval UI. Run it in the interactive TUI or choose a "
-                "read-only MCP action."
+                "has no approval UI. Run it in the interactive TUI, allow it with a "
+                "PreToolUse hook, or choose a read-only MCP action."
             ),
             name=request.tool_call["name"],
             tool_call_id=_tool_call_id(request.tool_call),

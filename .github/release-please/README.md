@@ -15,6 +15,7 @@ pnpm keeps one patch file per package version, so every change lives in `patches
 | Change | Why | Upstream |
 | --- | --- | --- |
 | `build/src/util/commit-exclude.js` | Lets `exclude-paths` name a single file (e.g. `libs/code/uv.lock`), not only a directory. | [googleapis/release-please#2868](https://github.com/googleapis/release-please/pull/2868) |
+| `build/src/util/tag-name.js` | Parses tags whose separator is longer than one character. Our tags use `==` (`deepagents-code==0.2.7`); unpatched, every tag parses as component `deepagents-code=`, so release lookup pages through up to 400 releases, logs a warning for each, and falls back to exact tag lookups. | None yet |
 
 Remove a change once the pinned release-please includes the fix.
 

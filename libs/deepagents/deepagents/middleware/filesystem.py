@@ -1076,7 +1076,7 @@ def _discard_task_result(task: asyncio.Future[Any]) -> None:
 
 
 DEFAULT_READ_OFFSET = 0
-DEFAULT_READ_LIMIT = 100
+DEFAULT_READ_LIMIT = 2000
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
 READ_FILE_TRUNCATION_MSG = (
@@ -1510,12 +1510,12 @@ _IMAGE_PDF_PAGINATION_BULLET = "- For images and PDFs, pagination via `offset`/`
 """Multimodal bullet shared by both `read_file` descriptions (images/PDFs are not paginated)."""
 
 READ_FILE_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
-    first_line="By default, it reads up to 100 lines starting from the beginning of the file",
+    first_line="By default, it reads up to 2000 lines starting from the beginning of the file",
     multimodal_bullets=_IMAGE_PDF_PAGINATION_BULLET,
 )
 
 READ_FILE_VIDEO_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
-    first_line="For text files, by default it reads up to 100 lines starting from the beginning of the file",
+    first_line="For text files, by default it reads up to 2000 lines starting from the beginning of the file",
     multimodal_bullets=(
         f"{_IMAGE_PDF_PAGINATION_BULLET}\n"
         "- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail."

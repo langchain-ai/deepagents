@@ -54,7 +54,7 @@ _SHORT_TOOL_DESCRIPTIONS: dict[str, str] = {
     "read_file": (
         "Read a file. Text output starts with a `@@ ... @@` status header; everything after it is verbatim file content. "
         "Never include the header in an edit.\n"
-        "- Reads up to 100 lines by default; use `offset`/`limit` for other ranges.\n"
+        "- Reads up to 2000 lines by default; use `offset`/`limit` for other ranges.\n"
         "- Images, audio, video and PDFs return multimodal content (no `offset`/`limit`).\n"
         "- Read a file before editing it. Batch several reads in one response when they may help."
     ),
@@ -85,6 +85,24 @@ _SHORT_TOOL_DESCRIPTIONS: dict[str, str] = {
 
 They drop the SDK defaults' instructions to avoid shell `grep`/`find`/`cat` and
 to run `ls` before reading, and trim text the model doesn't need.
+"""
+
+
+_AGENT_PROMPT = """You are an expert agent. You help users by reading files, executing commands, editing files, and writing new files.
+
+Guidelines:
+- Use execute for shell commands and file operations like ls, rg, find.
+- Use read_file to examine files instead of cat or sed.
+- Use edit_file for precise changes (old_string must match exactly).
+- Use write_file only for new files or complete rewrites.
+- Be concise in your responses.
+- Show file paths clearly when working with files."""
+
+_BARE_SYSTEM_PROMPTS: dict[str, str] = {"accounts/fireworks/models/kimi-k3p1-pro": _AGENT_PROMPT}
+"""Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
+
+A Pi-style prompt that describes a general agent rather than a coding assistant.
+Models without an entry get no system prompt.
 """
 
 
@@ -565,6 +583,7 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         backend=backend,
         tools=tools or None,
         skills=_skills(configurable),
+        system_prompt=_BARE_SYSTEM_PROMPTS.get(getattr(model, "model", "")),
         middleware=_bare_middleware(),
     )
 

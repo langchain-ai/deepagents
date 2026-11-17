@@ -177,6 +177,13 @@ class _PreToolPassed(TypedDict):
 
     behavior: Literal["allow", "none"]
     context: list[str]
+    hook_allowed: NotRequired[bool]
+    """`True` only when the hook itself returned `allow`.
+
+    An `ask` that an approval prompt resolved also stores `behavior: "allow"`,
+    but headless runtimes approve those prompts automatically, so it must not
+    count as the hook's own permission.
+    """
 
 
 type _PreToolState = _PreToolDenied | _PreToolPassed
@@ -616,6 +623,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 tool=self._mcp_tools.get(str(tool_call.get("name") or "")),
             )
             behavior: PreToolBehavior = "none"
+            hook_allowed = False
             reason: str | None = None
             hook_context: list[str] = []
             if precompact_enabled and call.name == _COMPACT_TOOL_NAME:
@@ -685,6 +693,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                         )
                 elif permission.behavior == "allow":
                     behavior = "allow"
+                    hook_allowed = True
             if behavior == "deny":
                 outcomes[call.id] = {
                     "behavior": "deny",
@@ -697,6 +706,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 outcomes[call.id] = {
                     "behavior": behavior,
                     "context": hook_context,
+                    "hook_allowed": hook_allowed,
                 }
         update: dict[str, Any] = {_PRE_TOOL_STATE_KEY: outcomes}
         if tool_calls != message.tool_calls:
@@ -919,6 +929,23 @@ def hook_permission_behavior(
     if behavior == "deny":
         return "deny"
     return None
+
+
+def hook_explicitly_allowed(state: object, tool_call_id: str) -> bool:
+    """Report whether a `PreToolUse` hook itself returned `allow` for a call.
+
+    Unlike `hook_permission_behavior`, this excludes an `ask` that an approval
+    prompt resolved, so callers without a human reviewer can rely on it.
+
+    Args:
+        state: Agent state carrying the current turn's hook outcomes.
+        tool_call_id: Tool call to look up.
+
+    Returns:
+        `True` only for an explicit hook `allow`.
+    """
+    outcome = _pre_tool_state(state, tool_call_id)
+    return outcome is not None and outcome.get("hook_allowed") is True
 
 
 def _pre_tool_state(state: object, tool_call_id: str) -> Mapping[str, object] | None:

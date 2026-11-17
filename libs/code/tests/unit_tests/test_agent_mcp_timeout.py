@@ -132,12 +132,12 @@ async def test_delegated_mcp_call_times_out(
 
 
 @pytest.mark.parametrize("delegated", [False, True])
-@pytest.mark.parametrize("hook_behavior", ["allow", "deny", "none", "disabled"])
+@pytest.mark.parametrize("hook_behavior", ["allow", "ask", "deny", "none", "disabled"])
 async def test_headless_production_graph_gates_mcp_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     delegated: bool,
-    hook_behavior: Literal["allow", "deny", "none", "disabled"],
+    hook_behavior: Literal["allow", "ask", "deny", "none", "disabled"],
 ) -> None:
     calls: list[str] = []
 
@@ -214,7 +214,16 @@ async def test_headless_production_graph_gates_mcp_calls(
     )
     while result.get("__interrupt__"):
         request = parse_hook_interrupt_payload(result["__interrupt__"][0].value)
-        assert request is not None
+        if request is None:
+            # A hook `ask` raises an approval prompt, which headless mode
+            # approves automatically; that must not unblock a gated MCP call.
+            assert hook_behavior == "ask"
+            result = await graph.ainvoke(
+                Command(resume={"decisions": [{"type": "approve"}]}),
+                config=config,
+                context=context,
+            )
+            continue
         event = request.invocation.event
         assert isinstance(event, PreToolUseEvent)
         behavior = (

@@ -47,12 +47,7 @@ from langchain_quickjs._format import (
     format_handle,
     stringify,
 )
-from langchain_quickjs._ptc import (
-    ToolResolver,
-    UnresolvedToolError,
-    is_valid_js_identifier,
-    to_camel_case,
-)
+from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
 from langchain_quickjs._subagent import (
     call_subagent_task_tool,
     find_subagent_task_tool,
@@ -349,39 +344,25 @@ def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
 
 _TOOLS_CALL = "__tools_call"
 _TOOLS_NAMES = "__tools_names"
-_UNRESOLVED_KEY = "__tools_unresolved"
 
 
-def _render_tools_namespace(*, resolves: bool) -> str:
+def _render_tools_namespace() -> str:
     """Return JS that defines `globalThis.tools` as a proxy over the host.
 
     Python owns the tool map: a call is `__tools_call(name, input)` and the
     installed names come from `__tools_names()`, so changing the tool set
-    never touches the guest. Inherited `Object.prototype` members such as
-    `hasOwnProperty` and `toString` stay reachable. With `resolves`, any other
-    name is a function that asks the resolver. `then` and `toJSON` stay
-    undefined, so `await tools` and `JSON.stringify(tools)` call no tool.
+    never touches the guest. Any other name, including inherited
+    `Object.prototype` members, reads from a plain object.
     """
     call = json.dumps(_TOOLS_CALL)
     names = json.dumps(_TOOLS_NAMES)
-    unresolved = json.dumps(_UNRESOLVED_KEY)
-    unknown = "fn(name)" if resolves else "undefined"
     return (
-        "{ const fn = (name) => async (input) => {"
-        f" const result = await globalThis[{call}](name, input);"
-        " if (result !== null && typeof result === 'object'"
-        f" && Object.prototype.hasOwnProperty.call(result, {unresolved}))"
-        f" throw new TypeError(result[{unresolved}]);"
-        " return result; };"
+        f"{{ const fn = (name) => (input) => globalThis[{call}](name, input);"
         " const has = (name) => typeof name === 'string'"
         f" && globalThis[{names}]().includes(name);"
         " globalThis.tools = new Proxy({}, {"
         " get(target, name) {"
-        " if (typeof name !== 'string' || name === 'then' || name === 'toJSON')"
-        " return undefined;"
-        " if (has(name)) return fn(name);"
-        " if (name in Object.prototype) return Reflect.get(target, name);"
-        f" return {unknown}; }},"
+        " return has(name) ? fn(name) : Reflect.get(target, name); },"
         " has(_, name) { return has(name); },"
         f" ownKeys() {{ return globalThis[{names}](); }},"
         " getOwnPropertyDescriptor(_, name) {"
@@ -398,7 +379,6 @@ class _REPLOptions(TypedDict):
     max_ptc_calls: int | None
     subagents_enabled: bool
     max_subagent_concurrency: int
-    resolve_tool: ToolResolver | None
 
 
 class _ThreadREPL:
@@ -420,12 +400,10 @@ class _ThreadREPL:
         max_ptc_calls: int | None = 256,
         subagents_enabled: bool = True,
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
-        resolve_tool: ToolResolver | None = None,
     ) -> None:
         """Build the REPL's Context. Must run on `worker`'s own thread."""
         self._worker = worker
         self._runtime = runtime
-        self._resolve_tool = resolve_tool
         # The Context-level `timeout` is used as the cumulative budget
         # for sync evals. Async evals pass `timeout=` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
@@ -523,9 +501,7 @@ class _ThreadREPL:
             name_to_tool[camel] = tool
         self._tools = name_to_tool
         if not self._tools_installed:
-            self._require_ctx().eval(
-                _render_tools_namespace(resolves=self._resolve_tool is not None)
-            )
+            self._require_ctx().eval(_render_tools_namespace())
             self._tools_installed = True
 
     @staticmethod
@@ -673,52 +649,50 @@ class _ThreadREPL:
         return await _on_outer_loop(_call, outer_loop)
 
     def _register_tools_bridge(self) -> None:
-        """Install the host functions behind the guest's `tools` proxy."""
+        """Install the host functions behind the guest's `tools` proxy.
+
+        `_call` looks the tool up in `self._tools` on every call, so
+        `install_tools` swapping the map is picked up without touching
+        the guest.
+        """
         ctx = self._require_ctx()
-        resolve_tool = self._resolve_tool
 
         def _names() -> list[str]:
             return list(self._tools)
 
         async def _call(camel: str, raw_input: Any = None) -> Any:
-            missing = f"tools.{camel} is not a function"
             tool = self._tools.get(camel)
-            if tool is None and resolve_tool is not None:
-                tool = resolve_tool(camel)
             if tool is None:
-                return {_UNRESOLVED_KEY: missing}
-            try:
-                return await self._acall_tool(camel, tool, raw_input)
-            except UnresolvedToolError as exc:
-                return {_UNRESOLVED_KEY: str(exc) or missing}
+                # A function captured before `install_tools` dropped it.
+                msg = f"tool '{camel}' not registered"
+                raise RuntimeError(msg)
+            if self._ptc_state is None:
+                msg = "PTC bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            state = self._ptc_state.consume_call_budget(
+                function_name=f"tools.{camel}",
+                max_ptc_calls=self._max_ptc_calls,
+            )
+            self._ptc_state = state
+            payload = _normalize_tool_input(raw_input)
+            call_id = _synth_tool_call_id(tool.name)
+            # Inject runtime/state/store ourselves. The bridge uses `arun`
+            # rather than the tool-call envelope path so the result can be
+            # unwrapped back to native JS-visible values after the standard
+            # tool lifecycle callbacks have fired.
+            args = _inject_tool_args_for_ptc(
+                tool, payload, state.outer_runtime, call_id
+            )
+            result = await self._ainvoke_tool_on_outer_loop(
+                tool,
+                {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
+                outer_runtime=state.outer_runtime,
+                outer_loop=state.outer_loop,
+            )
+            return coerce_tool_output_for_ptc(result)
 
         ctx.register(_TOOLS_NAMES, _names)
         ctx.register(_TOOLS_CALL, _call, is_async=True)
-
-    async def _acall_tool(self, camel: str, tool: BaseTool, raw_input: Any) -> Any:
-        """Call a tool within the eval's budget and outer runtime."""
-        if self._ptc_state is None:
-            msg = "PTC bridge called outside active eval"
-            raise ConcurrentEvalError(msg)
-        state = self._ptc_state.consume_call_budget(
-            function_name=f"tools.{camel}",
-            max_ptc_calls=self._max_ptc_calls,
-        )
-        self._ptc_state = state
-        payload = _normalize_tool_input(raw_input)
-        call_id = _synth_tool_call_id(tool.name)
-        # Inject runtime/state/store ourselves. The bridge uses `arun`
-        # rather than the tool-call envelope path so the result can be
-        # unwrapped back to native JS-visible values after the standard
-        # tool lifecycle callbacks have fired.
-        args = _inject_tool_args_for_ptc(tool, payload, state.outer_runtime, call_id)
-        result = await self._ainvoke_tool_on_outer_loop(
-            tool,
-            {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
-            outer_runtime=state.outer_runtime,
-            outer_loop=state.outer_loop,
-        )
-        return coerce_tool_output_for_ptc(result)
 
     def _register_fs_bridge(self) -> None:
         ctx = self._require_ctx()
@@ -1106,7 +1080,6 @@ class _Registry:
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
-    resolve_tool: ToolResolver | None = None
     max_slots: int = _MAX_SLOTS
     _slots: OrderedDict[str, _Slot] = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -1241,7 +1214,6 @@ class _Registry:
             "max_ptc_calls": self.max_ptc_calls,
             "subagents_enabled": self.subagents_enabled,
             "max_subagent_concurrency": self.max_subagent_concurrency,
-            "resolve_tool": self.resolve_tool,
         }
 
     def close(self) -> None:

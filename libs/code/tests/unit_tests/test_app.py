@@ -198,6 +198,42 @@ def _closing_run_worker_mock(
     return MagicMock()
 
 
+async def test_unmount_waits_for_cancelled_database_worker() -> None:
+    """Cancelled workers close their database before app teardown finishes."""
+    from deepagents_code import sessions
+
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    threads: list[threading.Thread] = []
+
+    async def background() -> None:
+        async with sessions._connect() as conn:
+            threads.append(conn._thread)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+
+    async with app.run_test():
+        worker = app.run_worker(background, group="database-cleanup")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app.workers.cancel_all()
+        await asyncio.wait_for(cleaning.wait(), timeout=5)
+        unmount = asyncio.create_task(app.on_unmount())
+        await asyncio.sleep(0)
+        try:
+            assert not unmount.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(unmount, timeout=5)
+            await asyncio.gather(worker.wait(), return_exceptions=True)
+        assert not threads[0].is_alive()
+
+
 class TestDisplayModelLabel:
     """Tests for stripping the provider prefix off a model spec for display."""
 

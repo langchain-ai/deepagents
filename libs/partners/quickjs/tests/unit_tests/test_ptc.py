@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Literal
+from unittest.mock import patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -19,6 +20,7 @@ from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
 from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs._prompt import _tool_block_key
 from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
@@ -203,9 +205,18 @@ def runtime(worker: ThreadWorker) -> Runtime:
         worker.run_sync(_close())
 
 
+def _make_repl(worker: ThreadWorker, runtime: Runtime, **options: Any) -> _ThreadREPL:
+    """Build a `_ThreadREPL` on the worker's thread, as `_Slot` does."""
+
+    async def _build() -> _ThreadREPL:
+        return _ThreadREPL(worker, runtime, **options)
+
+    return worker.run_sync(_build())
+
+
 @pytest.fixture
 def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(
+    return _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -529,7 +540,7 @@ async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
 async def test_ptc_host_call_budget_exceeded_surfaces_error(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = _ThreadREPL(
+    limited = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -553,7 +564,7 @@ async def test_ptc_host_call_budget_exceeded_surfaces_error(
 async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = _ThreadREPL(
+    limited = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -578,7 +589,7 @@ async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
 async def test_ptc_host_call_budget_resets_each_eval(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = _ThreadREPL(
+    limited = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -596,7 +607,7 @@ async def test_ptc_host_call_budget_resets_each_eval(
 async def test_ptc_host_call_budget_none_disables_limit(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    unlimited = _ThreadREPL(
+    unlimited = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -1046,3 +1057,47 @@ def test_dict_schema_recursive_ref_renders_unknown() -> None:
     }
     body = _ptc_body([_dict_schema_tool("walk", schema)])
     assert "  root?: { children?: unknown[] };" in body
+
+
+class _LookupArgs(BaseModel):
+    key: str = Field(description="Key to look up.")
+
+
+def _lookup_tool() -> BaseTool:
+    def _fn(key: str) -> str:
+        return key
+
+    return StructuredTool.from_function(
+        name="lookup",
+        description="Look up a key.",
+        func=_fn,
+        args_schema=_LookupArgs,
+    )
+
+
+def test_render_ptc_prompt_reuses_blocks_across_tool_instances() -> None:
+    """Tools rebuilt per run (same name, schema, return type) render once."""
+    first = render_ptc_prompt([_lookup_tool()])
+    with patch(
+        "langchain_quickjs._prompt._safe_json_schema", side_effect=AssertionError
+    ):
+        assert render_ptc_prompt([_lookup_tool()]) == first
+
+
+def test_render_ptc_prompt_keys_dict_schemas_by_content() -> None:
+    """MCP-style dict schemas share the `dict` class but must not collide."""
+
+    def _mcp_tool(prop: str) -> BaseTool:
+        return StructuredTool(
+            name="mcp",
+            description="An MCP tool.",
+            args_schema={
+                "type": "object",
+                "properties": {prop: {"type": "string"}},
+                "required": [prop],
+            },
+            func=lambda **_: "ok",
+        )
+
+    assert _tool_block_key(_mcp_tool("query")) == _tool_block_key(_mcp_tool("query"))
+    assert _tool_block_key(_mcp_tool("query")) != _tool_block_key(_mcp_tool("path"))

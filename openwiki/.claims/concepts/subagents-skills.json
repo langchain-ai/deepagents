@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:084650596a52ef00def066731c48888651dd4b1956d64a68c6861a93c117dc18",
+  "pageVersion": "sha256:5761bd240c87bc40bde6886c632061402db9b7fd6950b4434a8b4a10549417b6",
   "claims": [
     {
       "id": "claim_6bdfb8742f1343cf8ba28d8db535656f",
@@ -58,7 +58,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py#L170-L220",
-          "version": "repo-lines-v1:sha256:69803830a51fe057a01fd58d764e19937ca1d073cbd84a4fc799d612d1f24373:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YzM5ZGE3ZmI4NGY0NmFiNGE0OGFlZjc3YzVlMWFhMzExNzZiYzZjNWZhYzYxYjcyNjNlYTU0ZTEwNjQwYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5OTE1NmZjMjU4ZWM3Yjk2ZGFkM2M3ODYzODA4ZGQzNmYzNzAyZTAzMzgxNzBkMGZiODI1ODZkM2IxZjQ0NDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBhMzkwMTQ1NTZhODJmYjJiN2YwM2IzYTcyODU5ZDA2ZTVhYTQ1YjIyNDcxNTM5YmYwYTUyNjczY2E5OTQyZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjNWE3MzE3N2Y1NGMwYzRmZDk0OWJhNmRhN2FmMGQ0YTYwY2JmMTg0Y2Y5MzdjMjY0YjE4MGNhMWZmZjAxZTgifQ"
+          "version": "repo-lines-v1:sha256:3e229d9257c61c1fae2b094c9001fc7b6051308a5ab2a88389679785dbc9ee30:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YzM5ZGE3ZmI4NGY0NmFiNGE0OGFlZjc3YzVlMWFhMzExNzZiYzZjNWZhYzYxYjcyNjNlYTU0ZTEwNjQwYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5OTE1NmZjMjU4ZWM3Yjk2ZGFkM2M3ODYzODA4ZGQzNmYzNzAyZTAzMzgxNzBkMGZiODI1ODZkM2IxZjQ0NDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBhMzkwMTQ1NTZhODJmYjJiN2YwM2IzYTcyODU5ZDA2ZTVhYTQ1YjIyNDcxNTM5YmYwYTUyNjczY2E5OTQyZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjNWE3MzE3N2Y1NGMwYzRmZDk0OWJhNmRhN2FmMGQ0YTYwY2JmMTg0Y2Y5MzdjMjY0YjE4MGNhMWZmZjAxZTgifQ"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py#L519-L580",
@@ -229,10 +229,32 @@
           "version": "repo-lines-v1:sha256:19903481e2893ffa657a9a2f5d99b111d880be6337572625163da49bf023d659:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmNTgwMWI3MTNkM2IxYjEzNzNjMDliOWM1NmZiODZiMWUzMGE1N2RkOTYyY2JmNjUxYjQyNzI3Mzk3ZjA2NTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2OWRmZDEyZjBkZmU0N2JhMTM4OTE1MTM1M2JiZjNlOGQ2Yjk5YzJhYWYyNzFhNWFhODRjNDMwZWI2NzQ0YjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjOGRkNjNhOTAyMDQwYTBlYmI3NmVjNzAzYjBlOGY4ZDllOGFjY2JlZDVkZTQyYTFmOGEyYTU2NTFjNTZhNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5YTkzMDE3M2Y1NmMwZjA2ODFkZjQzYjE4NmU2ODQxZjJiNjU1NzYzY2E1MzlkYmJiNzEyNzgwNzM3ZDc2OWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_bb323d6b2faf4c8e9d100350805d4671",
+      "statement": "An `AsyncSubAgent` can use experimental fork mode to launch a remote task with a snapshot of effective parent messages plus the delegated description, while isolated mode sends only that description; copying conversation does not make the remote graph inherit parent configuration, and a URL-less ASGI target can be launched only through an async parent entrypoint.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L727-L729",
+          "version": "repo-lines-v1:sha256:1eacc0cc5992ecf071ccc99dec580c812cf42a4ad5a468f3dbc9576b9d8f37e0:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTcwMTVjNzY2OTA2NjljMGRiZjYwODMwODhlMDhlNDQyNGQ2MzMzN2RmMTE5N2MxMWJhODNiZDI5Y2RlMmM1NCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjVhYmE0Mjg3Y2RiOTU2MWQ0ZTFiMjI0NTM4ZTI1MmFhYjQwNzRkMTQyMjhiNzY0NDkyMGZlZDU1ODk3YzU0MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjdkMTA4YjQ4N2FmMDc3YzlmMjUxMzQzNGFhNjY2YjFmMzhkNGIyMDY1MWQ3ZDk5NjU0OWFhYjI0YjdiYjA4MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGQxMzhkNjMzOTQ2YTc3MTI2OTFjNDhjNWZiOGI0YzJhZDM4MjU2YjI4YjlmYTVhNTM2MjViYzZkNGY2ODc0NyJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L758-L775",
+          "version": "repo-lines-v1:sha256:4f30c1571c7f57c69bb6a72267142fb0ffc589a7136a6a60a0c9887c56db5248:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwNTQ4Y2I4NGM5ZmIwNWNiNzZiNTk0MTI0MGI5ZDM0MGQyOWZmZjQ3YzgzMmFhYmMyNjZkOGY2Zjk2N2Q4ZjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkNzhmMDY0YWNiMjY2MWQwZWI1NWRhMTU4NWUzNDI2ZWRhMzZlZmE5NWNhYzYyYjcxMzM3N2NhYWZmM2EyNjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdlNzZhNTExNzk3NzFkZDBmNWQ2ZmE0MGFlYTIwNzY0ZDEwMzJjY2FmZGNhMzRjODY5MmE1YzUxMTExNWViMmQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L76-L103",
+          "version": "repo-lines-v1:sha256:4ef94be86174ef0e7f009f8ff3c0fac200035ca2512dff4fbe64afbe86316573:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyM2MyZjU5ODJiN2FiZWViMGZmYWYzODdiODVmYmM3ZTY1MTMxYzVhODhhZjc4NmViNWVhM2RiZTdkM2IzNjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1OTgxNmQwZGYxZjUxMTI4Y2FkMDNjYWRhN2QwYzE1ZGYxOWRjMTFkNGYzODJjMGVmZTNkOTI2ODg3N2M0YzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1YjRiMDA0ZDBkODUwZjYwMTJiNWMzNzg5MGMwYWQ0NTZkY2UxZjhmNzViM2MyY2NhZTA2Mjc2YmUyODM1YWEifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L306-L370",
+          "version": "repo-lines-v1:sha256:54d91394bb390f4d1f2b3ee6ad16d1914d7b991b19de512dc1e930427f787d51:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmOGEwYzE1NGNlOWQzMDc5MzIzODU0ZWE0YjcyNmUyY2M4OTZiNjYyMjZiMDQxN2E2OWUwMzY5ZTNiYzJkNDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmN2M5MjlkMDFmYjYzNDE3YTJkMTMxZDM3MjdkNDdiN2FhNWEwM2I0MzEzNjRhZDZjMzFiZTdmZDdmYjQyZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmNzZjNjg4NGYzZGI2YTQ1MzFmZWZhYmM1NTIzOTY0NzU0MzRiYTRiYmNhZTRlMmI0NDIwMzQ2Mzg0ZjM4ODgifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-13T08:03:55.116Z"
+    "at": "2026-11-14T08:03:44.053Z"
   }
 }

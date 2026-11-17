@@ -1,11 +1,8 @@
 ---
 type: scheduling and background-work model
 title: Talon Scheduling and Background Work
-description: How Talon persists and executes unattended cron jobs, routes their results, and distinguishes scheduled inline delegation from process-local attended-chat subagents. Covers acknowledgement, redelivery, authority boundaries, limits, interruption recovery, and shutdown.
+description: How Talon persists unattended cron jobs, runs process-local attended-chat workers, and performs inline scheduled delegation. Covers delivery, authority boundaries, trusted hook snapshots, and fresh subagent isolation.
 tags: [talon, scheduling, cron, background-work, subagents, delivery]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -29,20 +26,31 @@ sources:
     resource: repo://libs/talon/deepagents_talon/subagent_control.py
   - id: openwiki-source-2d1f686d24d8182f60108ae7
     resource: repo://libs/talon/deepagents_talon/subagents.py
+  - id: openwiki-source-a4cc4beb110c42a169caf195
+    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
   - id: openwiki-source-f2859f71853cf2cbdb40aaa3
     resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
   - id: openwiki-source-cf14bb91e6251d6d6d4a9413
     resource: repo://libs/talon/tests/unit_tests/test_subagent_control.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-17T08:03:47.818Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 ---
 
 # Talon Scheduling and Background Work
 
-Talon has two deliberately different deferred-work mechanisms. `PersistentCronScheduler` persists assistant-scoped jobs in `jobs.json`, claims due fires, invokes the host, and delivers returned text. `BackgroundSubagents` keeps workers in process for an attended chat conversation and injects their completed results into a later main-agent turn; neither workers nor results survive a restart. The CLI installs the persistent scheduler only when at least one channel is configured, wiring it to `TalonHost.run_scheduled_job` and a delivery callback.
+Talon has three intentionally distinct ways to defer or delegate work:
+
+- **Durable cron work** is persisted in `jobs.json`, claimed by `PersistentCronScheduler`, run by the host, and independently delivered to its recorded origin.
+- **Attended-chat background work** is an in-memory, conversation-owned worker whose result is injected into a later main-agent turn. Workers and pending results do not survive a process restart.
+- **Scheduled delegation** is not background work: a cron turn waits for `task` or `start_async_task` in the same turn and incorporates the returned result before it finishes.
+
+The CLI installs the persistent scheduler only when at least one channel is configured, wiring it to `TalonHost.run_scheduled_job` and a delivery callback.
 
 > **Unattended authority boundary:** Talon is experimental. Cron fires and background-result delivery turns have no approval or authorization handler. The runtime automatically rejects approval interrupts for `trigger: "cron"`; detached workers also clear the authorization handler inherited from their launching turn, so an authorization prompt cannot outlive the party able to answer it.
 
-## Persistent cron lifecycle
+## Durable cron lifecycle
 
 A persisted job contains the prompt, schedule and recurrence/end state, next run, last status/error, trusted origin, delivery choice, claim timestamp, and optional pinned skills. Cron tools create, list, edit, and remove only jobs in the current origin scope. They accept relative one-shot or recurring schedules, timezone-aware wall-clock schedules, and five-field cron schedules. Wall-clock and cron forms retain their local-time meaning across daylight-saving changes. `deliver_to` selects only a channel-versus-thread result target; it does not widen management scope or alter the originating conversation.
 
@@ -82,7 +90,15 @@ The host supplies `trigger: "cron"`, origin metadata, and pinned skills. If pers
 
 A job may pin at most eight validated lowercase skill names. Validation de-duplicates while preserving first-seen order and does not require a skill to be installed yet. The host forwards these names as `pinned_skills`; the runtime accepts that metadata only for a cron request and injects it into graph/model assembly. Channel metadata cannot force skill pinning.
 
-Hooks are per turn: Talon loads only trusted assistant-home `hooks.json`, not workspace hooks, and validates hook snapshot, thread, and prompt identity before resuming an interrupt. Fresh local subagents get isolated hook identities and transcripts while retaining the parent turn's hook snapshot.
+## Turn hooks and fresh local subagents
+
+Hooks are loaded once for each runtime turn, from the trusted assistant-home `hooks.json` only. Loading rejects symlinked or non-regular configuration and explicitly excludes workspace/project hooks. The resulting snapshot, including diagnostics, is held for the turn; an edit is therefore seen by the next turn, not retroactively by work already running. When a hook interrupt is resumed, Talon verifies that its snapshot ID, thread ID, and prompt ID belong to that snapshot before it invokes the hook.
+
+A fresh local subagent is deliberately a separate hook session, not a continuation of its parent transcript. It inherits the parent's **already loaded hook snapshot**, but receives a new child thread ID, prompt ID, agent identity, and transcript. Concurrent children therefore cannot mix hook fulfillments or transcripts; parent content is not written to a child transcript. Child hook execution emits tool events but does not emit the parent turn's `Stop` event.
+
+Fresh local agents also preserve the parent graph's applicable tool-approval policy for their explicitly attached tools. They are compiled with a `HumanInTheLoopMiddleware` derived from that policy, so an attended foreground local task can route a protected action to the parent approval handler. A detached task has no approval operator and returns a safe "needs tool approval" result instead; the protected action does not run. Talon refuses precompiled subagents when any approval policy is active because it cannot enforce that policy inside an opaque graph. This is an important distinction: do not "solve" detached work by silently bypassing the policy.
+
+Fresh agents use fresh context: they receive the delegated description and only their configured or explicitly selected tools, rather than parent chat history or skills. The main agent can add valid catalog tools to a named local agent for one `task` call; this augments rather than mutates its configured tools. Saved definition changes need an explicit reload and affect subsequent turns, while running tasks retain their original graph.
 
 ## Attended-chat background subagents
 
@@ -120,7 +136,7 @@ The runtime tracks results exposed to a main turn and acknowledges them only aft
 
 A cron turn has no later user turn into which detached work could be delivered. For `trigger: "cron"`, `task` and `start_async_task` run inline and return their result in the same turn; they create no background job. Scheduled guidance explains this difference, inspection, messaging, listing, and cancellation tools are hidden, and nested delegation is refused.
 
-Inline scheduled calls use a separate four-slot semaphore and queue rather than consuming the attended-worker limit or returning a capacity refusal. The default timeout is 10 minutes and can be changed with `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT`; answer text is capped at 64,000 characters. Timeout or failure becomes a safe tool error, preventing a retryable escaping error from relaunching sibling delegation calls.
+Inline scheduled calls use a separate four-slot semaphore and queue rather than consuming the attended-worker limit or returning a capacity refusal. The default timeout is 10 minutes and can be changed with `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT`; answer text is capped at 64,000 characters. Timeout or failure becomes a safe tool error, preventing a retryable escaping error from relaunching sibling delegation calls. Since scheduled turns have no approval operator, a protected fresh-local action cannot be approved and is not executed.
 
 ## Operations and safe changes
 
@@ -128,10 +144,12 @@ Inline scheduled calls use a separate four-slot semaphore and queue rather than 
 
 During host shutdown, Talon stops the background delivery loop, cancels in-flight work, stops channels and the scheduler, and finally stops the runtime. A component-stop failure is logged without preventing later shutdown steps. Runtime shutdown cancels background workers before closing graph/checkpoint resources. If workers outlive the cancellation wait, it raises and deliberately leaves those resources open rather than allowing live workers to write through a closed checkpointer.
 
-When changing this area, preserve the durable claim-before-run transition, trusted origin propagation, cron approval rejection, worker ownership/privacy, and the distinction between detached attended work and inline scheduled delegation.
+When changing this area, preserve the durable claim-before-run transition, trusted origin propagation, cron approval rejection, hook snapshot and child-transcript isolation, worker ownership/privacy, fresh-agent approval enforcement, and the distinction between detached attended work and inline scheduled delegation.
 
 ## Focused tests
 
-`libs/talon/tests/cron/test_scheduler.py` covers claiming, outcomes, silent output, delivery failure, ticker recovery, and sequential execution. `libs/talon/tests/test_host.py` covers scheduled timeout recovery, serialization, background delivery, and scheduled delivery. `libs/talon/tests/unit_tests/test_scheduled_history.py` verifies fresh scheduled IDs and read-only origin history. `libs/talon/tests/unit_tests/test_background.py` exercises capacity, ownership, cancellation, acknowledgement/requeue, failure limits, remote cancellation, inline cron delegation, and shutdown. `libs/talon/tests/unit_tests/test_subagent_control.py` covers cooperative messages, privacy, and bounded retention.
+`libs/talon/tests/cron/test_scheduler.py` covers claiming, outcomes, silent output, delivery failure, ticker recovery, and sequential execution. `libs/talon/tests/test_host.py` covers scheduled timeout recovery, serialization, background delivery, and scheduled delivery. `libs/talon/tests/unit_tests/test_scheduled_history.py` verifies fresh scheduled IDs and read-only origin history. `libs/talon/tests/unit_tests/test_background.py` exercises capacity, ownership, cancellation, acknowledgement/requeue, failure limits, remote cancellation, inline cron delegation, and shutdown.
 
-See also [runtime behavior](../architecture/runtime-behavior.md), [subagents and skills](./subagents-skills.md), [Talon channel admission](./talon-channel-admission.md), [Talon integration](../integrations/talon.md), and [testing guide](../testing/testing-guide.md).
+`libs/talon/tests/unit_tests/test_hooks.py` verifies trusted-home-only loading, reload between turns, interrupt identity checks, local-child hook policy enforcement, and concurrent snapshot/transcript isolation. `libs/talon/tests/unit_tests/test_research_subagents.py` verifies fresh-context boundaries, explicit per-task attachments, authorization behavior, and the protected-action approval boundary for fresh versus precompiled subagents. `libs/talon/tests/unit_tests/test_subagent_control.py` covers cooperative messages, privacy, and bounded retention.
+
+See also [subagents and skills](./subagents-skills.md), [Talon channel admission](./talon-channel-admission.md), [Talon integration](../integrations/talon.md), [security](../operations/security.md), and [testing guide](../testing/testing-guide.md).

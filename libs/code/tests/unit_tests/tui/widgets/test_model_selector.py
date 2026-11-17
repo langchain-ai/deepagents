@@ -1414,7 +1414,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k3"
+        spec = "fireworks:accounts/fireworks/models/minimax-m3p1-flash"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         # Provider is installed/discoverable but its profiles omit the curated
@@ -1448,7 +1448,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "baseten:moonshotai/Kimi-K3"
+        spec = "baseten:moonshotai/Kimi-K3.1-Pro"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -1478,7 +1478,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k3"
+        spec = "fireworks:accounts/fireworks/models/minimax-m3p1-flash"
         model = spec.split(":", 1)[1]
         assert spec in model_selector._RECOMMENDED_MODELS
 
@@ -1663,7 +1663,10 @@ class TestModelSelectorInstallRouting:
 
             assert "dim" in install_widget.content.markup
 
-    async def test_navigation_preserves_install_required_dim_in_recent(self) -> None:
+    @pytest.mark.parametrize("profile_name", ["Kimi K3.1 Pro", None])
+    async def test_navigation_preserves_install_required_dim_in_recent(
+        self, profile_name: str | None
+    ) -> None:
         """The Recent-section copy of an install-required row stays dimmed too.
 
         `_move_selection` is section-agnostic, but the Recent section builds
@@ -1671,7 +1674,7 @@ class TestModelSelectorInstallRouting:
         install-required model also surfaces at the top as a recent pick, so
         cursoring onto then off that Recent row must re-dim it just the same.
         """
-        install_spec = "baseten:moonshotai/Kimi-K3"
+        install_spec = "baseten:moonshotai/Kimi-K3.1-Pro"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -1688,6 +1691,15 @@ class TestModelSelectorInstallRouting:
             ]
             screen._all_models = list(screen._unfiltered_models)
             screen._filtered_models = list(screen._unfiltered_models)
+            screen._profiles = (
+                {
+                    install_spec: ModelProfileEntry(
+                        profile={"name": profile_name}, overridden_keys=frozenset()
+                    )
+                }
+                if profile_name is not None
+                else {}
+            )
             # The install-required model is also a recent pick, so it renders
             # both at the top (Recent) and in its provider group.
             screen._recent_specs = [install_spec]
@@ -1703,7 +1715,7 @@ class TestModelSelectorInstallRouting:
             # carries a dim `(Baseten)` provider tag, so a bare "dim" substring
             # search can't tell install-required dimming from the tag. The name
             # is wrapped in `[dim]...` only when install-required and unselected.
-            name_dim = "[dim]Kimi K3"
+            name_dim = "[dim]" + (profile_name or "Kimi K3.1 Pro")
             # The provider tag disambiguates the cross-provider Recent row and
             # must survive `_move_selection`'s incremental relabel — which
             # re-derives the label from the widget's persisted `show_provider`.

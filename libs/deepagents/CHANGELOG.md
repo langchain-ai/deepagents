@@ -2,6 +2,17 @@
 
 # Deep Agents Changelog
 
+## [0.7.39](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.38...deepagents==0.7.39) (2026-11-16)
+
+### Bug Fixes
+
+- Fixed streaming of asynchronous subagent runs to apps that join them ([#7722](https://github.com/langchain-ai/deepagents/pull/7722)).
+- Fixed uploads containing NUL bytes by storing them as base64 in `StoreBackend` ([#7710](https://github.com/langchain-ai/deepagents/pull/7710)).
+
+### Performance Improvements
+
+- Limited editable-install scans to `deepagents` records ([#7752](https://github.com/langchain-ai/deepagents/pull/7752)).
+
 ## [0.7.38](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.37...deepagents==0.7.38) (2026-11-13)
 
 ### Bug Fixes

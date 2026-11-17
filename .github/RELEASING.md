@@ -595,7 +595,7 @@ The config-file form below (`"release-as"` in `release-please-config.json`) does
 ```
 
 > [!IMPORTANT]
-> This is a temporary override, not permanent configuration. Let release-please open the release PR, then remove the `release-as` line in a follow-up `hotfix(code): remove release-as override` PR (so the next release-please run does not keep forcing `0.0.35`).
+> This is a temporary override, not permanent configuration. Keep it until `0.0.35` is published, then remove the `release-as` line in a follow-up `hotfix(code): remove release-as override` PR. release-please recomputes the version from config on every run, so removing it while the release PR is open drops the PR back to the computed version, and leaving it after the release keeps forcing `0.0.35`.
 
 ### Multiple pre-release iterations
 
@@ -678,7 +678,7 @@ When the new line is ready to become `main`:
        git commit -m "feat(sdk): release X.Y.Z" -m "Release-As: X.Y.Z"
        ```
 
-     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same version override, but it lives in config rather than a commit message. Unlike the footer, it adds no changelog entry, so it only works when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit; on its own it will not open a release PR. It's a standing override, so **delete the key once the release PR is open!** — otherwise every later run keeps pinning that same version.
+     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same version override, but it lives in config rather than a commit message. Unlike the footer, it adds no changelog entry, so it only works when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit; on its own it will not open a release PR. It's a standing override, so **delete the key once that release is published!** Removing it while the release PR is open drops the PR back to the computed version; leaving it afterward keeps every later run pinned to the same version.
 
    > [!CAUTION]
    > Don't put the `Release-As` footer on an `--allow-empty` commit on `main` — an empty commit touches no package paths and triggers the [empty-commit fan-out](#empty-commit-fan-out) guard, opening a release PR for *every* package. That's why the footer goes on a commit that actually edits the package's files; the `release-as` config key avoids the fan-out since editing the config file is itself a non-empty change (but see the visible-commit caveat above).
@@ -745,17 +745,18 @@ When a `feat`/`fix` (etc.) also edits non-lockfile files under other managed pac
 
 ### Dependency bump in a package with path dependents
 
-Some packages are resolved from a local path by others (e.g. `libs/code`, `libs/evals`, and `libs/talon` resolve `langchain-quickjs` via `[tool.uv.sources]`). Changing that package's dependencies makes the dependents' `uv.lock` files stale, so `🔒 Check Lockfiles` requires relocking them in the same PR. A bump-worthy title then fans out to every dependent.
+Some packages are resolved from a local path by others (e.g. `libs/code`, `libs/evals`, and `libs/talon` resolve `langchain-quickjs` via `[tool.uv.sources]`). Changing that package's dependencies makes the dependents' `uv.lock` files stale, so `🔒 Check Lockfiles` requires relocking them in the same PR. A bump-worthy title on that PR then fans out to every dependent.
 
-When the change needs to release (e.g. `feat(quickjs)!: upgrade to quickjs-rs 0.3.0`), use one PR with exactly two commits and merge it with **Create a merge commit**, not squash:
+Land the whole change as one squash-merged `chore(deps):` PR: the package's pin and lockfile, the dependents' relocks, and any bound changes they need (e.g. [#7505](https://github.com/langchain-ai/deepagents/pull/7505)). `chore` opens no release PRs, so nothing fans out, and the package picks up the change in its next release.
 
-1. `feat(quickjs)!: ...`, touching only the package's own files.
-2. `chore(deps): ...`, with the dependents' relocks and any bound changes they need.
+When the bump is breaking and needs its own version (e.g. quickjs-rs 0.3.0 → `langchain-quickjs` 0.4.0), the `chore` commit can't carry a `!`. Set the version and the breaking note separately:
 
-release-please reads each commit on `main` and scopes it by that commit's own files, so only the package is released, and `main` stays green. The title-based fan-out and scope checks will flag the PR. Neither is required.
+1. Add `"release-as": "X.Y.Z"` to the package's entry in `release-please-config.json`, in the same PR or a follow-up. The config file is outside every package path, so it doesn't fan out. It only takes effect when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit since its last release. Without one, use a package-scoped `Release-As` footer instead (see [Promoting a pre-release to GA](#promoting-a-pre-release-to-ga)).
+2. Before merging the release PR, add the breaking change under `⚠ BREAKING CHANGES` through [curated release notes](#curated-release-notes). The `chore` commit is hidden, so release-please won't write it.
+3. After the release is published, remove the `release-as` key in a follow-up PR (e.g. [#5032](https://github.com/langchain-ai/deepagents/pull/5032)).
 
 > [!WARNING]
-> The merge commit's body is the PR title. release-please skips the `Merge pull request ...` header, but a conventional PR title **without** `!` is split out of the body and parsed as its own commit, attributed to every file in the PR. Keep the `!` title, or clear the body in the merge dialog.
+> Don't put a `Release-As` footer on the `chore(deps)` commit itself. It touches every dependent, so release-please pins all of them to that version.
 
 ### Releasing a new line ahead of its dependents
 

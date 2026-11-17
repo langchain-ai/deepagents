@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
+    from deepagents_code.program_status import ProgramStatusReporter
     from deepagents_code.thread_ownership import ThreadLease
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
@@ -110,6 +111,28 @@ def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
         re-invokes `stop()` as the exception unwinds, resuming the teardown.
     """
     raise SystemExit(128 + signum)
+
+
+def _start_headless_program_status() -> ProgramStatusReporter:
+    """Report a headless run as `working` with `OSC 7501`.
+
+    The run's final `done` or `error` must outlive the process, so the
+    reporter does not clear at exit; terminals drop `working` on their own.
+
+    Returns:
+        The reporter for the run's final report.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+    from deepagents_code.program_status import (
+        ProgramState,
+        ProgramStatus,
+        ProgramStatusReporter,
+    )
+
+    enabled = load_bool_display_preference("display.terminal_status", fallback=True)
+    reporter = ProgramStatusReporter(enabled=enabled, clear_on_exit=False)
+    reporter.report(ProgramStatus(ProgramState.WORKING))
+    return reporter
 
 
 def _install_termination_signal_handlers() -> None:
@@ -6729,6 +6752,9 @@ def cli_main() -> None:
                 sys.exit(2)
 
             timeout = getattr(args, "timeout", None)
+            program_status = _start_headless_program_status()
+            exit_code: int | None = None
+            failure = ""
             try:
                 exit_code = asyncio.run(
                     asyncio.wait_for(
@@ -6784,13 +6810,26 @@ def cli_main() -> None:
                     f"{timeout}s. Retry with a larger --timeout, or use "
                     "--max-turns for a turn-count limit."
                 )
-                sys.exit(124)
+                exit_code = 124
+                failure = f"Timed out after {timeout}s"
             except KeyboardInterrupt:
                 # `asyncio.run` re-raises `KeyboardInterrupt` past the inner
                 # `run_non_interactive` handler when the signal hits during
                 # `wait_for`; mirror its exit code 130 here so Ctrl-C is a
                 # quiet exit instead of a traceback.
-                sys.exit(130)
+                exit_code = 130
+            except Exception as exc:
+                # An unexpected crash exits 1 with a traceback; report it as
+                # `error` instead of clearing. A signal's `SystemExit` is not
+                # caught here, so it still clears. Only the type is reported:
+                # the message can hold paths or data meant for the log.
+                exit_code = 1
+                failure = f"Crashed with {type(exc).__name__}"
+                raise
+            finally:
+                from deepagents_code.program_status import exit_status
+
+                program_status.report(exit_status(exit_code, reason=failure))
             sys.exit(exit_code)
         else:
             _print_configured_profile_notice()

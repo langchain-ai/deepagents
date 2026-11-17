@@ -715,6 +715,17 @@ overrides `config.toml` instead of falling through. Also settable via
 sequence regardless.
 """
 
+TERMINAL_STATUS = "DEEPAGENTS_CODE_TERMINAL_STATUS"
+"""Report agent status to the terminal with `OSC 7501` (Program Status Protocol).
+
+Terminals and multiplexers that support the protocol (such as Herdr) show
+whether the agent is working, waiting on you, done, or failed. Enabled by
+default; set to a falsy value (`0`, `false`, `no`, `off`, or blank) to stop
+emitting the sequence. Parsed like `TERMINAL_PROGRESS`. Also settable via
+`[ui].terminal_status` in config.toml. `NO_TERMINAL_ESCAPE` suppresses the
+sequence regardless.
+"""
+
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
 

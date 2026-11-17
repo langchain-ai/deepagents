@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Literal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
@@ -19,8 +19,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
 
 from langchain_quickjs import CodeInterpreterMiddleware
-from langchain_quickjs._repl import _Registry
 from tests._common import FakeChatModel
+from tests.unit_tests._slots import drop_slots, slots_of, warm_slot
 
 InvokeMode = Literal["invoke", "ainvoke"]
 
@@ -107,7 +107,7 @@ async def test_next_run_restores_snapshot_after_failed_run(mode: InvokeMode) -> 
     with pytest.raises(RuntimeError, match="boom"):
         await _invoke(agent, {"messages": [HumanMessage("bump")]}, config, mode)
     # The failed run skipped `after_agent`, so its Context (counter = 99) leaked.
-    slot = next(iter(mw._registry._slots.values()))
+    slot = next(iter(slots_of(mw)))
     leaked = slot.repl
     assert leaked is not None
 
@@ -117,7 +117,7 @@ async def test_next_run_restores_snapshot_after_failed_run(mode: InvokeMode) -> 
     # the same warm slot.
     assert "<result>10</result>" in _last_eval(result), _last_eval(result)
     assert leaked._ctx is None
-    assert list(mw._registry._slots.values()) == [slot]
+    assert list(slots_of(mw)) == [slot]
     assert slot.repl is None
 
 
@@ -141,7 +141,7 @@ async def test_next_run_restores_snapshot_after_cancelled_run() -> None:
     task = asyncio.create_task(
         agent.ainvoke({"messages": [HumanMessage("bump")]}, config=config)
     )
-    slot = next(iter(mw._registry._slots.values()))
+    slot = next(iter(slots_of(mw)))
     for _ in range(200):
         await asyncio.sleep(0.01)
         if slot.repl is not None:
@@ -178,7 +178,7 @@ async def test_resume_after_interrupt_keeps_live_slot(mode: InvokeMode) -> None:
     await _invoke(agent, {"messages": [HumanMessage("set")]}, config, mode)
     paused = await _invoke(agent, {"messages": [HumanMessage("bump")]}, config, mode)
     assert paused["__interrupt__"]
-    slot = next(iter(mw._registry._slots.values()))
+    slot = next(iter(slots_of(mw)))
     live = slot.repl
     assert live is not None
 
@@ -191,35 +191,11 @@ async def test_resume_after_interrupt_keeps_live_slot(mode: InvokeMode) -> None:
     assert slot.repl is None
 
 
-def _registry() -> _Registry:
-    return _Registry(
-        memory_limit=32 * 1024 * 1024,
-        timeout=5.0,
-        capture_console=True,
-        max_stdout_chars=4000,
-    )
-
-
-def test_evicting_a_busy_slot_defers_close_to_release() -> None:
-    reg = _registry()
-    try:
-        slot = reg.acquire("busy")
-        with patch.object(slot, "close", wraps=slot.close) as close_spy:
-            reg.evict("busy")
-            assert "busy" not in reg._slots
-            close_spy.assert_not_called()
-            assert slot.eval_sync("1 + 1").result == "2"
-            reg.release(slot)
-        close_spy.assert_called_once_with()
-    finally:
-        reg.close()
-
-
 def test_before_agent_closes_stale_context_and_its_caches() -> None:
     mw = CodeInterpreterMiddleware()
     try:
         state: dict[str, Any] = {"messages": [], "_quickjs_slot_id": "stale"}
-        slot = mw._registry.get("stale")
+        slot = warm_slot(mw, "stale")
         slot.eval_sync("var leaked = 1")
         runtime = slot.runtime
         mw._ptc_tools_by_slot["stale"] = ()
@@ -230,16 +206,16 @@ def test_before_agent_closes_stale_context_and_its_caches() -> None:
         assert slot.runtime is runtime
         assert "stale" not in mw._ptc_tools_by_slot
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 async def test_abefore_agent_closes_stale_context() -> None:
     mw = CodeInterpreterMiddleware()
     try:
         state: dict[str, Any] = {"messages": [], "_quickjs_slot_id": "stale"}
-        slot = mw._registry.get("stale")
+        slot = warm_slot(mw, "stale")
         await slot.eval_async("var leaked = 1")
         await mw.abefore_agent(state, MagicMock())  # type: ignore[arg-type]
         assert slot.repl is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)

@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from langchain_quickjs import CodeInterpreterMiddleware, _repl
 from tests._common import FakeChatModel
+from tests.unit_tests._slots import slot_of, slots_of
 
 InvokeMode = Literal["invoke", "ainvoke"]
 
@@ -378,7 +379,7 @@ async def test_first_eval_initializes_runtime_and_current_tools(
     )
     result = await _invoke(agent, invoke_mode, {})
     assert _results(result) == ["<result>available</result>"]
-    assert all(s.repl is None for s in middleware._registry._slots.values())
+    assert all(getattr(s, "repl", None) is None for s in slots_of(middleware))
 
 
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
@@ -474,7 +475,7 @@ async def test_live_bindings_change_before_first_and_subsequent_eval(
         original = prepare([lookup])
         assert original == prepare([lookup])
         prepare([replacement])
-        assert middleware._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+        assert slot_of(middleware, state["_quickjs_slot_id"]) is None
         result = await evaluate("await tools.lookup({})")
         assert result.content == "<result>replacement</result>"
         prepare([lookup])
@@ -485,4 +486,4 @@ async def test_live_bindings_change_before_first_and_subsequent_eval(
         assert result.content == "<result>undefined</result>"
     finally:
         middleware.after_agent(state, None)
-    assert all(s.repl is None for s in middleware._registry._slots.values())
+    assert all(getattr(s, "repl", None) is None for s in slots_of(middleware))

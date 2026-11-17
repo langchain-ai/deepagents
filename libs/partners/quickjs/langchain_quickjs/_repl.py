@@ -13,8 +13,8 @@ import logging
 import threading
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, get_type_hints
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools.base import (
@@ -372,54 +372,41 @@ def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     return " ".join(statements)
 
 
-class _REPLOptions(TypedDict):
-    timeout: float | None
-    capture_console: bool
-    max_stdout_chars: int
-    max_ptc_calls: int | None
-    subagents_enabled: bool
-    max_subagent_concurrency: int
+@dataclass(frozen=True)
+class _SlotConfig:
+    """Settings for the interpreters one middleware creates."""
+
+    mode: PersistenceMode = "thread"
+    memory_limit: int | None = 64 * 1024 * 1024
+    timeout: float | None = 5.0
+    capture_console: bool = True
+    max_stdout_chars: int = 4000
+    max_ptc_calls: int | None = 256
+    subagents_enabled: bool = True
+    max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
 
 
 class _ThreadREPL:
-    """One QuickJS context + console buffer, per LangGraph thread.
+    """One QuickJS Context with its console, PTC bridges and budgets.
 
-    All `ctx.*` operations are marshalled onto the worker's dedicated
-    thread because `quickjs_rs` objects are `!Send`. The public
-    methods are safe to call from any thread/loop.
+    `quickjs_rs` objects are `!Send`: build, use and close a REPL only on its
+    slot's worker thread. Slots do the marshalling.
     """
 
     def __init__(
-        self,
-        worker: ThreadWorker,
-        runtime: Runtime,
-        *,
-        timeout: float | None,
-        capture_console: bool,
-        max_stdout_chars: int,
-        max_ptc_calls: int | None = 256,
-        subagents_enabled: bool = True,
-        max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
-        task_calls: asyncio.Semaphore | None = None,
+        self, runtime: Runtime, config: _SlotConfig, task_calls: asyncio.Semaphore
     ) -> None:
-        """Build the REPL's Context. Must run on `worker`'s own thread.
-
-        `task_calls` shares a `task()` concurrency limit across REPLs.
-        """
-        self._worker = worker
         self._runtime = runtime
         # The Context-level `timeout` is used as the cumulative budget
         # for sync evals. Async evals pass `timeout=` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
         # and what we describe in the system prompt.
-        self._per_call_timeout = float("inf") if timeout is None else timeout
-        self._capture_console = capture_console
+        self._per_call_timeout = (
+            float("inf") if config.timeout is None else config.timeout
+        )
         # Static budget config; mutable counters live in `_ptc_state`.
-        self._max_ptc_calls = max_ptc_calls
-        self._subagents_enabled = subagents_enabled
-        self._max_subagent_concurrency = max_subagent_concurrency
-        self._console = _ConsoleBuffer(max_stdout_chars)
-        self._ctx: Context | None = None
+        self._max_ptc_calls = config.max_ptc_calls
+        self._console = _ConsoleBuffer(config.max_stdout_chars)
         self._prepared_for_eval = False
         # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
@@ -441,17 +428,13 @@ class _ThreadREPL:
         # at eval start and cleared in finally so bridge calls can't run
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
+        # Shared by every REPL on the slot, so parallel `call`-mode evals
+        # share one `task()` concurrency limit.
         self._task_calls = task_calls
-
-        self._init()
-
-    def _init(self) -> None:
-        self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
-        if self._capture_console:
+        self._ctx: Context | None = runtime.new_context(timeout=self._per_call_timeout)
+        if config.capture_console:
             self._install_console()
-        if self._subagents_enabled:
-            if self._task_calls is None:
-                self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
+        if config.subagents_enabled:
             self._register_task_bridge()
         self._register_fs_bridge()
 
@@ -491,18 +474,6 @@ class _ThreadREPL:
             " error: __console_error,"
             "}; undefined"
         )
-
-    def install_tools(self, tools: Sequence[BaseTool]) -> None:
-        """Expose `tools` as `globalThis.tools.<camelCase>` in the REPL.
-
-        Idempotent per (camelName, tool identity). Safe to call on every
-        model-call turn; we diff against the current active set and only
-        (a) register new host-function bridges for tools we haven't seen
-        before and (b) rewrite `globalThis.tools` when the active-name
-        set changes. Hot path cost when nothing changes: one frozenset
-        equality check.
-        """
-        self._worker.run_sync(self._ainstall_tools(tools))
 
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
         ctx = self._require_ctx()
@@ -626,9 +597,6 @@ class _ThreadREPL:
                 msg = "task bridge called outside active eval"
                 raise ConcurrentEvalError(msg)
             task_calls = self._task_calls
-            if task_calls is None:
-                msg = "task call limiter not initialized"
-                raise RuntimeError(msg)
 
             payload = _normalize_tool_input(raw_input)
             dispatch_ordinal = state.task_dispatch_count
@@ -773,76 +741,10 @@ class _ThreadREPL:
             return e.reply
         return reply
 
-    def eval_sync(
-        self,
-        code: str,
-        *,
-        outer_runtime: ToolRuntime | None = None,
-        snapshot_payload: bytes | None = None,
-        tools: Sequence[BaseTool] | None = None,
-        fs: BackendProtocol | None = None,
-    ) -> EvalOutcome:
-        # Both sync and async entry points funnel through ctx.eval_async on
-        # the worker loop. Sync ctx.eval can't dispatch async host functions
-        # (PTC bridges are is_async=True), so routing sync callers through
-        # the async path is required for PTC to work under sync invocation.
-        return self._worker.run_sync(
-            self._aeval_async(
-                code,
-                outer_runtime=outer_runtime,
-                snapshot_payload=snapshot_payload,
-                tools=tools,
-                fs=fs,
-            )
-        )
-
-    async def eval_async(
-        self,
-        code: str,
-        *,
-        outer_runtime: ToolRuntime | None = None,
-        snapshot_payload: bytes | None = None,
-        tools: Sequence[BaseTool] | None = None,
-        outer_loop: asyncio.AbstractEventLoop | None = None,
-        fs: BackendProtocol | None = None,
-    ) -> EvalOutcome:
-        return await self._worker.run_async(
-            self._aeval_async(
-                code,
-                outer_runtime=outer_runtime,
-                snapshot_payload=snapshot_payload,
-                tools=tools,
-                outer_loop=outer_loop,
-                fs=fs,
-            )
-        )
-
-    def create_snapshot(self) -> bytes:
-        """Capture the current context snapshot as bytes."""
-        return self._worker.run_sync(self._acreate_snapshot())
-
-    async def acreate_snapshot(self) -> bytes:
-        """Async variant of `create_snapshot`."""
-        return await self._worker.run_async(self._acreate_snapshot())
-
     async def _acreate_snapshot(self) -> bytes:
         ctx = self._require_ctx()
         snapshot = ctx.create_snapshot()
         return snapshot.to_bytes()
-
-    def restore_snapshot(self, payload: bytes, *, inject_globals: bool = True) -> None:
-        """Restore snapshot bytes into this REPL's context."""
-        self._worker.run_sync(
-            self._arestore_snapshot(payload, inject_globals=inject_globals)
-        )
-
-    async def arestore_snapshot(
-        self, payload: bytes, *, inject_globals: bool = True
-    ) -> None:
-        """Async variant of `restore_snapshot`."""
-        await self._worker.run_async(
-            self._arestore_snapshot(payload, inject_globals=inject_globals)
-        )
 
     async def _arestore_snapshot(self, payload: bytes, *, inject_globals: bool) -> None:
         ctx = self._require_ctx()
@@ -994,36 +896,28 @@ class _ThreadREPL:
         outcome.error_stack = e.stack
 
     def close(self) -> None:
-        self._worker.run_sync(self._aclose())
-
-    async def aclose(self) -> None:
-        await self._worker.run_async(self._aclose())
-
-    async def _aclose(self) -> None:
         if self._ctx is not None:
             self._ctx.close()
             self._ctx = None
 
 
 class _Slot:
-    """One LangGraph thread's QuickJS worker and Runtime.
+    """One LangGraph thread's QuickJS worker, Runtime and `task()` limit.
 
-    Creates nothing until the first eval. All QuickJS work, including building
-    and closing the Runtime and Contexts, runs on the slot's own worker thread,
-    so async callers only await it. The worker and Runtime outlive turns;
-    subclasses decide how evals map to Contexts.
+    Builds nothing until the first eval. All QuickJS work runs on the slot's
+    own worker thread, so callers on any thread or loop only wait on it. The
+    worker and Runtime outlive turns; subclasses own how evals map to
+    Contexts and when those Contexts close.
     """
 
-    def __init__(self, name: str, *, memory_limit: int, options: _REPLOptions) -> None:
+    def __init__(self, name: str, config: _SlotConfig) -> None:
         self.worker = ThreadWorker(name=name)  # starts its thread on first use
+        self.config = config
         self.runtime: Runtime | None = None
-        self.repl: _ThreadREPL | None = None
-        self._memory_limit = memory_limit
-        self._options = options
-        # Evals (or snapshots) currently using the slot. A leased slot is never
-        # closed; `evict` marks it `retired` and the last release closes it.
+        self.task_calls = asyncio.Semaphore(config.max_subagent_concurrency)
+        # Evals (or snapshots) running on the slot. A leased slot is never
+        # evicted.
         self.leases = 0
-        self.retired = False
 
     def eval_sync(self, code: str, **kwargs: Any) -> EvalOutcome:
         return self.worker.run_sync(self._aeval(code, **kwargs))
@@ -1034,45 +928,34 @@ class _Slot:
     async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
         raise NotImplementedError
 
-    def _new_repl(self, **extra: Any) -> _ThreadREPL:
+    def _new_repl(self) -> _ThreadREPL:
+        """Build a Context on the warm Runtime. Runs on the worker; never awaits."""
         if self.runtime is None:
-            self.runtime = self._create_runtime()
-        return _ThreadREPL(self.worker, self.runtime, **self._options, **extra)
-
-    def _create_runtime(self) -> Runtime:
-        return Runtime(
-            memory_limit=self._memory_limit,
-            transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
-        )
+            self.runtime = Runtime(
+                memory_limit=self.config.memory_limit,
+                transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+            )
+        return _ThreadREPL(self.runtime, self.config, self.task_calls)
 
     def create_snapshot(self) -> bytes | None:
-        """Snapshot the turn's Context, or `None` if no eval ran this turn."""
-        return self.repl.create_snapshot() if self.repl is not None else None
+        """Snapshot the turn's Context, or `None` if there is none."""
+        return None
 
     async def acreate_snapshot(self) -> bytes | None:
         """Async variant of `create_snapshot`."""
-        return await self.repl.acreate_snapshot() if self.repl is not None else None
+        return None
 
     def end_turn(self) -> None:
-        """Close the turn's Context; keep the worker and Runtime."""
-        if self.repl is not None:
-            self.worker.run_sync(self._aend_turn())
+        """Close what the turn left open; the worker and Runtime stay warm."""
 
     async def aend_turn(self) -> None:
         """Async variant of `end_turn`."""
-        if self.repl is not None:
-            await self.worker.run_async(self._aend_turn())
-
-    async def _aend_turn(self) -> None:
-        repl, self.repl = self.repl, None
-        if repl is not None:
-            await repl._aclose()  # noqa: SLF001
 
     def close(self) -> None:
-        """Close the Context and Runtime on the worker, then stop the worker."""
+        """Close everything on the worker, then stop the worker."""
         try:
             if self.runtime is not None:
-                self.worker.run_sync(self._aclose_runtime())
+                self.worker.run_sync(self._aclose())
         finally:
             self.worker.close()
 
@@ -1080,208 +963,163 @@ class _Slot:
         """Async variant of `close`."""
         try:
             if self.runtime is not None:
-                await self.worker.run_async(self._aclose_runtime())
+                await self.worker.run_async(self._aclose())
         finally:
             await self.worker.aclose()
 
-    async def _aclose_runtime(self) -> None:
-        await self._aend_turn()
+    async def _aclose(self) -> None:
         if self.runtime is not None:
             self.runtime.close()
             self.runtime = None
 
 
 class _TurnSlot(_Slot):
-    """A `thread`- or `turn`-mode slot: evals share one Context per turn.
+    """A `thread`- or `turn`-mode slot: evals share one Context per turn."""
 
-    The Context is closed by `end_turn`.
-    """
+    def __init__(self, name: str, config: _SlotConfig) -> None:
+        super().__init__(name, config)
+        self.repl: _ThreadREPL | None = None
 
     async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
-        # Runs on the worker. Building the Runtime and Context never awaits, so
-        # concurrent first evals on this single-threaded loop can't both build.
+        # Building the Context never awaits, so concurrent first evals on the
+        # worker's single-threaded loop can't both build one.
         if self.repl is None:
             self.repl = self._new_repl()
         return await self.repl._aeval_async(code, **kwargs)  # noqa: SLF001
+
+    def create_snapshot(self) -> bytes | None:
+        if self.repl is None:
+            return None
+        return self.worker.run_sync(self._asnapshot())
+
+    async def acreate_snapshot(self) -> bytes | None:
+        if self.repl is None:
+            return None
+        return await self.worker.run_async(self._asnapshot())
+
+    async def _asnapshot(self) -> bytes | None:
+        if self.repl is None:
+            return None
+        return await self.repl._acreate_snapshot()  # noqa: SLF001
+
+    def end_turn(self) -> None:
+        if self.repl is not None:
+            self.worker.run_sync(self._aend_turn())
+
+    async def aend_turn(self) -> None:
+        if self.repl is not None:
+            await self.worker.run_async(self._aend_turn())
+
+    async def _aend_turn(self) -> None:
+        repl, self.repl = self.repl, None
+        if repl is not None:
+            repl.close()
+
+    async def _aclose(self) -> None:
+        await self._aend_turn()
+        await super()._aclose()
 
 
 class _CallSlot(_Slot):
     """A `call`-mode slot: each eval gets its own Context, closed when it ends.
 
-    Parallel evals share the slot's Runtime (and so its `memory_limit`) and
-    its `task()` concurrency limit.
+    Parallel evals share the slot's Runtime, so its `memory_limit`, and its
+    `task()` limit.
     """
 
-    def __init__(self, name: str, *, memory_limit: int, options: _REPLOptions) -> None:
-        super().__init__(name, memory_limit=memory_limit, options=options)
-        self._task_calls = asyncio.Semaphore(options["max_subagent_concurrency"])
-
     async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
-        repl = self._new_repl(task_calls=self._task_calls)
+        repl = self._new_repl()
         try:
             return await repl._aeval_async(code, **kwargs)  # noqa: SLF001
         finally:
-            await repl._aclose()  # noqa: SLF001
+            repl.close()
 
 
-@dataclass
 class _Registry:
-    """Per-thread slot registry: an LRU of up to `max_slots` `_Slot`s.
+    """Process-wide LRU of up to `max_slots` warm slots.
 
-    Slots stay warm across turns. Over the cap, the least recently used slot
-    with no eval running is closed, mid-turn or not, so slots left by failed
-    or abandoned runs are reclaimed too. Nothing is built or closed while
-    holding the lock.
+    Slots are keyed by thread and config, so middlewares with different
+    settings never share one. Over the cap, the least recently used slot with
+    no eval running is closed, mid-turn or not, so slots left by failed or
+    abandoned runs are reclaimed too. Nothing is built or closed while holding
+    the lock.
     """
 
-    memory_limit: int
-    timeout: float | None
-    capture_console: bool
-    max_stdout_chars: int
-    max_ptc_calls: int | None = 256
-    subagents_enabled: bool = True
-    max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
-    max_slots: int = _MAX_SLOTS
-    mode: PersistenceMode = "thread"
-    _slots: OrderedDict[str, _Slot] = field(default_factory=OrderedDict)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    def __init__(self, max_slots: int = _MAX_SLOTS) -> None:
+        self.max_slots = max_slots
+        self._slots: OrderedDict[tuple[str, _SlotConfig], _Slot] = OrderedDict()
+        self._lock = threading.Lock()
 
-    def get(self, thread_id: str) -> _Slot:
-        """Return the slot for `thread_id`, creating it if needed."""
-        with self._lock:
-            slot, stale = self._get_locked(thread_id)
-        for old in stale:
-            old.close()
-        return slot
-
-    def acquire(self, thread_id: str) -> _Slot:
+    def acquire(self, thread_id: str, config: _SlotConfig) -> _Slot:
         """Lease the slot for `thread_id`, creating it if needed.
 
-        A leased slot is never closed. Pair with `release`.
+        A leased slot is never evicted. Pair with `release`.
         """
-        with self._lock:
-            slot, stale = self._get_locked(thread_id)
-            slot.leases += 1
+        slot, stale = self._acquire_locked(thread_id, config)
         for old in stale:
             old.close()
         return slot
 
-    async def aacquire(self, thread_id: str) -> _Slot:
+    async def aacquire(self, thread_id: str, config: _SlotConfig) -> _Slot:
         """Async variant of `acquire`."""
-        with self._lock:
-            slot, stale = self._get_locked(thread_id)
-            slot.leases += 1
+        slot, stale = self._acquire_locked(thread_id, config)
         for old in stale:
             await old.aclose()
         return slot
 
-    def _get_locked(self, thread_id: str) -> tuple[_Slot, list[_Slot]]:
-        slot = self._slots.get(thread_id)
-        if slot is None:
-            slot_class = _CallSlot if self.mode == "call" else _TurnSlot
-            slot = self._slots[thread_id] = slot_class(
-                f"quickjs-worker-{thread_id[:8]}",
-                memory_limit=self.memory_limit,
-                options=self._repl_options(),
-            )
-        self._slots.move_to_end(thread_id)
-        stale = []
-        excess = len(self._slots) - self.max_slots
-        for key, old in list(self._slots.items()):  # least recently used first
-            if excess <= 0:
-                break
-            # Never close a slot with an eval running on it.
-            if key == thread_id or old.leases:
-                continue
-            del self._slots[key]
-            stale.append(old)
-            excess -= 1
-        return slot, stale
+    def _acquire_locked(
+        self, thread_id: str, config: _SlotConfig
+    ) -> tuple[_Slot, list[_Slot]]:
+        key = (thread_id, config)
+        with self._lock:
+            slot = self._slots.get(key)
+            if slot is None:
+                slot_class = _CallSlot if config.mode == "call" else _TurnSlot
+                slot = slot_class(f"quickjs-worker-{thread_id[:8]}", config)
+                self._slots[key] = slot
+            self._slots.move_to_end(key)
+            slot.leases += 1
+            stale = []
+            excess = len(self._slots) - self.max_slots
+            for other, old in list(self._slots.items()):  # least recent first
+                if excess <= 0:
+                    break
+                # Never close a slot with an eval running on it.
+                if old.leases:
+                    continue
+                del self._slots[other]
+                stale.append(old)
+                excess -= 1
+            return slot, stale
 
-    def lease_if_exists(self, thread_id: str) -> _Slot | None:
+    def lease_if_exists(self, thread_id: str, config: _SlotConfig) -> _Slot | None:
         """Lease the slot for `thread_id` without creating one."""
         with self._lock:
-            slot = self._slots.get(thread_id)
+            slot = self._slots.get((thread_id, config))
             if slot is not None:
                 slot.leases += 1
             return slot
 
     def release(self, slot: _Slot) -> None:
-        """Return a lease; closes the slot if it was evicted meanwhile."""
-        if self._release_locked(slot):
-            slot.close()
-
-    async def arelease(self, slot: _Slot) -> None:
-        """Async variant of `release`."""
-        if self._release_locked(slot):
-            await slot.aclose()
-
-    def _release_locked(self, slot: _Slot) -> bool:
+        """Return a lease taken by `acquire` or `lease_if_exists`."""
         with self._lock:
             slot.leases -= 1
-            return slot.retired and slot.leases == 0
 
-    def end_turn(self, thread_id: str) -> None:
-        """Close `thread_id`'s turn Context, keeping its worker and Runtime."""
-        if (slot := self.lease_if_exists(thread_id)) is not None:
+    def end_turn(self, thread_id: str, config: _SlotConfig) -> None:
+        """Close what `thread_id`'s turn left open, keeping the slot warm."""
+        if (slot := self.lease_if_exists(thread_id, config)) is not None:
             try:
                 slot.end_turn()
             finally:
                 self.release(slot)
 
-    async def aend_turn(self, thread_id: str) -> None:
+    async def aend_turn(self, thread_id: str, config: _SlotConfig) -> None:
         """Async variant of `end_turn`."""
-        if (slot := self.lease_if_exists(thread_id)) is not None:
+        if (slot := self.lease_if_exists(thread_id, config)) is not None:
             try:
                 await slot.aend_turn()
             finally:
-                await self.arelease(slot)
+                self.release(slot)
 
-    def get_if_exists(self, thread_id: str) -> _Slot | None:
-        """Return the slot for `thread_id` without creating one."""
-        with self._lock:
-            return self._slots.get(thread_id)
 
-    def evict(self, thread_id: str) -> None:
-        """Close and remove the slot for `thread_id`.
-
-        A leased slot is removed now and closed when its last lease ends.
-        """
-        with self._lock:
-            slot = self._pop_for_close_locked(thread_id)
-        if slot is not None:
-            slot.close()
-
-    async def aevict(self, thread_id: str) -> None:
-        """Async variant of `evict`."""
-        with self._lock:
-            slot = self._pop_for_close_locked(thread_id)
-        if slot is not None:
-            await slot.aclose()
-
-    def _pop_for_close_locked(self, thread_id: str) -> _Slot | None:
-        """Remove a slot; return it if it can close now, else retire it."""
-        slot = self._slots.pop(thread_id, None)
-        if slot is None:
-            return None
-        if slot.leases:
-            slot.retired = True
-            return None
-        return slot
-
-    def _repl_options(self) -> _REPLOptions:
-        return {
-            "timeout": self.timeout,
-            "capture_console": self.capture_console,
-            "max_stdout_chars": self.max_stdout_chars,
-            "max_ptc_calls": self.max_ptc_calls,
-            "subagents_enabled": self.subagents_enabled,
-            "max_subagent_concurrency": self.max_subagent_concurrency,
-        }
-
-    def close(self) -> None:
-        with self._lock:
-            slots = list(self._slots.values())
-            self._slots.clear()
-        for slot in slots:
-            slot.close()
+_REGISTRY = _Registry()

@@ -1,9 +1,7 @@
 """`CodeInterpreterMiddleware`: exposes a sandboxed JavaScript REPL tool."""
 
 import asyncio
-import contextlib
 import logging
-import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
@@ -51,9 +49,10 @@ from langchain_quickjs._ptc import (
 )
 from langchain_quickjs._repl import (
     _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+    _REGISTRY,
     EvalOutcome,
     PersistenceMode,
-    _Registry,
+    _SlotConfig,
     _SnapshotRestoreError,
 )
 from langchain_quickjs._snapshot import (
@@ -330,7 +329,8 @@ class CodeInterpreterMiddleware(
             if snapshot_signing_key is not None
             else None
         )
-        self._registry = _Registry(
+        self._slot_config = _SlotConfig(
+            mode=self._mode,
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
@@ -338,8 +338,8 @@ class CodeInterpreterMiddleware(
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
-            mode=self._mode,
         )
+        self._registry = _REGISTRY
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
@@ -402,7 +402,7 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = middleware._registry.acquire(slot_id)
+            slot = middleware._registry.acquire(slot_id, middleware._slot_config)
             try:
                 outcome = slot.eval_sync(
                     code,
@@ -423,7 +423,7 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = await middleware._registry.aacquire(slot_id)
+            slot = await middleware._registry.aacquire(slot_id, middleware._slot_config)
             try:
                 outcome = await slot.eval_async(
                     code,
@@ -436,7 +436,7 @@ class CodeInterpreterMiddleware(
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
-                await middleware._registry.arelease(slot)
+                middleware._registry.release(slot)
             return _make_tool_output(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
@@ -534,7 +534,7 @@ class CodeInterpreterMiddleware(
         # snapshot. The slot's worker and Runtime stay warm.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            self._registry.end_turn(slot_id)
+            self._registry.end_turn(slot_id, self._slot_config)
         return self._prepare_slot(state)
 
     async def abefore_agent(
@@ -546,7 +546,7 @@ class CodeInterpreterMiddleware(
         # See `before_agent`: any live Context here was left by a dead run.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            await self._registry.aend_turn(slot_id)
+            await self._registry.aend_turn(slot_id, self._slot_config)
         return self._prepare_slot(state)
 
     def _drop_slot_caches(self, slot_id: str) -> None:
@@ -730,10 +730,10 @@ class CodeInterpreterMiddleware(
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
         if self._mode != "thread":
-            self._registry.end_turn(slot_id)
+            self._registry.end_turn(slot_id, self._slot_config)
             return None
 
-        slot = self._registry.lease_if_exists(slot_id)
+        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""
@@ -768,10 +768,10 @@ class CodeInterpreterMiddleware(
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
         if self._mode != "thread":
-            await self._registry.aend_turn(slot_id)
+            await self._registry.aend_turn(slot_id, self._slot_config)
             return None
 
-        slot = self._registry.lease_if_exists(slot_id)
+        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""
@@ -794,19 +794,5 @@ class CodeInterpreterMiddleware(
             update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
             await slot.aend_turn()
-            await self._registry.arelease(slot)
+            self._registry.release(slot)
         return update
-
-    def __del__(self) -> None:
-        """Best-effort Runtime cleanup on GC; never raises at shutdown."""
-        # During interpreter finalization the daemon worker threads can no
-        # longer take the GIL, so closing a slot (which waits on its worker)
-        # would block forever and the process would never exit. The OS
-        # reclaims the interpreters' memory at exit anyway.
-        if sys.is_finalizing():
-            return
-        # Wrapped in `contextlib.suppress` because __del__ must not raise
-        # during interpreter shutdown, when dependencies may already be
-        # half-unloaded.
-        with contextlib.suppress(Exception):
-            self._registry.close()

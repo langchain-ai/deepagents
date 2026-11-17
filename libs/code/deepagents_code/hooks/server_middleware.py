@@ -948,6 +948,20 @@ def hook_explicitly_allowed(state: object, tool_call_id: str) -> bool:
     return outcome is not None and outcome.get("hook_allowed") is True
 
 
+def hook_denial_message(request: ToolCallRequest) -> ToolMessage | None:
+    """Build the `PreToolUse` denial message for a call a hook refused.
+
+    Outer guards use this to report the hook's reason instead of their own.
+
+    Args:
+        request: Pending tool call carrying the current turn's hook outcomes.
+
+    Returns:
+        The denial `ToolMessage`, or `None` when no hook denied the call.
+    """
+    return _pre_tool_outcome(request.state, _tool_call_data(request)).blocked
+
+
 def _pre_tool_state(state: object, tool_call_id: str) -> Mapping[str, object] | None:
     if not isinstance(state, Mapping):
         return None

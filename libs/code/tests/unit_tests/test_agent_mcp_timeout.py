@@ -249,6 +249,8 @@ async def test_headless_production_graph_gates_mcp_calls(
     if not delegated:
         output = next(m for m in result["messages"] if isinstance(m, ToolMessage))
         assert output.status == ("success" if hook_behavior == "allow" else "error")
+        if hook_behavior == "deny":
+            assert "mcp__slack__send_message blocked by hook" in str(output.content)
 
 
 async def test_headless_hook_allow_is_scoped_to_each_call_and_turn(

@@ -4585,12 +4585,17 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
         self._tool_names = frozenset(tool_names)
 
     def _rejection(self, request: ToolCallRequest) -> ToolMessage | None:
-        from deepagents_code.hooks.server_middleware import hook_explicitly_allowed
+        from deepagents_code.hooks.server_middleware import (
+            hook_denial_message,
+            hook_explicitly_allowed,
+        )
 
         if request.tool_call["name"] not in self._tool_names:
             return None
         if hook_explicitly_allowed(request.state, _tool_call_id(request.tool_call)):
             return None
+        if (denial := hook_denial_message(request)) is not None:
+            return denial
         return ToolMessage(
             content=(
                 "This MCP action requires approval, but the current headless runtime "

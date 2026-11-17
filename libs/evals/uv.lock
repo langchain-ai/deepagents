@@ -554,7 +554,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.8.1,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.12" },
-    { name = "langsmith", specifier = ">=0.14.17" },
+    { name = "langsmith", specifier = ">=0.15.0" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0" },
     { name = "wcmatch", specifier = ">=11.0" },
@@ -566,7 +566,7 @@ test = [
     { name = "av", specifier = ">=18.0.0,<19.0.0" },
     { name = "build" },
     { name = "langchain-aws", specifier = ">=1.9.3,<2.0.0" },
-    { name = "langchain-openai", specifier = ">=1.8.0,<2.0.0" },
+    { name = "langchain-openai", specifier = ">=1.8.1,<2.0.0" },
     { name = "langchain-tests", specifier = ">=1.1.9" },
     { name = "pillow", specifier = ">=12.3.0,<14.0.0" },
     { name = "pytest" },
@@ -603,7 +603,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 examples = [
     { name = "langchain-baseten", specifier = ">=0.2.5" },
-    { name = "langchain-openai", specifier = ">=1.8.0" },
+    { name = "langchain-openai", specifier = ">=1.8.1" },
 ]
 test = [
     { name = "pytest", specifier = ">=9.1.1" },
@@ -698,8 +698,8 @@ requires-dist = [
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.5.0,<2.0.0" },
     { name = "langchain-nvidia-openshell", marker = "extra == 'openshell'", specifier = ">=0.1.1" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2.0.0" },
-    { name = "langchain-openai", specifier = ">=1.8.0,<2.0.0" },
-    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.8.0,<2.0.0" },
+    { name = "langchain-openai", specifier = ">=1.8.1,<2.0.0" },
+    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.8.1,<2.0.0" },
     { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.2.9,<2.0.0" },
     { name = "langchain-perplexity", marker = "extra == 'perplexity'", specifier = ">=1.4.2,<2.0.0" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
@@ -709,9 +709,9 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.4.0,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.43,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.38.1,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.38.2,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.14,<1.0.0" },
-    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.17" },
+    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.15.0" },
     { name = "markdownify", specifier = ">=1.2.3" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
@@ -1958,7 +1958,7 @@ wheels = [
 
 [[package]]
 name = "langchain-openai"
-version = "1.8.0"
+version = "1.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -1966,9 +1966,9 @@ dependencies = [
     { name = "openai" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/4a/7b9a0e825917813eae02d254229a0b56cbd870a8618c38c14eb0eb6c34ab/langchain_openai-1.8.0.tar.gz", hash = "sha256:670a39def25c550ac7b828f6c4336f5653a440e992584590f6cc168525d993b7", size = 3383548, upload-time = "2026-11-13T16:48:12.161Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/6c/ec932819ba748a17bfc7b6e85b1c136db7169a2809b56ce0e4760974f4a6/langchain_openai-1.8.1.tar.gz", hash = "sha256:d046911c1cd88e36005090ae47dbd5883deb2991657376ee9c1a9f69fa1f0bac", size = 3384926, upload-time = "2026-11-17T20:39:25.84Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/2e/d206826165323dc9b9e53fd837f7d6ba94b45d15543f068b4a601ee65805/langchain_openai-1.8.0-py3-none-any.whl", hash = "sha256:55a6aca37b7d4fa7011fef7faad53e6a544640c2b9a2fecf2e18d95115497555", size = 154978, upload-time = "2026-11-13T16:48:10.728Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/a5/dcc9f1d7f0d2ee467ff77baaca3e1911ee38380907f3fddc67c82576944f/langchain_openai-1.8.1-py3-none-any.whl", hash = "sha256:6de3738d7ce756912a97151e67e338c1cf4ecf67df922ecac91e9433868a274b", size = 155379, upload-time = "2026-11-17T20:39:23.735Z" },
 ]
 
 [[package]]
@@ -2183,7 +2183,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.38.1"
+version = "0.38.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -2194,9 +2194,9 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/6b/39b5a0a20ef05a12033f89d326ac2cd37645a5c32024e8d8a9e2692430f5/langgraph_runtime_inmem-0.38.1.tar.gz", hash = "sha256:8dac68cf9fbeb7f6204ac4384d69ce800bc83e3be6c407e614c954e1e0c1eda7", size = 145079, upload-time = "2026-11-16T02:50:34.273Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/57/64a2928b85972991f91b9be905fcef99dfd635971cab40d6bc7208b8d951/langgraph_runtime_inmem-0.38.2.tar.gz", hash = "sha256:380699c1947afc63aee4a83db2a5c4593fe23067619672834ce7d7ca3e013312", size = 145079, upload-time = "2026-11-17T01:04:46.958Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/5a/9b4a03c77c5c976dcfdfa62eb9d5c33a0bb502166ee9da03b7b87e8af15a/langgraph_runtime_inmem-0.38.1-py3-none-any.whl", hash = "sha256:12c0ec2630bf566f89776a7f6da34144fe72d7d38d6d837ffcf1afe73b154df8", size = 64991, upload-time = "2026-11-16T02:50:32.735Z" },
+    { url = "https://files.pythonhosted.org/packages/96/ea/dfbe75214a4950f6a504cb9a667c3d5d3571b79e50909a15602b614adcba/langgraph_runtime_inmem-0.38.2-py3-none-any.whl", hash = "sha256:9223ae012b3bfaeb1216c6f94c98a12a94ba8ebe06f372c42db393fb55ea3bb7", size = 64993, upload-time = "2026-11-17T01:04:45.611Z" },
 ]
 
 [[package]]
@@ -2217,7 +2217,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.14.17"
+version = "0.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2235,9 +2235,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/12/4b/c91526e3038d5d5869fa5dba647215826fb8b2b8a3c042d20581a3e5d735/langsmith-0.14.17.tar.gz", hash = "sha256:53efa2db8293d0a8d60efebe0945c595b635873774b302066ed0a746ddf87562", size = 5106102, upload-time = "2026-11-02T00:58:45.943Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/e9/a1828d873c6ccc2bc40afd9afeceee6a15a39ce49488790e026aba74495b/langsmith-0.15.0.tar.gz", hash = "sha256:74e9524c65e7acb7db907f04dee703bb81f0d8529509f9438057cee5fd62209f", size = 5109402, upload-time = "2026-11-17T12:37:20.59Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/11/4da3faa7fd20c487c4770f14aa2b4247871e787ad305c2ba528fcf0f2bcc/langsmith-0.14.17-py3-none-any.whl", hash = "sha256:0aa2c79936c93c7cea9c55656f05e21cc5da715fecbdbda439d084adc08429be", size = 940828, upload-time = "2026-11-02T00:58:43.727Z" },
+    { url = "https://files.pythonhosted.org/packages/52/9e/f263c4a2516698dec716fbdd80eee963bac3a88dfba2a1aa29e0b15c3d6b/langsmith-0.15.0-py3-none-any.whl", hash = "sha256:d6f7aa67e4c984ce7c7b6a1bdb7fc50ce3caaca032b42805f0f6a2d6458f42be", size = 1006779, upload-time = "2026-11-17T12:37:17.954Z" },
 ]
 
 [package.optional-dependencies]

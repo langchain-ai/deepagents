@@ -41,6 +41,23 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
+_PI_STYLE_PROMPT = """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
+
+Guidelines:
+- Use execute for shell commands and file operations like ls, rg, find.
+- Use read_file to examine files instead of cat or sed.
+- Use edit_file for precise changes (old_string must match exactly).
+- Use write_file only for new files or complete rewrites.
+- Be concise in your responses.
+- Show file paths clearly when working with files."""
+
+_BARE_SYSTEM_PROMPTS: dict[str, str] = {"accounts/fireworks/models/kimi-k3p1-pro": _PI_STYLE_PROMPT}
+"""Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
+
+Kimi K3.1 Pro gets the same Pi-style prompt the Nov 13 GLM 5.3 run used, so the
+full Kimi run matches that setup. Models without an entry get no system prompt.
+"""
+
 _MODEL_RETRY_ATTEMPTS = 3
 """Retries for a model call that fails mid-request (e.g. a dropped stream)."""
 
@@ -500,6 +517,7 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         backend=backend,
         tools=tools or None,
         skills=_skills(configurable),
+        system_prompt=_BARE_SYSTEM_PROMPTS.get(getattr(model, "model", "")),
         middleware=_bare_middleware(),
     )
 

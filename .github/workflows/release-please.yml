@@ -709,7 +709,7 @@ jobs:
             const normalize = require('./.github/scripts/release/normalize-release-labels.js');
             await normalize(github, context.repo.owner, context.repo.repo);
 
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
           config-file: release-please-config.json

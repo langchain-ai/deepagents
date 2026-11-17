@@ -14,7 +14,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, TypedDict, get_type_hints
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, get_type_hints
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools.base import (
@@ -70,6 +70,8 @@ _DEFAULT_MAX_SUBAGENT_CONCURRENCY = 32
 # That takes a busy process: langgraph-api runs 10 concurrent runs per worker
 # by default.
 _MAX_SLOTS = 32
+
+PersistenceMode = Literal["thread", "turn", "call"]
 _TASK_FUNCTION_NAME = "task"
 
 
@@ -1004,13 +1006,12 @@ class _ThreadREPL:
 
 
 class _Slot:
-    """One LangGraph thread's QuickJS worker, Runtime and turn Context.
+    """One LangGraph thread's QuickJS worker and Runtime.
 
     Creates nothing until the first eval. All QuickJS work, including building
     and closing the Runtime and Contexts, runs on the slot's own worker thread,
-    so async callers only await it. Evals share one Context per turn (`thread`
-    and `turn` modes), closed by `end_turn`. The worker and Runtime outlive
-    turns.
+    so async callers only await it. The worker and Runtime outlive turns;
+    subclasses decide how evals map to Contexts.
     """
 
     def __init__(self, name: str, *, memory_limit: int, options: _REPLOptions) -> None:
@@ -1031,11 +1032,7 @@ class _Slot:
         return await self.worker.run_async(self._aeval(code, **kwargs))
 
     async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
-        # Runs on the worker. Building the Runtime and Context never awaits, so
-        # concurrent first evals on this single-threaded loop can't both build.
-        if self.repl is None:
-            self.repl = self._new_repl()
-        return await self.repl._aeval_async(code, **kwargs)  # noqa: SLF001
+        raise NotImplementedError
 
     def _new_repl(self, **extra: Any) -> _ThreadREPL:
         if self.runtime is None:
@@ -1094,6 +1091,20 @@ class _Slot:
             self.runtime = None
 
 
+class _TurnSlot(_Slot):
+    """A `thread`- or `turn`-mode slot: evals share one Context per turn.
+
+    The Context is closed by `end_turn`.
+    """
+
+    async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
+        # Runs on the worker. Building the Runtime and Context never awaits, so
+        # concurrent first evals on this single-threaded loop can't both build.
+        if self.repl is None:
+            self.repl = self._new_repl()
+        return await self.repl._aeval_async(code, **kwargs)  # noqa: SLF001
+
+
 class _CallSlot(_Slot):
     """A `call`-mode slot: each eval gets its own Context, closed when it ends.
 
@@ -1131,7 +1142,7 @@ class _Registry:
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
     max_slots: int = _MAX_SLOTS
-    slot_class: type[_Slot] = _Slot
+    mode: PersistenceMode = "thread"
     _slots: OrderedDict[str, _Slot] = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -1167,7 +1178,8 @@ class _Registry:
     def _get_locked(self, thread_id: str) -> tuple[_Slot, list[_Slot]]:
         slot = self._slots.get(thread_id)
         if slot is None:
-            slot = self._slots[thread_id] = self.slot_class(
+            slot_class = _CallSlot if self.mode == "call" else _TurnSlot
+            slot = self._slots[thread_id] = slot_class(
                 f"quickjs-worker-{thread_id[:8]}",
                 memory_limit=self.memory_limit,
                 options=self._repl_options(),

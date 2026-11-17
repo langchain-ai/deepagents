@@ -16,7 +16,7 @@ import pytest
 from quickjs_rs import Runtime
 
 from langchain_quickjs import CodeInterpreterMiddleware
-from langchain_quickjs._repl import _CallSlot, _Registry, _Slot, _ThreadREPL
+from langchain_quickjs._repl import PersistenceMode, _Registry, _Slot, _ThreadREPL
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -26,13 +26,13 @@ SLOW = 0.3
 MAX_GAP = 0.15
 
 
-def _registry(slot_class: type[_Slot] = _Slot) -> _Registry:
+def _registry(mode: PersistenceMode = "thread") -> _Registry:
     return _Registry(
         memory_limit=64 * 1024 * 1024,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
-        slot_class=slot_class,
+        mode=mode,
     )
 
 
@@ -97,7 +97,7 @@ async def test_first_eval_build_does_not_block_loop(slow_build: list[str]) -> No
 
 
 async def test_concurrent_first_evals_build_one_runtime(slow_build: list[str]) -> None:
-    registry = _registry(_CallSlot)
+    registry = _registry("call")
     slot = registry.get("shared-1")
     outcomes = await asyncio.gather(*(slot.eval_async(f"{i} + 1") for i in range(3)))
     assert [o.result for o in outcomes] == ["1", "2", "3"]
@@ -108,7 +108,7 @@ async def test_concurrent_first_evals_build_one_runtime(slow_build: list[str]) -
 async def test_fresh_context_does_not_block_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry = _registry(_CallSlot)
+    registry = _registry("call")
     slot = registry.get("fresh-01")
     await slot.eval_async("1")
     original = _ThreadREPL._init

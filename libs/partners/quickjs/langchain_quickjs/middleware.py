@@ -7,7 +7,7 @@ import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.backends.protocol import BackendProtocol
@@ -52,9 +52,8 @@ from langchain_quickjs._ptc import (
 from langchain_quickjs._repl import (
     _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
     EvalOutcome,
-    _CallSlot,
+    PersistenceMode,
     _Registry,
-    _Slot,
     _SnapshotRestoreError,
 )
 from langchain_quickjs._snapshot import (
@@ -73,8 +72,6 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
-
-PersistenceMode = Literal["thread", "turn", "call"]
 
 
 class REPLState(AgentState):
@@ -341,7 +338,7 @@ class CodeInterpreterMiddleware(
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
-            slot_class=_CallSlot if self._mode == "call" else _Slot,
+            mode=self._mode,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}

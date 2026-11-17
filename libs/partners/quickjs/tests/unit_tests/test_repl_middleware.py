@@ -32,7 +32,6 @@ from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._repl import (
     _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
-    _CallSlot,
     _clear_exception_references,
     _Registry,
     _ThreadREPL,
@@ -382,13 +381,13 @@ def test_registry_end_turn_keeps_worker_and_runtime() -> None:
     assert outcome.result == "undefined"
 
 
-def test_call_slot_gives_each_eval_its_own_context_on_the_warm_runtime() -> None:
+def test_call_mode_gives_each_eval_its_own_context_on_the_warm_runtime() -> None:
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
-        slot_class=_CallSlot,
+        mode="call",
     )
     try:
         slot = reg.get("thread-a")

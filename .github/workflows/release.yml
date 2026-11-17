@@ -172,10 +172,13 @@ jobs:
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
       # input SHA declares the version being released). The build below and
       # all downstream jobs use the resolved SHA so wheel bytes and tag tree
-      # agree.
+      # agree. File contents are left out of the clone: git fetches the few
+      # it reads (that pyproject.toml, then the release SHA's tree on
+      # checkout) on demand.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - name: "📝 Log dispatch inputs"
@@ -516,11 +519,14 @@ jobs:
       release-body: ${{ steps.finalize-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
+      # Release notes read tags, commit lists, and one CHANGELOG.md, so file
+      # contents are left out of the clone and fetched on demand.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.build.outputs.release-sha }}
           fetch-depth: 0
           fetch-tags: true
+          filter: blob:none
           persist-credentials: false
 
       - name: Check tags

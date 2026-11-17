@@ -527,12 +527,13 @@ class AgentStatusTracker:
         """Mark work as started or stopped.
 
         Starting new work forgets the previous outcome, since the user has
-        moved on.
+        moved on. This also applies when the new work starts before the last
+        work was reported as stopped, such as a queued message.
 
         Args:
             working: Whether work is in progress.
         """
-        if working and not self._activity.working:
+        if working:
             self._apply(
                 replace(
                     self._activity, working=True, outcome=TurnOutcome.IDLE, detail=""

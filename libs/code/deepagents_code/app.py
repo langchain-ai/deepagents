@@ -20856,7 +20856,10 @@ class DeepAgentsApp(App):
         """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
-        self._set_agent_running(False)
+        # Report the stop in `finally` below, and only if no queued message or
+        # goal continuation started a new turn: reporting it here would flash
+        # `done` between back-to-back turns.
+        self._set_agent_running(False, report_status=False)
         self._agent_worker = None
         # Tie the flag's lifetime to the worker's: left `True` across turns it
         # would disable `_recover_unstarted_agent_worker` for every later turn.
@@ -20987,6 +20990,8 @@ class DeepAgentsApp(App):
             # `_goal_state_lock` — would never be woken and would deadlock.
             if not self._agent_running and not self._agent_reconciling:
                 self._agent_quiescent.set()
+            if not self._agent_running:
+                self._agent_status.set_working(False)
             # Scheduled after goal reconciliation so the refreshed rows include
             # every checkpoint this turn produced.
             self._schedule_thread_cache_refresh()

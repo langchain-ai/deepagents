@@ -12,7 +12,7 @@ import pytest
 
 from deepagents_code import program_status
 from deepagents_code._env_vars import TERMINAL_STATUS
-from deepagents_code.app import DeepAgentsApp, TextualSessionState
+from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.program_status import TurnOutcome
 
 if TYPE_CHECKING:
@@ -126,6 +126,31 @@ async def test_agent_error_reports_error(sink: _Sink) -> None:
             await pilot.pause()
         assert sink.states() == ["idle", "working", "error"]
         assert sink.reports()[-1]["msg"].startswith("Agent error:")
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_queued_turn_does_not_flash_done(
+    sink: _Sink, monkeypatch: pytest.MonkeyPatch, *, queued: bool
+) -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-7501")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def start_next_turn() -> None:
+            if app._pending_messages:
+                app._pending_messages.clear()
+                app._set_agent_running(True)
+
+        monkeypatch.setattr(
+            app, "_process_next_from_queue", AsyncMock(side_effect=start_next_turn)
+        )
+        app._set_agent_running(True)
+        app._mark_thread_turn_completed()
+        if queued:
+            app._pending_messages.append(QueuedMessage(text="next", mode="normal"))
+        await app._cleanup_agent_task()
+        expected = ["idle", "working"] if queued else ["idle", "working", "done"]
+        assert sink.states() == expected
 
 
 async def test_approval_reports_blocked_permission(sink: _Sink) -> None:

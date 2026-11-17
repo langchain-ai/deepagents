@@ -198,9 +198,16 @@ def _closing_run_worker_mock(
     return MagicMock()
 
 
-async def test_unmount_waits_for_cancelled_database_worker() -> None:
-    """Cancelled workers close their database before app teardown finishes."""
+@pytest.mark.parametrize("times_out", [False, True])
+async def test_unmount_waits_for_cancelled_database_worker(
+    monkeypatch: pytest.MonkeyPatch, *, times_out: bool
+) -> None:
+    """Database cleanup is awaited, but cannot block shutdown indefinitely."""
     from deepagents_code import sessions
+
+    monkeypatch.setattr(
+        "deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01 if times_out else 5
+    )
 
     app = DeepAgentsApp()
     started = asyncio.Event()
@@ -226,7 +233,11 @@ async def test_unmount_waits_for_cancelled_database_worker() -> None:
         unmount = asyncio.create_task(app.on_unmount())
         await asyncio.sleep(0)
         try:
-            assert not unmount.done()
+            if times_out:
+                await asyncio.wait_for(asyncio.shield(unmount), timeout=1)
+                assert threads[0].is_alive()
+            else:
+                assert not unmount.done()
         finally:
             release.set()
             await asyncio.wait_for(unmount, timeout=5)

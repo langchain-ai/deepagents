@@ -65,6 +65,37 @@ async def test_store_backend_grep_skips_binary_uploads(*, use_async: bool, max_c
     assert result.truncated is False
 
 
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize(
+    ("content", "encoding"),
+    [
+        (b"plain text\n", "utf-8"),
+        ("héllo".encode(), "utf-8"),
+        (b"ASCII\x00", "base64"),
+        ("hi".encode("utf-16-le"), "base64"),
+        (b"\xff\xfe", "base64"),
+    ],
+)
+async def test_store_backend_upload_encoding_round_trips(*, use_async: bool, content: bytes, encoding: str) -> None:
+    """Uploads containing NUL are stored as base64 and download byte-for-byte."""
+    mem_store = InMemoryStore()
+    backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    if use_async:
+        uploads = await backend.aupload_files([("/file", content)])
+        downloads = await backend.adownload_files(["/file"])
+    else:
+        uploads = backend.upload_files([("/file", content)])
+        downloads = backend.download_files(["/file"])
+
+    assert uploads[0].error is None
+    item = mem_store.get(("filesystem",), "/file")
+    assert item is not None
+    assert item.value["encoding"] == encoding
+    assert "\x00" not in str(item.value["content"])
+    assert downloads[0].content == content
+
+
 def test_store_backend_read_surfaces_pagination_metadata():
     """`StoreBackend.read` propagates the pagination metadata from `slice_read_response`."""
     mem_store = InMemoryStore()

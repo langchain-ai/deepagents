@@ -18,7 +18,7 @@ from deepagents_talon.store_archive import StoreConversationArchive
 from deepagents_talon.store_records import finish
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncGenerator, Callable
     from types import ModuleType
 
     from langgraph.store.base import BaseStore, IndexConfig
@@ -35,7 +35,7 @@ type StoreFactory = Callable[[str], AbstractAsyncContextManager[BaseStore]]
 
 
 @asynccontextmanager
-async def open_history(config: TalonConfig) -> AsyncIterator[StoreConversationArchive]:
+async def open_history(config: TalonConfig) -> AsyncGenerator[StoreConversationArchive]:
     """Open URI-selected history, defaulting to local SQLite.
 
     Args:
@@ -105,7 +105,7 @@ def _store_factory(scheme: str) -> StoreFactory:
 
 
 @asynccontextmanager
-async def _plugin_store(plugin: EntryPoint, uri: str) -> AsyncIterator[BaseStore]:
+async def _plugin_store(plugin: EntryPoint, uri: str) -> AsyncGenerator[BaseStore]:
     async with AsyncExitStack() as stack:
         try:
             async with asyncio.timeout(_STARTUP_TIMEOUT):
@@ -125,7 +125,7 @@ def _validate_remote_uri(uri: str) -> None:
 
 
 @asynccontextmanager
-async def _sqlite_store(uri: str) -> AsyncIterator[BaseStore]:
+async def _sqlite_store(uri: str) -> AsyncGenerator[BaseStore]:
     parsed = urlsplit(uri)
     if parsed.netloc or not parsed.path or parsed.path == "/":
         msg = "DEEPAGENTS_TALON_HISTORY_URI requires a SQLite file path without a host"
@@ -155,7 +155,7 @@ def _driver(module: str, extra: str) -> ModuleType:
 @asynccontextmanager
 async def _postgres_store(
     uri: str, *, index: IndexConfig | None = None, generation: str = ""
-) -> AsyncIterator[BaseStore]:
+) -> AsyncGenerator[BaseStore]:
     _validate_remote_uri(uri)
     driver = _driver("langgraph.store.postgres.aio", "postgres")
     async with AsyncExitStack() as stack:
@@ -193,7 +193,7 @@ async def _mongodb_store(
     index: IndexConfig | None = None,
     collection: str = "talon_history",
     profile: EmbeddingProfile | None = None,
-) -> AsyncIterator[BaseStore]:
+) -> AsyncGenerator[BaseStore]:
     _validate_remote_uri(uri)
     driver = _driver("langgraph.store.mongodb", "mongodb")
     pymongo = _driver("pymongo", "mongodb")

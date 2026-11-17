@@ -20,7 +20,7 @@ from deepagents_talon.config import TalonConfigError
 from deepagents_talon.history_drivers import load_driver
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Coroutine
+    from collections.abc import AsyncGenerator, Callable, Coroutine
     from types import ModuleType
 
     from deepagents_talon.config import TalonConfig
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def open_profile(config: TalonConfig) -> AsyncIterator[EmbeddingProfile | None]:
+async def open_profile(config: TalonConfig) -> AsyncGenerator[EmbeddingProfile | None]:
     """Resolve one adapter, releasing only resources created by this context."""
     if not config.history_vector_search:
         yield None

@@ -41,6 +41,7 @@ from deepagents_code._constants import (
     LOCAL_CONTEXT_MESSAGE_SOURCE,
     SYSTEM_MESSAGE_PREFIX,
 )
+from deepagents_code.goal_state_notice import anchor_summarization_event
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
@@ -957,9 +958,9 @@ class LocalContextMiddleware(AgentMiddleware):
         raw_event = state.get("_summarization_event")
         if raw_event is None:
             return None
-        event: SummarizationEvent = raw_event
-        cutoff = event.get("cutoff_index")
         messages = state.get("messages", [])
+        event: SummarizationEvent = anchor_summarization_event(raw_event, messages)
+        cutoff = event.get("cutoff_index")
         if (
             not isinstance(cutoff, int)
             or isinstance(cutoff, bool)

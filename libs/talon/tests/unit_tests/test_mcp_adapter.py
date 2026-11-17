@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import sys
@@ -13,11 +14,15 @@ from fastmcp import Context, FastMCP
 from fastmcp.client.transports import FastMCPTransport
 from fastmcp.exceptions import ToolError
 from fastmcp.tools.function_tool import FunctionTool
-from langchain_core.messages import AIMessage
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import StructuredTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
+from mcp.client.session import ClientSession
 from mcp.types import (
     ElicitRequest,
     ElicitRequestFormParams,
@@ -151,6 +156,101 @@ async def test_open_arguments_survive_provider_conversion_and_invocation(
     message = result["messages"][-1]
     assert message.status == "success"
     assert message.artifact["structured_content"] == payload
+
+
+@pytest.mark.parametrize("responses", [False, True])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_mcp_binding_preserves_optional_nested_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, responses: bool, asynchronous: bool
+) -> None:
+    server = FastMCP("audio")
+
+    async def audio_create(
+        lyrics: str, style: str, controls: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        return {"lyrics": lyrics, "style": style, "controls": controls}
+
+    remote = FunctionTool.from_function(audio_create, name="audio-create")
+    remote.parameters = {
+        "type": "object",
+        "properties": {
+            "lyrics": {"type": "string"},
+            "style": {"type": "string"},
+            "controls": {
+                "type": ["object", "null"],
+                "default": None,
+                "properties": {
+                    "audio_influence": {"type": "number", "default": 0},
+                    "style_influence": {"type": ["number", "null"], "default": 0.5},
+                },
+            },
+        },
+        "required": ["lyrics", "style"],
+    }
+    original = copy.deepcopy(remote.parameters)
+    server.add_tool(remote)
+    loaded = await _load_tools(server, tmp_path, monkeypatch)
+    tool = loaded.tools[0]
+    local = StructuredTool(name="local", description="Local", args_schema=original)
+    model = ChatOpenAI(model="gpt-4.1", api_key="test", use_responses_api=responses)
+    request = ModelRequest(
+        model=model, messages=[HumanMessage("write a song")], tools=[tool, local]
+    )
+    middleware = talon_mcp_middleware()
+
+    def bind(passed: ModelRequest) -> ModelRequest:
+        bound = model.bind_tools(passed.tools)
+        payload = model._get_request_payload(passed.messages, **bound.kwargs)
+        definitions = payload["tools"]
+        remote_definition = definitions[0] if responses else definitions[0]["function"]
+        local_definition = definitions[1] if responses else definitions[1]["function"]
+        assert remote_definition.get("strict") is (False if responses else None)
+        assert "strict" not in local_definition
+        assert remote_definition["parameters"] == original
+        assert local_definition["parameters"] == original
+        return passed
+
+    if asynchronous:
+
+        async def handle(passed: ModelRequest) -> ModelRequest:
+            return bind(passed)
+
+        await middleware.awrap_model_call(request, handle)
+    else:
+        middleware.wrap_model_call(request, bind)
+    assert tool.args_schema == original
+    assert remote.parameters == original
+    assert loaded.servers[0].tools[0].input_schema == original
+
+    forwarded: list[dict[str, object]] = []
+    call_tool = ClientSession.call_tool
+
+    async def capture(client, name, arguments, **kwargs: object):
+        forwarded.append(copy.deepcopy(arguments))
+        return await call_tool(client, name, arguments, **kwargs)
+
+    monkeypatch.setattr(ClientSession, "call_tool", capture)
+    for controls in [
+        {},
+        {"controls": {}},
+        {"controls": None},
+        {"controls": {"style_influence": None}},
+        {"controls": {"audio_influence": 0}},
+    ]:
+        arguments = {"lyrics": "A new day", "style": "folk", **controls}
+        result = await _graph(list(loaded.tools)).ainvoke(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "audio", "name": tool.name, "args": arguments}],
+                    )
+                ]
+            },
+            {"configurable": {"thread_id": "audio"}},
+        )
+        assert result["messages"][-1].status == "success"
+        assert forwarded[-1] == arguments
 
 
 async def test_reload_keeps_inflight_tools_callable(

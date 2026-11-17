@@ -3120,6 +3120,7 @@ class TestLoadToolsConcurrency:
 
         def _warm() -> None:
             events.append(("warm", threading.get_ident()))
+            _warm_mcp_adapter_imports()
 
         with patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm):
             tools, manager, _infos = await _load_tools_from_config(self._config("only"))

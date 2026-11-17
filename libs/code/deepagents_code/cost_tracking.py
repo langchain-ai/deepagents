@@ -105,6 +105,9 @@ MODEL_USAGE_EVENT_TYPE = "model_usage"
 MODEL_USAGE_EVENT_VERSION = 1
 """Current shape version for nested model-usage events."""
 
+SUMMARIZATION_STARTED_EVENT_TYPE = "summarization_started"
+"""Custom-stream event type marking the start of a summarization model call."""
+
 SESSION_COST_EVENT_TYPE = "session_cost"
 SESSION_COST_EVENT_VERSION = 2
 """Custom-stream event type carrying the thread's absolute cumulative cost.
@@ -2095,6 +2098,19 @@ class _ModelCallContext:
     scope: str
     """Checkpoint namespace of the graph that owns this request."""
 
+    summarization: bool = False
+    """Whether the request writes a summarization (compaction) summary."""
+
+
+def _emit_summarization_started() -> None:
+    """Best-effort signal that a summarization model call started."""
+    try:
+        from langgraph.config import get_stream_writer
+
+        get_stream_writer()({"type": SUMMARIZATION_STARTED_EVENT_TYPE})
+    except Exception:
+        logger.debug("Could not emit summarization start", exc_info=True)
+
 
 def _emit_model_usage(
     record: _ModelCallRecord,
@@ -2111,7 +2127,7 @@ def _emit_model_usage(
         record: The completed request's usage, model, and response ID.
         context: The request's thread and owning graph scope.
     """
-    if not context.scope or record.message_id is None:
+    if (not context.scope and not context.summarization) or (record.message_id is None):
         return
     try:
         from langgraph.config import get_stream_writer
@@ -2119,6 +2135,7 @@ def _emit_model_usage(
         get_stream_writer()(
             {
                 "type": MODEL_USAGE_EVENT_TYPE,
+                **({"lc_source": "summarization"} if context.summarization else {}),
                 "version": MODEL_USAGE_EVENT_VERSION,
                 "request_id": record.message_id,
                 "usage_metadata": dict(record.usage_metadata),
@@ -2251,17 +2268,25 @@ class _SessionCostRecorder(BaseCallbackHandler):
         )
         if not isinstance(namespace, str) or not namespace:
             namespace = configurable.get("checkpoint_ns")
+        # `nostream` keeps summary tokens off the message stream, so the
+        # client learns of compaction and its usage from custom events.
+        summarization = (
+            metadata is not None and metadata.get("lc_source") == "summarization"
+        )
         with self._lock:
             self._run_contexts[run_id] = _ModelCallContext(
                 thread_id=thread_id,
                 configured_model=configured_model,
                 configured_provider=configured_provider,
                 scope=_parent_checkpoint_scope(namespace),
+                summarization=summarization,
             )
             # A request that neither completes nor errors (a cancelled turn)
             # leaves its entry behind, so evict the oldest rather than growing.
             while len(self._run_contexts) > _MAX_INFLIGHT_REQUESTS:
                 self._run_contexts.popitem(last=False)
+        if summarization:
+            _emit_summarization_started()
 
     def on_chat_model_start(
         self,

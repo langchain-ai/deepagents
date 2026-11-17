@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from langgraph_runtime_inmem import ops
 from langgraph_runtime_inmem.database import GLOBAL_STORE, connect
 from langgraph_runtime_inmem.ops import Runs
 
@@ -86,6 +87,7 @@ def test_skips_when_upstream_shape_changes(monkeypatch: pytest.MonkeyPatch) -> N
 @pytest.mark.usefixtures("isolated_runs", "stub_put")
 async def test_put_wakes_waiting_next(monkeypatch: pytest.MonkeyPatch) -> None:
     install_run_queue_wakeup()
+    monkeypatch.setattr(ops, "_using_encryption", lambda: False)
     monkeypatch.setattr(_run_queue_wakeup, "_POLL_INTERVAL", 60)
     ready = asyncio.Event()
     original_wait = _run_queue_wakeup._WAKEUP.wait
@@ -97,7 +99,7 @@ async def test_put_wakes_waiting_next(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_run_queue_wakeup._WAKEUP, "wait", wait)
 
     async def claim() -> list[object]:
-        return [run async for run, _attempt in Runs.next(wait=True)]
+        return [item async for item in Runs.next(wait=True)]
 
     async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
         waiter = tasks.create_task(claim())

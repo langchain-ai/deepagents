@@ -1110,7 +1110,9 @@ class QueuedUserMessage(Static):
         colors = theme.get_theme_colors(self)
         prefix, content = self._prefix_and_body()
         content = _truncate_for_display(content)
-        return Content.assemble(prefix, (content, colors.muted))
+        return _UserMessageContent.from_content(
+            Content.assemble(prefix, (content, colors.muted))
+        )
 
     def on_mouse_move(self, event: MouseMove) -> None:
         """Match the pointer shape to the cell under the mouse."""

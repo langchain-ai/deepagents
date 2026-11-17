@@ -1156,8 +1156,36 @@ async def test_token_write_is_flushed_and_locked(
 
 def test_format_login_error_survives_an_empty_message() -> None:
     """Both call sites are error handlers; str(OSError()) is empty."""
-    assert format_login_error(OSError()) == "OSError"
+    assert "check Talon logs" in format_login_error(OSError())
     assert format_login_error(ValueError("first line\nsecond")) == "first line"
+
+
+@pytest.mark.parametrize("exception_type", [RuntimeError, KeyError])
+def test_format_login_error_unknown_failure_is_actionable_and_safe(exception_type) -> None:
+    sensitive = "https://user:password@private.example/mcp?token=secret-token"
+    message = format_login_error(exception_type(sensitive))
+    assert "MCP login failed" in message
+    assert "retry login" in message
+    assert "check Talon logs" in message
+    assert sensitive not in message
+    assert "private.example" not in message
+    assert "secret-token" not in message
+
+
+@pytest.mark.parametrize(
+    ("error", "remedy"),
+    [
+        (TimeoutError("secret-token"), "complete the callback promptly"),
+        (httpx.ConnectError("secret-token"), "check connectivity"),
+        (httpx2.ConnectError("secret-token"), "check connectivity"),
+        (OAuthFlowError("secret-token"), "registered callback_url"),
+        (MCPAuthorizationError("Safe authorization remedy"), "Safe authorization remedy"),
+    ],
+)
+def test_format_login_error_preserves_specialized_remedies(error, remedy: str) -> None:
+    message = format_login_error(error)
+    assert remedy in message
+    assert "secret-token" not in message
 
 
 async def test_authorization_without_a_conversation_names_the_remedy() -> None:

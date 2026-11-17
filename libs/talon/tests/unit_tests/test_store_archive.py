@@ -9,6 +9,7 @@ from langgraph.store.base import PutOp
 from langgraph.store.memory import InMemoryStore
 from langgraph.store.sqlite.aio import AsyncSqliteStore
 
+from deepagents_talon.archive import ArchiveCursorError
 from deepagents_talon.store_archive import StoreConversationArchive
 from tests.store_archive_contract import (
     OTHER,
@@ -125,7 +126,6 @@ class CountingStore(InMemoryStore):
     "options",
     [
         {"query": "missing"},
-        {"query": "rare"},
         {"session_id": "session", "query": "missing"},
     ],
 )
@@ -150,6 +150,26 @@ async def test_retrieval_budget_bounds_reads_and_releases_lock(options):
         timeout=1,
     )
     assert (await archive.entries(SCOPE, limit=1))[0]["text"] == "still writable"
+
+
+async def test_budget_limited_page_keeps_matches_and_continues_to_the_end():
+    metadata = CountingStore()
+    archive = StoreConversationArchive(metadata, namespace=("budget-hits",))
+    await archive.append(
+        SCOPE,
+        "session",
+        "time",
+        [
+            HumanMessage("rare" if index == 500 else "ordinary", id=str(index))
+            for index in range(501)
+        ],
+    )
+    metadata.reads = 0
+    page = await archive.entries(SCOPE, query="rare")
+    assert metadata.reads <= 1003
+    assert [entry["text"] for entry in page] == ["rare"]
+    # A short page is not an end marker; continuing after it finishes the scan.
+    assert await archive.entries(SCOPE, query="rare", after=page[0]["cursor"]) == []
 
 
 @pytest.mark.parametrize("query", ["rare", "missing", ""])
@@ -315,7 +335,8 @@ async def test_long_sessions_page_with_bounded_reads_and_scoped_cursors():
         assert [entry["text"] for entry in entries] == (expected if session_id else expected[::-1])
     await archive.append(OTHER, "private", "time", [HumanMessage("private")])
     foreign = (await archive.entries(OTHER))[0]["cursor"]
-    assert await archive.entries(SCOPE, session_id="session", after=foreign) == []
+    with pytest.raises(ArchiveCursorError):
+        await archive.entries(SCOPE, session_id="session", after=foreign)
     assert await archive.entries(OTHER, session_id="session", after=cursor) == []
     first = entries[0]["cursor"]
     item = await metadata.aget(archive.records.namespace, str(first))

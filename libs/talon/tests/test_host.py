@@ -5,6 +5,10 @@ import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, cast
+from unittest.mock import Mock
+from uuid import uuid4
+
+from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.channels.slack import _convert_event
@@ -26,6 +30,7 @@ from deepagents_talon.interfaces import (
     SendResult,
     ToolApprovalRequest,
 )
+from deepagents_talon.runtime import DeepAgentRuntime
 from tests.conftest import RecordingChannel
 
 if TYPE_CHECKING:
@@ -2306,3 +2311,49 @@ async def test_host_batch_reprompts_partial_reply(tmp_path: Path, reply: str) ->
         assert not host._pending_tool_approvals
     finally:
         await host.stop()
+
+
+@pytest.mark.parametrize("tracing", [False, True])
+@pytest.mark.parametrize("action", ["/stop", "continue", "shutdown"])
+async def test_user_cancellation_feedback(tmp_path: Path, monkeypatch, tracing, action) -> None:
+    started = asyncio.Event()
+    root_id = uuid4()
+    feedback = Mock()
+    monkeypatch.setattr("langsmith.run_trees.get_cached_client", lambda: feedback)
+
+    async def block(_payload):
+        started.set()
+        await asyncio.Event().wait()
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "key"} if tracing else {},
+    )
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", block)
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    runtime._graph = builder.compile().with_config(run_id=root_id)
+
+    class TracedAgent(BlockingAgent):
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            if request.text == "block":
+                await runtime._invoke_payload_with_retries({}, request.conversation_id, None)
+            return AgentResult(text="done")
+
+    channel = RecordingChannel()
+    host = TalonHost(config=_config(tmp_path), agent=TracedAgent(), channels=[channel])
+    await host.start()
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    if action != "shutdown":
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text=action))
+    await host.stop()
+
+    if tracing and action != "shutdown":
+        feedback.create_feedback.assert_called_once_with(root_id, "user_interrupted", score=1)
+    else:
+        feedback.create_feedback.assert_not_called()

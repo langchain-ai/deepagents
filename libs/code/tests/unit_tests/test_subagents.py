@@ -74,6 +74,21 @@ class TestDiagnostics:
 
         assert "could not read file" in caplog.text
 
+    def test_warns_on_non_utf8_file(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A file that is not UTF-8 is skipped with a warning naming it."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_bytes(
+            make_subagent_content("reviewer", "Reviews code").encode("utf-16")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "could not read file" in caplog.text
+        assert str(subagent_file) in caplog.text
+
     def test_warns_on_invalid_yaml(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -21,9 +21,9 @@ from langchain_quickjs._repl import _Registry, _ThreadREPL
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-SLOW = 0.3
+SLOW = 0.5
 # A loop that never waits on the worker stays well under SLOW.
-MAX_GAP = 0.15
+MAX_GAP = 0.25
 
 
 def _registry() -> _Registry:

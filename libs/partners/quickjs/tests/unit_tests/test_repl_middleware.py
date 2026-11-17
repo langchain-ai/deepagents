@@ -422,19 +422,18 @@ def test_registry_closes_least_recently_used_slot_over_cap() -> None:
         reg.close()
 
 
-def test_registry_never_closes_a_slot_mid_turn() -> None:
+def test_registry_closes_idle_mid_turn_slot_but_not_a_running_eval() -> None:
     reg = _capped_registry(1)
     try:
-        mid_turn = reg.get("thread-a")
-        mid_turn.eval_sync("var x = 41")
+        abandoned = reg.get("thread-a")
+        abandoned.eval_sync("var x = 41")  # turn never ends, e.g. a dead run
         busy = reg.acquire("thread-b")
-        assert list(reg._slots) == ["thread-a", "thread-b"]
-        assert mid_turn.eval_sync("x + 1").result == "42"
-        reg.release(busy)
-        mid_turn.end_turn()
+        assert list(reg._slots) == ["thread-b"]
+        assert abandoned.runtime is None
         reg.get("thread-c")
-        assert list(reg._slots) == ["thread-c"]
-        assert mid_turn.runtime is None
+        assert list(reg._slots) == ["thread-b", "thread-c"]
+        assert busy.eval_sync("1 + 1").result == "2"
+        reg.release(busy)
     finally:
         reg.close()
 

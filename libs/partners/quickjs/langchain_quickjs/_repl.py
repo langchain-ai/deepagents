@@ -64,8 +64,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_SUBAGENT_CONCURRENCY = 32
-# Warm slots kept per middleware; well above langgraph-api's default of 10
-# concurrent runs per worker, so mid-turn slots rarely push past it.
+# Warm slots kept per middleware. A slot is closed once `_MAX_SLOTS` other
+# threads have evaled since its last eval, even mid-turn; its next eval then
+# restores the last persisted snapshot and loses that turn's earlier state.
+# That takes a busy process: langgraph-api runs 10 concurrent runs per worker
+# by default.
 _MAX_SLOTS = 32
 _TASK_FUNCTION_NAME = "task"
 
@@ -1050,11 +1053,6 @@ class _Slot:
             transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
         )
 
-    @property
-    def in_turn(self) -> bool:
-        """Whether a turn's Context is live (an eval ran since `end_turn`)."""
-        return self.repl is not None
-
     def create_snapshot(self) -> bytes | None:
         """Snapshot the turn's Context, or `None` if no eval ran this turn."""
         return self.repl.create_snapshot() if self.repl is not None else None
@@ -1106,9 +1104,9 @@ class _Registry:
     """Per-thread slot registry: an LRU of up to `max_slots` `_Slot`s.
 
     Slots stay warm across turns. Over the cap, the least recently used slot
-    between turns is closed. Slots mid-turn are never closed, so the registry
-    may exceed the cap while more than `max_slots` turns are running. Nothing
-    is built or closed while holding the lock.
+    with no eval running is closed, mid-turn or not, so slots left by failed
+    or abandoned runs are reclaimed too. Nothing is built or closed while
+    holding the lock.
     """
 
     memory_limit: int
@@ -1165,8 +1163,8 @@ class _Registry:
         for key, old in list(self._slots.items()):  # least recently used first
             if excess <= 0:
                 break
-            # A turn owns its slot until `end_turn`; never close one mid-turn.
-            if key == thread_id or old.leases or old.in_turn:
+            # Never close a slot with an eval running on it.
+            if key == thread_id or old.leases:
                 continue
             del self._slots[key]
             stale.append(old)

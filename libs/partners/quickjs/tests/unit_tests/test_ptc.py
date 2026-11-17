@@ -563,6 +563,34 @@ async def test_resolver_missing_names_and_namespace_introspection(
     assert names == []
 
 
+@pytest.mark.parametrize("resolves", [False, True])
+async def test_tools_keeps_object_prototype_members(
+    worker: ThreadWorker, runtime: Runtime, resolves: bool
+) -> None:
+    names: list[str] = []
+
+    def resolve(name: str) -> BaseTool | None:
+        names.append(name)
+        return None
+
+    repl = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        resolve_tool=resolve if resolves else None,
+    )
+    repl.install_tools([_echo_tool()])
+    outcome = await repl.eval_async(
+        "[tools.hasOwnProperty('echo'), tools.hasOwnProperty('x'), `${tools}`]"
+        ".join('|')"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "true|false|[object Object]"
+    assert names == []
+
+
 async def test_resolver_deferred_missing_tool_throws_catchable_typeerror(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:

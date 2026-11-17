@@ -352,14 +352,15 @@ def _render_tools_namespace(*, resolves: bool) -> str:
 
     Python owns the tool map: a call is `__tools_call(name, input)` and the
     installed names come from `__tools_names()`, so changing the tool set
-    never touches the guest. With `resolves`, any other name is a function
-    that asks the resolver. `then` and `toJSON` stay undefined, so
-    `await tools` and `JSON.stringify(tools)` call no tool.
+    never touches the guest. Inherited `Object.prototype` members such as
+    `hasOwnProperty` and `toString` stay reachable. With `resolves`, any other
+    name is a function that asks the resolver. `then` and `toJSON` stay
+    undefined, so `await tools` and `JSON.stringify(tools)` call no tool.
     """
     call = json.dumps(_TOOLS_CALL)
     names = json.dumps(_TOOLS_NAMES)
     unresolved = json.dumps(_UNRESOLVED_KEY)
-    callable_ = "true" if resolves else "has(name)"
+    unknown = "fn(name)" if resolves else "undefined"
     return (
         "{ const fn = (name) => async (input) => {"
         f" const result = await globalThis[{call}](name, input);"
@@ -370,10 +371,12 @@ def _render_tools_namespace(*, resolves: bool) -> str:
         " const has = (name) => typeof name === 'string'"
         f" && globalThis[{names}]().includes(name);"
         " globalThis.tools = new Proxy({}, {"
-        " get(_, name) {"
+        " get(target, name) {"
         " if (typeof name !== 'string' || name === 'then' || name === 'toJSON')"
         " return undefined;"
-        f" return {callable_} ? fn(name) : undefined; }},"
+        " if (has(name)) return fn(name);"
+        " if (name in Object.prototype) return Reflect.get(target, name);"
+        f" return {unknown}; }},"
         " has(_, name) { return has(name); },"
         f" ownKeys() {{ return globalThis[{names}](); }},"
         " getOwnPropertyDescriptor(_, name) {"

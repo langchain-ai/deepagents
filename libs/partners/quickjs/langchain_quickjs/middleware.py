@@ -52,7 +52,9 @@ from langchain_quickjs._ptc import (
 from langchain_quickjs._repl import (
     _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
     EvalOutcome,
+    _CallSlot,
     _Registry,
+    _Slot,
     _SnapshotRestoreError,
 )
 from langchain_quickjs._snapshot import (
@@ -339,6 +341,7 @@ class CodeInterpreterMiddleware(
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
+            slot_class=_CallSlot if self._mode == "call" else _Slot,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}
@@ -402,9 +405,7 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = middleware._registry.acquire(
-                slot_id, fresh=middleware._mode == "call"
-            )
+            slot = middleware._registry.acquire(slot_id)
             try:
                 outcome = slot.eval_sync(
                     code,
@@ -425,9 +426,7 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = await middleware._registry.aacquire(
-                slot_id, fresh=middleware._mode == "call"
-            )
+            slot = await middleware._registry.aacquire(slot_id)
             try:
                 outcome = await slot.eval_async(
                     code,

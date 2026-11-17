@@ -7,7 +7,7 @@ the REPL so one `eval` can orchestrate many tool invocations.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +16,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
+from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
 from langchain_quickjs import CodeInterpreterMiddleware
@@ -26,9 +27,6 @@ from langchain_quickjs._ptc import (
     to_camel_case,
 )
 from langchain_quickjs._repl import _ThreadREPL
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -183,22 +181,48 @@ def _mixed_list_tool(name: str = "emit_mixed") -> BaseTool:
 
 
 @pytest.fixture
-def make_repl() -> Iterator[Callable[..., _ThreadREPL]]:
-    """Build `_ThreadREPL`s that are closed when the test ends."""
-    repls: list[_ThreadREPL] = []
-
-    def _make(**options: Any) -> _ThreadREPL:
-        repls.append(_ThreadREPL(**options))
-        return repls[-1]
-
-    yield _make
-    for made in repls:
-        made.close()
+def worker() -> ThreadWorker:
+    w = ThreadWorker()
+    try:
+        yield w
+    finally:
+        w.close()
 
 
 @pytest.fixture
-def repl(make_repl: Callable[..., _ThreadREPL]) -> _ThreadREPL:
-    return make_repl(timeout=5.0, capture_console=True, max_stdout_chars=4000)
+def runtime(worker: ThreadWorker) -> Runtime:
+    async def _make() -> Runtime:
+        return Runtime()
+
+    rt = worker.run_sync(_make())
+    try:
+        yield rt
+    finally:
+
+        async def _close() -> None:
+            rt.close()
+
+        worker.run_sync(_close())
+
+
+def _make_repl(worker: ThreadWorker, runtime: Runtime, **options: Any) -> _ThreadREPL:
+    """Build a `_ThreadREPL` on the worker's thread, as `_Slot` does."""
+
+    async def _build() -> _ThreadREPL:
+        return _ThreadREPL(worker, runtime, **options)
+
+    return worker.run_sync(_build())
+
+
+@pytest.fixture
+def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
+    return _make_repl(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -514,9 +538,11 @@ async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
 
 
 async def test_ptc_host_call_budget_exceeded_surfaces_error(
-    make_repl: Callable[..., _ThreadREPL],
+    worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = make_repl(
+    limited = _make_repl(
+        worker,
+        runtime,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,
@@ -536,9 +562,11 @@ async def test_ptc_host_call_budget_exceeded_surfaces_error(
 
 
 async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
-    make_repl: Callable[..., _ThreadREPL],
+    worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = make_repl(
+    limited = _make_repl(
+        worker,
+        runtime,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,
@@ -559,9 +587,11 @@ async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
 
 
 async def test_ptc_host_call_budget_resets_each_eval(
-    make_repl: Callable[..., _ThreadREPL],
+    worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = make_repl(
+    limited = _make_repl(
+        worker,
+        runtime,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,
@@ -575,9 +605,11 @@ async def test_ptc_host_call_budget_resets_each_eval(
 
 
 async def test_ptc_host_call_budget_none_disables_limit(
-    make_repl: Callable[..., _ThreadREPL],
+    worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    unlimited = make_repl(
+    unlimited = _make_repl(
+        worker,
+        runtime,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,

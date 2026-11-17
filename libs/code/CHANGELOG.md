@@ -2,6 +2,19 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.10](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.9...deepagents-code==0.2.10) (2026-11-17)
+
+
+### Features
+
+* **code:** report agent status to terminals with OSC 7501 ([#7772](https://github.com/langchain-ai/deepagents/issues/7772)) ([085128d](https://github.com/langchain-ai/deepagents/commit/085128d2a46737e32061246c69872dc218db53de))
+
+
+### Bug Fixes
+
+* **code:** load MCP trust lists off the server event loop ([#7798](https://github.com/langchain-ai/deepagents/issues/7798)) ([f33c85e](https://github.com/langchain-ai/deepagents/commit/f33c85ea19b99cef80df8e5f6158fa7009b4956e))
+* **code:** point the ACP import error at a working upgrade command ([#7780](https://github.com/langchain-ai/deepagents/issues/7780)) ([d6a2dd1](https://github.com/langchain-ai/deepagents/commit/d6a2dd140d6359ec86bd572d5414da060f45f8d3))
+
 ## [0.2.9](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.8...deepagents-code==0.2.9) (2026-11-16)
 
 ### Features

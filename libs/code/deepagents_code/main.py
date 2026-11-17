@@ -6816,6 +6816,12 @@ def cli_main() -> None:
                 # `wait_for`; mirror its exit code 130 here so Ctrl-C is a
                 # quiet exit instead of a traceback.
                 exit_code = 130
+            except Exception:
+                # An unexpected crash exits 1 with a traceback; report it as
+                # `error` instead of clearing. A signal's `SystemExit` is not
+                # caught here, so it still clears.
+                exit_code = 1
+                raise
             finally:
                 from deepagents_code.program_status import exit_status
 

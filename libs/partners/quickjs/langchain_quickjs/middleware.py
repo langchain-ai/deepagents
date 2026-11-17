@@ -71,7 +71,7 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
-_DEFAULT_IDLE_TTL = 600.0
+_DEFAULT_IDLE_TTL = 3600.0
 
 PersistenceMode = Literal["thread", "turn", "call"]
 
@@ -277,7 +277,7 @@ class CodeInterpreterMiddleware(
             or pauses on an interrupt that is never resumed. Slots in use by
             an eval are never closed. A closed slot's next eval starts from the
             last persisted snapshot. Expiry is checked whenever a slot is
-            acquired or evicted. Defaults to 600 seconds; `None` disables.
+            acquired or evicted. Defaults to 3600 seconds (1 hour); `None` disables.
 
     Example:
         ```python

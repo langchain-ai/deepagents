@@ -7,6 +7,7 @@
 | `package.json`, `pnpm-lock.yaml` | Pin `release-please` and pnpm (`packageManager`) to exact versions. |
 | `pnpm-workspace.yaml`, `patches/` | pnpm [`patchedDependencies`](https://pnpm.io/settings#patcheddependencies): the patch is applied on install, and an install fails if it no longer applies. |
 | `run.mjs` | Loads the manifest, opens or updates release PRs, and writes the same `pr` / `prs` outputs as the action. It checks that each change in the patch is applied before calling GitHub. |
+| `history.mjs` | Reads commit history from the local clone for release-please (see below). Tested by `.github/scripts/tests/release/release-please-history.test.mjs`. |
 
 ## What the patch changes
 
@@ -19,6 +20,17 @@ pnpm keeps one patch file per package version, so every change lives in `patches
 
 Remove a change once the pinned release-please includes the fix.
 
+## Commit history from the local clone
+
+release-please normally walks history through GraphQL, 10 commits per request, and stops after 500 commits. Here, that walk was most of the run (about 80 of 100 seconds), it failed on GitHub timeouts, and the cap hid commits from packages whose last release is more than 500 commits back.
+
+`run.mjs` replaces that walk with `git log` over the job's full-history, blobless checkout and removes the cap. release-please still stops once it reaches every package's last release commit. What changes:
+
+- Each commit's PR comes from its subject: the `(#N)` squash suffix, or `Merge pull request #N`.
+- The PR body is the commit message, except for PRs whose body has a `BEGIN_COMMIT_OVERRIDE` block, which are fetched with one search request. GitHub's search index can lag by a minute or so, so an override added just before a run may only apply on the next one.
+- A merge commit lists its files against its first parent, as GitHub does.
+- A renamed file counts under both its old and new paths.
+
 ## Running locally
 
 ```bash
@@ -27,7 +39,7 @@ GITHUB_TOKEN="$(gh auth token)" GITHUB_REPOSITORY=langchain-ai/deepagents DRY_RU
   node .github/release-please/run.mjs
 ```
 
-`DRY_RUN=true` prints the release PRs that would be opened or updated and writes nothing to GitHub. It reads from GitHub, so a run takes about as long as the workflow step.
+`DRY_RUN=true` prints the release PRs that would be opened or updated and writes nothing to GitHub. Run it from a clone with full history; it fetches `main` first.
 
 ## Changing the patch
 

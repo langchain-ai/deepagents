@@ -1,18 +1,14 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide explains the public action contract, its relationship to the published CLI package, security boundaries, state lifecycle, and verification.
-tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the public action contract, its published CLI package boundary, security controls, state lifecycle, and focused verification.
+tags: [github-actions, dcode, deepagents-code, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-14T08:03:44.053Z
+    at: 2026-11-17T08:03:47.818Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
-  - id: openwiki-source-4d9cccca7700db7220ec055e
-    resource: repo://.github/workflows/_test.yml
-  - id: openwiki-source-9f9a45e8530875c513dbc901
-    resource: repo://.github/workflows/check_dep_freshness.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-96d0addee4aedab20d360121
@@ -27,14 +23,14 @@ sources:
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 ---
 
 # GitHub Action Integration
 
 The repository-root composite action, `langchain-ai/deepagents`, adapts one headless `dcode` task to a GitHub Actions step. Root `action.yml` is the public package: its declared `with:` inputs and three outputs are the supported action contract, while GitHub runs its implementation as a composite action. The wrapper installs the published `deepagents-code` distribution, validates and maps action inputs to CLI flags, then invokes `dcode` in the requested workspace.
 
-This is a CLI adapter, not the application API: `create_deep_agent()` constructs and returns a compiled graph, whereas the action launches `dcode`. For the CLI's local interactive and headless-session behavior, see [Run a dcode Session](../workflows/run-dcode-session.md); for editor protocol serving, see [Agent Client Protocol Integration](./acp.md). The current source package publishes both `dcode` and `deepagents-code` console-script entrypoints to the same `cli_main` function.
+This is a CLI adapter, not the application API: `create_deep_agent()` constructs and returns a compiled graph, whereas the action launches `dcode`. For editor protocol serving, see [Agent Client Protocol Integration](./acp.md). The published `deepagents-code` distribution exposes both `dcode` and `deepagents-code` console-script names, both invoking `deepagents_code:cli_main`.
 
 ## Use in a job
 
@@ -126,11 +122,11 @@ If `skills_repo` is supplied, the action shallow-clones an `owner/repo`, `owner/
 
 The action pipes combined output to `tee` but captures `PIPESTATUS[0]`, so a successful `tee` cannot conceal a dcode or timeout failure. It writes `response` with a random `$GITHUB_OUTPUT` heredoc delimiter, preventing agent output from forging output records. The stdin branch uses process substitution rather than a `printf | timeout` pipeline, avoiding a producer SIGPIPE being reported as the task result.
 
-## Package, release, and verification entrypoints
+## Package and verification contract
 
-The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. Pin both when reproducibility matters. The current source package is `deepagents-code` `0.2.8` and requires Python `>=3.14,<3.15`; the `0.2.0` changelog records that Python 3.14 requirement as a breaking change. A CLI pin is therefore also a Python-runtime compatibility choice.
+The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. Pin both when reproducibility matters.
 
-For release and dependency-maintenance procedures, see [Development and Release Operations](../operations/development.md). The release-PR dependency-freshness workflow runs only for release-please PR titles, checks changed minimums against PyPI, builds the target wheel, validates wheel metadata, and installs that wheel into a fresh virtual environment with dependencies resolved from PyPI. It is a release-artifact gate, not a substitute for testing this composite action.
+The current source package is `deepagents-code` `0.2.9`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.39` runtime dependency. Consequently, the action's selected CLI distribution—not the repository action ref—determines the resolved dcode/SDK package pair and its Python compatibility. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change.
 
 The focused action test parses `action.yml` and the dcode root parser to catch action-input-to-flag drift and ensure `--auto-approve` stays absent. It executes the actual action run body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, version command construction, timeout arithmetic, exit propagation, and stdin SIGPIPE behavior.
 
@@ -140,4 +136,4 @@ Run it locally from the repository root:
 python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
 ```
 
-CI runs that test through `python -m pytest .github/scripts/tests -v` in `Validate Release Options`, after installing `packaging`, `pyyaml`, and `pytest` on Python 3.14 (and Node 24 for other helper tests). The job runs unless change detection identifies a curated release-notes-only apply. It is the direct action coverage: root `action.yml` is not in the Code path selector, which otherwise selects `libs/code`, `libs/deepagents`, and shared CI workflow/action paths for Code lint and Python-3.14 sharded unit tests.
+Repository CI runs that test through `python -m pytest .github/scripts/tests -v` in `Validate Release Options`, after installing `packaging`, `pyyaml`, and `pytest` on Python 3.14. The helper-script job runs unless change detection identifies a curated release-notes-only apply; this is the direct repository validation for root `action.yml`.

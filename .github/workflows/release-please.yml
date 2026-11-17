@@ -35,6 +35,9 @@ jobs:
   detect-release-commit:
     name: Block empty commits and detect merged release PR
     runs-on: ubuntu-latest
+    # Normally ~20 s. Without a limit, a stuck clone holds this job, and
+    # everything after it, for GitHub's 6-hour default.
+    timeout-minutes: 10
     outputs:
       release-commit: ${{ steps.check-releases.outputs.release-commit }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
@@ -49,10 +52,13 @@ jobs:
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
       # Full history: the empty-commit guard walks the second parent of
-      # repo-hotfix merge commits.
+      # repo-hotfix merge commits. The steps only read commits and file
+      # lists, so skip file contents; the rare rename check fetches the
+      # few it needs on demand.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - name: Reject empty commits
@@ -695,9 +701,13 @@ jobs:
       pr: ${{ steps.release.outputs.pr }}
       prs: ${{ steps.release.outputs.prs }}
     steps:
+      # Full history without file contents: run.mjs walks commits with
+      # `git log --name-only`, which needs commits and trees but no blobs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
 
       # Release-please only discovers PRs with the canonical pending label.
       # Normalization must succeed before it runs, or it can update an existing
@@ -709,11 +719,29 @@ jobs:
             const normalize = require('./.github/scripts/release/normalize-release-labels.js');
             await normalize(github, context.repo.owner, context.repo.repo);
 
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
-        id: release
+      # Runs release-please from a pinned, patched npm package instead of
+      # googleapis/release-please-action. See .github/release-please/README.md.
+      - name: "📦 Setup pnpm"
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          package_json_file: .github/release-please/package.json
+
+      - name: "🟢 Setup Node"
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: "24"
+
+      # pnpm applies `patchedDependencies` from pnpm-workspace.yaml during
+      # install and fails if a patch no longer applies. `--ignore-scripts`
+      # keeps dependency install scripts out of a job with a write token.
+      - name: Install release-please
+        run: pnpm install --dir .github/release-please --frozen-lockfile --ignore-scripts
+
+      - name: Run release-please
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/release-please/run.mjs
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the

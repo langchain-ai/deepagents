@@ -3,9 +3,6 @@ type: integration architecture
 title: Sandbox and Partner Integrations
 description: How dcode selects and owns optional remote sandbox providers, including Modal's backend and normalized file-operation behavior. Covers the separately packaged QuickJS middleware, its persistence and bridge boundaries, and partner package compatibility.
 tags: [dcode, sandbox, integrations, providers, modal, quickjs, filesystem]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-14T08:03:44.053Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -43,7 +40,10 @@ sources:
     resource: repo://libs/partners/runloop/pyproject.toml
   - id: openwiki-source-03a39f44d8ccfde2fd47e57a
     resource: repo://libs/partners/vercel/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-17T08:03:47.818Z
 ---
 
 # Sandbox and Partner Integrations
@@ -102,7 +102,7 @@ This table records dcode's built-in metadata. `sandbox_id` means dcode permits a
 
 Partner packages are independently versioned distributions. Each owns its environment, `pyproject.toml`, `Makefile`, tests, and package-local `uv.lock`; they are not owned by dcode's curated provider registry. A lock is generated resolution for that package's development/CI environment, not a second dependency manifest. Do not hand-edit it.
 
-The current release manifest lists `deepagents-code` `0.2.8`, `langchain-daytona` `0.0.9`, `langchain-modal` `0.0.8`, `langchain-runloop` `0.0.7`, `langchain-vercel-sandbox` `0.0.2`, and `langchain-quickjs` `0.3.12`. Daytona, Modal, Runloop, and Vercel each require Python `>=3.11,<4.0` and Deep Agents `>=0.7.38,<0.8.0`; their provider-SDK floors are Daytona `>=0.197.0`, Modal `>=1.5.3`, and Vercel `>=0.5.9`, while Runloop declares `runloop-api-client` without a version floor. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.38`, bundles LangSmith sandbox support, and exposes the other curated remote providers through optional extras, including `langchain-modal>=0.0.8`.
+The current release manifest lists Deep Agents `0.7.39`, `deepagents-code` `0.2.9`, `langchain-daytona` `0.0.9`, `langchain-modal` `0.0.8`, `langchain-runloop` `0.0.7`, `langchain-vercel-sandbox` `0.0.2`, and `langchain-quickjs` `0.3.12`. Daytona, Modal, Runloop, and Vercel each require Python `>=3.11,<4.0` and Deep Agents `>=0.7.38,<0.8.0`; their provider-SDK floors are Daytona `>=0.197.0`, Modal `>=1.5.3`, and Vercel `>=0.5.9`, while Runloop declares `runloop-api-client` without a version floor. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.39`, bundles LangSmith sandbox support, and exposes the other curated remote providers through optional extras, including `langchain-modal>=0.0.8`.
 
 A manifest or local-path-source change can invalidate reverse consumers' locks as well as its own. Refresh the affected closure rather than changing a lock by hand, and keep dependency/lockfile churn separate from a bump-worthy feature or fix when release scope matters. The repository's targeted refresher and checker select the appropriate interpreter and report the required closure:
 

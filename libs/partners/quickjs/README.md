@@ -88,6 +88,8 @@ const fib = (n) => (n < 2 ? n : fib(n - 1) + fib(n - 2));
 fib(10)  // 55
 ```
 
+Snapshots don't carry across `quickjs-rs` minor versions. After upgrading to `langchain-quickjs` 0.4 (`quickjs-rs` 0.3), a thread saved under an earlier version gets one restore error on its next `eval`, then continues with a fresh REPL.
+
 ### Sandbox
 
 The REPL runs in a QuickJS context with **no ambient capabilities**. There is no filesystem, no network, no `fetch`, no `require`, no real clock (`Date.now()` is whatever QuickJS provides, not wall-clock for security-sensitive uses), no `process`, no `import` of anything you didn't explicitly install.

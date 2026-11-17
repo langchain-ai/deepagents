@@ -1,7 +1,8 @@
 """Upper bounds on WASM export calls for values crossing from JS to Python.
 
-`quickjs-rs` marshals a JS value into Python one leaf at a time, and every
-step is a WASM export call costing about 5 us. Counting the calls gives a
+`quickjs-rs` marshals a JS container into Python in one guest call when it
+can, and otherwise one leaf at a time. Every step is a WASM export call
+costing about 5 us. Counting the calls gives a
 deterministic proxy for that cost: a codec fix shows up as a drop, and a
 regression fails the bound. Lower a bound when a fix lands so it ratchets.
 """
@@ -17,11 +18,11 @@ from quickjs_rs import Context, Runtime, _engine
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-# Counts measured with quickjs-rs 0.2.5. Each includes the fixed cost of one eval.
-NUMBERS_1K_MAX = 11_019
-ROWS_1K_MAX = 96_019
+# Counts measured with quickjs-rs 0.3.0. Each includes the fixed cost of one eval.
+NUMBERS_1K_MAX = 14
+ROWS_1K_MAX = 14
 # Extra calls for one host call over an eval that makes none.
-FS_ARGS_HOST_CALL_MAX = 84
+FS_ARGS_HOST_CALL_MAX = 31
 
 
 @pytest.fixture

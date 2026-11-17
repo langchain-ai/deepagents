@@ -11,6 +11,9 @@ launching the Textual app:
 - `auth status <provider>` — print the resolution source (`stored`,
     `env: VAR`, `missing`, ...) for one provider.
 - `auth path` — print the resolved `auth.json` path.
+- `auth login [provider]` — interactive sign-in for ACP clients: store a key
+    in a small Textual app, pick a model if none is saved, and exit `0` only
+    when a new session would start.
 
 Security notes:
 
@@ -166,6 +169,24 @@ def setup_auth_parser(
         action=make_help_action(_lazy_ui_help("show_auth_help")),
     )
 
+    login_parser = auth_sub.add_parser(
+        "login",
+        help="Sign in interactively: store a provider key and pick a model",
+        add_help=False,
+    )
+    login_parser.add_argument(
+        "provider",
+        nargs="?",
+        default=None,
+        metavar="provider",
+        help="Provider to highlight first (e.g. anthropic)",
+    )
+    login_parser.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(_lazy_ui_help("show_auth_help")),
+    )
+
 
 def run_auth_command(args: argparse.Namespace) -> int:
     """Dispatch a parsed `dcode auth` invocation.
@@ -189,6 +210,11 @@ def run_auth_command(args: argparse.Namespace) -> int:
         return _run_status(getattr(args, "provider", None))
     if command == "path":
         return _run_path()
+    if command == "login":
+        return _run_login(
+            getattr(args, "provider", None),
+            model_override=getattr(args, "model", None),
+        )
     from deepagents_code.ui import show_auth_help
 
     show_auth_help()
@@ -539,3 +565,34 @@ def _run_path() -> int:
 
     print(auth_store.auth_path())  # noqa: T201
     return 0
+
+
+def _run_login(provider: str | None, *, model_override: str | None) -> int:
+    """Run the interactive sign-in app and report whether dcode is ready.
+
+    ACP clients run this in a terminal and treat exit `0` as signed in, so `0`
+    means a new session would start: a permitted model resolves and its
+    provider has credentials. ACP clients append `auth login` to their launch
+    args, so a launch `--model` is the model their sessions use; check that.
+
+    Returns:
+        Process exit code (`0` when ready, `1` otherwise).
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(  # noqa: T201
+            "Error: `auth login` needs an interactive terminal.\n"
+            "To store a key without one, pipe it to `dcode auth set <provider>`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from deepagents_code.model_readiness import Ready
+    from deepagents_code.tui.auth_login import run_login
+
+    outcome = run_login(provider, model_override=model_override)
+    if isinstance(outcome, Ready):
+        print(f"Signed in. New sessions use {outcome.model_spec}.")  # noqa: T201
+        return 0
+    reason = outcome.message.rstrip(".")
+    print(f"Error: not signed in: {reason}.", file=sys.stderr)  # noqa: T201
+    return 1

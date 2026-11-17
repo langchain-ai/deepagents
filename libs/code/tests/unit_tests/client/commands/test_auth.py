@@ -10,6 +10,7 @@ import sys
 import textwrap
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,6 +23,12 @@ from deepagents_code.client.commands.auth import (
     _resolution_label,
     run_auth_command,
 )
+from deepagents_code.model_readiness import (
+    MissingProviderKey,
+    NoModelSelected,
+    UnverifiedProviderAuth,
+)
+from deepagents_code.tui.auth_login import LoginCancelled
 
 
 @pytest.fixture
@@ -926,6 +933,110 @@ def test_no_subcommand_shows_help(capsys: pytest.CaptureFixture[str]) -> None:
     code = run_auth_command(_ns(auth_command=None))
     assert code == 0
     assert "dcode auth <command>" in capsys.readouterr().out
+
+
+class _TTY(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+class TestLogin:
+    """`auth login` exits `0` only when a new session would start."""
+
+    @pytest.mark.parametrize("piped", ["stdin", "stdout"])
+    def test_login_refuses_without_a_terminal(
+        self,
+        piped: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        run_login = MagicMock()
+        monkeypatch.setattr("deepagents_code.tui.auth_login.run_login", run_login)
+        monkeypatch.setattr(sys, "stdin", io.StringIO() if piped == "stdin" else _TTY())
+        if piped == "stdin":
+            monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+        code = run_auth_command(_ns(auth_command="login", provider="anthropic"))
+
+        assert code == 1
+        assert "needs an interactive terminal" in capsys.readouterr().err
+        run_login.assert_not_called()
+
+    def test_login_ready_exits_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepagents_code.model_readiness import Ready
+
+        stdout = _TTY()
+        monkeypatch.setattr(sys, "stdin", _TTY())
+        monkeypatch.setattr(sys, "stdout", stdout)
+        monkeypatch.setattr(
+            "deepagents_code.tui.auth_login.run_login",
+            lambda _provider, **_kwargs: Ready(
+                model_spec="anthropic:claude-x", provider="anthropic"
+            ),
+        )
+
+        code = run_auth_command(_ns(auth_command="login", provider="anthropic"))
+
+        assert code == 0
+        assert "anthropic:claude-x" in stdout.getvalue()
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected"),
+        [
+            pytest.param(
+                MissingProviderKey(model_spec="anthropic:x", provider="anthropic"),
+                "no key for anthropic",
+                id="missing-key",
+            ),
+            pytest.param(NoModelSelected(), "no model selected", id="no-model"),
+            pytest.param(
+                UnverifiedProviderAuth(model_spec="custom:x", provider="custom"),
+                "cannot verify credentials for custom",
+                id="unverified",
+            ),
+            pytest.param(LoginCancelled("model"), "cancelled", id="cancelled"),
+        ],
+    )
+    def test_login_not_ready_exits_nonzero(
+        self,
+        outcome: object,
+        expected: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(sys, "stdin", _TTY())
+        monkeypatch.setattr(sys, "stdout", _TTY())
+        monkeypatch.setattr(
+            "deepagents_code.tui.auth_login.run_login",
+            lambda _provider, **_kwargs: outcome,
+        )
+
+        code = run_auth_command(_ns(auth_command="login", provider=None))
+
+        assert code == 1
+        assert expected in capsys.readouterr().err
+
+    def test_login_checks_the_launch_model_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`dcode --acp --model X auth login P` checks X, not the saved default."""
+        from deepagents_code.main import parse_args
+
+        calls: list[tuple[str | None, str | None]] = []
+
+        def run_login(provider: str | None, *, model_override: str | None) -> object:
+            calls.append((provider, model_override))
+            return LoginCancelled("key")
+
+        argv = ["dcode", "--acp", "--model", "openai:gpt-test", "auth", "login"]
+        monkeypatch.setattr(sys, "argv", [*argv, "anthropic"])
+        monkeypatch.setattr(sys, "stdin", _TTY())
+        monkeypatch.setattr(sys, "stdout", _TTY())
+        monkeypatch.setattr("deepagents_code.tui.auth_login.run_login", run_login)
+
+        run_auth_command(parse_args())
+
+        assert calls == [("anthropic", "openai:gpt-test")]
 
 
 # --- Subprocess round-trip (per issue coverage requirements) ----------------

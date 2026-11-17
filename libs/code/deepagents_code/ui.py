@@ -1019,6 +1019,7 @@ def show_auth_help() -> None:
     console.print("  remove <provider>     Remove a stored credential (rm|delete)")
     console.print("  status <provider>     Show resolution source for one provider")
     console.print("  path                  Print the resolved auth.json path")
+    console.print("  login [provider]      Sign in interactively and pick a model")
     console.print()
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
@@ -1047,6 +1048,7 @@ def show_auth_help() -> None:
     console.print("  dcode auth status anthropic")
     console.print("  dcode auth remove anthropic")
     console.print("  dcode auth path")
+    console.print("  dcode auth login anthropic")
     console.print()
 
 

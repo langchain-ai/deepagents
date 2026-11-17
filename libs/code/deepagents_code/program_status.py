@@ -221,7 +221,8 @@ def encode_program_status(status: ProgramStatus, *, app: str = APP_NAME) -> str:
         The escape sequence, always within the spec's 4096-byte cap.
 
     Raises:
-        ValueError: If `app` is invalid.
+        ValueError: If `app` is invalid, or the sequence exceeds the
+            4096-byte cap.
     """
     if not is_valid_app(app):
         msg = f"invalid OSC 7501 app: {app!r}"
@@ -243,9 +244,10 @@ class ProgramStatusReporter:
     """Send `OSC 7501` reports and clear them when the program exits.
 
     Skips a report identical to the last one sent for the same record, so
-    callers can report on every UI update. Any successful report registers an
-    `atexit` hook that clears all records, so a crash or an unhandled exit
-    does not leave a stale status behind.
+    callers can report on every UI update. Unless `clear_on_exit` is `False`,
+    the first successful non-`clear` report registers an `atexit` hook that
+    clears all records, so an unhandled exception or `sys.exit` does not leave
+    a stale status behind. A hard kill skips the hook.
 
     Thread-safe: reports may come from the event loop and the `atexit` hook.
     """
@@ -393,6 +395,14 @@ class TurnOutcome(StrEnum):
     """The last turn, or startup, failed."""
 
 
+_OUTCOME_STATES: dict[TurnOutcome, ProgramState] = {
+    TurnOutcome.IDLE: ProgramState.IDLE,
+    TurnOutcome.DONE: ProgramState.DONE,
+    TurnOutcome.ERROR: ProgramState.ERROR,
+}
+"""The root-record state shown for each outcome while nothing is running."""
+
+
 @dataclass(frozen=True, slots=True)
 class Blocker:
     """One outstanding request for user input.
@@ -449,7 +459,7 @@ def activity_status(activity: AgentActivity) -> ProgramStatus:
     if activity.working:
         return ProgramStatus(ProgramState.WORKING, title=activity.title)
     return ProgramStatus(
-        ProgramState(activity.outcome.value),
+        _OUTCOME_STATES[activity.outcome],
         title=activity.title,
         msg=activity.detail,
     )

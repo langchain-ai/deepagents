@@ -2276,7 +2276,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         key="display.terminal_status",
         group="Display",
         summary=(
-            "Report agent status (working, waiting on you, done) to terminals "
+            "Report agent status (working, waiting on you, done, failed) to terminals "
             "that support OSC 7501."
         ),
         kind=OptionKind.BOOL,

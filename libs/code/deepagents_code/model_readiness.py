@@ -11,6 +11,10 @@ session setup, which turns a problem into an error that names what is missing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from deepagents_code.model_config import ProviderAuthState
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,14 +156,31 @@ def _check_credentials(model_spec: str, provider: str) -> Readiness:
     state = get_provider_auth_status(provider).state
     if state is ProviderAuthState.MISSING:
         return MissingProviderKey(model_spec=model_spec, provider=provider)
-    if state in {
+    if _is_affirmative(state):
+        return Ready(model_spec=model_spec, provider=provider)
+    return UnverifiedProviderAuth(model_spec=model_spec, provider=provider)
+
+
+def has_credentials(provider: str) -> bool:
+    """Return whether `provider`'s auth status affirmatively allows a session.
+
+    Unknown auth does not count; see `UnverifiedProviderAuth`.
+    """
+    from deepagents_code.model_config import get_provider_auth_status
+
+    return _is_affirmative(get_provider_auth_status(provider).state)
+
+
+def _is_affirmative(state: ProviderAuthState) -> bool:
+    """Return whether an auth state is proof that a session can authenticate."""
+    from deepagents_code.model_config import ProviderAuthState
+
+    return state in {
         ProviderAuthState.CONFIGURED,
         ProviderAuthState.IMPLICIT,
         ProviderAuthState.MANAGED,
         ProviderAuthState.NOT_REQUIRED,
-    }:
-        return Ready(model_spec=model_spec, provider=provider)
-    return UnverifiedProviderAuth(model_spec=model_spec, provider=provider)
+    }
 
 
 def readiness_problem(*, model_override: str | None = None) -> NotReady | None:

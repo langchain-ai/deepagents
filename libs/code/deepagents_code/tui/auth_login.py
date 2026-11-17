@@ -27,7 +27,9 @@ from deepagents_code import theme
 from deepagents_code.model_readiness import (
     NoModelSelected,
     Readiness,
+    Ready,
     check_readiness,
+    has_credentials,
 )
 from deepagents_code.tui.widgets.auth import (
     AuthManagerScreen,
@@ -69,6 +71,45 @@ LoginOutcome = Readiness | LoginCancelled | ModelSaveFailed
 """Final state of a login run: readiness after both steps, or why it stopped."""
 
 
+@dataclass(frozen=True, slots=True)
+class ModelStep:
+    """Go straight to the model step for a provider that already has a key."""
+
+    provider: str
+
+
+def skip_key_step(
+    readiness: Readiness,
+    provider: str | None,
+    provider_has_credentials: Callable[[str], bool],
+) -> Ready | ModelStep | None:
+    """Decide whether a sign-in can bypass the key step.
+
+    Credentials can already exist (an env var, a stored key, a ChatGPT
+    session) while only the model is missing, which is the common ACP case.
+
+    Args:
+        readiness: Current readiness.
+        provider: Provider the client asked to sign in to, if any.
+        provider_has_credentials: Whether a provider's auth is affirmative.
+
+    Returns:
+        `Ready` to finish, `ModelStep` to pick a model, or `None` when a key
+            is still needed.
+    """
+    if isinstance(readiness, Ready) and (
+        provider is None or provider_has_credentials(provider)
+    ):
+        return readiness
+    if (
+        isinstance(readiness, NoModelSelected)
+        and provider is not None
+        and provider_has_credentials(provider)
+    ):
+        return ModelStep(provider)
+    return None
+
+
 class AuthLoginApp(App[LoginOutcome]):
     """Two-step sign-in: save a provider key, then pick a model if needed."""
 
@@ -77,16 +118,21 @@ class AuthLoginApp(App[LoginOutcome]):
         *,
         provider: str | None = None,
         readiness: Callable[[], Readiness] = check_readiness,
+        provider_has_credentials: Callable[[str], bool] = has_credentials,
     ) -> None:
         """Initialize the app.
 
         Args:
-            provider: Provider row to highlight first in the key step.
-            readiness: Readiness check used to skip the model step and to
-                compute the final outcome.
+            provider: Provider to sign in to; highlighted first in the key step.
+            readiness: Readiness check used to skip steps and to compute the
+                final outcome.
+            provider_has_credentials: Whether a provider's auth is affirmative,
+                used to skip the key step when a key already exists.
         """
         super().__init__()
+        self._provider = provider
         self._readiness = readiness
+        self._has_credentials = provider_has_credentials
         self._manager = AuthManagerScreen(initial_provider=provider, sign_in_only=True)
         self._signed_in: str | None = None
         _register_default_theme(self)
@@ -121,8 +167,19 @@ class AuthLoginApp(App[LoginOutcome]):
         return await asyncio.to_thread(credentials.reload_from_environment)
 
     def on_mount(self) -> None:
-        """Open the key step."""
-        self.push_screen(self._manager, self._on_key_step_closed)
+        """Finish, open the model step, or open the key step, as needed."""
+        step = skip_key_step(self._readiness(), self._provider, self._has_credentials)
+        if step is None:
+            self.push_screen(self._manager, self._on_key_step_closed)
+            return
+        self._continue(step)
+
+    def _continue(self, step: Ready | ModelStep) -> None:
+        """Exit when ready, or open the model step for `step.provider`."""
+        if isinstance(step, Ready):
+            self.exit(step)
+            return
+        self.push_screen(_build_model_selector(step.provider), self._on_model_chosen)
 
     def on_auth_manager_screen_credential_saved(
         self, event: AuthManagerScreen.CredentialSaved
@@ -135,11 +192,21 @@ class AuthLoginApp(App[LoginOutcome]):
         self._manager.dismiss(None)
 
     def _on_key_step_closed(self, _result: None) -> None:
-        """Continue to the model step, or exit when no key was saved."""
-        if self._signed_in is None:
+        """Continue after a save; without one, continue only if nothing is missing."""
+        if self._signed_in is not None:
+            self.call_after_refresh(self._start_model_step, self._signed_in)
+            return
+        # Closing without a save is not a cancel when a key already existed.
+        readiness = self._readiness()
+        step = (
+            readiness
+            if isinstance(readiness, Ready)
+            else skip_key_step(readiness, self._provider, self._has_credentials)
+        )
+        if step is None:
             self.exit(LoginCancelled("key"))
             return
-        self.call_after_refresh(self._start_model_step, self._signed_in)
+        self.call_after_refresh(self._continue, step)
 
     def _start_model_step(self, provider: str) -> None:
         """Ask for a model only when no permitted one is saved yet."""

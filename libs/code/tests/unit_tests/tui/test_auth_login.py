@@ -12,12 +12,20 @@ from textual.widgets import Input, OptionList, Static
 
 from deepagents_code import auth_store, model_config
 from deepagents_code.integrations import openai_codex
-from deepagents_code.model_readiness import MissingProviderKey, Ready, check_readiness
+from deepagents_code.model_readiness import (
+    MissingProviderKey,
+    NoModelSelected,
+    Readiness,
+    Ready,
+    check_readiness,
+)
 from deepagents_code.tui.auth_login import (
     AuthLoginApp,
     LoginCancelled,
     LoginOutcome,
+    ModelStep,
     selection_problem,
+    skip_key_step,
 )
 from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
 from deepagents_code.tui.widgets.model_selector import (
@@ -269,3 +277,106 @@ async def test_chatgpt_sign_in_advances_to_model_step_then_cancel() -> None:
     assert {row.model_spec.partition(":")[0] for row in rows} == {"openai_codex"}
     assert app.signed_in == "openai_codex"
     assert app.return_value == LoginCancelled("model")
+
+
+@pytest.mark.usefixtures("config_path")
+async def test_existing_env_key_goes_straight_to_model_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The common ACP case: a key exists but `session/new` found no model."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    app = AuthLoginApp(provider="anthropic")
+    async with app.run_test() as pilot:
+        await _wait_for_models(pilot)
+        screens = list(app.screen_stack)
+        await pilot.press("enter")
+
+    assert not any(isinstance(screen, AuthManagerScreen) for screen in screens)
+    outcome = app.return_value
+    assert isinstance(outcome, Ready)
+    assert outcome.provider == "anthropic"
+    assert model_config.ModelConfig.load().default_model == outcome.model_spec
+
+
+@pytest.mark.parametrize(
+    "config_path", ['[models]\ndefault = "anthropic:claude-saved"\n'], indirect=True
+)
+@pytest.mark.usefixtures("config_path")
+async def test_already_ready_exits_without_a_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    pushed: list[object] = []
+    app = AuthLoginApp(provider="anthropic")
+    monkeypatch.setattr(
+        app, "push_screen", lambda screen, *_a, **_k: pushed.append(screen)
+    )
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.return_value is not None)
+
+    assert pushed == []
+    assert app.return_value == Ready(
+        model_spec="anthropic:claude-saved", provider="anthropic"
+    )
+
+
+@pytest.mark.usefixtures("config_path")
+async def test_escape_on_key_step_continues_when_a_key_appeared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key found without a save (Ctrl+R reload, ChatGPT session) is not a cancel."""
+    app = AuthLoginApp(provider="anthropic")
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: isinstance(app.screen, AuthManagerScreen))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+        await pilot.press("escape")
+        await _wait_for_models(pilot)
+        await pilot.press("enter")
+
+    assert isinstance(app.return_value, Ready)
+
+
+@pytest.mark.parametrize(
+    "config_path", ['[models]\ndefault = "openai:gpt-test"\n'], indirect=True
+)
+@pytest.mark.usefixtures("config_path")
+async def test_escape_on_key_step_exits_ready_when_already_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Naming a provider without a key opens the key step, but dcode is ready."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env")
+    app = AuthLoginApp(provider="anthropic")
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: isinstance(app.screen, AuthManagerScreen))
+        await pilot.press("escape")
+
+    assert app.return_value == Ready(model_spec="openai:gpt-test", provider="openai")
+
+
+_READY = Ready(model_spec="anthropic:x", provider="anthropic")
+
+
+@pytest.mark.parametrize(
+    ("readiness", "provider", "has_key", "expected"),
+    [
+        (_READY, None, False, _READY),
+        (_READY, "anthropic", True, _READY),
+        (_READY, "openai", False, None),
+        (NoModelSelected(), "anthropic", True, ModelStep("anthropic")),
+        (NoModelSelected(), "anthropic", False, None),
+        (NoModelSelected(), None, True, None),
+        (
+            MissingProviderKey(model_spec="anthropic:x", provider="anthropic"),
+            "anthropic",
+            True,
+            None,
+        ),
+    ],
+)
+def test_skip_key_step(
+    readiness: Readiness,
+    provider: str | None,
+    has_key: bool,
+    expected: Ready | ModelStep | None,
+) -> None:
+    assert skip_key_step(readiness, provider, lambda _p: has_key) == expected

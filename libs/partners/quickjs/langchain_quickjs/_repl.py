@@ -14,7 +14,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, TypedDict, Unpack, get_type_hints
+from typing import TYPE_CHECKING, Any, TypedDict, get_type_hints
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools.base import (
@@ -64,6 +64,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_SUBAGENT_CONCURRENCY = 32
+# Warm slots kept per middleware; well above langgraph-api's default of 10
+# concurrent runs per worker, so mid-turn slots rarely push past it.
 _MAX_SLOTS = 32
 _TASK_FUNCTION_NAME = "task"
 
@@ -394,43 +396,7 @@ class _ThreadREPL:
         subagents_enabled: bool = True,
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
     ) -> None:
-        self._setup(
-            worker,
-            runtime,
-            timeout=timeout,
-            capture_console=capture_console,
-            max_stdout_chars=max_stdout_chars,
-            max_ptc_calls=max_ptc_calls,
-            subagents_enabled=subagents_enabled,
-            max_subagent_concurrency=max_subagent_concurrency,
-        )
-        # Context creation + console install must happen on the worker
-        # thread. Block caller here so the REPL is ready to use when
-        # __init__ returns.
-        worker.run_sync(self._ainit())
-
-    @classmethod
-    def on_worker(
-        cls, worker: ThreadWorker, runtime: Runtime, **options: Unpack[_REPLOptions]
-    ) -> _ThreadREPL:
-        """Build on `worker`'s own thread, where `__init__` would deadlock."""
-        repl = cls.__new__(cls)
-        repl._setup(worker, runtime, **options)  # noqa: SLF001
-        repl._init()  # noqa: SLF001
-        return repl
-
-    def _setup(
-        self,
-        worker: ThreadWorker,
-        runtime: Runtime,
-        *,
-        timeout: float | None,
-        capture_console: bool,
-        max_stdout_chars: int,
-        max_ptc_calls: int | None,
-        subagents_enabled: bool,
-        max_subagent_concurrency: int,
-    ) -> None:
+        """Build the REPL's Context. Must run on `worker`'s own thread."""
         self._worker = worker
         self._runtime = runtime
         # The Context-level `timeout` is used as the cumulative budget
@@ -468,7 +434,6 @@ class _ThreadREPL:
         self._ptc_state: _PTCState | None = None
         self._task_calls: asyncio.Semaphore | None = None
 
-    async def _ainit(self) -> None:
         self._init()
 
     def _init(self) -> None:
@@ -1047,7 +1012,7 @@ class _Slot:
         self._memory_limit = memory_limit
         self._options = options
         # Evals (or snapshots) currently using the slot. A leased slot is never
-        # closed; eviction marks it `retired` and the last release closes it.
+        # closed; `evict` marks it `retired` and the last release closes it.
         self.leases = 0
         self.retired = False
 
@@ -1077,13 +1042,18 @@ class _Slot:
     def _new_repl(self) -> _ThreadREPL:
         if self.runtime is None:
             self.runtime = self._create_runtime()
-        return _ThreadREPL.on_worker(self.worker, self.runtime, **self._options)
+        return _ThreadREPL(self.worker, self.runtime, **self._options)
 
     def _create_runtime(self) -> Runtime:
         return Runtime(
             memory_limit=self._memory_limit,
             transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
         )
+
+    @property
+    def in_turn(self) -> bool:
+        """Whether a turn's Context is live (an eval ran since `end_turn`)."""
+        return self.repl is not None
 
     def create_snapshot(self) -> bytes | None:
         """Snapshot the turn's Context, or `None` if no eval ran this turn."""
@@ -1136,8 +1106,9 @@ class _Registry:
     """Per-thread slot registry: an LRU of up to `max_slots` `_Slot`s.
 
     Slots stay warm across turns. Over the cap, the least recently used slot
-    is closed, or retired if in use and closed on its last release. Nothing is
-    built or closed while holding the lock.
+    between turns is closed. Slots mid-turn are never closed, so the registry
+    may exceed the cap while more than `max_slots` turns are running. Nothing
+    is built or closed while holding the lock.
     """
 
     memory_limit: int
@@ -1190,12 +1161,16 @@ class _Registry:
             )
         self._slots.move_to_end(thread_id)
         stale = []
-        while len(self._slots) > self.max_slots:
-            _, old = self._slots.popitem(last=False)
-            if old.leases:
-                old.retired = True
-            else:
-                stale.append(old)
+        excess = len(self._slots) - self.max_slots
+        for key, old in list(self._slots.items()):  # least recently used first
+            if excess <= 0:
+                break
+            # A turn owns its slot until `end_turn`; never close one mid-turn.
+            if key == thread_id or old.leases or old.in_turn:
+                continue
+            del self._slots[key]
+            stale.append(old)
+            excess -= 1
         return slot, stale
 
     def lease_if_exists(self, thread_id: str) -> _Slot | None:

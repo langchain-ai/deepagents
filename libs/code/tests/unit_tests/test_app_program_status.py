@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import base64
 import re
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from deepagents_code import program_status
 from deepagents_code._env_vars import TERMINAL_STATUS
-from deepagents_code.app import DeepAgentsApp
+from deepagents_code.app import DeepAgentsApp, TextualSessionState
 from deepagents_code.program_status import TurnOutcome
 
 if TYPE_CHECKING:
@@ -82,14 +83,49 @@ async def test_turn_reports_working_then_done(sink: _Sink) -> None:
         assert sink.states() == ["idle", "working", "done"]
 
 
-async def test_background_compaction_keeps_unseen_done(sink: _Sink) -> None:
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-7501")
+async def test_background_compaction_keeps_unseen_done(
+    sink: _Sink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    offload = AsyncMock()
+    monkeypatch.setattr(app, "_offload_impl", offload)
+    monkeypatch.setattr(app, "_remote_agent", lambda: MagicMock())
+    monkeypatch.setattr(
+        "deepagents_code.configuration.resolver.get_config_resolver",
+        lambda: MagicMock(get=MagicMock(return_value=MagicMock(value=100_000))),
+    )
     async with app.run_test() as pilot:
         await pilot.pause()
+        monkeypatch.setattr(app, "_agent", MagicMock())
+        app._lc_thread_id = "idle"
+        app._session_state = TextualSessionState(thread_id="idle")
+        app._context_tokens = 100_000
+        app._tokens_approximate = False
+        assert app._status_bar is not None
+        app._status_bar.set_cache_timing(datetime.now(UTC), ttl_seconds=300)
+        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=45)
         app._agent_status.set_outcome(TurnOutcome.DONE)
-        app._set_agent_running(True, report_status=False)
-        app._set_agent_running(False)
+        app._check_idle_compaction()
+        await pilot.pause()
+        offload.assert_awaited_once()
         assert sink.states() == ["idle", "done"]
+
+
+async def test_agent_error_reports_error(sink: _Sink) -> None:
+    app = DeepAgentsApp(agent=MagicMock())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._ui_adapter is not None
+        app._set_agent_running(True)
+        with patch(
+            "deepagents_code.tui.textual_adapter.execute_task_textual",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ):
+            await app._run_agent_task("hello")
+            await pilot.pause()
+        assert sink.states() == ["idle", "working", "error"]
+        assert sink.reports()[-1]["msg"].startswith("Agent error:")
 
 
 async def test_approval_reports_blocked_permission(sink: _Sink) -> None:

@@ -142,6 +142,7 @@ jobs:
               "evals": "package:evals",
               "daytona": "integration:daytona",
               "modal": "integration:modal",
+              "mxc": "integration:mxc",
               "quickjs": "integration:quickjs",
               "runloop": "integration:runloop",
               "vercel": "integration:vercel",

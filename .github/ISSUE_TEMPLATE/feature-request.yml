@@ -48,6 +48,7 @@ body:
         - label: evals
         - label: daytona
         - label: modal
+        - label: mxc
         - label: quickjs
         - label: runloop
         - label: vercel

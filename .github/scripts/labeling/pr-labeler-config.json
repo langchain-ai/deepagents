@@ -90,6 +90,7 @@
     "package:examples": "Changes to example code or tutorials.",
     "integration:daytona": "Integration with the Daytona sandbox service.",
     "integration:modal": "Integration with the Modal sandbox service.",
+    "integration:mxc": "Integration with Microsoft Execution Containers (MXC) local sandboxes.",
     "integration:quickjs": "Integration with the QuickJS sandbox package.",
     "integration:runloop": "Integration with the Runloop sandbox service.",
     "integration:vercel": "Integration with Vercel sandbox services.",
@@ -113,11 +114,13 @@
     "harbor": "package:evals",
     "langchain-daytona": "integration:daytona",
     "langchain-modal": "integration:modal",
+    "langchain-mxc": "integration:mxc",
     "langchain-quickjs": "integration:quickjs",
     "langchain-runloop": "integration:runloop",
     "langchain-vercel-sandbox": "integration:vercel",
     "langsmith-sandbox": "integration:langsmith",
     "modal": "integration:modal",
+    "mxc": "integration:mxc",
     "quickjs": "integration:quickjs",
     "runloop": "integration:runloop",
     "sdk": "package:deepagents",
@@ -180,6 +183,11 @@
     {
       "label": "integration:modal",
       "prefix": "libs/partners/modal/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "integration:mxc",
+      "prefix": "libs/partners/mxc/",
       "skipExcludedFiles": true
     },
     {

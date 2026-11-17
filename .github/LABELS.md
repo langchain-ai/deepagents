@@ -45,6 +45,7 @@ Rules that are easy to get wrong:
 | `package:examples` | `examples` | `examples/` |
 | `integration:daytona` | `daytona`, `langchain-daytona` | `libs/partners/daytona/` |
 | `integration:modal` | `modal`, `langchain-modal` | `libs/partners/modal/` |
+| `integration:mxc` | `mxc`, `langchain-mxc` | `libs/partners/mxc/` |
 | `integration:quickjs` | `quickjs`, `langchain-quickjs` | `libs/partners/quickjs/` |
 | `integration:runloop` | `runloop`, `langchain-runloop` | `libs/partners/runloop/` |
 | `integration:vercel` | `vercel`, `langchain-vercel-sandbox` | `libs/partners/vercel/` |

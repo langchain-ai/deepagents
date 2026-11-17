@@ -54,6 +54,7 @@ PROJECT_READMES = frozenset(
         "libs/evals/README.md",
         "libs/partners/daytona/README.md",
         "libs/partners/modal/README.md",
+        "libs/partners/mxc/README.md",
         "libs/partners/quickjs/README.md",
         "libs/partners/runloop/README.md",
         "libs/partners/vercel/README.md",

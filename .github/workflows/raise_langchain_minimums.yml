@@ -72,6 +72,7 @@ on:
           - "deepagents-talon"
           - "langchain-daytona"
           - "langchain-modal"
+          - "langchain-mxc"
           - "langchain-quickjs"
           - "langchain-runloop"
           - "langchain-vercel-sandbox"

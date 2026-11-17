@@ -185,6 +185,22 @@
         "libs/partners/vercel/uv.lock"
       ]
     },
+    "libs/partners/mxc": {
+      "release-type": "python",
+      "package-name": "langchain-mxc",
+      "component": "langchain-mxc",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_mxc/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/mxc/tests",
+        "libs/partners/mxc/uv.lock"
+      ]
+    },
     "libs/partners/quickjs": {
       "release-type": "python",
       "package-name": "langchain-quickjs",

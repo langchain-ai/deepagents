@@ -107,6 +107,7 @@ jobs:
       acp: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.acp == 'true' }}
       daytona: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.daytona == 'true' }}
       modal: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.modal == 'true' }}
+      mxc: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.mxc == 'true' }}
       runloop: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.runloop == 'true' }}
       vercel: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.vercel == 'true' }}
       quickjs: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.quickjs == 'true' }}
@@ -265,6 +266,8 @@ jobs:
               - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
+            mxc:
+              - 'libs/partners/mxc/**'
               - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
@@ -353,6 +356,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/modal"
+      python-version: "3.11"
+
+  lint-mxc:
+    name: "🧹 Lint mxc"
+    needs: changes
+    if: needs.changes.outputs.mxc == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/mxc"
       python-version: "3.11"
 
   lint-runloop:
@@ -448,6 +460,15 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+
+  test-mxc:
+    name: "🧪 Test mxc"
+    needs: changes
+    if: needs.changes.outputs.mxc == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/mxc"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
 
   test-runloop:
@@ -755,6 +776,7 @@ jobs:
       - lint-acp
       - lint-daytona
       - lint-modal
+      - lint-mxc
       - lint-runloop
       - lint-vercel
       - lint-quickjs
@@ -765,6 +787,7 @@ jobs:
       - test-acp
       - test-daytona
       - test-modal
+      - test-mxc
       - test-runloop
       - test-vercel
       - test-quickjs

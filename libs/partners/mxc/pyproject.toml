@@ -1,0 +1,143 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-mxc"
+description = "Microsoft Execution Containers (MXC) sandbox integration for Deep Agents"
+license = { text = "MIT" }
+readme = "README.md"
+
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+]
+
+version = "0.0.1"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "deepagents>=0.7.39,<0.8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["langchain_mxc"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "langchain_mxc/",
+    "tests/",
+    "examples/",
+    "README.md",
+    "EXECUTOR_CONTRACT.md",
+    "LICENSE",
+]
+
+[project.urls]
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/mxc"
+Repository = "https://github.com/langchain-ai/deepagents"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/mxc"
+
+[dependency-groups]
+test = [
+    "pytest>=9.1.1,<10.0.0",
+    "pytest-cov",
+    "pytest-socket",
+    "pytest-xdist",
+    "pytest-timeout>=2.4.0,<3.0.0",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.20,<1.0.0",
+    "ty>=0.0.54,<1.0.0",
+    "langchain-tests>=1.1.9",
+]
+examples = [
+    "langchain-anthropic",
+    # tiktoken (a langchain-openai dependency) has no Windows ARM64 wheel.
+    "langchain-openai ; sys_platform != 'win32' or platform_machine != 'ARM64'",
+]
+
+[tool.uv]
+# Development lock only; does not affect the published package.
+# cryptography (via deepagents -> langchain-google-genai -> google-auth) has no
+# Windows ARM64 wheel after 46.0.3, and building it needs Rust.
+constraint-dependencies = [
+    "cryptography==46.0.3 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../deepagents", editable = true }
+
+[tool.ty.environment]
+extra-paths = ["../../deepagents"]
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
+
+[tool.ruff]
+# Same as `deepagents`, whose `FilesystemBackend` and `LocalShellBackend` this package extends.
+line-length = 150
+
+[tool.ruff.format]
+docstring-code-format = true
+exclude = ["*.md"]  # README examples are aligned by hand
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # Messes with the formatter
+    "ISC001",  # Messes with the formatter
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed — too strict for generic wrappers
+    "FBT001",  # Boolean positional arguments in protocol signatures
+    "FBT002",
+    "PTH",     # os.path is deliberate: the policy builder works on paths of a foreign OS
+    "PLR0913", # The constructor mirrors `LocalShellBackend` and exposes each policy knob as a keyword
+]
+extend-safe-fixes = ["PLR6201"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true  # ignore missing documentation for *args and **kwargs parameters
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config --durations=5"
+testpaths = ["tests"]
+markers = [
+    "requires: mark tests as requiring a specific library",
+    "compile: mark placeholder test used to compile integration tests without running them",
+    "scheduled: mark tests to run in scheduled testing",
+    "requires_mxc: needs a real MXC executor on this machine",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
+    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
+    # `google.genai.types` builds a union alias out of `typing._UnionGenericAlias`
+    # at import time, which Python 3.14 deprecates.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+    # `langsmith`'s pytest plugin calls the deprecated `asyncio.iscoroutinefunction`
+    # at import on Python 3.14; fixed by upgrading `langsmith`, not by this package.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/**/*.py" = ["D", "S101", "ANN", "PLR2004", "SLF001", "S108"]
+"examples/**/*.py" = ["D", "INP001", "T201", "S101", "PLR2004"]

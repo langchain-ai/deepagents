@@ -100,10 +100,11 @@ def _slow_worker_teardown(registry: _Registry, slot_id: str) -> asyncio.Future[N
 
 async def test_build_does_not_block_loop(slow_build: list[str]) -> None:
     registry = _registry()
-    gap, repl = await _max_gap(registry.aget("build-01"))
+    gap, slot = await _max_gap(registry.aacquire("build-01"))
     assert gap < MAX_GAP
     assert slow_build == ["quickjs-worker-build-01"]
-    assert (await repl.eval_async("1 + 1")).result == "2"
+    assert (await slot.repl.eval_async("1 + 1")).result == "2"
+    await registry.arelease(slot)
     await registry.aevict("build-01")
 
 
@@ -111,8 +112,9 @@ async def test_build_does_not_block_loop(slow_build: list[str]) -> None:
 async def test_evict_does_not_block_loop(mode: str) -> None:
     mw = CodeInterpreterMiddleware(mode=mode)  # type: ignore[arg-type]
     slot_id = f"evict-{mode}"
-    repl = await mw._registry.aget(slot_id)
-    await repl.eval_async("globalThis.x = 1")
+    slot = await mw._registry.aacquire(slot_id)
+    await slot.repl.eval_async("globalThis.x = 1")
+    await mw._registry.arelease(slot)
     lingering = _slow_worker_teardown(mw._registry, slot_id)
     state: dict[str, Any] = {"_quickjs_slot_id": slot_id}
     gap, _ = await _max_gap(mw.aafter_agent(state, None))  # type: ignore[arg-type]
@@ -126,7 +128,8 @@ async def test_call_mode_reset_does_not_block_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _registry()
-    first = await registry.aget("reset-01")
+    slot = await registry.aacquire("reset-01")
+    first = slot.repl
     original = _ThreadREPL._ainit
 
     async def _slow_ainit(self: _ThreadREPL) -> None:
@@ -139,15 +142,19 @@ async def test_call_mode_reset_does_not_block_loop(
     second = registry.get_if_exists("reset-01")
     assert second is not None
     assert second is not first
+    await registry.arelease(slot)
     await registry.aevict("reset-01")
 
 
 @pytest.mark.usefixtures("slow_build")
 async def test_concurrent_misses_share_one_slot() -> None:
     registry = _registry()
-    repls = await asyncio.gather(*(registry.aget("shared-1") for _ in range(3)))
-    assert all(r is repls[0] for r in repls)
+    slots = await asyncio.gather(*(registry.aacquire("shared-1") for _ in range(3)))
+    assert all(s is slots[0] for s in slots)
+    assert slots[0].leases == 3
     assert registry._builds == {}
+    for slot in slots:
+        await registry.arelease(slot)
     # Duplicate builds are closed; only the installed slot's worker remains.
     deadline = time.monotonic() + 5.0
     while len(_worker_threads("shared-1")) > 1 and time.monotonic() < deadline:  # noqa: ASYNC110
@@ -160,7 +167,7 @@ async def test_concurrent_misses_share_one_slot() -> None:
 @pytest.mark.usefixtures("slow_build")
 async def test_cancel_mid_build_leaves_no_worker() -> None:
     registry = _registry()
-    task = asyncio.create_task(registry.aget("cancel-1"))
+    task = asyncio.create_task(registry.aacquire("cancel-1"))
     await asyncio.sleep(0.05)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -173,7 +180,7 @@ async def test_cancel_mid_build_leaves_no_worker() -> None:
 @pytest.mark.usefixtures("slow_build")
 async def test_evict_mid_build_leaves_registry_empty() -> None:
     registry = _registry()
-    task = asyncio.create_task(registry.aget("evicted1"))
+    task = asyncio.create_task(registry.aacquire("evicted1"))
     await asyncio.sleep(0.05)
     await registry.aevict("evicted1")
     with pytest.raises(RuntimeError, match="evicted"):

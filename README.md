@@ -91,14 +91,17 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 
 ## Resources
 
-- [Examples](examples/) — working agents and patterns
+- [Examples](https://github.com/langchain-ai/deepagents/tree/main/examples#readme) — working agents and patterns
 - [Documentation](https://docs.langchain.com/oss/python/deepagents/overview) — conceptual overviews and guides
+- [Changelog](libs/deepagents/CHANGELOG.md) — release notes for the Python SDK
 - [LangChain ecosystem overview](https://docs.langchain.com/oss/python/concepts/products) — how Deep Agents, LangChain, LangGraph, and LangSmith fit together
 - [API reference](https://reference.langchain.com/python/deepagents/) — complete reference for all public classes, functions, and types
 - [Discussions](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18) — community forum for technical questions, ideas, and feedback
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Development Guide](libs/DEVELOPMENT.md) — local setup and package-specific checks
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) — how to contribute and find good first issues
+- [Release policy](https://docs.langchain.com/oss/python/release-policy) — releases and support
+- [Versioning policy](https://docs.langchain.com/oss/python/versioning) — version numbering and compatibility
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
 
 ---

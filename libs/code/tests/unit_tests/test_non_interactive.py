@@ -40,7 +40,6 @@ from deepagents_code.client.non_interactive import (
     _ConsoleSpinner,
     _end_headless_session,
     _make_hitl_decision,
-    _make_stdio_encoding_safe,
     _process_ai_message,
     _process_hitl_interrupts,
     _process_message_chunk,
@@ -1470,9 +1469,25 @@ class TestMaxTurns:
             {"role": "system", "content": "Replacement context"}
         ]
 
+    @pytest.mark.parametrize(
+        "summary_chunk",
+        [
+            (
+                (),
+                "messages",
+                (
+                    AIMessage(id="summary", content="summary"),
+                    {"lc_source": "summarization"},
+                ),
+            ),
+            ((), "custom", {"type": "summarization_started"}),
+        ],
+        ids=["streamed-summary", "nostream-start-event"],
+    )
     async def test_compact_session_start_uses_active_model_before_continuation(
         self,
         lifecycle_runtime: MagicMock,
+        summary_chunk: tuple[object, ...],
     ) -> None:
         runtime = lifecycle_runtime
         runtime.configured_events.return_value = frozenset(
@@ -1485,14 +1500,7 @@ class TestMaxTurns:
             ]
         )
         chunks = [
-            (
-                (),
-                "messages",
-                (
-                    AIMessage(id="summary", content="summary"),
-                    {"lc_source": "summarization"},
-                ),
-            ),
+            summary_chunk,
             (
                 (),
                 "messages",
@@ -2157,77 +2165,6 @@ async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa
     """Create an async iterator from a list for testing."""
     for item in items:
         yield item
-
-
-class TestMakeStdioEncodingSafe:
-    """Tests for `_make_stdio_encoding_safe`."""
-
-    def test_cp1252_stream_survives_unicode_glyphs(self):
-        """Unencodable glyphs degrade to "?" instead of raising."""
-        buffer = io.BytesIO()
-        stream = io.TextIOWrapper(buffer, encoding="cp1252")
-        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
-            _make_stdio_encoding_safe()
-            sys.stdout.write("✓ Server ready")
-            sys.stdout.flush()
-
-        assert buffer.getvalue() == b"? Server ready"
-
-    def test_stream_encoding_is_preserved(self):
-        """Only the error handler changes; the encoding stays untouched."""
-        buffer = io.BytesIO()
-        stream = io.TextIOWrapper(buffer, encoding="cp1252")
-        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
-            _make_stdio_encoding_safe()
-
-        assert stream.encoding == "cp1252"
-        assert stream.errors == "replace"
-
-    def test_non_reconfigurable_stream_is_left_alone(self):
-        """Streams without `reconfigure` (e.g. StringIO) do not raise."""
-        stream = io.StringIO()
-        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
-            _make_stdio_encoding_safe()
-
-        assert not stream.closed
-
-    def test_streams_handled_independently(self):
-        """A non-reconfigurable stdout must not stop stderr from being hardened.
-
-        In quiet mode `run_non_interactive` routes glyph-emitting output to
-        stderr, so a per-stream `continue` (not `break`/`return`) is
-        load-bearing: skipping stdout must still leave stderr reconfigured.
-        """
-        stdout = io.StringIO()  # no `reconfigure` -> skipped
-        stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
-        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
-            _make_stdio_encoding_safe()
-
-        assert stderr.errors == "replace"
-        assert not stdout.closed
-
-    def test_closed_stream_is_swallowed(self):
-        """A closed stream raises `ValueError` on reconfigure; swallowed, no crash."""
-        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
-        stream.close()
-        with (
-            patch.object(sys, "stdout", stream),
-            patch.object(sys, "stderr", io.StringIO()),
-        ):
-            _make_stdio_encoding_safe()  # must not raise
-
-        assert stream.closed
-
-    def test_duck_typed_reconfigure_typeerror_is_swallowed(self):
-        """A `reconfigure` with an incompatible signature must not crash the run."""
-        # This `reconfigure` takes no args, so calling it with `errors=` raises
-        # `TypeError` — the failure mode a non-stdlib stream wrapper (e.g. a
-        # capture/tee library) could exhibit. The guard must not propagate it.
-        stream = SimpleNamespace(reconfigure=lambda: None)
-        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
-            _make_stdio_encoding_safe()  # must not raise
-
-        assert hasattr(stream, "reconfigure")
 
 
 # ---------------------------------------------------------------------------
@@ -2980,9 +2917,6 @@ class TestDrainWiring:
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive._make_stdio_encoding_safe",
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -4491,6 +4425,10 @@ class TestHeadlessResume:
 
     @pytest.fixture
     def start_server(self, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+        monkeypatch.setattr(
+            "deepagents_code.client.headless_resume.resume_launch_model",
+            AsyncMock(return_value="openai:thread-model"),
+        )
         agent = _headless_agent()
         agent.aensure_thread = AsyncMock()
         agent.aget_state = AsyncMock(return_value=SimpleNamespace(values={}))

@@ -167,6 +167,7 @@ def test_local_pipeline_uses_talon_home_cache(tmp_path: Path, monkeypatch) -> No
         repo_id=DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL,
         cache_dir=str(tmp_path / "cache" / "models" / "huggingface"),
         token=False,
+        allow_patterns=["*.json", "*.safetensors"],
     )
     for loader in (modules["transformers"].AutoModel, modules["transformers"].AutoProcessor):
         loader.from_pretrained.assert_called_once_with(

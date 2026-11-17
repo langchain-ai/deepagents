@@ -111,6 +111,23 @@ def cwd_conflict(target: ResumeTarget, current_cwd: str) -> str | None:
     return None
 
 
+async def resume_launch_model(thread_id: str) -> str:
+    """Return the thread's model, or its saved-preference fallback."""
+    from deepagents_code.config import _get_default_model_spec
+    from deepagents_code.sessions import get_checkpointer
+
+    async with get_checkpointer() as checkpointer:
+        checkpoint = await checkpointer.aget_tuple(
+            {"configurable": {"thread_id": thread_id}}
+        )
+    selection = (
+        persisted_model(checkpoint.checkpoint["channel_values"])
+        if checkpoint is not None
+        else None
+    )
+    return selection[0] if selection else _get_default_model_spec()
+
+
 def persisted_model(
     values: Mapping[str, object],
 ) -> tuple[str, dict[str, Any] | None] | None:

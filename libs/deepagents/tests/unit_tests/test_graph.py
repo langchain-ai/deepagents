@@ -23,7 +23,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__, _lc_version, _with_editable_local_version
-from deepagents.backends import StateBackend
+from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
@@ -35,6 +35,7 @@ from deepagents.graph import (
 from deepagents.middleware._prompt_caching import (
     _create_bedrock_prompt_caching_middleware,
     _create_fireworks_prompt_caching_middleware,
+    _prompt_caching_middleware_class,
     append_prompt_caching_middleware,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -52,7 +53,9 @@ from deepagents.profiles.harness.harness_profiles import (
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
+
+    from deepagents.backends.protocol import BackendProtocol
 
 
 def _make_model(attrs: dict[str, Any]) -> MagicMock:
@@ -469,6 +472,36 @@ class TestGeneralPurposeSubagentProfileWiring:
 
 class TestPromptCachingWiring:
     """Tests for provider-specific prompt caching middleware wiring."""
+
+    @pytest.fixture(autouse=True)
+    def clear_provider_cache(self) -> Iterator[None]:
+        _prompt_caching_middleware_class.cache_clear()
+        yield
+        _prompt_caching_middleware_class.cache_clear()
+
+    @pytest.mark.parametrize("factory", [_create_bedrock_prompt_caching_middleware, _create_fireworks_prompt_caching_middleware])
+    def test_unavailable_provider_is_cached(self, factory: Callable[[], AgentMiddleware | None]) -> None:
+        package = "langchain_aws" if factory is _create_bedrock_prompt_caching_middleware else "langchain_fireworks"
+        with patch("deepagents.middleware._prompt_caching.import_module", side_effect=ModuleNotFoundError(name=package)) as load:
+            assert factory() is None
+            assert factory() is None
+        load.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("factory", "name"),
+        [
+            (_create_bedrock_prompt_caching_middleware, "BedrockPromptCachingMiddleware"),
+            (_create_fireworks_prompt_caching_middleware, "FireworksPromptCachingMiddleware"),
+        ],
+    )
+    def test_cached_provider_class_creates_fresh_instances(self, factory: Callable[[], AgentMiddleware | None], name: str) -> None:
+        middleware_cls = MagicMock(side_effect=[MagicMock(), MagicMock()])
+        module = MagicMock(**{name: middleware_cls})
+        with patch("deepagents.middleware._prompt_caching.import_module", return_value=module) as load:
+            first, second = factory(), factory()
+        assert first is not second
+        load.assert_called_once()
+        assert middleware_cls.call_count == 2
 
     def test_main_and_general_purpose_agents_get_bedrock_prompt_caching(self) -> None:
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
@@ -3285,3 +3318,53 @@ class TestSkillsMiddlewarePlacement:
             "ModelFallbackMiddleware",
             "AnthropicPromptCachingMiddleware",
         ]
+
+
+class _WantsBackend(AgentMiddleware[Any, Any, Any]):
+    def __init__(self, name: str = "WantsBackend") -> None:
+        super().__init__()
+        self._name = name
+        self.backends: list[BackendProtocol] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def bind_backend(self, backend: BackendProtocol) -> None:
+        self.backends.append(backend)
+
+
+class TestBackendBinding:
+    """`create_deep_agent` hands its backend to middleware that ask for it."""
+
+    def _build(self, **kwargs: Any) -> tuple[list[AgentMiddleware], dict[str, list[AgentMiddleware]]]:
+        return TestSkillsMiddlewarePlacement()._build(skills=None, **kwargs)
+
+    @staticmethod
+    def _file_backend(stack: list[AgentMiddleware]) -> BackendProtocol:
+        return next(m.backend for m in stack if isinstance(m, FilesystemMiddleware))
+
+    @pytest.mark.parametrize("explicit", [False, True], ids=["default_backend", "explicit_backend"])
+    def test_user_middleware_gets_the_backend_the_file_tools_use(self, *, explicit: bool) -> None:
+        wants = _WantsBackend()
+        kwargs: dict[str, Any] = {"backend": StateBackend()} if explicit else {}
+
+        main, _ = self._build(middleware=[wants], **kwargs)
+
+        assert wants.backends == [self._file_backend(main)]
+
+    def test_declarative_subagent_middleware_gets_the_backend(self) -> None:
+        own = _WantsBackend("OwnBackendMW")
+        worker: SubAgent = {"name": "worker", "description": "d", "middleware": [own]}
+
+        _, subagents = self._build(subagents=[worker])
+
+        assert own.backends == [self._file_backend(subagents["worker"])]
+
+    def test_middleware_without_the_method_is_left_alone(self) -> None:
+        plain = _named_mw("PlainMW")
+
+        main, _ = self._build(middleware=[plain])
+
+        assert plain in main
+        assert not isinstance(plain, BackendConsumer)

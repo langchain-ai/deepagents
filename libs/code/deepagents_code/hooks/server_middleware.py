@@ -613,7 +613,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             return {_PRE_TOOL_STATE_KEY: {}}
         context = _hook_context(runtime.context, None, self._cwd)
         outcomes: dict[str, _PreToolState] = {}
-        for tool_call in message.tool_calls:
+        tool_calls = [dict(call) for call in message.tool_calls]
+        for index, tool_call in enumerate(message.tool_calls):
             call = _tool_call_data_from_call(
                 tool_call,
                 mcp_server=self._mcp_servers.get(str(tool_call.get("name") or "")),
@@ -652,6 +653,19 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                     deadline=self._default_deadline,
                 )
                 decision = _require_decision(decision, PreToolUseDecision)
+                if (
+                    decision.updated_command is not None
+                    and decision.continue_processing
+                    and decision.permission.behavior != "deny"
+                    and call.name == "execute"
+                    and call.mcp_server is None
+                ):
+                    call = call.model_copy(
+                        update={
+                            "args": {**call.args, "command": decision.updated_command}
+                        }
+                    )
+                    tool_calls[index] = {**tool_call, "args": dict(call.args)}
                 permission = decision.permission
                 hook_context.extend(decision.context)
                 if not decision.continue_processing or permission.behavior == "deny":
@@ -688,7 +702,10 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                     "behavior": behavior,
                     "context": hook_context,
                 }
-        return {_PRE_TOOL_STATE_KEY: outcomes}
+        update: dict[str, Any] = {_PRE_TOOL_STATE_KEY: outcomes}
+        if tool_calls != message.tool_calls:
+            update["messages"] = [message.model_copy(update={"tool_calls": tool_calls})]
+        return update
 
     def _maybe_post_tool_use(
         self,

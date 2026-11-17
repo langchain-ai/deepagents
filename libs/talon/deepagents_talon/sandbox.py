@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncGenerator, Mapping
     from pathlib import Path
 
     from deepagents.backends import CompositeBackend
@@ -63,7 +63,7 @@ class SandboxSession:
 
 
 @asynccontextmanager
-async def open_sandbox(config: TalonConfig) -> AsyncIterator[SandboxSession | None]:
+async def open_sandbox(config: TalonConfig) -> AsyncGenerator[SandboxSession | None]:
     """Start the configured sandbox for the host lifetime.
 
     Yields `None` when `DEEPAGENTS_TALON_SANDBOX` is unset. An owned sandbox is

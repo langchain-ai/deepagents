@@ -15,9 +15,11 @@ from typing import TYPE_CHECKING, Final, Literal, override
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    ModelResponse,
     TracePolicy,
     omit_payload,
 )
+from langchain_core.exceptions import ModelRefusalError
 from langchain_core.messages import AIMessage, ToolMessage
 
 from deepagents_code.local_context import _FORKED_CONTEXT_KEY
@@ -27,7 +29,6 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import (
         ModelRequest,
-        ModelResponse,
         ToolCallRequest,
     )
     from langchain_core.language_models import BaseChatModel
@@ -373,10 +374,21 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Raise when the reply was cut off before any output.
 
+        A `ModelRefusalError` from inner middleware is turned back into the
+        refused reply, so refusals get the same handling as other cut-off replies.
+
         Returns:
             The unchanged model response.
+
+        Raises:
+            ModelRefusalError: If the refusal carries no reply message.
         """
-        response = handler(request)
+        try:
+            response = handler(request)
+        except ModelRefusalError as error:
+            if not isinstance(error.raw_message, AIMessage):
+                raise
+            response = ModelResponse(result=[error.raw_message])
         self._check(response, request)
         return response
 
@@ -387,10 +399,21 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Raise when the reply was cut off before any output.
 
+        A `ModelRefusalError` from inner middleware is turned back into the
+        refused reply, so refusals get the same handling as other cut-off replies.
+
         Returns:
             The unchanged model response.
+
+        Raises:
+            ModelRefusalError: If the refusal carries no reply message.
         """
-        response = await handler(request)
+        try:
+            response = await handler(request)
+        except ModelRefusalError as error:
+            if not isinstance(error.raw_message, AIMessage):
+                raise
+            response = ModelResponse(result=[error.raw_message])
         self._check(response, request)
         return response
 

@@ -23,23 +23,29 @@ from collections.abc import (
 )
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import pytest
 from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
-from langchain_core.callbacks import CallbackManagerForLLMRun  # noqa: TC002
+from langchain_core.callbacks import (
+    BaseCallbackHandler,
+    CallbackManagerForLLMRun,
+)
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.runnables import Runnable  # noqa: TC002
+from langchain_core.runnables import Runnable, RunnableConfig  # noqa: TC002
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 # The exact snippet a model produced in production when this regressed.
 _EVAL_CODE = "var result = tools.listUserIds({}); result;"
@@ -676,3 +682,51 @@ def test_wrong_arg_name_surfaces_to_model() -> None:
     assert message_types == ["human", "ai", "tool", "ai"]
     tool_message = result["messages"][-2]
     assert tool_message.text.startswith("Error invoking tool")
+
+
+class _ToolRunRecorder(BaseCallbackHandler):
+    def __init__(self) -> None:
+        self.runs: dict[str, tuple[UUID, UUID | None]] = {}
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.runs[serialized["name"]] = (run_id, parent_run_id)
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_ptc_and_task_runs_nest_under_eval(use_async: bool) -> None:
+    """PTC calls and `task()` subagents are child runs of the eval run."""
+    code = (
+        "await tools.syncLabel({value: 'x'});\n"
+        "await task({description: 'work', subagentType: 'worker'});"
+    )
+    agent = create_deep_agent(
+        model=FakeChatModel(messages=_script(code)),
+        middleware=[CodeInterpreterMiddleware(ptc=[sync_label_tool])],
+        subagents=[
+            {
+                "name": "worker",
+                "description": "Does work.",
+                "system_prompt": "Do the work.",
+                "model": FakeChatModel(messages=iter([AIMessage(content="done")])),
+            }
+        ],
+    )
+    recorder = _ToolRunRecorder()
+    payload = {"messages": [HumanMessage(content="go")]}
+    config: RunnableConfig = {"callbacks": [recorder]}
+    if use_async:
+        await agent.ainvoke(payload, config=config)
+    else:
+        await asyncio.to_thread(agent.invoke, payload, config)
+
+    eval_run_id, _ = recorder.runs["eval"]
+    assert recorder.runs["sync_label"][1] == eval_run_id
+    assert recorder.runs["task"][1] == eval_run_id

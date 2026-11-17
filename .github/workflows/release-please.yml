@@ -35,6 +35,9 @@ jobs:
   detect-release-commit:
     name: Block empty commits and detect merged release PR
     runs-on: ubuntu-latest
+    # Normally ~20 s. Without a limit, a stuck clone holds this job, and
+    # everything after it, for GitHub's 6-hour default.
+    timeout-minutes: 10
     outputs:
       release-commit: ${{ steps.check-releases.outputs.release-commit }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
@@ -49,10 +52,13 @@ jobs:
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
       # Full history: the empty-commit guard walks the second parent of
-      # repo-hotfix merge commits.
+      # repo-hotfix merge commits. The steps only read commits and file
+      # lists, so skip file contents; the rare rename check fetches the
+      # few it needs on demand.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - name: Reject empty commits

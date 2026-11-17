@@ -431,7 +431,7 @@ async def test_headless_mcp_hooks_match_original_names_and_gate_calls(
                 "hooks": {
                     "PreToolUse": [
                         {
-                            "matcher": "mcp__slack__.*",
+                            "matcher": f"mcp__{server}__{original_name}",
                             "hooks": [{"type": "command", "command": hook_command}],
                         }
                     ]

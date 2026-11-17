@@ -69,7 +69,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/deepagents/tests"
+        "libs/deepagents/tests",
+        "libs/deepagents/uv.lock"
       ]
     },
     "libs/acp": {
@@ -84,7 +85,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/acp/tests"
+        "libs/acp/tests",
+        "libs/acp/uv.lock"
       ]
     },
     "libs/code": {
@@ -99,7 +101,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/code/tests"
+        "libs/code/tests",
+        "libs/code/uv.lock"
       ]
     },
     "libs/talon": {
@@ -114,7 +117,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/talon/tests"
+        "libs/talon/tests",
+        "libs/talon/uv.lock"
       ]
     },
     "libs/partners/daytona": {
@@ -129,7 +133,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/partners/daytona/tests"
+        "libs/partners/daytona/tests",
+        "libs/partners/daytona/uv.lock"
       ]
     },
     "libs/partners/modal": {
@@ -144,7 +149,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/partners/modal/tests"
+        "libs/partners/modal/tests",
+        "libs/partners/modal/uv.lock"
       ]
     },
     "libs/partners/runloop": {
@@ -159,7 +165,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/partners/runloop/tests"
+        "libs/partners/runloop/tests",
+        "libs/partners/runloop/uv.lock"
       ]
     },
     "libs/partners/vercel": {
@@ -174,7 +181,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/partners/vercel/tests"
+        "libs/partners/vercel/tests",
+        "libs/partners/vercel/uv.lock"
       ]
     },
     "libs/partners/quickjs": {
@@ -189,7 +197,8 @@
       ],
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
-        "libs/partners/quickjs/tests"
+        "libs/partners/quickjs/tests",
+        "libs/partners/quickjs/uv.lock"
       ]
     }
   },

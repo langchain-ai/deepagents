@@ -1751,6 +1751,33 @@ def _load_terminal_progress_preference() -> bool:
     return _load_bool_display_preference("display.terminal_progress", fallback=True)
 
 
+def _approval_status_message(action_requests: Any) -> str:  # noqa: ANN401  # ActionRequest uses dynamic typing
+    """Return a one-line `OSC 7501` message naming the tools awaiting approval.
+
+    Tool arguments are left out: terminals may show the message in desktop
+    notifications.
+    """
+    names = [
+        name
+        for request in action_requests or []
+        if isinstance(request, dict) and isinstance(name := request.get("name"), str)
+    ]
+    return f"Approval needed: {', '.join(dict.fromkeys(names))}" if names else ""
+
+
+def _load_terminal_status_preference() -> bool:
+    """Resolve whether to emit `OSC 7501` program status reports.
+
+    Turn off with `DEEPAGENTS_CODE_TERMINAL_STATUS=0` or
+    `[ui].terminal_status = false`. `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` still
+    disables all terminal escapes regardless of this value.
+
+    Returns:
+        The resolved preference, or `True` when unset, unreadable, or malformed.
+    """
+    return _load_bool_display_preference("display.terminal_status", fallback=True)
+
+
 def _save_terminal_theme_mapping_result(
     term_program: str,
     name: str,
@@ -3667,6 +3694,16 @@ class DeepAgentsApp(App):
         self._terminal_progress_enabled = _load_terminal_progress_preference()
         """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
 
+        from deepagents_code.program_status import (
+            AgentStatusTracker,
+            ProgramStatusReporter,
+        )
+
+        self._agent_status = AgentStatusTracker(
+            ProgramStatusReporter(enabled=_load_terminal_status_preference())
+        )
+        """Reports agent status to terminals such as Herdr with `OSC 7501`."""
+
         self.sync_terminal_background()
 
         # Injected session config
@@ -5130,6 +5167,7 @@ class DeepAgentsApp(App):
         gc.freeze()
         self._terminal_title.start()
         self._update_terminal_title()
+        self._agent_status.start()
         self.screen_change_signal.subscribe(self, self._on_thread_name_screen_change)
         self.app_resume_signal.subscribe(self, self._on_terminal_resume)
 
@@ -6712,6 +6750,7 @@ class DeepAgentsApp(App):
         self._connecting = False
         self._reconnecting = False
         self._connection_ready_event.set()
+        self._agent_status.clear_error()
         self._agent = event.agent
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
@@ -6870,6 +6909,9 @@ class DeepAgentsApp(App):
             )
         else:
             text = f"Server failed to start: {self._server_startup_error}"
+        from deepagents_code.program_status import TurnOutcome
+
+        self._agent_status.set_outcome(TurnOutcome.ERROR, text)
         if had_deferred_actions:
             text += (
                 "\n\nCommands you ran while the server was starting were "
@@ -9478,6 +9520,9 @@ class DeepAgentsApp(App):
 
     def _mark_thread_turn_completed(self) -> None:
         """Record a clean stream end for the thread that owns the active turn."""
+        from deepagents_code.program_status import TurnOutcome
+
+        self._agent_status.set_outcome(TurnOutcome.DONE)
         if self._inflight_thread_id == self._lc_thread_id:
             self._thread_has_completed_turn = True
 
@@ -10074,7 +10119,7 @@ class DeepAgentsApp(App):
         ):
             return
         self._idle_compaction_seen[thread_id] = expires_at
-        self._set_agent_running(True)
+        self._set_agent_running(True, report_status=False)
         try:
             self._offload_worker = self.run_worker(
                 self._run_offload_task(idle_window=(thread_id, expires_at)),
@@ -11475,6 +11520,13 @@ class DeepAgentsApp(App):
         # remaining case where a future is abandoned without completing.
         self._pause_loading_spinner_for_approval()
         result_future.add_done_callback(self._resume_loading_spinner_after_approval)
+        from deepagents_code.program_status import BlockedKind
+
+        self._agent_status.track(
+            result_future,
+            BlockedKind.PERMISSION,
+            _approval_status_message(action_requests),
+        )
 
         # Create menu with unique ID to avoid conflicts
         from deepagents_code.tui.widgets.approval import ApprovalMenu
@@ -11942,6 +11994,13 @@ class DeepAgentsApp(App):
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
         menu.set_future(result_future)
+        from deepagents_code.program_status import BlockedKind
+
+        self._agent_status.track(
+            result_future,
+            BlockedKind.QUESTION,
+            questions[0]["question"] if questions else "",
+        )
 
         self._pending_ask_user_widget = menu
 
@@ -12088,6 +12147,11 @@ class DeepAgentsApp(App):
             id=unique_id,
         )
         menu.set_future(result_future)
+        from deepagents_code.program_status import BlockedKind
+
+        self._agent_status.track(
+            result_future, BlockedKind.PERMISSION, "Review the goal's criteria"
+        )
         self._pending_goal_review_widget = menu
         self._pending_goal_review_future = result_future
 
@@ -15198,13 +15262,22 @@ class DeepAgentsApp(App):
         while self._agent_running or self._agent_reconciling:
             await self._agent_quiescent.wait()
 
-    def _set_agent_running(self, running: bool) -> None:
-        """Keep the agent-running flag and quiescence event synchronized."""
+    def _set_agent_running(self, running: bool, *, report_status: bool = True) -> None:
+        """Keep the agent-running flag and quiescence event synchronized.
+
+        Args:
+            running: Whether the agent (or exclusive app work) is busy.
+            report_status: Report the change as `OSC 7501` status. Background
+                maintenance passes `False` so it does not replace an unseen
+                `done` with `working` and then `idle`.
+        """
         if running:
             self._agent_quiescent.clear()
         self._agent_running = running
         if not running and not self._agent_reconciling:
             self._agent_quiescent.set()
+        if report_status:
+            self._agent_status.set_working(running)
 
     @asynccontextmanager
     async def _goal_state_mutation_boundary(self) -> AsyncIterator[None]:
@@ -18503,10 +18576,15 @@ class DeepAgentsApp(App):
                 )
             )
             return False
+        from deepagents_code.program_status import BlockedKind
+
         try:
-            allowed = await self._push_screen_wait(
-                SkillTrustScreen(skill_name, directory)
-            )
+            with self._agent_status.blocked(
+                BlockedKind.PERMISSION, f"Trust skill {skill_name}?"
+            ):
+                allowed = await self._push_screen_wait(
+                    SkillTrustScreen(skill_name, directory)
+                )
         except Exception:
             # Fail closed: a prompt that cannot display is a deny.
             logger.warning(
@@ -19566,11 +19644,13 @@ class DeepAgentsApp(App):
             cwd=self._cwd,
             branch=self._status_bar.branch if self._status_bar else "",
         )
+        self._agent_status.set_title(self._thread_name)
 
     def _on_terminal_resume(self, _app: App) -> None:
-        """Reclaim the tab title from programs that ran while suspended."""
+        """Reclaim the tab title and status from programs that ran meanwhile."""
         self._terminal_title.invalidate()
         self._update_terminal_title()
+        self._agent_status.refresh()
 
     async def _load_thread_name(self) -> None:
         """Restore a name without letting an old read replace the active name."""
@@ -19887,6 +19967,7 @@ class DeepAgentsApp(App):
         for task in tasks:
             task.cancel()
         self._terminal_title.restore()
+        self._agent_status.close()
         await asyncio.gather(*tasks, return_exceptions=True)
 
     def _effective_model_spec(self) -> str | None:
@@ -20297,6 +20378,7 @@ class DeepAgentsApp(App):
 
         from deepagents_code.config import runtime_state
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.program_status import TurnOutcome
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
             RubricEvaluationEnd,
@@ -20534,6 +20616,9 @@ class DeepAgentsApp(App):
                 # would blame the model or the backend for a bug in this file —
                 # and run credential-mismatch detection that cannot apply.
                 logger.exception("Agent turn setup failed before streaming began")
+                self._agent_status.set_outcome(
+                    TurnOutcome.ERROR, "Internal error preparing this turn"
+                )
                 with suppress(Exception):
                     await self._mount_message(
                         ErrorMessage(
@@ -20552,6 +20637,7 @@ class DeepAgentsApp(App):
                 # The formatter itself must never mask the original error.
                 logger.exception("format_agent_exception failed")
                 error_text = f"Agent error: {e!r}"
+            self._agent_status.set_outcome(TurnOutcome.ERROR, error_text)
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
@@ -22757,6 +22843,7 @@ class DeepAgentsApp(App):
     async def _clear_messages_unlocked(self) -> None:
         """Clear the messages area and message store."""
         self._transcript_generation += 1
+        self._agent_status.start_new_conversation()
         # Drop buffered `!` shell output so it never leaks across a thread
         # reset, switch, or resume.
         self._pending_shell_messages.clear()
@@ -23749,6 +23836,7 @@ class DeepAgentsApp(App):
         for task in self._thread_name_tasks.values():
             task.cancel()
         self._terminal_title.restore()
+        self._agent_status.close()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
         # Cancellation alone is not enough: the task's `finally` block runs
@@ -26132,13 +26220,18 @@ class DeepAgentsApp(App):
             return True
 
         env_var = status.env_var or get_credential_env_var(provider)
-        result = await self._push_screen_wait(
-            AuthPromptScreen(
-                provider,
-                env_var,
-                reason=f"Required to use {model_spec}",
+        from deepagents_code.program_status import BlockedKind
+
+        with self._agent_status.blocked(
+            BlockedKind.AUTH, f"API key required to use {model_spec}"
+        ):
+            result = await self._push_screen_wait(
+                AuthPromptScreen(
+                    provider,
+                    env_var,
+                    reason=f"Required to use {model_spec}",
+                )
             )
-        )
         return result is AuthResult.SAVED
 
     def _register_custom_themes(self) -> None:
@@ -29446,12 +29539,17 @@ class DeepAgentsApp(App):
         await asyncio.sleep(0)
 
         login_error: Exception | None = None
+        from deepagents_code.program_status import BlockedKind
+
         try:
-            await mcp_login(
-                server_name=server_name,
-                server_config=selection.server_config,
-                ui=screen,
-            )
+            with self._agent_status.blocked(
+                BlockedKind.AUTH, f"Sign in to MCP server {server_name}"
+            ):
+                await mcp_login(
+                    server_name=server_name,
+                    server_config=selection.server_config,
+                    ui=screen,
+                )
         except MCPLoginCancelledError:
             screen.finish(success=False, message="Login cancelled.")
             await asyncio.wait_for(outcome_future, timeout=5.0)

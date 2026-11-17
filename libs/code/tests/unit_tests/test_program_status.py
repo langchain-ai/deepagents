@@ -304,10 +304,17 @@ class TestExitStatus:
     def test_success_is_done(self) -> None:
         assert exit_status(0).state is ProgramState.DONE
 
-    @pytest.mark.parametrize("code", [1, 124])
-    def test_failure_is_error_with_code(self, code: int) -> None:
-        assert exit_status(code) == ProgramStatus(
-            ProgramState.ERROR, msg=f"Exited with code {code}"
+    def test_failure_is_error_with_code(self) -> None:
+        assert exit_status(1) == ProgramStatus(
+            ProgramState.ERROR, msg="Exited with code 1"
+        )
+
+    def test_turn_limit_names_the_cause(self) -> None:
+        assert exit_status(124).msg == "Reached the --max-turns limit"
+
+    def test_reason_overrides_the_default(self) -> None:
+        assert exit_status(124, reason="Timed out after 5s").msg == (
+            "Timed out after 5s"
         )
 
     @pytest.mark.parametrize("code", [130, None])

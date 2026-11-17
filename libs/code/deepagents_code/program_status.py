@@ -466,7 +466,7 @@ def activity_status(activity: AgentActivity) -> ProgramStatus:
     )
 
 
-def exit_status(exit_code: int | None) -> ProgramStatus:
+def exit_status(exit_code: int | None, *, reason: str = "") -> ProgramStatus:
     """Return the final report for a one-shot (headless) run.
 
     The spec asks a program that exits when it finishes to report `done` or
@@ -474,15 +474,26 @@ def exit_status(exit_code: int | None) -> ProgramStatus:
 
     Args:
         exit_code: The process exit code, or `None` when it is unknown.
+        reason: Why the run failed, for the `error` message. Without it, a
+            known exit code gets a fixed reason and others get the code.
     """
     if exit_code == 0:
         return ProgramStatus(ProgramState.DONE)
     if exit_code is None or exit_code == _INTERRUPTED_EXIT_CODE:
         return ProgramStatus(ProgramState.CLEAR)
-    return ProgramStatus(ProgramState.ERROR, msg=f"Exited with code {exit_code}")
+    msg = reason or _EXIT_REASONS.get(exit_code, f"Exited with code {exit_code}")
+    return ProgramStatus(ProgramState.ERROR, msg=msg)
 
 
 _INTERRUPTED_EXIT_CODE = 130
+"""Exit code of an interrupted (Ctrl+C) headless run."""
+
+_EXIT_REASONS: dict[int, str] = {124: "Reached the --max-turns limit"}
+"""Default `error` message for headless exit codes with one known cause.
+
+`main.cli_main` passes its own reason for a `--timeout` hit, which also
+exits 124.
+"""
 
 
 class AgentStatusTracker:

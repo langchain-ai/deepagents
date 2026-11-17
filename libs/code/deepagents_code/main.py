@@ -6754,6 +6754,7 @@ def cli_main() -> None:
             timeout = getattr(args, "timeout", None)
             program_status = _start_headless_program_status()
             exit_code: int | None = None
+            failure = ""
             try:
                 exit_code = asyncio.run(
                     asyncio.wait_for(
@@ -6810,22 +6811,25 @@ def cli_main() -> None:
                     "--max-turns for a turn-count limit."
                 )
                 exit_code = 124
+                failure = f"Timed out after {timeout}s"
             except KeyboardInterrupt:
                 # `asyncio.run` re-raises `KeyboardInterrupt` past the inner
                 # `run_non_interactive` handler when the signal hits during
                 # `wait_for`; mirror its exit code 130 here so Ctrl-C is a
                 # quiet exit instead of a traceback.
                 exit_code = 130
-            except Exception:
+            except Exception as exc:
                 # An unexpected crash exits 1 with a traceback; report it as
                 # `error` instead of clearing. A signal's `SystemExit` is not
-                # caught here, so it still clears.
+                # caught here, so it still clears. Only the type is reported:
+                # the message can hold paths or data meant for the log.
                 exit_code = 1
+                failure = f"Crashed with {type(exc).__name__}"
                 raise
             finally:
                 from deepagents_code.program_status import exit_status
 
-                program_status.report(exit_status(exit_code))
+                program_status.report(exit_status(exit_code, reason=failure))
             sys.exit(exit_code)
         else:
             _print_configured_profile_notice()

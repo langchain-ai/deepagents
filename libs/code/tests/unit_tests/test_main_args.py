@@ -2391,7 +2391,17 @@ class TestHeadlessProgramStatus:
         mock_stdin.isatty.return_value = True
         with (
             patch.object(
-                sys, "argv", ["deepagents", "-n", "hi", "--model", "openai:test-model"]
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "hi",
+                    "--model",
+                    "openai:test-model",
+                    "--timeout",
+                    "30",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -2426,9 +2436,14 @@ class TestHeadlessProgramStatus:
                 {"state": "error", "msg": "Exited with code 1"},
             ),
             (
+                AsyncMock(return_value=124),
+                124,
+                {"state": "error", "msg": "Reached the --max-turns limit"},
+            ),
+            (
                 AsyncMock(side_effect=TimeoutError),
                 124,
-                {"state": "error", "msg": "Exited with code 124"},
+                {"state": "error", "msg": "Timed out after 30s"},
             ),
             (AsyncMock(side_effect=KeyboardInterrupt), 130, {"state": "clear"}),
         ],
@@ -2454,6 +2469,7 @@ class TestHeadlessProgramStatus:
         )
         assert isinstance(exc, RuntimeError)
         assert reports[-1]["state"] == "error"
+        assert reports[-1]["msg"] == "Crashed with RuntimeError"
 
     def test_opt_out_reports_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DEEPAGENTS_CODE_TERMINAL_STATUS", "0")

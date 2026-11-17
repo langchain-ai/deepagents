@@ -1,11 +1,8 @@
 ---
 type: security operations guide
 title: Security and Trust Boundaries
-description: Operational guidance for execution authority, filesystem policy, dcode server startup, MCP/OAuth safety, and Talon channel and unattended-run controls.
+description: Operational guidance for host-shell authority and cleanup, filesystem policy, dcode trust, MCP/OAuth safety, and Talon hooks, subagents, channel admission, and unattended work.
 tags: [security, operations, trust-boundaries, sandboxing, approvals, credentials, mcp]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-10T08:04:01.717Z
 sources:
   - id: openwiki-source-ffc41789c892ca61e2829a4c
     resource: repo://libs/acp/deepagents_acp/server.py
@@ -35,6 +32,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-cbf86ab9c145113d54045954
+    resource: repo://libs/talon/deepagents_talon/hooks.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
@@ -45,15 +46,22 @@ sources:
     resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-2d1f686d24d8182f60108ae7
+    resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-267468fe937003d4716fe6c2
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
+  - id: openwiki-source-7dcd7e37c18e77553a46cce3
+    resource: repo://libs/talon/tests/unit_tests/test_hooks.py
   - id: openwiki-source-3d684c645b34f5e3a3092ca9
     resource: repo://libs/talon/tests/unit_tests/test_questions.py
   - id: openwiki-source-6cf260dd7a6018657221ec15
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-17T08:03:47.818Z
 ---
 
 # Security and Trust Boundaries
@@ -71,10 +79,21 @@ flowchart TD
     Policy --> Local["LocalShellBackend"]
     Policy --> Sandbox["Isolated sandbox backend"]
     Local --> Host["Host user authority"]
+    Timeout["Timeout or cancellation"] --> Cleanup["Best effort process cleanup"]
+    Local --> Cleanup
+    Cleanup --> Host
     Sandbox --> Limits["Sandbox identity mounts and egress"]
 ```
 
-*Tool approval decides whether a mediated action proceeds; the selected backend defines its execution boundary.*
+*Tool approval decides whether a mediated action proceeds; the selected backend defines its execution boundary, while timeout and cancellation trigger cleanup rather than containment.*
+
+### Local-shell lifecycle and cleanup
+
+A command is launched through `subprocess.Popen(..., shell=True)` with stdin disconnected, the backend working directory, its constructed environment, and captured stdout/stderr. The default timeout is 120 seconds; output is bounded after collection. These operational limits make a failed command observable, but do not restrict what a running host command can access or do.
+
+On POSIX, each command starts in a new session, so timeout, interruption, and default `aexecute()` cancellation try to send `SIGKILL` to that command's process group, drain and close captured pipes, and briefly reap the shell. A child that creates its own session or process group—for example via `setsid`—is outside that group; `nohup` alone is not. On Windows there is no new group: cleanup kills only the direct shell, and descendants may survive or keep inherited output pipes open. In either case a cleanup failure is reported as a timeout that warns the command may still be running; do not blindly retry an operation with external effects.
+
+Async cancellation signals a worker thread and waits only a short cleanup grace period. If cleanup outlives it, the future is retained and its eventual failure is logged without command arguments; cancellation still returns to the caller. Overriding `execute()` takes the legacy thread-delegation path and does not receive this built-in cancellation cleanup. Treat cancellation, process killing, output limits, and timeout responses as availability and hygiene mechanisms—not as a security boundary or proof that a command, descendant, or side effect stopped.
 
 ### Filesystem middleware
 
@@ -131,7 +150,19 @@ Talon's OAuth transport validates public HTTPS endpoints with SSRF protection, i
 
 dcode token storage derives safe paths from server identity and warns that token representations must not be logged. Talon token storage uses owner-only directories/files, locking, and atomic replacement, preserves an existing refresh token when a refresh response omits one, and warns that filesystem hardening is not confidentiality isolation from its default shell backend. Store tokens outside agent workspaces and run Talon under an account appropriate to the authority those tokens convey.
 
-## Talon runtime, admission, and unattended work
+## Talon runtime, hooks, subagents, admission, and unattended work
+
+### Assistant-owned command hooks
+
+Talon loads `hooks.json` from the resolved assistant home once at the start of each turn, not from the workspace. It opens that exact file with `O_NOFOLLOW`, requires a regular file, and builds a snapshot with `workspace_trusted=False` and no project hooks. A missing file simply disables hooks; unreadable or invalid content produces diagnostics and an empty effective configuration rather than treating workspace configuration as trusted. Configuration changes therefore apply on a later turn, not midway through an existing turn.
+
+The shared hook runtime supports Talon's `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, and `Stop` server events. It validates that each hook interrupt belongs to the active snapshot, thread, and prompt and caches each invocation response. A `PreToolUse` denial prevents that call and suppresses an unnecessary approval interrupt, but a hook `allow` does **not** bypass Talon's operator-controlled tool approval. Hook commands are executable authority from the assistant home: protect that directory and review `hooks.json` as carefully as any other local command configuration. Hook denial and tool approval remain mediation decisions, not host containment.
+
+### Fresh subagents and inherited control plane
+
+Talon compiles local subagents with a fresh context: no parent history or skills are inherited, and `fork` mode is unsupported. A fresh graph receives only its configured tools plus an explicit per-task addition selected from the parent catalog; duplicate or unknown requested tool names are rejected. It gets Talon's MCP middleware, cooperative subagent-control middleware, and only the enabled approval entries for tools actually attached. Talon refuses to run a precompiled local subagent whenever an approval policy exists because it cannot enforce that policy inside the opaque graph; use a fresh agent with explicit tools instead.
+
+When parent hooks are active, each fresh child gets a child hook adapter that retains the turn's snapshot but creates independent thread and prompt identities, agent identity, invocation responses, and transcript scope. Its graph handles hook interrupts with a bounded resume loop, emits no child `Stop` event, and returns unresolved approval interrupts to the caller. Subagent findings and embedded instructions are untrusted evidence; they cannot prove approval or expand the main agent's authority.
 
 Talon's default backend is still `LocalShellBackend`, but its child environment is deliberately reconstructed rather than inherited. It admits only a small runtime-oriented allowlist plus `LC_` keys, forces a fixed safe `PATH`, and removes loader/shell/Python hijack variables, LangSmith/LangChain settings, and keys whose names indicate credentials or tokens. This reduces incidental secret and startup-state exposure; it does not sandbox the host filesystem, process, or network.
 
@@ -139,17 +170,18 @@ Unknown direct-message senders require a time-limited pairing code bound to prov
 
 Talon tool approval policy is an exact-name, revisioned immutable invocation snapshot. Enabled entries create approval interrupts; updates require operator context and a compare-and-swap revision, and take effect only for the next invocation. An absent or `false` entry does not create an approval gate, so policy edits can reduce oversight and need the same operational review as any authorization change.
 
-Scheduled jobs and background-result delivery are **unattended**. Talon withholds question, breakout, tool-approval, and channel OAuth authorization handlers from background delivery; its runtime also rejects all approval interrupts for cron and background-delivery requests, even if a handler was supplied. Scheduled work has a 30-minute outer bound and is repaired after timeout; revoking the paired sender that created a job cancels that sender's scheduled work. Pre-authorize the exact capabilities that unattended work needs, or design its tools to fail safely without an interactive person.
+Scheduled jobs and background-result delivery are **unattended**. Talon withholds question, breakout, tool-approval, and channel OAuth authorization handlers from background delivery; its runtime also rejects all approval interrupts for cron or background-delivery requests, even if a handler was supplied. Background subagents additionally clear the authorization handler before running. A protected action that interrupts consequently returns a message that it has not run, rather than leaving a prompt attached to an ended conversation. Scheduled work has a 30-minute outer bound and is repaired after timeout; revoking the paired sender that created a job cancels that sender's scheduled work. Pre-authorize the exact capabilities that unattended work needs, or design its tools to fail safely without an interactive person. Time bounds and denial prevent an unattended call from proceeding; they do not contain a capability already granted to its backend or tools.
 
 ## ACP and operating checklist
 
 ACP persistent execution approval is scoped to canonical full tool-argument JSON and the current session context. Changed commands, arguments, contexts, or sessions require review; invalid requests cannot receive reusable permission. This narrow reuse rule applies to `execute`; verify the graph's `interrupt_on` configuration for every other sensitive tool.
 
 1. **Choose the backend first.** Do not expose untrusted repository or channel input to a host shell, privileged OS account, inherited secrets, or unrestricted egress.
-2. **Use path policy as tool mediation, not confinement.** Test requested paths, symlink targets, and recursive deletion; keep shell authority separately constrained.
-3. **Grant checkout authority explicitly.** Review hooks, extensions, sandbox setup, and MCP per canonical workspace; do not carry grants across project switches.
-4. **Treat MCP configuration and OAuth as deployment authority.** Restrict stdio commands and remote scopes, protect token state, and never log token objects.
-5. **Require a human for human decisions.** Pair senders out of band, keep approval policy operator-owned, and ensure cron/background tasks auto-deny gated actions rather than prompting an unrelated channel.
-6. **Exercise focused tests after boundary changes.** Relevant coverage includes `libs/code/tests/unit_tests/test_server_helpers.py`, `libs/acp/tests/unit_tests/test_execute_permissions.py`, and Talon's `test_tool_approval_batch.py` and `test_questions.py`.
+2. **Operate host-shell cleanup as best effort.** On POSIX avoid programs that detach into their own session; on Windows assume descendants can survive. Treat a timeout warning as an incident signal and make effects idempotent before retrying.
+3. **Use path policy as tool mediation, not confinement.** Test requested paths, symlink targets, and recursive deletion; keep shell authority separately constrained.
+4. **Grant execution configuration explicitly.** Review dcode checkout hooks, extensions, sandbox setup, and MCP per canonical workspace. Separately protect Talon's assistant-home `hooks.json`; Talon intentionally does not load workspace hooks.
+5. **Treat MCP configuration and OAuth as deployment authority.** Restrict stdio commands and remote scopes, protect token state, and never log token objects.
+6. **Require a human for human decisions.** Pair senders out of band, keep approval policy operator-owned, use fresh subagents with explicit tools where policy must apply, and ensure cron/background tasks auto-deny gated actions rather than prompting an unrelated channel.
+7. **Exercise focused tests after boundary changes.** Relevant coverage includes `libs/deepagents/tests/unit_tests/backends/test_local_shell_backend.py`, `libs/talon/tests/unit_tests/test_hooks.py`, `libs/code/tests/unit_tests/test_server_helpers.py`, `libs/acp/tests/unit_tests/test_execute_permissions.py`, and Talon's `test_tool_approval_batch.py` and `test_questions.py`.
 
 See [Code agent architecture](/openwiki/architecture/code-agent.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [Talon channel admission](/openwiki/concepts/talon-channel-admission.md), and [MCP integration](/openwiki/integrations/mcp.md).

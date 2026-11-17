@@ -3,9 +3,6 @@ type: model and profile configuration
 title: Profiles and Models
 description: Explains SDK provider and harness profiles, plus dcode's inference-host model catalog, safe display metadata, selection policy, validation, persistence, and retry behavior.
 tags: [models, sdk-profiles, dcode, talon, provider-configuration, retries]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-16T08:11:13.198Z
 sources:
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
@@ -61,7 +58,10 @@ sources:
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-16T08:11:13.198Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-17T08:03:47.818Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 ---
 
 # Profiles and Models
@@ -196,7 +196,7 @@ Talon only accepts interactive switches from its discovered catalog, builds and 
 
 ## Operations and focused tests
 
-`deepagents-code` 0.2.8 requires Python `>=3.14,<3.15` and pins `deepagents==0.7.38`; Deep Agents 0.7.38 supports Python `>=3.11,<4.0`. The dcode core includes Anthropic, Google GenAI, and OpenAI integration floors, with other providers as separately installable extras. `deepagents-talon` likewise requires Python `>=3.14,<3.15` and depends on `deepagents>=0.7.38` and `deepagents-code>=0.2.8,<1.0.0`.
+`deepagents-code` 0.2.9 requires Python `>=3.14,<3.15` and pins `deepagents==0.7.39`; Deep Agents 0.7.39 supports Python `>=3.11,<4.0`. The SDK requires LangChain `>=1.5.0,<2.0.0`, LangChain Core `>=1.8.1,<2.0.0`, Anthropic `>=1.7.10,<2.0.0`, and Google GenAI `>=4.4.3,<5.0.0`. dcode includes Anthropic, Google GenAI, and OpenAI integration floors, with other providers as separately installable extras. `deepagents-talon` likewise requires Python `>=3.14,<3.15` and depends on `deepagents>=0.7.39` and `deepagents-code>=0.2.8,<1.0.0`.
 
 Focused catalog and picker tests cover the host-authority boundary, strict readiness coherence, scalar catalog serialization, custom-provider setup with no discovered models, policy-before-setup behavior, ambiguous identifier deferral, recommendation/current retention, and asynchronous default validation and persistence races. When changing this area, preserve admission before construction side effects, host-owned readiness, presentation-only serialization, current/recent retention, and validation before activation or persistence.
 

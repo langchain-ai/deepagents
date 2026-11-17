@@ -5,63 +5,27 @@ description: Package-local development, dependency and lockfile policy, release-
 tags: [development, dependencies, uv, lockfiles, python, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-14T08:03:44.053Z
+    at: 2026-11-17T08:03:47.818Z
 sources:
-  - id: openwiki-source-3638ff2c170b760df159d81b
-    resource: repo://.github/actions/uv_setup/action.yml
-  - id: openwiki-source-9a1c436646ef8c4f6dde787a
-    resource: repo://.github/RELEASING.md
   - id: openwiki-source-9d81aa681a56a98960013750
     resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
-  - id: openwiki-source-594b8b7a84e0fb527fbafd52
-    resource: repo://.github/scripts/checks/raise_langchain_minimums.py
   - id: openwiki-source-3cf9b023d0ac578794148a01
     resource: repo://.github/scripts/checks/refresh_lockfiles.py
-  - id: openwiki-source-f87398ca371fc238611bbff7
-    resource: repo://.github/scripts/release/check_dep_freshness.py
-  - id: openwiki-source-e7d931fcc9d582768b59c30e
-    resource: repo://.github/scripts/release/check_sdk_pin.py
-  - id: openwiki-source-d8e4ee8c2eab091950193178
-    resource: repo://.github/scripts/release/check_wheel_dep_freshness.py
-  - id: openwiki-source-1bc32c2b33ab6e58128b0319
-    resource: repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py
-  - id: openwiki-source-750d05d3ff77bc37d6cb1a49
-    resource: repo://.github/scripts/tests/release/test_check_wheel_dep_freshness.py
-  - id: openwiki-source-0e2f8f3ef1c6d8452a906e09
-    resource: repo://.github/workflows/bump_code_sdk_pin.yml
-  - id: openwiki-source-9f9a45e8530875c513dbc901
-    resource: repo://.github/workflows/check_dep_freshness.yml
-  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
-    resource: repo://.github/workflows/check_lockfiles.yml
-  - id: openwiki-source-bc54cf7ca3addab1b243d7a6
-    resource: repo://.github/workflows/raise_langchain_minimums.yml
+  - id: openwiki-source-ea29da8749b893917f11666d
+    resource: repo://.github/scripts/release/release-notes.js
+  - id: openwiki-source-e0d5bd90fac633227fff1f23
+    resource: repo://.github/scripts/tests/release/release-notes.test.js
   - id: openwiki-source-de0ecb740a3d9d20b8ad07cc
     resource: repo://.github/workflows/release_notes_check.yml
-  - id: openwiki-source-4541a26c837a99dc39a0ee0c
-    resource: repo://.github/workflows/release_notes.yml
-  - id: openwiki-source-7f3822065cb7dc086752e9d5
-    resource: repo://.github/workflows/release_please_scope_check.yml
-  - id: openwiki-source-4d1d392666be6dfdd7a91a2e
-    resource: repo://.github/workflows/release.yml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
-  - id: openwiki-source-bb78950c8b36b7b9f6746e96
-    resource: repo://libs/acp/pyproject.toml
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-478a579b56d29c6928ec2320
-    resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-fb60ee46c55b974b8341651c
-    resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-49fbcc45434b619b68220bf9
-    resource: repo://libs/Makefile
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 ---
 
 # Development and Release Operations
@@ -138,9 +102,9 @@ python .github/scripts/checks/check_lockfiles_pre_commit.py
 
 ## Code and sibling-package constraints
 
-`deepagents-code` publishes an exact `deepagents==0.7.38` dependency, but its workspace configuration resolves `deepagents` from editable `../deepagents`. Thus local Code development does not exercise the version of the SDK that PyPI users receive. When Code begins to require a newer SDK capability, update the exact published pin and regenerate Code's lockfile with Python 3.14.
+`deepagents-code` publishes an exact `deepagents==0.7.39` dependency, but its workspace configuration resolves `deepagents` from editable `../deepagents`. Thus local Code development does not exercise the version of the SDK that PyPI users receive. When Code begins to require a newer SDK capability, update the exact published pin and regenerate Code's lockfile with Python 3.14.
 
-Talon is a Python-3.14-only package and requires `deepagents>=0.7.38` plus `deepagents-code>=0.2.7,<1.0.0`. Its editable source mappings are local wiring rather than published dependency metadata.
+Talon is a Python-3.14-only package and requires `deepagents>=0.7.39` plus `deepagents-code>=0.2.8,<1.0.0`. Its editable source mappings are local wiring rather than published dependency metadata.
 
 `make -C libs/code check` includes an SDK-pin comparison after its local checks. An equal or ahead pin succeeds. An older pin produces exit code 1 and is advisory to that Make target; missing, malformed, or unsupported version data produces exit code 2 and fails it. The release workflow is the hard gate against shipping Code with a pin older than the workspace SDK, unless its dangerous pin-check bypass is deliberately selected.
 
@@ -160,7 +124,7 @@ uv run --no-project --with "packaging>=26.2" pytest .github/scripts/tests/checks
 
 ## Release boundaries and curated notes
 
-Release Please tracks nine independently released package paths. Its present baselines are Deep Agents `0.7.38`, ACP `0.0.13`, Code `0.2.8`, Talon `0.1.0`, Daytona `0.0.9`, Modal `0.0.8`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.12`. Configuration assigns Python release handling, separate draft release PRs, and pre-1.0 version-bump behavior to every managed package. Release Please prepares release PRs but does not create the GitHub release; `release.yml` publishes after a release PR is merged.
+The `packages` registry in `release-please-config.json` is the authoritative component and changelog-target registry for release operations; the manifest records its release baselines. It currently contains nine independently released package paths: Deep Agents `0.7.39`, ACP `0.0.13`, Code `0.2.9`, Talon `0.1.0`, Daytona `0.0.9`, Modal `0.0.8`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.12`. Configuration assigns Python release handling, separate draft release PRs, and pre-1.0 version-bump behavior to every managed package. Release Please prepares release PRs but does not create the GitHub release; `release.yml` publishes after a release PR is merged.
 
 When adding, removing, renaming, or changing the release-relevant paths of a package, reconcile `.release-please-manifest.json`, `release-please-config.json`, and release workflow routing. The manifest is release automation state: do not hand-edit an established entry except as part of adding a managed package. For a new first release at source version `0.0.1`, use a `0.0.0` manifest baseline unless `0.0.1` was previously released; otherwise Release Please treats `0.0.1` as already shipped and proposes `0.0.2`.
 
@@ -168,13 +132,23 @@ Keep a user-visible `feat`, `fix`, `perf`, or `revert` scoped to one owning comp
 
 ### Curated release-note gate
 
-Every managed release PR must use curated notes unless a maintainer deliberately applies `ci:skip-curated-notes`. Keep a release PR draft while it accumulates changes. Once ready for review, the bot posts a marked draft comment; edit it while retaining its version heading, then comment `@release-bot apply`. Apply writes that package's `CHANGELOG.md` and mirrors the notes to the PR body. The required `curated release notes` check must pass before merge.
+Every managed release PR must use curated notes unless a maintainer deliberately applies `ci:skip-curated-notes`. Keep a release PR draft while it accumulates changes. When it becomes ready for review, the bot posts a marked draft comment; edit it while retaining its version heading, then comment `@release-bot apply`. Apply writes only the registry-selected package `CHANGELOG.md`, mirrors that section to the PR body, and refreshes the required `curated release notes` check on the new head. The merged changelog—not the PR description—is the source for the published GitHub release body.
 
-Drafts use release-please's fixed ordering—`⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`—omitting empty sections. They must link every PR in the generated changelog section and no other link; this prevents incomplete or invented release-note references. The merged changelog, not the PR description, is the source for the published GitHub release body.
+Drafts use release-please's fixed ordering—`⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`—omitting empty sections. They must link every PR in the generated changelog section and no other link; this prevents incomplete or invented release-note references. A draft may carry up to 500 characters of subordinate editing instructions with `@release-bot draft`; `apply` republishes the stored draft and ignores trailing instructions.
 
-The automation derives the release package from the release PR branch and configuration, so it covers all release-please components without a per-package workflow list. It validates and executes helpers from a trusted `main` checkout; release-PR content is read as untrusted API data at the validated SHA rather than checked out in privileged jobs. Draft and apply mutations use short-lived GitHub App tokens after command and maintainer-permission validation. Commands are serialized per PR rather than cancelling an in-progress curation run.
+#### Identity and trust boundary
 
-A later `main` commit touching the release package requires `@release-bot draft` again. A release-branch lock-only update caused by an unrelated `main` change does not invalidate the prose; if that refresh overwrites applied notes, apply again. A manual draft can include up to 500 characters of subordinate editing instructions; `apply` republishes the stored draft and ignores trailing instructions.
+The gate is configuration-driven, not a hard-coded package list. It accepts only an open, same-repository PR targeting `main` whose head has the exact release-please branch prefix and whose derived component exists in the `packages` registry. Its `release(<component>): <version>` title must agree with that component before the automation derives the package or changelog path. Invalid, forked, retargeted, malformed, or title/branch-mismatched PRs are not release PRs; a malformed registry also fails loudly rather than silently leaving a component uncovered.
+
+All helper code executes from a trusted `main` checkout. Release-PR files are fetched through the GitHub API at the validated head SHA and treated as data, never checked out or executed in the privileged jobs. Manual `draft` and `apply` commands require a ready-for-review release PR and maintainer write permission; ambiguous commands are rejected. Draft/apply mutation uses a short-lived GitHub App token, and the bot identity is checked by both configured login and numeric ID. Per-PR concurrency queues later commands rather than cancelling a live curation run.
+
+#### Freshness and failure semantics
+
+The check is deliberately fail-closed. It trusts only strictly structured, marked comments from the configured bot identity, validates one version section and one PR-preview terminator, and refuses changed heads, changed PR bodies, altered drafts, mismatched headings, or generated entries whose fingerprint no longer matches the draft. The apply path revalidates its snapshot immediately before it creates the changelog commit and uses a non-force branch update; a concurrent release-branch move or a stale snapshot stops the mutation.
+
+New drafts record the `main` head and are fresh only when the comparison can positively prove that no file in the target package changed since that baseline. A changed package, rewritten or non-ahead history, malformed comparison data, an API comparison error, a truncated commit list, a 300-file comparison cap, and renamed paths all require a new draft. This intentionally permits an unrelated `main` change to rebuild the release branch and refresh locks without invalidating package prose. If that refresh overwrites already-applied notes, apply the stored draft again; if it changes generated entries, draft and apply again.
+
+The required-check workflow waits for the automatic first draft, then fails a ready release PR without a valid draft and applied state. It reports a pass for a draft PR, a non-release PR, or the explicit skip label; make the literal `curated release notes` check required in repository branch protection for the workflow to be a merge gate. Interrupted or failed refresh checks are closed as failures instead of being left in progress.
 
 ```mermaid
 flowchart TD
@@ -216,7 +190,7 @@ Run the focused validation suites after changing either release check:
 
 ```bash
 uv run --no-project --with "packaging>=26.2" pytest .github/scripts/tests/release/test_check_wheel_dep_freshness.py
-uv run --no-project --with pyyaml pytest .github/scripts/tests/release/test_release_notes.py
+node --test .github/scripts/tests/release/release-notes.test.js
 ```
 
 ## Validation expectations

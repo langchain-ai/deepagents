@@ -47,7 +47,7 @@ Follow Conventional Commits and include a scope. Allowed types and scopes are de
 - Do not put Linear issue-closing markers in titles; put issue relationships in the PR body.
 - For version-branch syncs, use `chore(repo): sync main into vX.Y`; `release` is a type, not a scope.
 - PRs should generally leave `README.md` files unchanged, including root and package READMEs. Only modify them when explicitly requested or necessary to correct information made inaccurate by the PR; avoid incidental README edits.
-- Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
+- Keep each bump-worthy PR to published-file changes (source, `pyproject.toml`) in one releasable package. Relocking other packages' `uv.lock` in the same PR is fine; release-please ignores lockfiles and `tests/`. Land another package's `pyproject.toml` or source change in its own PR first. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [dependency bump in a package with path dependents](.github/RELEASING.md#dependency-bump-in-a-package-with-path-dependents).
 
 ### Branch naming
 

@@ -16,11 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Operating System :: MacOS",
-    "Operating System :: Microsoft :: Windows",
-    "Operating System :: POSIX :: Linux",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Security",
 ]
 
 version = "0.0.1"
@@ -48,14 +44,6 @@ test = [
     "ruff>=0.15.20,<1.0.0",
     "ty>=0.0.54,<1.0.0",
     "langchain-tests>=1.1.9",
-]
-
-[tool.uv]
-# Development lock only; does not affect the published package.
-# cryptography (via deepagents -> langchain-google-genai -> google-auth) has no
-# Windows ARM64 wheel after 46.0.3, and building it needs Rust.
-constraint-dependencies = [
-    "cryptography==46.0.3 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
 ]
 
 [tool.uv.sources]
@@ -108,7 +96,6 @@ markers = [
     "requires_mxc: needs a real MXC executor on this machine",
 ]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",

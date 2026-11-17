@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11, <4.0"
 resolution-markers = [
     "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
@@ -11,9 +11,6 @@ resolution-markers = [
     "python_full_version < '3.12' and platform_machine == 'ARM64' and sys_platform == 'win32'",
     "(python_full_version < '3.12' and platform_machine != 'ARM64') or (python_full_version < '3.12' and sys_platform != 'win32')",
 ]
-
-[manifest]
-constraints = [{ name = "cryptography", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'", specifier = "==46.0.3" }]
 
 [[package]]
 name = "annotated-types"

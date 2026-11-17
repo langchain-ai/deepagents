@@ -31,7 +31,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -271,8 +270,6 @@ class ExecutorResult:
     returncode: int | None
     timed_out: bool = False
     """True when the host-side wait expired and the process tree was killed."""
-    duration: float = 0.0
-    argv: list[str] = field(default_factory=list)
 
     @property
     def stdout_text(self) -> str:
@@ -402,7 +399,6 @@ def run_request(
         windows = sys.platform == "win32"
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0) if windows else 0
 
-        started = time.monotonic()
         proc = subprocess.Popen(  # noqa: S603 - running the MXC executor is this function's purpose
             argv,
             stdin=subprocess.DEVNULL,
@@ -431,8 +427,6 @@ def run_request(
             stderr=stderr or b"",
             returncode=proc.returncode,
             timed_out=timed_out,
-            duration=time.monotonic() - started,
-            argv=argv,
         )
     finally:
         with contextlib.suppress(OSError):

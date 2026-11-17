@@ -138,7 +138,6 @@ The disabled step preserves package-scoped wiring so a future re-enablement has 
 | `langchain-quickjs` | `ANTHROPIC_API_KEY` |
 | `langchain-daytona` | `DAYTONA_API_KEY` |
 | `langchain-modal` | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` |
-| `langchain-mxc` | None. MXC runs on the local host; integration tests need the MXC executor installed, not credentials |
 | `langchain-runloop` | `RUNLOOP_API_KEY` |
 | `langchain-vercel-sandbox` | `VERCEL_TOKEN` plus `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` Actions variables |
 

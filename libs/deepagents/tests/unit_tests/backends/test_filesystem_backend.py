@@ -2713,6 +2713,29 @@ class TestFilesystemDelete:
         assert result.error is not None
         assert "not found" in result.error
 
+    def test_delete_root_is_refused(self, tmp_path: Path) -> None:
+        # Deleting the virtual root must not remove the configured root directory.
+        write_file(tmp_path / "keep.txt", "keep")
+        (tmp_path / "sub").mkdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.delete("/")
+        assert result.path is None
+        assert result.error is not None
+        assert "root directory" in result.error
+        assert (tmp_path / "keep.txt").exists()
+        assert (tmp_path / "sub").exists()
+
+    def test_delete_root_is_refused_outside_virtual_mode(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "keep.txt", "keep")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+        result = be.delete(str(tmp_path))
+        assert result.path is None
+        assert result.error is not None
+        assert "root directory" in result.error
+        assert (tmp_path / "keep.txt").exists()
+
     def test_delete_empty_directory(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)

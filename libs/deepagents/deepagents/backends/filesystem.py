@@ -623,6 +623,8 @@ class FilesystemBackend(BackendProtocol):
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
         try:
+            if resolved_path.resolve() == self.cwd:
+                return DeleteResult(error=f"Error: cannot delete the root directory '{file_path}'")
             if not resolved_path.exists() and not resolved_path.is_symlink():
                 return DeleteResult(error=f"Error: '{file_path}' not found")
             if resolved_path.is_symlink():

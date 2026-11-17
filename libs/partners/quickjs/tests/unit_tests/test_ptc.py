@@ -510,6 +510,12 @@ async def test_resolver_calls_unlisted_tools_with_shared_budget(
 ) -> None:
     calls: list[dict] = []
     greet = _greet_tool(calls)
+    names: list[str] = []
+
+    def resolve(name: str) -> BaseTool | None:
+        names.append(name)
+        return greet if name == "greet" else None
+
     resolved = _ThreadREPL(
         worker,
         runtime,
@@ -517,7 +523,7 @@ async def test_resolver_calls_unlisted_tools_with_shared_budget(
         capture_console=True,
         max_stdout_chars=4000,
         max_ptc_calls=2,
-        resolve_tool=lambda name: greet if name == "greet" else None,
+        resolve_tool=resolve,
     )
     resolved.install_tools([_echo_tool()])
     outcome = await resolved.eval_async(
@@ -526,6 +532,8 @@ async def test_resolver_calls_unlisted_tools_with_shared_budget(
     assert outcome.error_type is None
     assert outcome.result == "hi found x1"
     assert calls == [{"name": "found", "times": 1}]
+    # Installed names never reach the resolver; resolved ones reach it once.
+    assert names == ["greet"]
     exceeded = await resolved.eval_async(
         "await tools.echo({msg:'a'}); await tools.greet({name:'b'});"
         "await tools.greet({name:'c'})"
@@ -582,13 +590,19 @@ async def test_resolver_deferred_missing_tool_throws_catchable_typeerror(
     proxy = StructuredTool.from_function(
         name="remote", description="Resolve remotely.", coroutine=missing
     )
+    names: list[str] = []
+
+    def resolve(name: str) -> BaseTool:
+        names.append(name)
+        return proxy
+
     resolved = _ThreadREPL(
         worker,
         runtime,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
-        resolve_tool=lambda name: proxy,
+        resolve_tool=resolve,
     )
     resolved.install_tools([])
     outcome = await resolved.eval_async(
@@ -596,6 +610,7 @@ async def test_resolver_deferred_missing_tool_throws_catchable_typeerror(
     )
     assert outcome.error_type is None
     assert outcome.result == "TypeError:tools.remote is not a function"
+    assert names == ["remote"]
 
 
 async def test_install_tools_is_idempotent(repl: _ThreadREPL) -> None:
@@ -816,6 +831,35 @@ async def test_middleware_resolver_works_without_eager_ptc(mode: str) -> None:
                 {"runtime": runtime, "code": f"await tools.greet({{name:'{name}'}})"}
             )
             assert f"hi {name} x1" in result.content
+    finally:
+        mw._registry.close()
+
+
+async def test_middleware_resolver_injects_runtime_into_resolved_tools() -> None:
+    from types import SimpleNamespace
+
+    def whoami(runtime: ToolRuntime) -> str:
+        """Report the injected runtime."""
+        return f"{runtime.state['_quickjs_slot_id']}|{runtime.tool_call_id}"
+
+    found = StructuredTool.from_function(whoami)
+    mw = CodeInterpreterMiddleware(resolve_tool=lambda name: found)
+    state = {"_quickjs_slot_id": "resolver-runtime"}
+    mw._prepare_for_call(SimpleNamespace(tools=mw.tools, state=state))
+    runtime = ToolRuntime(
+        state=state,
+        context=None,
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="resolver-eval",
+        store=None,
+    )
+    try:
+        result = await mw.tools[0].ainvoke(
+            {"runtime": runtime, "code": "await tools.whoami({})"}
+        )
+        assert "<result>resolver-runtime|ptc_whoami_" in result.content
     finally:
         mw._registry.close()
 

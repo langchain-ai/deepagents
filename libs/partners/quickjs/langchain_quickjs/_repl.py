@@ -355,7 +355,6 @@ def _bridge_symbol_name(tool_name: str) -> str:
     return f"__tools_{normalized}_{digest}"
 
 
-_RESOLVES_TOOL_SYMBOL = "__tools_resolves"
 _RESOLVED_TOOL_SYMBOL = "__tools_resolved"
 _UNRESOLVED_KEY = "__tools_unresolved"
 
@@ -378,7 +377,6 @@ def _render_tools_namespace_assignment(
             f"installed[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
         )
     if resolves:
-        found = json.dumps(_RESOLVES_TOOL_SYMBOL)
         resolved = json.dumps(_RESOLVED_TOOL_SYMBOL)
         unresolved = json.dumps(_UNRESOLVED_KEY)
         statements.append(
@@ -387,14 +385,11 @@ def _render_tools_namespace_assignment(
             " || name === 'then' || name === 'toJSON')"
             " return target[name];"
             " return async (input) => {"
-            f" if (!globalThis[{found}](name))"
-            " throw new TypeError(`tools.${name} is not a function`);"
-            f" return globalThis[{resolved}](name, input).then((result) => {{"
+            f" const result = await globalThis[{resolved}](name, input);"
             " if (result !== null && typeof result === 'object'"
             f" && Object.prototype.hasOwnProperty.call(result, {unresolved}))"
             f" throw new TypeError(result[{unresolved}]);"
             " return result;"
-            " });"
             " };"
             " } });"
         )
@@ -747,20 +742,16 @@ class _ThreadREPL:
         if resolve_tool is None:
             return
 
-        def _resolves(camel: str) -> bool:
-            return resolve_tool(camel) is not None
-
         async def _resolved(camel: str, raw_input: Any = None) -> Any:
+            missing = f"tools.{camel} is not a function"
             tool = resolve_tool(camel)
             if tool is None:
-                msg = f"tool '{camel}' no longer resolves"
-                raise RuntimeError(msg)
+                return {_UNRESOLVED_KEY: missing}
             try:
                 return await self._acall_tool(camel, tool, raw_input)
             except UnresolvedToolError as exc:
-                return {_UNRESOLVED_KEY: str(exc) or f"tools.{camel} is not a function"}
+                return {_UNRESOLVED_KEY: str(exc) or missing}
 
-        ctx.register(_RESOLVES_TOOL_SYMBOL, _resolves)
         ctx.register(_RESOLVED_TOOL_SYMBOL, _resolved, is_async=True)
 
     async def _acall_tool(self, camel: str, tool: BaseTool, raw_input: Any) -> Any:

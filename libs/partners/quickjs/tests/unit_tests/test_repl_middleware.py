@@ -79,9 +79,18 @@ def runtime(worker: ThreadWorker) -> Runtime:
         worker.run_sync(_close())
 
 
+def _make_repl(worker: ThreadWorker, runtime: Runtime, **options: Any) -> _ThreadREPL:
+    """Build a `_ThreadREPL` on the worker's thread, as `_Slot` does."""
+
+    async def _build() -> _ThreadREPL:
+        return _ThreadREPL(worker, runtime, **options)
+
+    return worker.run_sync(_build())
+
+
 @pytest.fixture
 def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(
+    return _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -330,14 +339,14 @@ def test_state_persists_across_evals(repl: _ThreadREPL) -> None:
 
 
 def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
-    a = _ThreadREPL(
+    a = _make_repl(
         worker,
         runtime,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
     )
-    b = _ThreadREPL(
+    b = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -390,25 +399,42 @@ def test_fresh_eval_gets_its_own_context_on_the_warm_runtime() -> None:
         reg.close()
 
 
-def test_registry_closes_least_recently_used_slot_over_cap() -> None:
-    reg = _Registry(
+def _capped_registry(max_slots: int) -> _Registry:
+    return _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
-        max_slots=1,
+        max_slots=max_slots,
     )
+
+
+def test_registry_closes_least_recently_used_slot_over_cap() -> None:
+    reg = _capped_registry(1)
     try:
-        old = reg.get("thread-a")
-        old.eval_sync("1")
-        busy = reg.acquire("thread-b")
+        idle = reg.get("thread-a")
+        idle.eval_sync("1")
+        idle.end_turn()
+        reg.get("thread-b")
         assert list(reg._slots) == ["thread-b"]
-        assert old.runtime is None
-        reg.get("thread-c")
-        assert busy.retired
-        assert busy.eval_sync("1 + 1").result == "2"
+        assert idle.runtime is None
+    finally:
+        reg.close()
+
+
+def test_registry_never_closes_a_slot_mid_turn() -> None:
+    reg = _capped_registry(1)
+    try:
+        mid_turn = reg.get("thread-a")
+        mid_turn.eval_sync("var x = 41")
+        busy = reg.acquire("thread-b")
+        assert list(reg._slots) == ["thread-a", "thread-b"]
+        assert mid_turn.eval_sync("x + 1").result == "42"
         reg.release(busy)
-        assert busy.runtime is None
+        mid_turn.end_turn()
+        reg.get("thread-c")
+        assert list(reg._slots) == ["thread-c"]
+        assert mid_turn.runtime is None
     finally:
         reg.close()
 
@@ -433,7 +459,7 @@ def test_syntax_error_surfaces(repl: _ThreadREPL) -> None:
 
 
 def test_timeout(worker: ThreadWorker, runtime: Runtime) -> None:
-    tight = _ThreadREPL(
+    tight = _make_repl(
         worker,
         runtime,
         timeout=0.1,
@@ -460,7 +486,7 @@ def test_console_log_is_captured(repl: _ThreadREPL) -> None:
 
 
 def test_console_can_be_disabled(worker: ThreadWorker, runtime: Runtime) -> None:
-    quiet = _ThreadREPL(
+    quiet = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -475,7 +501,7 @@ def test_console_can_be_disabled(worker: ThreadWorker, runtime: Runtime) -> None
 def test_console_capture_is_bounded_at_append_time(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    bounded = _ThreadREPL(
+    bounded = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -495,7 +521,7 @@ def test_console_capture_is_bounded_at_append_time(
 def test_console_overflow_preserves_prefix(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    bounded = _ThreadREPL(
+    bounded = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -510,7 +536,7 @@ def test_console_overflow_preserves_prefix(
 def test_console_truncation_state_resets_between_evals(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    bounded = _ThreadREPL(
+    bounded = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -528,7 +554,7 @@ def test_console_truncation_state_resets_between_evals(
 def test_console_truncation_marker_emits_with_zero_budget(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    bounded = _ThreadREPL(
+    bounded = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -1103,7 +1129,7 @@ async def test_queued_identical_tasks_have_distinct_replay_stable_ids(
 async def test_queued_tasks_do_not_restore_spent_ptc_budget(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    repl = _ThreadREPL(
+    repl = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -1363,7 +1389,7 @@ async def test_async_task_global_not_installed_when_disabled(
     worker: ThreadWorker,
     runtime: Runtime,
 ) -> None:
-    disabled = _ThreadREPL(
+    disabled = _make_repl(
         worker,
         runtime,
         timeout=5.0,

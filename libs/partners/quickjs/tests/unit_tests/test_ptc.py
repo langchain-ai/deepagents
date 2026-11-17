@@ -204,9 +204,18 @@ def runtime(worker: ThreadWorker) -> Runtime:
         worker.run_sync(_close())
 
 
+def _make_repl(worker: ThreadWorker, runtime: Runtime, **options: Any) -> _ThreadREPL:
+    """Build a `_ThreadREPL` on the worker's thread, as `_Slot` does."""
+
+    async def _build() -> _ThreadREPL:
+        return _ThreadREPL(worker, runtime, **options)
+
+    return worker.run_sync(_build())
+
+
 @pytest.fixture
 def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(
+    return _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -648,7 +657,7 @@ async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
 async def test_ptc_host_call_budget_exceeded_surfaces_error(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = _ThreadREPL(
+    limited = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -672,7 +681,7 @@ async def test_ptc_host_call_budget_exceeded_surfaces_error(
 async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = _ThreadREPL(
+    limited = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -697,7 +706,7 @@ async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
 async def test_ptc_host_call_budget_resets_each_eval(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    limited = _ThreadREPL(
+    limited = _make_repl(
         worker,
         runtime,
         timeout=5.0,
@@ -715,7 +724,7 @@ async def test_ptc_host_call_budget_resets_each_eval(
 async def test_ptc_host_call_budget_none_disables_limit(
     worker: ThreadWorker, runtime: Runtime
 ) -> None:
-    unlimited = _ThreadREPL(
+    unlimited = _make_repl(
         worker,
         runtime,
         timeout=5.0,

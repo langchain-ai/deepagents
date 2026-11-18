@@ -189,8 +189,8 @@ class _Slot:
     all QuickJS work runs on the slot's own worker thread; callers on any
     thread or loop only wait on it. Evals run one at a time: one that starts
     while another is running fails with `ConcurrentEval`. The worker and
-    Runtime outlive turns; how long a Context and its state last is up to each
-    persistence mode's subclass (see `_SLOT_CLASSES`), through the hooks below.
+    Runtime outlive turns. The Context lasts one eval in `call` mode and one
+    turn otherwise; `thread` mode carries its state across turns as snapshots.
     """
 
     def __init__(self, name: str, config: _SlotConfig) -> None:
@@ -234,6 +234,8 @@ class _Slot:
             timeout=self._per_call_timeout
         )
         self._console = _ConsoleBuffer(self._config.max_stdout_chars)
+        # A Context restores the thread's snapshot once (`thread` mode).
+        self._snapshot_restored = False
         # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
         # QuickJS context. Host functions cannot be un-registered, so we
@@ -575,7 +577,7 @@ class _Slot:
         outer_loop: asyncio.AbstractEventLoop | None = None,
         fs: BackendProtocol | None = None,
     ) -> EvalOutcome:
-        """Uses `ctx.eval_async` directly.
+        """Run `code` in the Context. Runs on the worker.
 
         An eval that starts while another is running fails with
         `ConcurrentEval`. We intentionally do not queue: a model dispatching
@@ -681,13 +683,10 @@ class _Slot:
         finally:
             self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
-            self._after_eval()
+            if self._config.mode == "call":
+                self._close_context()
             self._eval_running = False
         return outcome
-
-    def _after_eval(self) -> None:
-        """Run on the worker after each eval, before the next can start."""
-        raise NotImplementedError
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
         outcome.error_type = e.name
@@ -710,32 +709,65 @@ class _Slot:
         return await self._worker.run_async(self._aeval_async(code, **kwargs))
 
     def restore_snapshot(self, payload: bytes) -> None:
-        """Bring a persisted snapshot into the Context before an eval.
+        """Restore a `thread`-mode snapshot into the Context, once per Context.
 
         Raises:
             _SnapshotRestoreError: If the payload can't be restored.
         """
-        raise NotImplementedError
+        if self._config.mode == "thread":
+            self._worker.run_sync(self._arestore_snapshot(payload))
 
     async def arestore_snapshot(self, payload: bytes) -> None:
         """Async variant of `restore_snapshot`."""
-        raise NotImplementedError
+        if self._config.mode == "thread":
+            await self._worker.run_async(self._arestore_snapshot(payload))
+
+    async def _arestore_snapshot(self, payload: bytes) -> None:
+        context = self._ensure_context()
+        if self._snapshot_restored:
+            return
+        self._snapshot_restored = True
+        try:
+            self._ensure_runtime().restore_snapshot(
+                QjsSnapshot.from_bytes(payload), context, inject_globals=True
+            )
+        except Exception as exc:  # best-effort restore path
+            logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
+            msg = "Failed to restore QuickJS snapshot"
+            raise _SnapshotRestoreError(msg) from exc
 
     def create_snapshot(self) -> bytes | None:
-        """Return REPL state to persist at the end of a turn, if any."""
-        raise NotImplementedError
+        """Snapshot the Context in `thread` mode; `None` if there's nothing to keep."""
+        if self._config.mode != "thread" or self._context is None:
+            return None
+        return self._worker.run_sync(self._acreate_snapshot())
 
     async def acreate_snapshot(self) -> bytes | None:
         """Async variant of `create_snapshot`."""
-        raise NotImplementedError
+        if self._config.mode != "thread" or self._context is None:
+            return None
+        return await self._worker.run_async(self._acreate_snapshot())
+
+    async def _acreate_snapshot(self) -> bytes | None:
+        if self._context is None:
+            return None
+        return self._context.create_snapshot().to_bytes()
 
     def end_turn(self) -> None:
-        """Release what the turn left open; keep the worker and Runtime."""
-        raise NotImplementedError
+        """Close the turn's Context; keep the worker and Runtime."""
+        if self._context is not None:
+            self._worker.run_sync(self._aend_turn())
 
     async def aend_turn(self) -> None:
         """Async variant of `end_turn`."""
-        raise NotImplementedError
+        if self._context is not None:
+            await self._worker.run_async(self._aend_turn())
+
+    async def _aend_turn(self) -> None:
+        # A forked subagent shares this slot; its turn ending must not close
+        # the Context under a parent eval that is still running.
+        if not self._eval_running:
+            self._close_context()
 
     def close(self) -> None:
         """Close the Context and Runtime on the worker, then stop the worker."""
@@ -758,107 +790,6 @@ class _Slot:
         if self._runtime is not None:
             self._runtime.close()
             self._runtime = None
-
-
-class _TurnSlot(_Slot):
-    """A `turn`-mode slot: one Context per turn, nothing persisted.
-
-    The default lifecycle the other modes build on.
-    """
-
-    def restore_snapshot(self, payload: bytes) -> None:
-        del payload  # nothing carries across turns
-
-    async def arestore_snapshot(self, payload: bytes) -> None:
-        del payload
-
-    def create_snapshot(self) -> bytes | None:
-        return None
-
-    async def acreate_snapshot(self) -> bytes | None:
-        return None
-
-    def _after_eval(self) -> None:
-        pass
-
-    def end_turn(self) -> None:
-        if self._context is not None:
-            self._worker.run_sync(self._aend_turn())
-
-    async def aend_turn(self) -> None:
-        if self._context is not None:
-            await self._worker.run_async(self._aend_turn())
-
-    async def _aend_turn(self) -> None:
-        # A forked subagent shares this slot; its turn ending must not close
-        # the Context under a parent eval that is still running.
-        if not self._eval_running:
-            self._close_context()
-
-
-class _ThreadSlot(_TurnSlot):
-    """A `thread`-mode slot: REPL state carries across turns as snapshots.
-
-    The last snapshot is restored into each new Context before its first eval,
-    and the Context is snapshotted at the end of the turn.
-    """
-
-    def __init__(self, name: str, config: _SlotConfig) -> None:
-        super().__init__(name, config)
-        # The Context the last snapshot was restored into, so each Context
-        # restores once.
-        self._restored_context: QjsContext | None = None
-
-    def restore_snapshot(self, payload: bytes) -> None:
-        """Restore `payload` into the Context, once per Context."""
-        self._worker.run_sync(self._arestore_snapshot(payload))
-
-    async def arestore_snapshot(self, payload: bytes) -> None:
-        await self._worker.run_async(self._arestore_snapshot(payload))
-
-    async def _arestore_snapshot(self, payload: bytes) -> None:
-        context = self._ensure_context()
-        if self._restored_context is context:
-            return
-        self._restored_context = context
-        try:
-            self._ensure_runtime().restore_snapshot(
-                QjsSnapshot.from_bytes(payload), context, inject_globals=True
-            )
-        except Exception as exc:  # best-effort restore path
-            logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
-            msg = "Failed to restore QuickJS snapshot"
-            raise _SnapshotRestoreError(msg) from exc
-
-    async def _acreate_snapshot(self) -> bytes | None:
-        if self._context is None:
-            return None
-        return self._context.create_snapshot().to_bytes()
-
-    def create_snapshot(self) -> bytes | None:
-        """Snapshot the live Context, or `None` if no eval ran this turn."""
-        if self._context is None:
-            return None
-        return self._worker.run_sync(self._acreate_snapshot())
-
-    async def acreate_snapshot(self) -> bytes | None:
-        if self._context is None:
-            return None
-        return await self._worker.run_async(self._acreate_snapshot())
-
-
-class _CallSlot(_TurnSlot):
-    """A `call`-mode slot: each eval gets a fresh Context."""
-
-    def _after_eval(self) -> None:
-        self._close_context()
-
-
-_SLOT_CLASSES: dict[PersistenceMode, type[_Slot]] = {
-    "thread": _ThreadSlot,
-    "turn": _TurnSlot,
-    "call": _CallSlot,
-}
 
 
 class _Registry:
@@ -903,9 +834,7 @@ class _Registry:
         with self._lock:
             slot = self._slots.get(key)
             if slot is None:
-                slot = _SLOT_CLASSES[config.mode](
-                    f"quickjs-worker-{slot_id[:8]}", config
-                )
+                slot = _Slot(f"quickjs-worker-{slot_id[:8]}", config)
                 self._slots[key] = slot
             self._slots.move_to_end(key)
             self._leases[slot] += 1

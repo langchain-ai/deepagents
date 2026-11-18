@@ -2,6 +2,20 @@
 
 # Deep Agents Changelog
 
+## [0.7.40](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.39...deepagents==0.7.40) (2026-11-18)
+
+
+### Bug Fixes
+
+* **sdk:** avoid warning-filter races in `warn_deprecated` ([#7749](https://github.com/langchain-ai/deepagents/issues/7749)) ([c9732c8](https://github.com/langchain-ai/deepagents/commit/c9732c8f1859d65865ea2957f2a685a3769063e6))
+* **sdk:** clean up cancelled shell commands ([#5907](https://github.com/langchain-ai/deepagents/issues/5907)) ([00f0486](https://github.com/langchain-ai/deepagents/commit/00f04867996f7ecc99f57aa8f4472117c4cef25d))
+* **sdk:** preserve output from timed-out shell commands ([#6349](https://github.com/langchain-ai/deepagents/issues/6349)) ([54b64dc](https://github.com/langchain-ai/deepagents/commit/54b64dcf952406c0de3b7d60ef3add449e100bc3))
+
+
+### Performance Improvements
+
+* **sdk:** discover profile plugins in a single entry-point scan ([#7755](https://github.com/langchain-ai/deepagents/issues/7755)) ([cf1fc13](https://github.com/langchain-ai/deepagents/commit/cf1fc137c2f3ddd5dcff509c27df3930f8521673))
+
 ## [0.7.39](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.38...deepagents==0.7.39) (2026-11-16)
 
 ### Bug Fixes

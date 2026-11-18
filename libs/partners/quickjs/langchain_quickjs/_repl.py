@@ -580,8 +580,12 @@ class _Slot:
         tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
         fs: BackendProtocol | None = None,
+        close_context_after: bool = False,
     ) -> EvalOutcome:
         """Run `code` in the Context. Runs on the worker.
+
+        With `close_context_after`, the Context is closed on every exit before
+        the next eval can start, so that eval gets a fresh one.
 
         An eval that starts while another is running fails with
         `ConcurrentEval`. We intentionally do not queue: a model dispatching
@@ -688,6 +692,8 @@ class _Slot:
         finally:
             self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
+            if close_context_after:
+                self._dispose_context()
             self._eval_running = False
         return outcome
 

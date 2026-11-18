@@ -473,12 +473,7 @@ class CodeInterpreterMiddleware(
         """Run one eval on `slot`, applying the persistence mode around it."""
         if snapshot := self._snapshot_for_eval(state):
             slot.restore_snapshot(snapshot)
-        try:
-            return slot.eval_sync(code, **kwargs)
-        finally:
-            # Also when the eval raises (an interrupt), so a replay starts fresh.
-            if self._mode == "call":
-                slot.close_context()
+        return slot.eval_sync(code, close_context_after=self._mode == "call", **kwargs)
 
     async def _aeval(
         self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
@@ -486,11 +481,9 @@ class CodeInterpreterMiddleware(
         """Async variant of `_eval`."""
         if snapshot := self._snapshot_for_eval(state):
             await slot.arestore_snapshot(snapshot)
-        try:
-            return await slot.eval_async(code, **kwargs)
-        finally:
-            if self._mode == "call":
-                await slot.aclose_context()
+        return await slot.eval_async(
+            code, close_context_after=self._mode == "call", **kwargs
+        )
 
     def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:
         """Return authenticated thread state for lazy restoration."""

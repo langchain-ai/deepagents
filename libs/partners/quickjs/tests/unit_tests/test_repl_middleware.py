@@ -1564,3 +1564,20 @@ async def test_unbounded_timeout_outlives_a_short_deadline(
 def test_default_timeout_is_unchanged() -> None:
     mw = CodeInterpreterMiddleware()
     assert "Timeout: 5.0s per call." in mw._base_prompt(ptc_attached=False)
+
+
+async def test_close_context_after_closes_on_interrupt(repl: _Slot) -> None:
+    """A `call`-mode eval that interrupts still leaves no state for its replay."""
+
+    async def _ask() -> str:
+        raise GraphInterrupt([Interrupt(value="ok?")])
+
+    ask = StructuredTool.from_function(coroutine=_ask, name="ask", description="Ask.")
+    with pytest.raises(GraphInterrupt):
+        await repl.eval_async(
+            "globalThis.seen = true; await tools.ask({})",
+            tools=[ask],
+            close_context_after=True,
+        )
+    assert repl._context is None
+    assert (await repl.eval_async("typeof seen")).result == "undefined"

@@ -330,12 +330,12 @@ def _get(registry: _Registry, thread_id: str, config: _SlotConfig = _CONFIG) -> 
 def test_registry_end_turn_keeps_worker_and_runtime(registry: _Registry) -> None:
     slot = _get(registry, "thread-a")
     slot.eval_sync("globalThis.answer = 42")
-    runtime = slot.runtime
+    runtime = slot._runtime
     registry.end_turn("thread-a", _CONFIG)
-    assert slot._ctx is None
+    assert slot._context is None
     assert slot.eval_sync("typeof answer").result == "undefined"
     assert _get(registry, "thread-a") is slot
-    assert slot.runtime is runtime
+    assert slot._runtime is runtime
 
 
 def test_call_mode_gives_each_eval_its_own_context_on_the_warm_runtime(
@@ -343,10 +343,10 @@ def test_call_mode_gives_each_eval_its_own_context_on_the_warm_runtime(
 ) -> None:
     slot = _get(registry, "thread-a", _SlotConfig(mode="call"))
     slot.eval_sync("globalThis.answer = 42")
-    runtime = slot.runtime
+    runtime = slot._runtime
     assert runtime is not None
     assert slot.eval_sync("typeof answer").result == "undefined"
-    assert slot.runtime is runtime
+    assert slot._runtime is runtime
 
 
 def _thread_ids(registry: _Registry) -> list[str]:
@@ -356,24 +356,24 @@ def _thread_ids(registry: _Registry) -> list[str]:
 def test_registry_closes_least_recently_used_slot_over_cap(
     registry: _Registry,
 ) -> None:
-    registry.max_slots = 1
+    registry._max_slots = 1
     idle = _get(registry, "thread-a")
     idle.eval_sync("1")
     idle.end_turn()
     _get(registry, "thread-b")
     assert _thread_ids(registry) == ["thread-b"]
-    assert idle.runtime is None
+    assert idle._runtime is None
 
 
 def test_registry_closes_idle_mid_turn_slot_but_not_a_running_eval(
     registry: _Registry,
 ) -> None:
-    registry.max_slots = 1
+    registry._max_slots = 1
     abandoned = _get(registry, "thread-a")
     abandoned.eval_sync("var x = 41")  # turn never ends, e.g. a dead run
     busy = registry.acquire("thread-b", _CONFIG)
     assert _thread_ids(registry) == ["thread-b"]
-    assert abandoned.runtime is None
+    assert abandoned._runtime is None
     _get(registry, "thread-c")
     assert _thread_ids(registry) == ["thread-b", "thread-c"]
     assert busy.eval_sync("1 + 1").result == "2"
@@ -626,10 +626,10 @@ def test_per_thread_slot_has_own_worker_and_runtime(registry: _Registry) -> None
     slot_b = _get(registry, "thread-b")
     slot_a.eval_sync("1")
     slot_b.eval_sync("1")
-    assert slot_a.worker is not slot_b.worker
-    assert slot_a.runtime is not slot_b.runtime
-    assert slot_a.worker._name == "quickjs-worker-thread-a"
-    assert slot_b.worker._name == "quickjs-worker-thread-b"
+    assert slot_a._worker is not slot_b._worker
+    assert slot_a._runtime is not slot_b._runtime
+    assert slot_a._worker._name == "quickjs-worker-thread-a"
+    assert slot_b._worker._name == "quickjs-worker-thread-b"
 
 
 def test_after_agent_evicts_current_thread_slot() -> None:
@@ -647,7 +647,7 @@ def test_after_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_of(mw, slot_id)._ctx is None
+        assert slot_of(mw, slot_id)._context is None
     finally:
         drop_slots(mw)
 
@@ -666,7 +666,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_of(mw, slot_id)._ctx is None
+        assert slot_of(mw, slot_id)._context is None
     finally:
         drop_slots(mw)
 
@@ -693,11 +693,11 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
         )
         assert "<result>42</result>" in first.content
         slot = slot_of(mw, slot_id)
-        first_runtime = slot.runtime
+        first_runtime = slot._runtime
 
         second = await tool.coroutine(runtime=runtime, code="typeof answer")
         assert "<result>undefined</result>" in second.content
-        assert slot.runtime is first_runtime
+        assert slot._runtime is first_runtime
     finally:
         drop_slots(mw)
 

@@ -138,13 +138,13 @@ async def test_after_agent_does_not_block_loop(
     state: dict[str, Any] = {"_quickjs_slot_id": slot_id}
     gap, _ = await _max_gap(mw.aafter_agent(state, None))  # type: ignore[arg-type]
     assert gap < MAX_GAP
-    assert slot._ctx is None
+    assert slot._context is None
 
 
 async def test_closing_an_evicted_slot_does_not_block_loop(
     registry: _Registry,
 ) -> None:
-    registry.max_slots = 1
+    registry._max_slots = 1
     slot = _get(registry, "evict-01")
     await slot.eval_async("1")
 
@@ -155,7 +155,7 @@ async def test_closing_an_evicted_slot_does_not_block_loop(
             time.sleep(SLOW)  # noqa: ASYNC251  # blocks the worker thread on purpose
             raise
 
-    lingering = slot.worker.run_async(_linger())
+    lingering = slot._worker.run_async(_linger())
     gap, newer = await _max_gap(registry.aacquire("evict-02", _SlotConfig()))
     registry.release(newer)
     assert gap < MAX_GAP

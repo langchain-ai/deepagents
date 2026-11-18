@@ -14,8 +14,7 @@ from langchain_core.utils.json_schema import dereference_refs
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from collections.abc import Set as AbstractSet
+    from collections.abc import Sequence, Set as AbstractSet
 
     from langchain_core.tools import BaseTool
 

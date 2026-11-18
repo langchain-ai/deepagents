@@ -9,6 +9,7 @@ from deepagents.backends import StateBackend
 from deepagents.middleware.filesystem import FilesystemState
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
@@ -302,7 +303,12 @@ def _compile_fresh(
             model=effective_model,
             tools=spec.get("tools", []),
             system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
-            middleware=[summarization, *middleware, *hook_middleware],
+            middleware=[
+                summarization,
+                *middleware,
+                *hook_middleware,
+                UnsupportedContentMiddleware(),
+            ],
             state_schema=FilesystemState,
             checkpointer=InMemorySaver() if hooks else False,
         )

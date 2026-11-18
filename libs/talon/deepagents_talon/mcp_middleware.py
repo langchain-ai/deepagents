@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
@@ -12,6 +14,7 @@ from langchain_openai.chat_models.base import BaseChatOpenAI
 from mcp.shared.exceptions import MCPError
 
 from deepagents_talon.mcp import _normalize_mcp_arguments, _run_authorized
+from deepagents_talon.media import MAX_TEXT_DOCUMENT_BYTES
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -32,6 +35,23 @@ def _preserve_mcp_schemas(request: ModelRequest) -> ModelRequest:
         for tool in request.tools
     ]
     return request.override(tools=tools)
+
+
+def _decode_text_attachment(block: str | dict[str, object]) -> str | dict[str, object]:
+    if not isinstance(block, dict) or block.get("type") != "file":
+        return block
+    if block.get("mime_type") != "application/octet-stream":
+        return block
+    payload = block.get("base64", block.get("data"))
+    if not isinstance(payload, str) or len(payload) > 4 * ((MAX_TEXT_DOCUMENT_BYTES + 2) // 3):
+        return block
+    try:
+        decoded = base64.b64decode(payload, validate=True)
+        if len(decoded) <= MAX_TEXT_DOCUMENT_BYTES:
+            return {"type": "text", "text": decoded.decode("utf-8")}
+    except ValueError, binascii.Error:
+        return block
+    return block
 
 
 class _TalonMCPMiddleware(AgentMiddleware):
@@ -66,7 +86,7 @@ class _TalonMCPMiddleware(AgentMiddleware):
         )
         request = request.override(tool_call={**request.tool_call, "args": arguments})
         try:
-            return await _run_authorized(
+            result = await _run_authorized(
                 request.tool_call["id"],
                 lambda: handler(request),
             )
@@ -77,6 +97,11 @@ class _TalonMCPMiddleware(AgentMiddleware):
                 tool_call_id=request.tool_call["id"],
                 status="error",
             )
+        if isinstance(result.content, list):
+            return result.model_copy(
+                update={"content": [_decode_text_attachment(block) for block in result.content]}
+            )
+        return result
 
 
 def talon_mcp_middleware() -> AgentMiddleware:

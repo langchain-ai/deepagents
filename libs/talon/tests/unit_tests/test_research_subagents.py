@@ -1019,3 +1019,28 @@ async def test_transcript_reads_compact_fresh_subagent_history(
         assert list((tmp_path / "artifacts").rglob("*.md"))
     finally:
         await runtime.stop()
+
+
+async def test_fresh_subagent_filters_binary_attachments() -> None:
+    @tool
+    def attachment() -> list[dict[str, str]]:
+        """Read a binary attachment."""
+        return [{"type": "file", "mime_type": "application/octet-stream", "base64": "/w=="}]
+
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("attachment")]),
+            AIMessage(content="Attachment unavailable"),
+        ]
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [attachment]}], model, None
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Read attachment")]})
+    assert result["messages"][-1].content == "Attachment unavailable"
+    message = next(item for item in model._seen[-1] if isinstance(item, ToolMessage))
+    assert "application/octet-stream" in str(message.content)
+    assert "/w==" not in str(message.content)
+    assert not any(
+        isinstance(block, dict) and block.get("type") == "file" for block in message.content
+    )

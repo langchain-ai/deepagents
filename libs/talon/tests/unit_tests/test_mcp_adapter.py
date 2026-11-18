@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import os
@@ -34,7 +35,8 @@ from deepagents_talon import mcp
 from deepagents_talon.authorization import current_authorization_invocation
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import AgentRequest
-from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY, talon_mcp_middleware
+from deepagents_talon.media import MAX_TEXT_DOCUMENT_BYTES
 from deepagents_talon.runtime import DeepAgentRuntime
 
 if TYPE_CHECKING:
@@ -380,3 +382,51 @@ async def test_stdio_processes_exit_after_discovery_and_invocation(tmp_path: Pat
                 os.kill(int(pidfile.read_text()), 0)
     finally:
         await mcp.FastMCPClient(transport).close()
+
+
+@pytest.mark.parametrize("key", ["base64", "data"])
+@pytest.mark.parametrize("is_mcp", [False, True])
+@pytest.mark.parametrize(
+    ("payload", "mime", "readable"),
+    [
+        (b'{"finding": "example"}\n', "application/octet-stream", True),
+        ("Evidence: café\n".encode(), "application/octet-stream", True),
+        (b"\xff\xfe", "application/octet-stream", False),
+        ("not base64!", "application/octet-stream", False),
+        (None, "application/octet-stream", False),
+        (b"x" * MAX_TEXT_DOCUMENT_BYTES, "application/octet-stream", True),
+        (b"x" * (MAX_TEXT_DOCUMENT_BYTES + 1), "application/octet-stream", False),
+        (b"document", "application/pdf", False),
+    ],
+)
+async def test_attachment_text_is_readable(key, is_mcp, payload, mime, readable):
+    encoded = base64.b64encode(payload).decode() if isinstance(payload, bytes) else payload
+    block = {"type": "file", key: encoded, "mime_type": mime}
+
+    def attachment():
+        return [block]
+
+    remote = StructuredTool.from_function(
+        attachment,
+        name="attachment",
+        description="Read an attachment",
+        metadata={MCP_TOOL_METADATA_KEY: True} if is_mcp else {},
+    )
+    result = await _graph([remote]).ainvoke(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "attachment-1", "name": "attachment", "args": {}}],
+                )
+            ]
+        },
+        {"configurable": {"thread_id": "attachments"}},
+    )
+    message = result["messages"][-1]
+    assert message.tool_call_id == "attachment-1"
+    assert message.name == "attachment"
+    assert message.status == "success"
+    assert message.content == (
+        [{"type": "text", "text": payload.decode()}] if readable and is_mcp else [block]
+    )

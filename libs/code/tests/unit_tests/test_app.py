@@ -198,6 +198,53 @@ def _closing_run_worker_mock(
     return MagicMock()
 
 
+@pytest.mark.parametrize("times_out", [False, True])
+async def test_unmount_waits_for_cancelled_database_worker(
+    monkeypatch: pytest.MonkeyPatch, *, times_out: bool
+) -> None:
+    """Database cleanup is awaited, but cannot block shutdown indefinitely."""
+    from deepagents_code import sessions
+
+    monkeypatch.setattr(
+        "deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01 if times_out else 5
+    )
+
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    threads: list[threading.Thread] = []
+
+    async def background() -> None:
+        async with sessions._connect() as conn:
+            threads.append(conn._thread)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+
+    async with app.run_test():
+        worker = app.run_worker(background, group="database-cleanup")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app.workers.cancel_all()
+        await asyncio.wait_for(cleaning.wait(), timeout=5)
+        unmount = asyncio.create_task(app.on_unmount())
+        await asyncio.sleep(0)
+        try:
+            if times_out:
+                await asyncio.wait_for(asyncio.shield(unmount), timeout=1)
+                assert threads[0].is_alive()
+            else:
+                assert not unmount.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(unmount, timeout=5)
+            await asyncio.gather(worker.wait(), return_exceptions=True)
+        assert not threads[0].is_alive()
+
+
 class TestDisplayModelLabel:
     """Tests for stripping the provider prefix off a model spec for display."""
 

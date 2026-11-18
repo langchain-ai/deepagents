@@ -30,7 +30,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
-from langchain_quickjs._repl import _Slot
+from langchain_quickjs._repl import _ThreadSlot
 from langchain_quickjs._snapshot import (
     coerce_record,
     normalize_signing_key,
@@ -761,7 +761,7 @@ def test_before_agent_rejects_missing_hmac() -> None:
         )
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
 
-        with patch.object(_Slot, "_arestore_snapshot") as restore:
+        with patch.object(_ThreadSlot, "_arestore_snapshot") as restore:
             before_update = mw.before_agent(
                 state={
                     "_quickjs_slot_id": _signing_thread_id(mw),

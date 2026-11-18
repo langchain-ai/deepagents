@@ -460,11 +460,11 @@ async def test_install_tools_skips_invalid_js_identifier_names(
 async def test_tools_namespace_assignment_escapes_malicious_tool_name(
     repl: _Slot,
 ) -> None:
-    from langchain_quickjs._repl import _render_tools_namespace_assignment
+    from langchain_quickjs._ptc import render_tools_namespace_assignment
 
     malicious = 'x"]; globalThis.__ptc_pwned = "yes"; //'
     quoted = json.dumps(malicious)
-    js = _render_tools_namespace_assignment({malicious: "__console_log"})
+    js = render_tools_namespace_assignment({malicious: "__console_log"})
 
     outcome = await repl.eval_async(f"{js}; typeof globalThis.__ptc_pwned")
     assert outcome.error_type is None, outcome.error_message

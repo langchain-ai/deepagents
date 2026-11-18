@@ -5,7 +5,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.backends.protocol import BackendProtocol
@@ -54,6 +54,7 @@ from langchain_quickjs._repl import (
     PersistenceMode,
     _SlotConfig,
     _SnapshotRestoreError,
+    _ThreadSlot,
 )
 from langchain_quickjs._snapshot import (
     encode_snapshot,
@@ -733,7 +734,11 @@ class CodeInterpreterMiddleware(
             self._registry.end_turn(slot_id, self._slot_config)
             return None
 
-        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
+        # `thread` mode only builds `_ThreadSlot`s.
+        slot = cast(
+            "_ThreadSlot | None",
+            self._registry.lease_if_exists(slot_id, self._slot_config),
+        )
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""
@@ -749,7 +754,7 @@ class CodeInterpreterMiddleware(
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for thread_id=%s",
+                "Failed to create QuickJS snapshot for slot_id=%s",
                 slot_id,
                 exc_info=True,
             )
@@ -771,7 +776,11 @@ class CodeInterpreterMiddleware(
             await self._registry.aend_turn(slot_id, self._slot_config)
             return None
 
-        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
+        # `thread` mode only builds `_ThreadSlot`s.
+        slot = cast(
+            "_ThreadSlot | None",
+            self._registry.lease_if_exists(slot_id, self._slot_config),
+        )
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""
@@ -787,7 +796,7 @@ class CodeInterpreterMiddleware(
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for thread_id=%s",
+                "Failed to create QuickJS snapshot for slot_id=%s",
                 slot_id,
                 exc_info=True,
             )

@@ -267,6 +267,54 @@ def test_update_lockfiles_condition_fails_closed() -> None:
     assert not runs("[1]", cancelled=True)
 
 
+def test_label_release_prs_condition_fails_closed() -> None:
+    """Labeling runs beside `update-lockfiles` with the same skip-gate handling.
+
+    It needs `release-please`, so it inherits the same implicit-success()
+    poison from the legitimately-skipped `trigger-releases` (#5161/#5169).
+    """
+    label_if = _condition(_load_workflow()["jobs"]["label-release-prs"])
+
+    def runs(
+        prs: str,
+        *,
+        detect: str = "success",
+        guard: str = "success",
+        release_please: str = "success",
+        cancelled: bool = False,
+    ) -> bool:
+        return _evaluate(
+            label_if,
+            {
+                "needs.detect-release-commit.result": detect,
+                "needs.guard-pending-release.result": guard,
+                "needs.release-please.result": release_please,
+                "needs.release-please.outputs.prs": prs,
+            },
+            cancelled=cancelled,
+        )
+
+    assert runs('[{"number": 1, "title": "release(deepagents): 1.0.0"}]')
+    assert not runs("[]")
+    assert not runs("")
+    assert not runs("[1]", detect="failure")
+    assert not runs("[1]", guard="failure")
+    assert not runs("[1]", guard="skipped")
+    assert not runs("[1]", release_please="failure")
+    assert not runs("[1]", release_please="skipped")
+    assert not runs("[1]", cancelled=True)
+
+
+def test_label_release_prs_is_off_the_lockfile_path() -> None:
+    """Labeling must not sit between release-please and the lockfile refresh."""
+    jobs = _load_workflow()["jobs"]
+    assert "label-release-prs" not in _needs(jobs["update-lockfiles"])
+    assert "label-release-prs" not in _needs(jobs["dispatch-release-notes-check"])
+    assert not any(
+        step.get("name") == "Label release PRs" for step in jobs["release-please"]["steps"]
+    )
+
+
 def test_dispatch_release_notes_check_condition_fails_closed() -> None:
     """Pin the notes-check dispatch gate: `always()` plus hand-checked deps.
 

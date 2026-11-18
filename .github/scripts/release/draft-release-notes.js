@@ -345,8 +345,9 @@ function responseText(provider, payload) {
 // repository-qualified number so the two forms compare equal.
 const GITHUB_LINK = /https:\/\/github\.com\/([^/\s()<>]+)\/([^/\s()<>]+)\/(?:issues|pull)\/(\d+)/g;
 // release-please appends each commit's PR as a `([#N](url))` suffix. An issue
-// that a commit closes is also linked (`closes [#N](url)`), but it is not a PR,
-// so only the suffix form makes a link required.
+// that a commit references is also linked (`refs [#N](url)`; `closes [#N](url)`
+// before release-please 17.10.4), but it is not a PR, so only the suffix form
+// makes a link required.
 const PULL_REQUEST_SUFFIX = new RegExp(`\\(\\[#\\d+\\]\\(${GITHUB_LINK.source}\\)\\)`, 'g');
 
 function linkRefs(text, pattern = GITHUB_LINK) {

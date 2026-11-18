@@ -154,8 +154,9 @@ def _ensure_builtin_profiles_loaded() -> None:
         _anthropic_haiku_4_5.register()
         _nvidia_nemotron_3_ultra.register()
         _openai_codex.register()
-        _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
-        _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
+        plugins = _discover_profile_plugins()
+        _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP, plugins[_PROVIDER_PROFILE_GROUP])
+        _invoke_profile_plugins(_HARNESS_PROFILE_GROUP, plugins[_HARNESS_PROFILE_GROUP])
         bootstrap_harness_keys = frozenset(_HARNESS_PROFILES)
     except Exception:
         logger.exception("Built-in profile bootstrap failed; restoring pre-bootstrap registry state.")
@@ -177,22 +178,45 @@ def _ensure_builtin_profiles_loaded() -> None:
         _BOOTSTRAP_CONDITION.notify_all()
 
 
-def _invoke_profile_plugins(group: str) -> None:
-    """Invoke every entry-point callable in `group`, isolating failures.
+def _discover_profile_plugins() -> dict[str, list[EntryPoint]]:
+    """Return the entry points of both profile groups from a single scan.
 
-    Failure handling differentiates environment-level breakage from
-    plugin-level bugs:
+    Enumerating entry points reads `entry_points.txt` from every installed
+    distribution, and `entry_points(group=...)` repeats that whole scan for
+    each call. This runs on the first `create_deep_agent()` of a process, so
+    both groups are partitioned out of one enumeration instead of two.
 
-    1. `entry_points(group=...)` itself raises (e.g. malformed
-        `dist-info` metadata). Logged at `WARNING` — environment-level,
-        not attributable to a specific plugin. The whole group is skipped.
-    2. `ep.load()` raises (missing dependency, import-time error). Logged
+    If enumeration itself raises (e.g. malformed `dist-info` metadata), the
+    failure is logged at `WARNING` — environment-level, not attributable to a
+    specific plugin — and both groups come back empty.
+    """
+    groups = (_PROVIDER_PROFILE_GROUP, _HARNESS_PROFILE_GROUP)
+    try:
+        # `.select()` rather than iterating: on Python 3.11 a bare
+        # `entry_points()` is the deprecated `SelectableGroups` mapping, whose
+        # iteration yields group names. Selecting from it does not rescan.
+        all_eps = entry_points()
+        return {group: list(all_eps.select(group=group)) for group in groups}
+    except Exception as exc:  # noqa: BLE001
+        msg = f"Failed to enumerate entry points; no third-party profile plugins will load: {type(exc).__name__}: {exc}"
+        logger.warning(msg, exc_info=True)
+        warnings.warn(msg, stacklevel=3)
+        return {group: [] for group in groups}
+
+
+def _invoke_profile_plugins(group: str, eps: list[EntryPoint]) -> None:
+    """Invoke every entry-point callable in `eps`, isolating failures.
+
+    Plugin-level failures are each logged and skipped so one broken plugin
+    cannot block its siblings:
+
+    1. `ep.load()` raises (missing dependency, import-time error). Logged
         at `ERROR` with the source distribution name — a structural bug
         in the plugin that the plugin author needs to fix.
-    3. The entry-point target resolves to something that is not callable.
+    2. The entry-point target resolves to something that is not callable.
         Logged at `ERROR` (declaring a non-callable as a registration hook
         is a plugin bug).
-    4. The registration callable raises when invoked. Logged at `ERROR` —
+    3. The registration callable raises when invoked. Logged at `ERROR` —
         the plugin attempted to register but produced a `ValueError` /
         `TypeError` / etc. The plugin's registrations are silently absent
         if this is suppressed, so the elevated level helps users notice.
@@ -204,16 +228,10 @@ def _invoke_profile_plugins(group: str) -> None:
     top), so later entries layer on earlier ones.
 
     Args:
-        group: Entry-point group name to iterate (e.g.
+        group: Entry-point group name, used in log messages (e.g.
             `deepagents.provider_profiles`).
+        eps: The group's entry points, from `_discover_profile_plugins`.
     """
-    try:
-        eps = entry_points(group=group)
-    except Exception as exc:  # noqa: BLE001
-        msg = f"Failed to enumerate {group} entry points; no third-party plugins in this group will load: {type(exc).__name__}: {exc}"
-        logger.warning(msg, exc_info=True)
-        warnings.warn(msg, stacklevel=2)
-        return
     for ep in eps:
         plugin_label = _format_plugin_label(ep)
         try:

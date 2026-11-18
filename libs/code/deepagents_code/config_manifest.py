@@ -2273,6 +2273,19 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         empty_env_is_false=True,
     ),
     ConfigOption(
+        key="display.terminal_status",
+        group="Display",
+        summary=(
+            "Report agent status (working, waiting on you, done, failed) to terminals "
+            "that support OSC 7501."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.TERMINAL_STATUS,
+        toml_keys=("ui", "terminal_status"),
+        empty_env_is_false=True,
+    ),
+    ConfigOption(
         key="terminal.tab_title",
         group="Display",
         summary=(

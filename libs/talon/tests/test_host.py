@@ -1392,6 +1392,87 @@ def test_approval_prompt_preserves_angle_brackets_for_other_channels() -> None:
     assert '"command": "sort < input.txt"' in _format_tool_approval_prompt(approval)
 
 
+def test_approval_prompt_summarizes_stored_mcp_values_without_changing_args() -> None:
+    args = {
+        "server_name": "slack",
+        "server": {
+            "allowedTools": ["<redacted>"] * 24,
+            "url": "<redacted>",
+            "enabled": False,
+            "auth": "oauth",
+        },
+        "mixed": ["<redacted>", "visible", {"hidden": "<redacted>"}],
+        "empty": {"list": [], "dict": {}, "null": None, "zero": 0},
+    }
+    original = json.dumps(args)
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "update_mcp_server", "args": args}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    assert "<redacted>" not in prompt
+    displayed = json.loads(prompt.split("Args: `", 1)[1].split("`", 1)[0])
+    assert displayed == {
+        "server_name": "slack",
+        "server": {
+            "allowedTools": "(24 stored values preserved)",
+            "url": "<kept>",
+            "enabled": False,
+            "auth": "oauth",
+        },
+        "mixed": ["<kept>", "visible", {"hidden": "<kept>"}],
+        "empty": {"list": [], "dict": {}, "null": None, "zero": 0},
+    }
+    assert json.dumps(args) == original
+
+
+@pytest.mark.parametrize(
+    ("server", "displayed_server"),
+    [
+        (
+            {"url": "https://new.example/mcp", "headers": {"Authorization": "<redacted>"}},
+            {"url": "https://new.example/mcp", "headers": {"Authorization": "<kept>"}},
+        ),
+        (
+            {"command": "new-command", "args": ["<redacted>", "--x"], "env": {"KEY": "<redacted>"}},
+            {"command": "new-command", "args": ["<kept>", "--x"], "env": {"KEY": "<kept>"}},
+        ),
+    ],
+)
+def test_approval_prompt_shows_stored_credential_reuse(
+    server: dict[str, object], displayed_server: dict[str, object]
+) -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "update_mcp_server", "args": {"server": server}}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    displayed = json.loads(prompt.split("Args: `", 1)[1].split("`", 1)[0])
+    assert displayed == {"server": displayed_server}
+    assert "<redacted>" not in prompt
+
+
+@pytest.mark.parametrize("args", ["<redacted>", {"content": "<redacted>"}, ["<redacted>"]])
+def test_approval_prompt_preserves_literal_placeholders_for_other_tools(args: object) -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "write_file", "args": args}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    assert "<redacted>" in prompt
+    assert "<kept>" not in prompt
+    assert "stored values preserved" not in prompt
+
+
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = ApprovalAgent()

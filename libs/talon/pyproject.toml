@@ -33,8 +33,8 @@ dependencies = [
     # objects and implements `httpx2.Auth`. Arrives transitively via `mcp`;
     # declared here because we import it directly.
     "httpx2>=2.16.0",
-    "langchain>=1.5.0,<2.0.0",
-    "langchain-core>=1.8.2,<2.0.0",
+    "langchain>=1.5.1,<2.0.0",
+    "langchain-core>=1.8.3,<2.0.0",
     "langgraph>=1.2.22,<2.0.0",
     "langgraph-checkpoint>=4.3.2,<5.0.0",
     "langgraph-checkpoint-sqlite>=3.1.3,<4.0.0",
@@ -60,7 +60,7 @@ history-voyage = [
     # `voyageai.Client`/`AsyncClient` directly.
     "voyageai>=0.5.0",
 ]
-history-openai = ["langchain-openai>=1.8.1,<2.0.0"]
+history-openai = ["langchain-openai>=1.8.2,<2.0.0"]
 # NVIDIA OpenShell sandbox (`DEEPAGENTS_TALON_SANDBOX=openshell`). The provider
 # lives in `deepagents-code`; this extra pulls in its backend package.
 openshell = ["deepagents-code[openshell]>=0.2.10,<1.0.0"]

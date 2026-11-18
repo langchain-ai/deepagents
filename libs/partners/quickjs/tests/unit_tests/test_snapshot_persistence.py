@@ -349,7 +349,7 @@ def lookup() -> str:
 async def test_model_only_turn_never_allocates_runtime(
     monkeypatch, invoke_mode, mode, ptc
 ) -> None:
-    monkeypatch.setattr(_repl, "Runtime", _forbid_allocation)
+    monkeypatch.setattr(_repl, "QjsRuntime", _forbid_allocation)
     monkeypatch.setattr(_repl, "ThreadWorker", _forbid_allocation)
     middleware = CodeInterpreterMiddleware(mode=mode, ptc=ptc)
     agent = create_agent(
@@ -423,7 +423,7 @@ async def test_signed_snapshot_survives_model_only_turns_and_rebuilt_agent(
     persisted = checkpoint(agent)
     assert all(persisted)
     with monkeypatch.context() as forbidden:
-        forbidden.setattr(_repl, "Runtime", _forbid_allocation)
+        forbidden.setattr(_repl, "QjsRuntime", _forbid_allocation)
         forbidden.setattr(_repl, "ThreadWorker", _forbid_allocation)
         await _invoke(agent, invoke_mode, config)
         assert checkpoint(agent) == persisted

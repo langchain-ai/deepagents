@@ -27,19 +27,25 @@ from langgraph.prebuilt.tool_node import _get_all_injected_args
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
-    Context,
     DeadlockError,
     HostCancellationError,
     JSError,
     MarshalError,
     MemoryLimitError,
-    Runtime,
-    Snapshot,
     SourceTransform,
     ThreadWorker,
 )
 from quickjs_rs import (
-    TimeoutError as QJSTimeoutError,
+    Context as QjsContext,
+)
+from quickjs_rs import (
+    Runtime as QjsRuntime,
+)
+from quickjs_rs import (
+    Snapshot as QjsSnapshot,
+)
+from quickjs_rs import (
+    TimeoutError as QjsTimeoutError,
 )
 
 from langchain_quickjs import _fs
@@ -400,8 +406,8 @@ class _Slot:
     def __init__(self, name: str, config: _SlotConfig) -> None:
         self.worker = ThreadWorker(name=name)  # starts its thread on first use
         self.config = config
-        self.runtime: Runtime | None = None
-        self._ctx: Context | None = None
+        self.runtime: QjsRuntime | None = None
+        self._ctx: QjsContext | None = None
         # Evals (or snapshots) running on the slot. A leased slot is never
         # evicted.
         self.leases = 0
@@ -418,7 +424,7 @@ class _Slot:
         # eval runs, so bridge calls can't run outside one.
         self._ptc_state: _PTCState | None = None
 
-    def _context(self) -> Context:
+    def _context(self) -> QjsContext:
         """Return the live Context, building it (and the Runtime) if needed.
 
         Runs on the worker and never awaits, so concurrent first evals on its
@@ -427,7 +433,7 @@ class _Slot:
         if self._ctx is not None:
             return self._ctx
         if self.runtime is None:
-            self.runtime = Runtime(
+            self.runtime = QjsRuntime(
                 memory_limit=self.config.memory_limit,
                 transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
             )
@@ -456,7 +462,7 @@ class _Slot:
         self._register_fs_bridge()
         return self._ctx
 
-    def _require_ctx(self) -> Context:
+    def _require_ctx(self) -> QjsContext:
         """Return the live QuickJS context or raise if this REPL is closed."""
         if self._ctx is None:
             msg = "QuickJS context is closed"
@@ -769,7 +775,7 @@ class _Slot:
             msg = "QuickJS context is closed"
             raise RuntimeError(msg)
         self.runtime.restore_snapshot(
-            Snapshot.from_bytes(payload),
+            QjsSnapshot.from_bytes(payload),
             self._ctx,
             inject_globals=inject_globals,
         )
@@ -865,7 +871,7 @@ class _Slot:
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
             _clear_exception_references(e)
-        except QJSTimeoutError as e:
+        except QjsTimeoutError as e:
             outcome.error_type = "Timeout"
             outcome.error_message = str(e)
             _clear_exception_references(e)
@@ -957,7 +963,10 @@ class _Slot:
             await self.worker.run_async(self._aend_turn())
 
     async def _aend_turn(self) -> None:
-        self._close_context()
+        # A forked subagent shares this slot; its turn ending must not close
+        # the Context under a parent eval that is still running.
+        if self._ptc_state is None:
+            self._close_context()
 
     def close(self) -> None:
         """Close the Context and Runtime on the worker, then stop the worker."""

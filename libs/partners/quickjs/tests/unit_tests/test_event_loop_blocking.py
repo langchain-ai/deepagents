@@ -79,7 +79,7 @@ def slow_build(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         time.sleep(SLOW)
         return Runtime(**kwargs)
 
-    monkeypatch.setattr(_repl, "Runtime", _slow_runtime)
+    monkeypatch.setattr(_repl, "QjsRuntime", _slow_runtime)
     return calls
 
 

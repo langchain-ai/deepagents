@@ -269,7 +269,7 @@ async def slow_tool() -> str:
 
 
 async def test_quickjs_mode_call_overlapping_eval_fails_loudly() -> None:
-    """A `mode="call"` eval that overlaps another fails; the first finishes."""
+    """Of two overlapping `mode="call"` evals, one fails and the other finishes."""
     model = FakeChatModel(
         messages=iter(
             [
@@ -284,7 +284,7 @@ async def test_quickjs_mode_call_overlapping_eval_fails_loudly() -> None:
                         },
                         {
                             "name": "eval",
-                            "args": {"code": "1 + 1"},
+                            "args": {"code": "await tools.slow({})"},
                             "id": "call_fast",
                             "type": "tool_call",
                         },
@@ -306,6 +306,8 @@ async def test_quickjs_mode_call_overlapping_eval_fails_loudly() -> None:
         for m in result["messages"]
         if isinstance(m, ToolMessage) and m.name == "eval"
     }
-    _assert_result_contains(contents["call_slow"], "done")
-    assert '<error type="ConcurrentEval">' in contents["call_fast"]
+    # The tool node may start either eval first; exactly one of them wins.
+    failed = [c for c in contents.values() if '<error type="ConcurrentEval">' in c]
+    assert len(failed) == 1
+    assert sum("done" in c for c in contents.values()) == 1
     assert result["messages"][-1].content == "finished"

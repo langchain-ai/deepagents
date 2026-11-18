@@ -1148,6 +1148,10 @@ async def test_scheduled_prompt_replaces_the_background_instructions():
 
     assert _SCHEDULED_INSTRUCTIONS in captured["system"]
     assert _INSTRUCTIONS not in captured["system"]
+    assert "message_subagent are unavailable during scheduled runs" in captured["system"]
+    assert "This run owns no background workers" in captured["system"]
+    assert "not count against the background concurrency cap" in captured["system"]
+    assert "before delegating is therefore satisfied; use task as needed" in captured["system"]
     # Both could only ever report nothing on a run that owns no jobs.
     assert captured["tools"] == ["researcher_tool"]
 

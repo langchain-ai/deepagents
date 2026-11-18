@@ -51,6 +51,7 @@ from deepagents_talon.background import (
     _IN_SUBAGENT,
     _INLINE_TIMEOUT_SECONDS,
     _MAX_RUNNING,
+    _SCHEDULED_HIDDEN_TOOLS,
     _SCHEDULED_TURN,
     BackgroundSubagents,
     _track_consumed_results,
@@ -938,18 +939,36 @@ class DeepAgentRuntime:
             self._resolved_subagents = replacement
             self._graph = graph
 
-    def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
-        @tool
-        async def get_agent_tools() -> dict[str, object]:
-            """Inspect active tool attachments without credentials or prompt contents.
+    @staticmethod
+    def _turn_attachments(attachments: list[Attachment]) -> list[Attachment]:
+        """Limit the main-agent inventory to scheduled-turn capabilities."""
+        if not _SCHEDULED_TURN.get():
+            return attachments
+        return [
+            {
+                **agent,
+                "tools": [name for name in agent["tools"] if name not in _SCHEDULED_HIDDEN_TOOLS],
+            }
+            if agent["name"] == "main" and agent["tools"] is not None
+            else agent
+            for agent in attachments
+        ]
 
-            Each agent's `tools` are what its configuration attached; only the names in
-            its `selectable_tools` can be passed to task(tools=[...]). The two lists come
-            from different catalogs, so a name in one may be absent from the other.
-            Null tools mean an opaque compiled/remote agent has not been inspected.
-            Saved edits require reload. Running turns and tasks retain old capabilities;
-            use list_subagents and cancel_subagent before claiming revocation is complete.
-            """
+    def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
+        @tool(
+            description=(
+                "Inspect active tool attachments without credentials or prompt contents. "
+                "Each agent's tools are what its configuration attached; only names in "
+                "selectable_tools can be passed to task(tools=[...]). The lists come from "
+                "different catalogs, so a name in one may be absent from the other. "
+                "Null tools mean an opaque compiled/remote agent has not been inspected. "
+                "Saved edits require reload. Running turns and tasks retain old capabilities; "
+                "in chat turns, use list_subagents and cancel_subagent before claiming "
+                "revocation is complete."
+            )
+        )
+        async def get_agent_tools() -> dict[str, object]:
+            """Inspect capabilities available to this turn."""
             try:
                 resolved = await asyncio.to_thread(self._resolve_subagents)
             except Exception:  # noqa: BLE001  # never return configuration contents
@@ -957,8 +976,8 @@ class DeepAgentRuntime:
             else:
                 changed = resolved != self._resolved_subagents
             return {
-                "agents": attachments,
-                "latest_agents": self._attachments,
+                "agents": self._turn_attachments(attachments),
+                "latest_agents": self._turn_attachments(self._attachments),
                 "saved_changes_inactive": changed or self._mcp_reload_failed,
                 "current_turn_uses_previous_graph": attachments is not self._attachments,
                 "running_tasks": "Running turns and tasks retain their original capabilities.",

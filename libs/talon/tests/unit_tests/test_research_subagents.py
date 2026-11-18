@@ -25,6 +25,7 @@ from deepagents_talon.authorization import (
     current_authorization_handler,
     current_authorization_invocation,
 )
+from deepagents_talon.background import _SCHEDULED_HIDDEN_TOOLS, _SCHEDULED_TURN
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.mcp_auth import _channel_handlers
 from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY
@@ -236,6 +237,33 @@ async def test_explicit_shell_access(tmp_path, monkeypatch, name):
 
 async def _inventory(runtime):
     return await runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"].ainvoke({})
+
+
+@pytest.mark.parametrize("scheduled", [False, True])
+async def test_inventory_reports_turn_capabilities(tmp_path, monkeypatch, scheduled) -> None:
+    _write_agent(tmp_path)
+    model = ToolModel(responses=[AIMessage(content="Done")])
+    runtime = _runtime(tmp_path, monkeypatch, model, model)
+    await runtime.start()
+    try:
+        token = _SCHEDULED_TURN.set(scheduled)
+        try:
+            inventory = await _inventory(runtime)
+        finally:
+            _SCHEDULED_TURN.reset(token)
+        for key in ("agents", "latest_agents"):
+            main = next(agent for agent in inventory[key] if agent["name"] == "main")
+            assert "task" in main["tools"]
+            assert set(main["tools"]) & _SCHEDULED_HIDDEN_TOOLS == (
+                set() if scheduled else _SCHEDULED_HIDDEN_TOOLS
+            )
+        chat = await _inventory(runtime)
+        main = next(agent for agent in chat["agents"] if agent["name"] == "main")
+        assert set(main["tools"]) >= _SCHEDULED_HIDDEN_TOOLS
+        tool = runtime._graph.nodes["tools"].bound.tools_by_name["get_agent_tools"]
+        assert "in chat turns, use list_subagents and cancel_subagent" in tool.description
+    finally:
+        await runtime.stop()
 
 
 @pytest.mark.parametrize("dynamic", [False, True])

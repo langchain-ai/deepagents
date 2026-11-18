@@ -110,7 +110,12 @@ _INSTRUCTIONS = (
 _SCHEDULED_INSTRUCTIONS = (
     "This is a scheduled run with nobody to talk to while it works. The task and "
     "start_async_task tools run a subagent to completion and return its result to you "
-    "directly, so act on that result in this same turn -- no later turn will."
+    "directly, so act on that result in this same turn -- no later turn will. "
+    "list_subagents, inspect_subagent, cancel_subagent, and message_subagent are unavailable "
+    "during scheduled runs. This run owns no background workers, and inline task calls do "
+    "not count against the background concurrency cap. A request to check worker status "
+    "before delegating is therefore satisfied; use task as needed without inspecting "
+    "background-worker occupancy."
 )
 
 

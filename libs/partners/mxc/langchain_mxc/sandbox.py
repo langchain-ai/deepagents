@@ -33,7 +33,7 @@ from langchain_mxc._executor import (
     probe_executor,
     run_request,
 )
-from langchain_mxc._policy import HostInfo, SandboxPolicy
+from langchain_mxc._policy import HostInfo, SandboxPolicy, is_under
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -82,6 +82,11 @@ WINDOWS_DELETE_HINT = (
 _UI_BLOCKED = re.compile(r"STATUS_DLL_INIT_FAILED|0xC0000142|Win32k", re.IGNORECASE)
 _UI_CRASH_EXIT_CODES = frozenset({0xC0000142, 0xC06D007E})  # DLL init failed; delay-loaded module not found
 _UI_CRASH_TEXT = re.compile(r"DLL\) initialization routine failed|Windows fatal exception: code 0xc06d007e", re.IGNORECASE)
+
+
+def _remove_dirs(*paths: str) -> None:
+    for path in paths:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
@@ -177,8 +182,12 @@ class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
         self._executor_path = find_executor(executor_path)
 
         scratch = Path(tempfile.mkdtemp(prefix=f"langchain-mxc-{self._sandbox_id}-")).resolve()
+        # The executor reads each request from a file. Keep those files out of every
+        # sandbox-writable path so a sandboxed process cannot rewrite a later command's policy.
+        requests = Path(tempfile.mkdtemp(prefix=f"langchain-mxc-{self._sandbox_id}-requests-")).resolve()
         self._scratch_dir = scratch
-        self._finalizer = weakref.finalize(self, shutil.rmtree, str(scratch), True)  # noqa: FBT003 - `ignore_errors`; `finalize` forwards only positionals
+        self._request_dir = requests
+        self._finalizer = weakref.finalize(self, _remove_dirs, str(scratch), str(requests))
 
         self._host = HostInfo.current()
         self._policy = SandboxPolicy.create(
@@ -193,6 +202,10 @@ class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
             clipboard=clipboard,
             allow_input_injection=allow_input_injection,
         )
+        if any(is_under(self._host, str(requests), p) for p in self._policy.read_write_paths):
+            self._finalizer()
+            msg = f"read_write_paths must not include {requests.parent}: MXCSandbox keeps its sandbox policy files there"
+            raise ValueError(msg)
         if self._policy.dropped_paths:
             logger.warning("MXCSandbox %s ignored nonexistent paths: %s", self._sandbox_id, ", ".join(self._policy.dropped_paths))
 
@@ -236,7 +249,7 @@ class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
                     lambda cmd: self._policy.build_request(cmd, 30),
                     allowed_paths=self._policy.allowed_paths,
                     platform=self._host.platform,
-                    config_dir=self._scratch_dir,
+                    config_dir=self._request_dir,
                 )
                 if self._probe_result.ok:
                     logger.info("MXCSandbox %s: probe passed (%s)", self._sandbox_id, self._executor_path)
@@ -305,7 +318,7 @@ class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
                 request,
                 timeout=effective_timeout,
                 grace=DEFAULT_GRACE_SECONDS,
-                config_dir=self._scratch_dir,
+                config_dir=self._request_dir,
             )
         except Exception as e:  # noqa: BLE001 - mirror LocalShellBackend: always return a response
             return ExecuteResponse(output=f"Error executing command ({type(e).__name__}): {e}", exit_code=1, truncated=False)

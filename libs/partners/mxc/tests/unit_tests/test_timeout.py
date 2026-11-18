@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 import langchain_mxc.sandbox as sandbox_module
 from langchain_mxc import MXCSandbox
 from langchain_mxc._executor import ExecutorResult, ProbeResult, classify_result, run_request
+from langchain_mxc._policy import is_under
 from langchain_mxc.sandbox import TIMEOUT_EXIT_CODE
 
 FAKE = Path(__file__).with_name("fake_executor.py")
@@ -191,3 +193,30 @@ def test_empty_command(monkeypatch: pytest.MonkeyPatch, root: Path, dummy_execut
     resp = sb.execute("")
     assert resp.exit_code == 1
     assert "non-empty string" in resp.output
+
+
+def test_request_files_stay_outside_sandbox_writable_paths(monkeypatch: pytest.MonkeyPatch, root: Path, dummy_executor: Path) -> None:
+    config_dirs: list[Path] = []
+
+    def fake_probe(*_args, config_dir, **_kwargs) -> ProbeResult:
+        config_dirs.append(Path(config_dir))
+        return ProbeResult(ok=True)
+
+    def fake_run(_executor, _req, *, timeout, grace, config_dir, extra_args=()) -> ExecutorResult:  # noqa: ARG001
+        config_dirs.append(Path(config_dir))
+        return ExecutorResult(stdout=b"", stderr=b"", returncode=0)
+
+    monkeypatch.setattr(sandbox_module, "probe_executor", fake_probe)
+    monkeypatch.setattr(sandbox_module, "run_request", fake_run)
+    sb = MXCSandbox(root_dir=root, executor_path=dummy_executor)
+    sb.execute("true")
+
+    assert len(config_dirs) == 2
+    for config_dir in config_dirs:
+        assert config_dir.is_dir()
+        assert not any(is_under(sb.policy.host, str(config_dir), p) for p in sb.policy.read_write_paths)
+
+
+def test_sandbox_rejects_write_access_to_request_folder(root: Path, dummy_executor: Path) -> None:
+    with pytest.raises(ValueError, match="read_write_paths must not include"):
+        MXCSandbox(root_dir=root, executor_path=dummy_executor, read_write_paths=[tempfile.gettempdir()])

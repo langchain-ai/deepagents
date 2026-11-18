@@ -2544,10 +2544,12 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
         name = action.get("name")
         tool_name = name if isinstance(name, str) and name else "unknown"
         lines.append(f"{index}. `{tool_name}`")
-        args = _visible_approval_args(action.get("args"))
+        args = action.get("args")
+        if tool_name == "update_mcp_server":
+            args = _mcp_approval_args(args)
         if isinstance(args, dict) and args:
             lines.append(f"Args: `{_json_preview(args)}`")
-        elif args not in (None, {}, [], "<redacted>"):
+        elif args not in (None, {}, []):
             lines.append(f"Args: `{args}`")
     if len(approval.action_requests) > 1:
         lines.append(
@@ -2558,18 +2560,16 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
     return "\n".join(lines)
 
 
-def _visible_approval_args(value: object) -> object:
-    """Copy display arguments, pruning placeholders and their emptied containers."""
+def _mcp_approval_args(value: object) -> object:
+    """Summarize stored MCP values, retaining field paths and mixed-list positions."""
+    if value == "<redacted>":
+        return "<kept>"
     if isinstance(value, dict):
-        visible = {
-            key: item
-            for key, raw in value.items()
-            if (item := _visible_approval_args(raw)) != "<redacted>"
-        }
-        return visible if visible or not value else "<redacted>"
+        return {key: _mcp_approval_args(item) for key, item in value.items()}
     if isinstance(value, list):
-        items = [item for raw in value if (item := _visible_approval_args(raw)) != "<redacted>"]
-        return items if items or not value else "<redacted>"
+        if value and all(item == "<redacted>" for item in value):
+            return f"({len(value)} stored values preserved)"
+        return [_mcp_approval_args(item) for item in value]
     return value
 
 

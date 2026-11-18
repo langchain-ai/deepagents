@@ -37,8 +37,6 @@ from quickjs_rs import (
     Snapshot,
     SourceTransform,
     ThreadWorker,
-)
-from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 

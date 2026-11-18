@@ -266,6 +266,11 @@ jobs:
               - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
             mxc:
               - 'libs/partners/mxc/**'
               - 'libs/deepagents/**'

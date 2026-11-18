@@ -2544,10 +2544,10 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
         name = action.get("name")
         tool_name = name if isinstance(name, str) and name else "unknown"
         lines.append(f"{index}. `{tool_name}`")
-        args = action.get("args")
+        args = _visible_approval_args(action.get("args"))
         if isinstance(args, dict) and args:
             lines.append(f"Args: `{_json_preview(args)}`")
-        elif args not in (None, {}, []):
+        elif args not in (None, {}, [], "<redacted>"):
             lines.append(f"Args: `{args}`")
     if len(approval.action_requests) > 1:
         lines.append(
@@ -2556,6 +2556,21 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
     else:
         lines.append("Reply `👍` / `approve` to run or `👎` / `deny` to skip.")
     return "\n".join(lines)
+
+
+def _visible_approval_args(value: object) -> object:
+    """Copy display arguments, pruning placeholders and their emptied containers."""
+    if isinstance(value, dict):
+        visible = {
+            key: item
+            for key, raw in value.items()
+            if (item := _visible_approval_args(raw)) != "<redacted>"
+        }
+        return visible if visible or not value else "<redacted>"
+    if isinstance(value, list):
+        items = [item for raw in value if (item := _visible_approval_args(raw)) != "<redacted>"]
+        return items if items or not value else "<redacted>"
+    return value
 
 
 def _json_preview(value: object) -> str:

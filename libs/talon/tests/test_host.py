@@ -1392,6 +1392,57 @@ def test_approval_prompt_preserves_angle_brackets_for_other_channels() -> None:
     assert '"command": "sort < input.txt"' in _format_tool_approval_prompt(approval)
 
 
+def test_approval_prompt_omits_nested_placeholders_without_changing_args() -> None:
+    args = {
+        "server_name": "slack",
+        "server": {
+            "allowedTools": ["<redacted>"] * 24,
+            "url": "<redacted>",
+            "enabled": False,
+            "auth": "oauth",
+        },
+        "mixed": ["<redacted>", "visible", {"hidden": "<redacted>"}],
+        "empty": {"list": [], "dict": {}, "null": None, "zero": 0},
+    }
+    original = json.dumps(args)
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "update_mcp_server", "args": args}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    assert "<redacted>" not in prompt
+    displayed = json.loads(prompt.split("Args: `", 1)[1].split("`", 1)[0])
+    assert displayed == {
+        "server_name": "slack",
+        "server": {"enabled": False, "auth": "oauth"},
+        "mixed": ["visible"],
+        "empty": {"list": [], "dict": {}, "null": None, "zero": 0},
+    }
+    assert json.dumps(args) == original
+
+
+@pytest.mark.parametrize(
+    "args",
+    ["<redacted>", {"url": "<redacted>"}, ["<redacted>"], {"nested": [{"url": "<redacted>"}]}],
+)
+def test_approval_prompt_omits_fully_redacted_args(args: object) -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "update_mcp_server", "args": args}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    assert "Args:" not in prompt
+    assert "<redacted>" not in prompt
+    assert "1. `update_mcp_server`" in prompt
+    assert "Reply `👍` / `approve` to run or `👎` / `deny` to skip." in prompt
+
+
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = ApprovalAgent()

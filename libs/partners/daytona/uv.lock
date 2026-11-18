@@ -1276,7 +1276,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "daytona", specifier = ">=0.197.0,<1" },
+    { name = "daytona", specifier = ">=0.197.0" },
     { name = "deepagents", editable = "../../deepagents" },
 ]
 

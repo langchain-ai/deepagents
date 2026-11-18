@@ -183,14 +183,14 @@ class _SlotConfig:
 
 
 class _Slot:
-    """One LangGraph thread's QuickJS worker, Runtime and Context (`turn` mode).
+    """One LangGraph thread's QuickJS worker, Runtime and Context.
 
     Builds nothing until the first eval. `quickjs_rs` objects are `!Send`, so
     all QuickJS work runs on the slot's own worker thread; callers on any
     thread or loop only wait on it. Evals run one at a time: one that starts
-    while another is running fails with `ConcurrentEval`. The Context lives
-    for a turn and is closed by `end_turn`; the worker and Runtime outlive
-    turns. `_ThreadSlot` and `_CallSlot` change how long REPL state lasts.
+    while another is running fails with `ConcurrentEval`. `end_turn` closes
+    the Context; the worker and Runtime outlive turns. Each persistence mode
+    has its own subclass (see `_SLOT_CLASSES`).
     """
 
     def __init__(self, name: str, config: _SlotConfig) -> None:
@@ -797,6 +797,10 @@ class _ThreadSlot(_Slot):
         return await self._worker.run_async(self._acreate_snapshot())
 
 
+class _TurnSlot(_Slot):
+    """A `turn`-mode slot: REPL state lasts for one turn."""
+
+
 class _CallSlot(_Slot):
     """A `call`-mode slot: each eval gets a fresh Context."""
 
@@ -812,7 +816,7 @@ class _CallSlot(_Slot):
 
 _SLOT_CLASSES: dict[PersistenceMode, type[_Slot]] = {
     "thread": _ThreadSlot,
-    "turn": _Slot,
+    "turn": _TurnSlot,
     "call": _CallSlot,
 }
 

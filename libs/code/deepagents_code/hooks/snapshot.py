@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from deepagents_code.hooks.capabilities import HookOwner, get_event_spec
 from deepagents_code.hooks.loading import UNSOURCED, SourcedGroup, compute_snapshot_id
@@ -25,7 +25,7 @@ from deepagents_code.hooks.models.domain import (
     SubagentStopEvent,
 )
 from deepagents_code.hooks.projection import to_wire_notification_type
-from deepagents_code.hooks.tools import to_wire_tool_name
+from deepagents_code.hooks.tools import to_wire_call
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -53,6 +53,7 @@ class HookHandler:
     matcher: Pattern[str] | frozenset[str] | None
     matcher_text: str | None
     argv: tuple[str, ...] | None = None
+    on_error: Literal["continue", "deny"] = "continue"
     source: HooksSource = UNSOURCED
     """Where the handler came from, which fixes its environment overlay."""
 
@@ -154,6 +155,7 @@ class HooksSnapshot:
                             ),
                             timeout=spec.timeout,
                             status_message=spec.status_message,
+                            on_error=spec.on_error,
                             matcher=matcher,
                             matcher_text=group.matcher,
                             argv=(
@@ -263,7 +265,7 @@ def _match_target(
         | PostToolUseEvent
         | PostToolUseFailureEvent,
     ):
-        return to_wire_tool_name(event.call.name, mcp_server=event.call.mcp_server)
+        return to_wire_call(event.call)[0]
     if matcher_field == "notification_type" and isinstance(event, NotificationEvent):
         return to_wire_notification_type(event.notification.type).value
     if matcher_field == "cause" and isinstance(

@@ -56,10 +56,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      # History to reach the PR's base, but no file contents: the hooks only
+      # list files changed between the base and head refs.
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - name: "🐍 Set up uv"

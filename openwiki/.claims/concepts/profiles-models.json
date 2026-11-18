@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:8048b259e577edb99c5cb9d7fa18a7672eb75614d6251614d9dc1d812ec87186",
+  "pageVersion": "sha256:255699532cf2c714a2ae81a2664e98079bd959e86f9dec8d3d1a7f10d1480575",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -128,15 +128,15 @@
     },
     {
       "id": "claim_7f00ab756ebf4225ac9f05bfb43bb47e",
-      "statement": "dcode 0.2.9 requires Python >=3.14,<3.15 and pins deepagents==0.7.39, while the deepagents 0.7.39 manifest supports Python >=3.11,<4.0; the SDK range does not widen dcode's released Python contract.",
+      "statement": "dcode 0.2.10 requires Python >=3.14,<3.15 and pins deepagents==0.7.39, while the deepagents 0.7.39 manifest supports Python >=3.11,<4.0; the SDK range does not widen dcode's released Python contract.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:82bd345c824de1a9a7b6f56517931c8b4f58ba921b265e2ccc78181f320beb2b"
+          "version": "repo-file-v1:sha256:eb094bb579be63b7e218e70d37fa0056f7a563b6df435a07f5d88d5a801dfab3"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:d4c644d5e805a4ed33cfec8a0972ed98a1a9f125a69dba7dbea2e9f470238be8"
+          "version": "repo-file-v1:sha256:42f47763d7ac03514cd766b374c3508dbab749217712e9179bbfd6e241b73132"
         }
       ]
     },
@@ -146,7 +146,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:d4c644d5e805a4ed33cfec8a0972ed98a1a9f125a69dba7dbea2e9f470238be8"
+          "version": "repo-file-v1:sha256:42f47763d7ac03514cd766b374c3508dbab749217712e9179bbfd6e241b73132"
         }
       ]
     },
@@ -156,7 +156,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:82bd345c824de1a9a7b6f56517931c8b4f58ba921b265e2ccc78181f320beb2b"
+          "version": "repo-file-v1:sha256:eb094bb579be63b7e218e70d37fa0056f7a563b6df435a07f5d88d5a801dfab3"
         }
       ]
     },
@@ -170,7 +170,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/config_manifest.py",
-          "version": "repo-file-v1:sha256:0fe1824a43f9b42324c82b436712b4f9d48d629157334dc065d38c8508aaa6bd"
+          "version": "repo-file-v1:sha256:35434f3056c76716f0ef1416edca8333463c4a929e73aff6096f3eba1be1268a"
         }
       ]
     },
@@ -180,7 +180,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/main.py",
-          "version": "repo-file-v1:sha256:fbeb1062ce526819019a37e3c63ea22d81779bd03ba89601092da84f33d48e17"
+          "version": "repo-file-v1:sha256:651defb9f54c2959882a590fcb383e2293927067d626bc10bb74e0d6bdcbb09b"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
@@ -390,17 +390,53 @@
     },
     {
       "id": "claim_8ae598a929d141ebb59dbdda9b34a27d",
-      "statement": "deepagents-talon 0.1.0 requires Python >=3.14,<3.15 and depends on deepagents>=0.7.39 plus deepagents-code>=0.2.8,<1.0.0.",
+      "statement": "deepagents-talon 0.1.0 requires Python >=3.14,<3.15 and depends on deepagents>=0.7.39 plus deepagents-code>=0.2.9,<1.0.0.",
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml#L5-L29",
-          "version": "repo-lines-v1:sha256:926cb61370ccafa36155884051e453642c25d1271bc5677565de07483f2bc230:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhMTZkMjczNzUxYmY1NTBlMzZlNDlkMTUwZGNhZjZkMzBiNTU0YzllMmNlYjY1ZmQ2MTZmYWQyMWU3Y2MxZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNTA1YTFlYzkyODBmYmJhNDZhMTZmOTRjMzNiY2U4ZGVmMzVhNjY4MzA5YTQ0MzBkNDQzNzViZWMzZDdkOWYifQ"
+          "version": "repo-lines-v1:sha256:70ff2b9a1abe8f3f490b9b582789bb4b23e442ffb9bfd2efd70e717299385ad8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhMTZkMjczNzUxYmY1NTBlMzZlNDlkMTUwZGNhZjZkMzBiNTU0YzllMmNlYjY1ZmQ2MTZmYWQyMWU3Y2MxZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNTA1YTFlYzkyODBmYmJhNDZhMTZmOTRjMzNiY2U4ZGVmMzVhNjY4MzA5YTQ0MzBkNDQzNzViZWMzZDdkOWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1847923b255b48e284d3654b34034c34",
+      "statement": "dcode Auto mode resolves a distinct authorization classifier from runtime context or startup configuration, constructs and caches it lazily under separate construction and review deadlines, and fails closed when classifier construction, invocation, validation, or control-state persistence fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L2545-L2659",
+          "version": "repo-lines-v1:sha256:19873fbe6f8f1e5fddd36e9e2c15e96a6bdd46aa79d09ca941e03949aa8d042f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5NmFjM2M2NTU1YzNlN2Q2Mzc2YjgyOTZiYTAyMzdjMTkxMjRmMzgwYjY2MjgzNWZjOTNjNWVhNDFkZTBhZWQzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5Y2EwODRiZDUyZmVlN2I1MzAxYjEyYzliNmVmMjVjMDdjYzNiY2M1MGYwNTg4ZDlmNzdmNWFlYWYyMDFmZDUyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhYjhmMDU4Zjc3ZWI4NTQwOTA2MWQ4NmIyMzA4OTM0NjMwYWUxMTc5ZDA5MDQ3ZTE0ZDM0ZDhjZmE1OGY1NzFiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiZTE2NjhlZTM3ODNkMjQzMGYyNDVhMmY1ZmE1N2Y5ZmM0MTA0Yzc0M2U3Zjc2NzlkYzI1ZjI1ZGU4OTdkZjQ4In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L2949-L3055",
+          "version": "repo-lines-v1:sha256:2707949a6a91dc0f6f38e1f88ea739a5aaa1c5243d481a6a98037b63dc78a850:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYjg1MjM2NTI2MmFiMDUwZmUwMmNhNTcyMTRkMzg0ZGI1YzhhNWFmMzViZDU0ZmYzNGMyODIxZTQ5NjE1NTgyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmODA4MmIyYWZjNDAzY2JlZDQzY2NiNDI4ZTU0ZGYwYzJjNDcwNGEwN2E1ODhiMjg0NzgxMGRlNjIwN2U4NjBkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0MGViOWNlMjJkMzEwNTk1OGQ0OTRmYWJkMzcwMTFmNDY1NzMyMDg3ZmEwMWEzOWQxNDdjN2RkN2QzYmUxNGFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlMWVhN2VkNzE3OTAzOTEyN2UzNDU0NDVjODRhNjA1OWFhM2QxNGZmMzM2NjljOTU0ZDhkOWM5ZGZjNjI4NzQyIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L3635-L3833",
+          "version": "repo-lines-v1:sha256:f0db64db756ee8a7dce47656a51449d04718edf488710dfdf9b83238149d94a7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNTY5Y2IwOTI4MGVlMDc4MTk0NWU0OGQ0MDQxYmQyZGZhYWU2OTFhZDJlYWJmNWQzY2JhMDg0NmM3MjE2Y2FhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTAzMmU5NjRkMDkzMjM1MWU1ZDE4NTI2OTI4MWIxNzFhM2EwOWIwOGIyODZlNjYxZWE0NzAzMjNjODJlYjRkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNWFiOTQ0MmJkMDcxNDE4YjAyMTM4OWI3MTgxYjcyZWYzNmEwNGIyNGExNzU1NDZmNDhjNTc5MjMxMWNkNTY4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4YzM5NDE0YmZjMTY5ZDk4YTU0NjFjYmVmY2I1NzUyNGEyYjFiNDcxNDIwYmIxNDM2MjMxNzU1MTZmNmIyZWJjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_b00235c2c2fc4eb797070d104eadd81b",
+      "statement": "dcode startup treats an explicitly blank --auto-classifier-model as an inherit sentinel that overrides configured classifiers, selects configured or provider-default classifiers only when the flag is absent, and downgrades a policy-blocked classifier to the approved main model while warning about other startup-detectable problems.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L2537-L2560",
+          "version": "repo-lines-v1:sha256:4d4efc905a04dbc77a6b0569866eaa391d5ee163c4f5fa6cc53d1c43a1fed5c8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0M2MyZTAwOTNkNzRkN2JmOTM0M2UwYTIwMWFhZmE1NzQ4YzliZTc4OTkyMjYxMjFjNWFhMThhN2EwYmRjNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMDRiYzFkOThkODBkOWE0ZTA2NGExYTI2MmVjOWZlZjI0ZDNkMDg3YzU2Yjc4ZmNmMzliYzdjYWMwYjMwYzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlODMxZWRlOTIxNjFmMWM1OTE2NmM4NzA4MjZlY2EyZTdmY2MzZGNjYWM1MTE5YWI5OWNkNDc3ODZhNzllODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgxYzU1MDg4MGNmZjM4YWEwNTRlMDNkNzg2OTA4YmJkZjMyOWEyMWRmOTZhMzhhZmNiODJjNTRlZDcwYTBiY2MifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3227-L3315",
+          "version": "repo-lines-v1:sha256:eb46e65fb8e8d3e0625be3963641cd00b0a55d25c629d8a60b0ee376da79cd6d:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2OWYwNmU4YmZjMWY0ZjNlZWE0NzQzMDRlNjY4NzllNWMzOWRiOTRjMWJmZWQ1OWQxYjI5NGFhNzY1MGI5ODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE0ZGVlMzI1MDkxMjA4MTNhMDE5YTQ5NmJjYzFkNjEzMDc0ZTBjM2JiNWVlYjVkNmMwMTFlYmY0NGRmMjA1OGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk1MWYwZmZmMzhlZmNlNDMxODI3OWQ0MTg1ZWJlYmY4Y2ZhYjlmZGIxOTMzOWYwODIyZDgwNzM3MWYyOTkwNzQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3555-L3597",
+          "version": "repo-lines-v1:sha256:e321dd13c7cb5edfc3bf2af45d922a00e4fd94d63785a46ce0b666d538358a78:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZjY4ODQ5MmU3Njk3NTJiZTI0ZGM3YmI1NGNiMGQwYjc2NDkxNzM4NWJmZDZmZTMzZTdkYmYzYTM2M2MxOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyOTNiNWEzYjg0MzNhYjk2MjQzMTJiYjlmYjk3MWI2YTI3MzY5ZWE0YTQyOTEzYTQ0Yzg5MzI2ZTY5NDc3YmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmYTc5MWViYjcwZjJiNzdmMDlkYmYwYWEzZjEwMGUyY2M4ZTVmMjhmMjM5NTRjYzA1MDEyYWNkN2FhOWU4ZTUifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-17T08:03:47.818Z"
+    "at": "2026-11-18T08:03:59.609Z"
   }
 }

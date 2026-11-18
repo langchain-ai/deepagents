@@ -19962,13 +19962,18 @@ class DeepAgentsApp(App):
         self.push_screen(ThreadNameScreen(name), apply_name)
 
     async def on_unmount(self) -> None:
-        """Cancel pending thread-naming tasks and restore the terminal title."""
+        """Allow bounded background cleanup and restore the terminal title."""
         tasks = list(self._thread_name_tasks.values())
         for task in tasks:
             task.cancel()
         self._terminal_title.restore()
         self._agent_status.close()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        cleanup = asyncio.gather(
+            *tasks,
+            *(worker.wait() for worker in self.workers),
+            return_exceptions=True,
+        )
+        await asyncio.wait({cleanup}, timeout=_GRACEFUL_EXIT_WAIT_SECONDS)
 
     def _effective_model_spec(self) -> str | None:
         """Return the `provider:model` spec in effect for the next invocation.

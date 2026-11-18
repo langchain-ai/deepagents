@@ -1,0 +1,2 @@
+patchedDependencies:
+  release-please@17.11.2: patches/release-please@17.11.2.patch

@@ -1,16 +1,20 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the public action contract, its published CLI package boundary, security controls, state lifecycle, and focused verification.
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the action contract, its CLI distribution boundary, state lifecycle, safeguards, verification, and release controls.
 tags: [github-actions, dcode, deepagents-code, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-17T08:03:47.818Z
+    at: 2026-11-18T08:03:59.609Z
 sources:
+  - id: openwiki-source-9a1c436646ef8c4f6dde787a
+    resource: repo://.github/RELEASING.md
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
+  - id: openwiki-source-4d1d392666be6dfdd7a91a2e
+    resource: repo://.github/workflows/release.yml
   - id: openwiki-source-96d0addee4aedab20d360121
     resource: repo://action.yml
   - id: openwiki-source-6c2e9cfaa20096e021221d47
@@ -23,18 +27,18 @@ sources:
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-18T08:03:59.609Z" }
 ---
 
 # GitHub Action Integration
 
-The repository-root composite action, `langchain-ai/deepagents`, adapts one headless `dcode` task to a GitHub Actions step. Root `action.yml` is the public package: its declared `with:` inputs and three outputs are the supported action contract, while GitHub runs its implementation as a composite action. The wrapper installs the published `deepagents-code` distribution, validates and maps action inputs to CLI flags, then invokes `dcode` in the requested workspace.
+The repository-root composite action, `langchain-ai/deepagents`, adapts one headless `dcode` task to a GitHub Actions step. Root `action.yml` is the public action package: its declared `with:` inputs and three outputs are the supported contract, while GitHub executes its steps through the composite-action mechanism. The wrapper installs the published `deepagents-code` distribution, validates and maps inputs to CLI flags, then runs `dcode` in the selected workspace.
 
-This is a CLI adapter, not the application API: `create_deep_agent()` constructs and returns a compiled graph, whereas the action launches `dcode`. For editor protocol serving, see [Agent Client Protocol Integration](./acp.md). The published `deepagents-code` distribution exposes both `dcode` and `deepagents-code` console-script names, both invoking `deepagents_code:cli_main`.
+This is a CLI adapter, not the application API: `create_deep_agent()` constructs and returns a compiled graph, whereas the action launches `dcode`. The distribution exposes both `dcode` and `deepagents-code` console-script names, each invoking `deepagents_code:cli_main`.
 
 ## Use in a job
 
-Check out the target repository first. `working_directory` defaults to `.`, so it is the dcode workspace unless a sandbox is selected. Pin a production action reference to a reviewed commit SHA, and give the job only the permissions and secrets that its task needs.
+Check out the target repository before invoking the action. `working_directory` defaults to `.`, so it is the dcode workspace unless a sandbox is selected. Pin a production action reference to a reviewed commit SHA, pin `cli_version` when reproducibility matters, and grant the job only the permissions and secrets required by its task.
 
 ```yaml
 name: dcode review
@@ -60,9 +64,9 @@ jobs:
           quiet: "true"
 ```
 
-`github_token` defaults to `${{ github.token }}`. The run step exports it as `GITHUB_TOKEN`, and exports provider inputs as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`. The same supplied token authenticates an optional skills clone. The task consequently has the authority of the job token and credentials made available to that job.
+`github_token` defaults to `${{ github.token }}`. The run step exports it only as `GITHUB_TOKEN`; provider inputs become `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`. The optional skills clone uses the same supplied token. The task therefore has the authority of the job token and credentials made available to the job.
 
-## Lifecycle and failure boundary
+## Execution lifecycle
 
 ```mermaid
 flowchart TD
@@ -82,37 +86,35 @@ flowchart TD
 
 *The composite action restores state before dcode and attempts cache saving after its run even when it fails.*
 
-The installation step resolves latest `deepagents-code` with `uvx --from deepagents-code dcode --version`, or an exact `cli_version` with `uvx --from "deepagents-code==${INPUT_CLI_VERSION}" dcode --version`. A selected version below `0.1.0` fails before execution. That floor covers only always-used flags: an old pin can still reject an optional flag introduced later.
+The installation step resolves latest `deepagents-code` with `uvx --from deepagents-code dcode --version`, or an exact `cli_version` with `uvx --from "deepagents-code==${INPUT_CLI_VERSION}" dcode --version`. A version below `0.1.0` fails before execution. That floor covers only always-used flags: an old pin can still reject an optional flag added in a later dcode release.
 
-The run step requires a nonempty prompt and builds an argument array. By default it calls `dcode ... --non-interactive "$prompt"`; `stdin: "true"` instead calls `dcode ... --stdin` and supplies the prompt on standard input. `stdin` cannot be combined with `skill`, because piped input with a skill would select dcode's interactive route rather than headless execution. `timeout` is the wrapper's outer wall-clock limit in minutes (default `30`); `task_timeout` becomes dcode's `--timeout` in seconds.
+The run step requires a nonempty prompt and builds an argument array. Normally it calls `dcode ... --non-interactive "$prompt"`; `stdin: "true"` instead calls `dcode ... --stdin` and supplies the prompt on standard input. `stdin` cannot be combined with `skill`, because piped input with a skill takes dcode's interactive route rather than the intended headless route. `timeout` is the wrapper's outer wall-clock limit in minutes (default `30`); `task_timeout` becomes dcode's `--timeout` in seconds.
 
 It rejects unsupported boolean forms, validates positive numeric budgets (`timeout`, `max_turns`, `task_timeout`, and `rubric_max_iterations`), permits zero `max_retries`, and validates nonempty `model_params` and `profile_override` as JSON objects when `jq` is available. `interpreter` is tri-state: `true` adds `--interpreter`, `false` adds `--no-interpreter`, and empty preserves dcode's default.
 
-## Public inputs and execution authority
+## Inputs, authority, and safety boundary
 
-All `with:` values are strings. Empty optional value inputs are normally omitted; boolean `true` inputs add their corresponding flag.
+All `with:` values are strings. Empty optional value inputs are omitted; `true` boolean inputs add their mapped flag.
 
 | Concern | Inputs | Effect |
 | --- | --- | --- |
 | Task and identity | `prompt`, `working_directory`, `agent_name`, `cli_version` | Select the task, workspace, memory identity, and CLI distribution. |
-| Model | `model`, `model_params`, `max_retries`, `profile_override` | Map to the corresponding model flags. |
+| Model | `model`, `model_params`, `max_retries`, `profile_override` | Map to model-selection and retry flags. |
 | Task bounds | `shell_allow_list`, `skill`, `startup_cmd`, `stdin`, `max_turns`, `task_timeout`, `timeout` | Set shell policy, startup behavior, prompt transport, and limits. |
-| Response | `quiet`, `no_stream`, `json` | Map directly to dcode output flags. |
+| Response | `quiet`, `no_stream`, `json` | Map to dcode output flags. |
 | Rubric | `rubric`, `rubric_model`, `rubric_max_iterations` | Pass acceptance criteria and grader controls. |
-| Integrations | `mcp_config`, `no_mcp`, `trust_project_mcp`, `interpreter`, `interpreter_tools`, `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, `sandbox_setup` | Direct mappings for supported MCP, interpreter, and sandbox controls. |
+| Integrations | `mcp_config`, `no_mcp`, `trust_project_mcp`, `interpreter`, `interpreter_tools`, `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, `sandbox_setup` | Map supported MCP, interpreter, and sandbox controls. |
 | Memory | `enable_memory`, `memory_scope` | Control the cache lifecycle. |
 
-`--auto-approve` is intentionally absent from the action contract. Adding a dcode option does not expose it from the action; it must be declared and mapped deliberately in `action.yml`. In dcode, `--non-interactive` runs one task and exits without human tool approvals; it can still change files and access the network.
+`--auto-approve` is intentionally absent from the action contract. Adding a dcode option does not expose it from the action; it must be declared and mapped deliberately in `action.yml`. `--non-interactive` runs one task and exits without human approvals, but it can still change files and access the network.
 
-At the dcode boundary, no shell allow list disables shell access, a restrictive list enables and gates shell commands, and `all` permits unrestricted shell commands and auto-approves tools. Project stdio MCP is untrusted by default. An explicit MCP config path has highest precedence over auto-discovered configuration, `no_mcp` disables MCP tool loading, and `trust_project_mcp` explicitly grants project MCP loading. An empty `sandbox` means local runner execution, not isolation. Treat prompts, checked-out content, skills, MCP configuration, and agent output as untrusted.
+At the dcode boundary, no shell allow list disables shell access; a restrictive list enables and gates shell commands; and `all` permits unrestricted shell commands and auto-approves tools. Project stdio MCP is untrusted by default. An explicit MCP config path takes precedence over auto-discovered configuration, `no_mcp` disables MCP tool loading, and `trust_project_mcp` explicitly permits project MCP loading. An empty `sandbox` means local runner execution, not isolation. Treat prompts, checked-out content, skills, MCP configuration, and agent output as untrusted.
 
-## Memory and skills
+## Memory, skills, and outputs
 
-With `enable_memory: "true"` (the default), the action caches the named agent memory directory, the global SQLite session database plus WAL/SHM files, and `<working_directory>/.deepagents/AGENTS.md`. Cache namespace begins with `agent_name` (default `agent`) and uses `memory_scope`: `pr` selects an issue/PR number or ref, `branch` selects the ref, and `repo` is repository-wide and default. Unknown scopes warn and fall back to the PR/ref calculation. Restore tries the selected prefix and then the agent-wide prefix; saves append `github.run_id` and run under `always()`. `cache_hit` is the restore result and is empty when memory is disabled.
+With `enable_memory: "true"` (the default), the action caches the named agent memory directory, the global SQLite session database plus WAL/SHM files, and `<working_directory>/.deepagents/AGENTS.md`. The cache namespace begins with `agent_name` (default `agent`) and uses `memory_scope`: `pr` selects an issue/PR number or ref, `branch` selects the ref, and `repo` is repository-wide and the default. Unknown scopes warn and fall back to the PR/ref calculation. Restore tries the selected prefix and then the agent-wide prefix; saves append `github.run_id` and run under `always()`. `cache_hit` is the restore result and is empty when memory is disabled.
 
 If `skills_repo` is supplied, the action shallow-clones an `owner/repo`, `owner/repo@ref`, HTTPS, or SSH source into a temporary directory. Every directory containing `SKILL.md` is copied to `.deepagents/skills`; clone failure or no discovered skill fails the action. Pin a reviewed skill revision because this installs instructions into the agent workspace.
-
-## Outputs and failure propagation
 
 | Output | Meaning |
 | --- | --- |
@@ -122,11 +124,15 @@ If `skills_repo` is supplied, the action shallow-clones an `owner/repo`, `owner/
 
 The action pipes combined output to `tee` but captures `PIPESTATUS[0]`, so a successful `tee` cannot conceal a dcode or timeout failure. It writes `response` with a random `$GITHUB_OUTPUT` heredoc delimiter, preventing agent output from forging output records. The stdin branch uses process substitution rather than a `printf | timeout` pipeline, avoiding a producer SIGPIPE being reported as the task result.
 
-## Package and verification contract
+## Published CLI and release contract
 
-The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. Pin both when reproducibility matters.
+The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. The current source package is `deepagents-code` `0.2.10`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.39` runtime dependency. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change.
 
-The current source package is `deepagents-code` `0.2.9`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.39` runtime dependency. Consequently, the action's selected CLI distribution—not the repository action ref—determines the resolved dcode/SDK package pair and its Python compatibility. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change.
+`deepagents-code` is a release-managed PyPI package. The release workflow maps it to `libs/code`, builds from a resolved exact release SHA, and stamps that SHA into its build through `DEEPAGENTS_CODE_BUILD_COMMIT`; this keeps the distribution and eventual tag tied to the same source tree. Before publishing, the release checks that the code package's exact SDK pin is at least the workspace SDK version unless an operator explicitly enables `dangerous-skip-sdk-pin-check`. That bypass is for an intentional older pin, not routine release use.
+
+For normal releases, release-please creates a package release PR after releasable changes on `main`; merging it dispatches the package-release workflow. The release workflow builds, performs pre-release checks and Test PyPI validation, publishes to PyPI, then creates the GitHub release. A manual dispatch requires a package, version, and normally an exact `release-sha`; the workflow verifies that the selected commit declares the requested version and is reachable from `main`. Do not move or recreate a tag for a version already published to PyPI: one version must continue to identify one artifact.
+
+## Verification and safe changes
 
 The focused action test parses `action.yml` and the dcode root parser to catch action-input-to-flag drift and ensure `--auto-approve` stays absent. It executes the actual action run body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, version command construction, timeout arithmetic, exit propagation, and stdin SIGPIPE behavior.
 
@@ -136,4 +142,4 @@ Run it locally from the repository root:
 python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
 ```
 
-Repository CI runs that test through `python -m pytest .github/scripts/tests -v` in `Validate Release Options`, after installing `packaging`, `pyyaml`, and `pytest` on Python 3.14. The helper-script job runs unless change detection identifies a curated release-notes-only apply; this is the direct repository validation for root `action.yml`.
+Repository CI runs it through `python -m pytest .github/scripts/tests -v` in `Validate Release Options`, after installing `packaging`, `pyyaml`, and `pytest` on Python 3.14. The helper-script job runs unless change detection identifies a curated release-notes-only apply. When changing the action, update its input declarations, flag mapping, and this focused test together; when changing an action-used CLI flag, its parser compatibility assertion is the early warning that prevents publishing a broken adapter.

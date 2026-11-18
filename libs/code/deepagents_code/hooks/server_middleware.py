@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -81,7 +82,7 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.models.transport import HookInvocationRequest
 from deepagents_code.hooks.reducer import reduce_hook_results
-from deepagents_code.hooks.tools import to_wire_tool_name
+from deepagents_code.hooks.tools import to_wire_call
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -177,6 +178,13 @@ class _PreToolPassed(TypedDict):
 
     behavior: Literal["allow", "none"]
     context: list[str]
+    hook_allowed: NotRequired[bool]
+    """`True` only when the hook itself returned `allow`.
+
+    An `ask` that an approval prompt resolved also stores `behavior: "allow"`,
+    but headless runtimes approve those prompts automatically, so it must not
+    count as the hook's own permission.
+    """
 
 
 type _PreToolState = _PreToolDenied | _PreToolPassed
@@ -335,12 +343,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         self._cwd = cwd
         self._default_deadline = default_deadline
         self._emit_stop = emit_stop
-        self._mcp_servers = {
-            name: server
-            for tool in mcp_tools
-            if (name := getattr(tool, "name", None))
-            and isinstance(name, str)
-            and (server := _mcp_server_from_tool(tool)) is not None
+        self._mcp_tools = {
+            tool.name: tool for tool in mcp_tools if _mcp_server_from_tool(tool)
         }
 
     @override
@@ -565,7 +569,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         for tool_call in ai_message.tool_calls:
             call = _tool_call_data_from_call(
                 tool_call,
-                mcp_server=self._mcp_servers.get(str(tool_call.get("name") or "")),
+                tool=self._mcp_tools.get(str(tool_call.get("name") or "")),
             )
             duration_ms = pending.get(call.id)
             result = results.get(call.id)
@@ -614,12 +618,16 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         context = _hook_context(runtime.context, None, self._cwd)
         outcomes: dict[str, _PreToolState] = {}
         tool_calls = [dict(call) for call in message.tool_calls]
+        # Outcomes are keyed by call id, so an explicit allow cannot be trusted
+        # when a provider reuses one id for several calls in a message.
+        call_ids = Counter(str(call.get("id") or "") for call in message.tool_calls)
         for index, tool_call in enumerate(message.tool_calls):
             call = _tool_call_data_from_call(
                 tool_call,
-                mcp_server=self._mcp_servers.get(str(tool_call.get("name") or "")),
+                tool=self._mcp_tools.get(str(tool_call.get("name") or "")),
             )
             behavior: PreToolBehavior = "none"
+            hook_allowed = False
             reason: str | None = None
             hook_context: list[str] = []
             if precompact_enabled and call.name == _COMPACT_TOOL_NAME:
@@ -689,6 +697,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                         )
                 elif permission.behavior == "allow":
                     behavior = "allow"
+                    hook_allowed = True
             if behavior == "deny":
                 outcomes[call.id] = {
                     "behavior": "deny",
@@ -701,6 +710,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 outcomes[call.id] = {
                     "behavior": behavior,
                     "context": hook_context,
+                    "hook_allowed": hook_allowed and call_ids[call.id] == 1,
                 }
         update: dict[str, Any] = {_PRE_TOOL_STATE_KEY: outcomes}
         if tool_calls != message.tool_calls:
@@ -923,6 +933,37 @@ def hook_permission_behavior(
     if behavior == "deny":
         return "deny"
     return None
+
+
+def hook_explicitly_allowed(state: object, tool_call_id: str) -> bool:
+    """Report whether a `PreToolUse` hook itself returned `allow` for a call.
+
+    Unlike `hook_permission_behavior`, this excludes an `ask` that an approval
+    prompt resolved, so callers without a human reviewer can rely on it.
+
+    Args:
+        state: Agent state carrying the current turn's hook outcomes.
+        tool_call_id: Tool call to look up.
+
+    Returns:
+        `True` only for an explicit hook `allow`.
+    """
+    outcome = _pre_tool_state(state, tool_call_id)
+    return outcome is not None and outcome.get("hook_allowed") is True
+
+
+def hook_denial_message(request: ToolCallRequest) -> ToolMessage | None:
+    """Build the `PreToolUse` denial message for a call a hook refused.
+
+    Outer guards use this to report the hook's reason instead of their own.
+
+    Args:
+        request: Pending tool call carrying the current turn's hook outcomes.
+
+    Returns:
+        The denial `ToolMessage`, or `None` when no hook denied the call.
+    """
+    return _pre_tool_outcome(request.state, _tool_call_data(request)).blocked
 
 
 def _pre_tool_state(state: object, tool_call_id: str) -> Mapping[str, object] | None:
@@ -1187,16 +1228,13 @@ def _config_thread_id(config: Mapping[str, Any] | None) -> str | None:
 
 
 def _tool_call_data(request: ToolCallRequest) -> ToolCallData:
-    return _tool_call_data_from_call(
-        request.tool_call,
-        mcp_server=_mcp_server_from_tool(request.tool),
-    )
+    return _tool_call_data_from_call(request.tool_call, tool=request.tool)
 
 
 def _tool_call_data_from_call(
     tool_call: Mapping[str, object],
     *,
-    mcp_server: str | None,
+    tool: object | None,
 ) -> ToolCallData:
     raw_args = tool_call.get("args")
     args: dict[str, Any]
@@ -1208,8 +1246,17 @@ def _tool_call_data_from_call(
         id=str(tool_call.get("id") or ""),
         name=str(tool_call.get("name") or ""),
         args=cast("JsonObject", args),
-        mcp_server=mcp_server,
+        mcp_server=_mcp_server_from_tool(tool),
+        mcp_tool=_mcp_original_tool_name(tool),
     )
+
+
+def _mcp_original_tool_name(tool: object | None) -> str | None:
+    metadata = getattr(tool, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    value = metadata.get("_deepagents_code_mcp_tool")
+    return value if isinstance(value, str) and value else None
 
 
 def _mcp_server_from_tool(tool: object | None) -> str | None:
@@ -1218,7 +1265,12 @@ def _mcp_server_from_tool(tool: object | None) -> str | None:
     metadata = getattr(tool, "metadata", None)
     if not isinstance(metadata, Mapping):
         return None
-    for key in ("mcp_server", "mcp_server_name", "server_name"):
+    for key in (
+        "_deepagents_code_mcp_server",
+        "mcp_server",
+        "mcp_server_name",
+        "server_name",
+    ):
         value = metadata.get(key)
         if isinstance(value, str) and value:
             return value
@@ -1230,7 +1282,7 @@ def _denied_tool_message(
     permission: PermissionEffect,
 ) -> ToolMessage:
     reason = permission.reason or "Blocked by PreToolUse hook"
-    wire_name = to_wire_tool_name(call.name, mcp_server=call.mcp_server)
+    wire_name, _ = to_wire_call(call)
     return ToolMessage(
         content=f"{wire_name} blocked by hook: {reason}",
         name=call.name,

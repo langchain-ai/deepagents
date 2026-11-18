@@ -2649,7 +2649,10 @@ async def resolve_and_load_mcp_tools(
     if additional_configs or project_configs:
         from deepagents_code.model_config import load_mcp_server_trust_lists
 
-        trust_lists = load_mcp_server_trust_lists()
+        # Normalizing saved approval roots calls `Path.resolve()`, which calls
+        # `os.readlink` when a root sits under a symlink. That blocks the
+        # server event loop, so read the trust lists in a worker thread.
+        trust_lists = await asyncio.to_thread(load_mcp_server_trust_lists)
         config_load_errors.extend(_mcp_trust_list_notices(trust_lists))
 
     # Installing a plugin is the user's trust decision for every bundled

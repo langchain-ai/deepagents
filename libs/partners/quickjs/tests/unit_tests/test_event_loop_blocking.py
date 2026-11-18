@@ -108,7 +108,7 @@ async def test_fresh_context_does_not_block_loop(
 ) -> None:
     slot = _get(registry, "fresh-01")
     await slot.eval_async("1")
-    await slot.aend_turn()
+    await slot.aclose_context()
     original = _Slot._install_console
 
     def _slow_install(self: _Slot) -> None:
@@ -129,13 +129,13 @@ async def test_after_agent_does_not_block_loop(
     slot_id = f"after-{mode}"
     slot = warm_slot(mw, slot_id)
     await slot.eval_async("globalThis.x = 1")
-    original = _Slot._close_context
+    original = _Slot._dispose_context
 
     def _slow_close(self: _Slot) -> None:
         time.sleep(SLOW)
         original(self)
 
-    monkeypatch.setattr(_Slot, "_close_context", _slow_close)
+    monkeypatch.setattr(_Slot, "_dispose_context", _slow_close)
     state: dict[str, Any] = {"_quickjs_slot_id": slot_id}
     gap, _ = await _max_gap(mw.aafter_agent(state, None))  # type: ignore[arg-type]
     assert gap < MAX_GAP

@@ -331,7 +331,7 @@ def test_registry_end_turn_keeps_worker_and_runtime(registry: _Registry) -> None
     slot = _get(registry, "thread-a")
     slot.eval_sync("globalThis.answer = 42")
     runtime = slot._runtime
-    registry.end_turn("thread-a", _CONFIG)
+    registry.close_context("thread-a", _CONFIG)
     assert slot._context is None
     assert slot.eval_sync("typeof answer").result == "undefined"
     assert _get(registry, "thread-a") is slot
@@ -348,7 +348,7 @@ def test_registry_closes_least_recently_used_slot_over_cap(
     registry._max_slots = 1
     idle = _get(registry, "thread-a")
     idle.eval_sync("1")
-    idle.end_turn()
+    idle.close_context()
     _get(registry, "thread-b")
     assert _thread_ids(registry) == ["thread-b"]
     assert idle._runtime is None

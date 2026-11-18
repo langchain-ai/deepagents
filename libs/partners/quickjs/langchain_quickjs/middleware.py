@@ -473,10 +473,12 @@ class CodeInterpreterMiddleware(
         """Run one eval on `slot`, applying the persistence mode around it."""
         if snapshot := self._snapshot_for_eval(state):
             slot.restore_snapshot(snapshot)
-        outcome = slot.eval_sync(code, **kwargs)
-        if self._mode == "call":
-            slot.end_turn()
-        return outcome
+        try:
+            return slot.eval_sync(code, **kwargs)
+        finally:
+            # Also when the eval raises (an interrupt), so a replay starts fresh.
+            if self._mode == "call":
+                slot.close_context()
 
     async def _aeval(
         self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
@@ -484,10 +486,11 @@ class CodeInterpreterMiddleware(
         """Async variant of `_eval`."""
         if snapshot := self._snapshot_for_eval(state):
             await slot.arestore_snapshot(snapshot)
-        outcome = await slot.eval_async(code, **kwargs)
-        if self._mode == "call":
-            await slot.aend_turn()
-        return outcome
+        try:
+            return await slot.eval_async(code, **kwargs)
+        finally:
+            if self._mode == "call":
+                await slot.aclose_context()
 
     def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:
         """Return authenticated thread state for lazy restoration."""
@@ -558,7 +561,7 @@ class CodeInterpreterMiddleware(
         # snapshot. The slot's worker and Runtime stay warm.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            self._registry.end_turn(slot_id, self._slot_config)
+            self._registry.close_context(slot_id, self._slot_config)
         return self._prepare_slot(state)
 
     async def abefore_agent(
@@ -570,7 +573,7 @@ class CodeInterpreterMiddleware(
         # See `before_agent`: any live Context here was left by a dead run.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            await self._registry.aend_turn(slot_id, self._slot_config)
+            await self._registry.aclose_context(slot_id, self._slot_config)
         return self._prepare_slot(state)
 
     def _drop_slot_caches(self, slot_id: str) -> None:
@@ -754,7 +757,7 @@ class CodeInterpreterMiddleware(
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
         if self._mode != "thread":
-            self._registry.end_turn(slot_id, self._slot_config)
+            self._registry.close_context(slot_id, self._slot_config)
             return None
         slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
@@ -778,7 +781,7 @@ class CodeInterpreterMiddleware(
             )
             update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
-            slot.end_turn()
+            slot.close_context()
             self._registry.release(slot)
         return update
 
@@ -791,7 +794,7 @@ class CodeInterpreterMiddleware(
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
         if self._mode != "thread":
-            await self._registry.aend_turn(slot_id, self._slot_config)
+            await self._registry.aclose_context(slot_id, self._slot_config)
             return None
         slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
@@ -815,6 +818,6 @@ class CodeInterpreterMiddleware(
             )
             update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
-            await slot.aend_turn()
+            await slot.aclose_context()
             self._registry.release(slot)
         return update

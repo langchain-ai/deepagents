@@ -188,7 +188,7 @@ class _Slot:
     all QuickJS work runs on the slot's own worker thread; callers on any
     thread or loop only wait on it. Evals run one at a time: one that starts
     while another is running fails with `ConcurrentEval`. The worker and
-    Runtime outlive turns; the Context lives until `end_turn`. Persistence
+    Runtime outlive turns; the Context lives until `close_context`. Persistence
     modes are the middleware's business.
     """
 
@@ -690,7 +690,7 @@ class _Slot:
         outcome.error_message = e.message
         outcome.error_stack = e.stack
 
-    def _close_context(self) -> None:
+    def _dispose_context(self) -> None:
         ctx, self._context = self._context, None
         if ctx is not None:
             ctx.close()
@@ -748,21 +748,21 @@ class _Slot:
             return None
         return self._context.create_snapshot().to_bytes()
 
-    def end_turn(self) -> None:
-        """Close the turn's Context; keep the worker and Runtime."""
+    def close_context(self) -> None:
+        """Close the Context and its REPL state; keep the worker and Runtime."""
         if self._context is not None:
-            self._worker.run_sync(self._aend_turn())
+            self._worker.run_sync(self._aclose_context())
 
-    async def aend_turn(self) -> None:
-        """Async variant of `end_turn`."""
+    async def aclose_context(self) -> None:
+        """Async variant of `close_context`."""
         if self._context is not None:
-            await self._worker.run_async(self._aend_turn())
+            await self._worker.run_async(self._aclose_context())
 
-    async def _aend_turn(self) -> None:
-        # A forked subagent shares this slot; its turn ending must not close
-        # the Context under a parent eval that is still running.
+    async def _aclose_context(self) -> None:
+        # A forked subagent shares this slot; it must not close the Context
+        # under a parent eval that is still running.
         if not self._eval_running:
-            self._close_context()
+            self._dispose_context()
 
     def close(self) -> None:
         """Close the Context and Runtime on the worker, then stop the worker."""
@@ -781,7 +781,7 @@ class _Slot:
             await self._worker.aclose()
 
     async def _aclose(self) -> None:
-        self._close_context()
+        self._dispose_context()
         if self._runtime is not None:
             self._runtime.close()
             self._runtime = None
@@ -861,19 +861,19 @@ class _Registry:
             if not self._leases[slot]:
                 del self._leases[slot]
 
-    def end_turn(self, slot_id: str, config: _SlotConfig) -> None:
-        """Close what `slot_id`'s turn left open, keeping the slot warm."""
+    def close_context(self, slot_id: str, config: _SlotConfig) -> None:
+        """Close `slot_id`'s Context, keeping the slot warm."""
         if (slot := self.lease_if_exists(slot_id, config)) is not None:
             try:
-                slot.end_turn()
+                slot.close_context()
             finally:
                 self.release(slot)
 
-    async def aend_turn(self, slot_id: str, config: _SlotConfig) -> None:
-        """Async variant of `end_turn`."""
+    async def aclose_context(self, slot_id: str, config: _SlotConfig) -> None:
+        """Async variant of `close_context`."""
         if (slot := self.lease_if_exists(slot_id, config)) is not None:
             try:
-                await slot.aend_turn()
+                await slot.aclose_context()
             finally:
                 self.release(slot)
 

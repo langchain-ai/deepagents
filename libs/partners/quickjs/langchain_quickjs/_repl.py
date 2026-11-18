@@ -188,7 +188,8 @@ class _Slot:
     all QuickJS work runs on the slot's own worker thread; callers on any
     thread or loop only wait on it. Evals run one at a time: one that starts
     while another is running fails with `ConcurrentEval`. The worker and
-    Runtime outlive turns; the Context lives until `close_context`. Persistence
+    Runtime outlive turns; the Context lives until `close_context`, and stays
+    warm across turns while it matches the thread's last snapshot. Persistence
     modes are the middleware's business.
     """
 
@@ -207,6 +208,10 @@ class _Slot:
         self._task_calls = asyncio.Semaphore(config.max_subagent_concurrency)
         # Whether an eval is running. Evals run one at a time.
         self._eval_running = False
+        # The snapshot the live Context still matches: set when one is taken,
+        # cleared by the next eval. Kept whole (not hashed): comparing it is
+        # far cheaper than hashing a multi-MB payload every turn.
+        self._snapshot: bytes | None = None
         # Mutable per-eval PTC state. Tracks call budget plus outer
         # runtime/loop dispatch context for bridge invocations. Set while an
         # eval runs, so bridge calls can't run outside one.
@@ -594,6 +599,7 @@ class _Slot:
         ctx = self._ensure_context()
         outcome = EvalOutcome()
         self._eval_running = True
+        self._snapshot = None
         self._ptc_state = PTCState(
             remaining_calls=self._config.max_ptc_calls,
             outer_runtime=outer_runtime,
@@ -691,6 +697,7 @@ class _Slot:
         outcome.error_stack = e.stack
 
     def _dispose_context(self) -> None:
+        self._snapshot = None
         ctx, self._context = self._context, None
         if ctx is not None:
             ctx.close()
@@ -732,37 +739,48 @@ class _Slot:
             raise _SnapshotRestoreError(msg) from exc
 
     def create_snapshot(self) -> bytes | None:
-        """Snapshot the Context, or `None` if no eval ran this turn."""
-        if self._context is None:
+        """Snapshot the Context, or `None` if no eval changed it since the last."""
+        if self._context is None or self._snapshot is not None:
             return None
         return self._worker.run_sync(self._acreate_snapshot())
 
     async def acreate_snapshot(self) -> bytes | None:
         """Async variant of `create_snapshot`."""
-        if self._context is None:
+        if self._context is None or self._snapshot is not None:
             return None
         return await self._worker.run_async(self._acreate_snapshot())
 
     async def _acreate_snapshot(self) -> bytes | None:
-        if self._context is None:
+        if self._context is None or self._snapshot is not None:
             return None
-        return self._context.create_snapshot().to_bytes()
+        payload = self._context.create_snapshot().to_bytes()
+        # The Context now is this snapshot: it needs no restore to match it.
+        self._snapshot = payload
+        self._snapshot_restored = True
+        return payload
 
-    def close_context(self) -> None:
-        """Close the Context and its REPL state; keep the worker and Runtime."""
+    def close_context(self, *, keep_snapshot: bytes | None = None) -> None:
+        """Close the Context and its REPL state; keep the worker and Runtime.
+
+        A Context that still matches `keep_snapshot` (no eval since it was
+        taken) stays open, so the next turn skips the restore.
+        """
         if self._context is not None:
-            self._worker.run_sync(self._aclose_context())
+            self._worker.run_sync(self._aclose_context(keep_snapshot))
 
-    async def aclose_context(self) -> None:
+    async def aclose_context(self, *, keep_snapshot: bytes | None = None) -> None:
         """Async variant of `close_context`."""
         if self._context is not None:
-            await self._worker.run_async(self._aclose_context())
+            await self._worker.run_async(self._aclose_context(keep_snapshot))
 
-    async def _aclose_context(self) -> None:
+    async def _aclose_context(self, keep_snapshot: bytes | None) -> None:
         # A forked subagent shares this slot; it must not close the Context
         # under a parent eval that is still running.
-        if not self._eval_running:
-            self._dispose_context()
+        if self._eval_running:
+            return
+        if keep_snapshot is not None and keep_snapshot == self._snapshot:
+            return
+        self._dispose_context()
 
     def close(self) -> None:
         """Close the Context and Runtime on the worker, then stop the worker."""
@@ -861,19 +879,23 @@ class _Registry:
             if not self._leases[slot]:
                 del self._leases[slot]
 
-    def close_context(self, slot_id: str, config: _SlotConfig) -> None:
-        """Close `slot_id`'s Context, keeping the slot warm."""
+    def close_context(
+        self, slot_id: str, config: _SlotConfig, *, keep_snapshot: bytes | None = None
+    ) -> None:
+        """Close `slot_id`'s Context, keeping the slot warm (see `_Slot`)."""
         if (slot := self.lease_if_exists(slot_id, config)) is not None:
             try:
-                slot.close_context()
+                slot.close_context(keep_snapshot=keep_snapshot)
             finally:
                 self.release(slot)
 
-    async def aclose_context(self, slot_id: str, config: _SlotConfig) -> None:
+    async def aclose_context(
+        self, slot_id: str, config: _SlotConfig, *, keep_snapshot: bytes | None = None
+    ) -> None:
         """Async variant of `close_context`."""
         if (slot := self.lease_if_exists(slot_id, config)) is not None:
             try:
-                await slot.aclose_context()
+                await slot.aclose_context(keep_snapshot=keep_snapshot)
             finally:
                 self.release(slot)
 

@@ -118,7 +118,7 @@ async def test_next_run_restores_snapshot_after_failed_run(mode: InvokeMode) -> 
     assert "<result>10</result>" in _last_eval(result), _last_eval(result)
     assert leaked._closed
     assert list(slots_of(mw)) == [slot]
-    assert slot._context is None
+    assert slot._context is not leaked
 
 
 async def test_next_run_restores_snapshot_after_cancelled_run() -> None:
@@ -155,7 +155,6 @@ async def test_next_run_restores_snapshot_after_cancelled_run() -> None:
     result = await agent.ainvoke({"messages": [HumanMessage("read")]}, config=config)
 
     assert "<result>10</result>" in _last_eval(result), _last_eval(result)
-    assert slot._context is None
 
 
 @pytest.mark.parametrize("mode", ["invoke", "ainvoke"])
@@ -187,8 +186,33 @@ async def test_resume_after_interrupt_keeps_live_slot(mode: InvokeMode) -> None:
     # Resume doesn't re-run `before_agent`: the live Context (counter = 42) is
     # kept rather than rolled back to the snapshot (counter = 10).
     assert "<result>42</result>" in _last_eval(result), _last_eval(result)
-    assert live._closed  # closed by `after_agent` at the end
-    assert slot._context is None
+    assert slot._context is live  # snapshotted and kept warm by `after_agent`
+
+
+@pytest.mark.parametrize("mode", ["invoke", "ainvoke"])
+async def test_next_turn_reuses_warm_context(mode: InvokeMode) -> None:
+    mw = CodeInterpreterMiddleware()
+    agent = _agent(
+        [
+            _eval_call("var counter = 10", "c1"),
+            AIMessage(content="turn 1 done"),
+            _eval_call("counter", "c2"),
+            AIMessage(content="turn 2 done"),
+        ],
+        [],
+        mw,
+    )
+    config = {"configurable": {"thread_id": "warm-context"}}
+
+    await _invoke(agent, {"messages": [HumanMessage("set")]}, config, mode)
+    slot = next(iter(slots_of(mw)))
+    warm = slot._context
+    assert warm is not None
+
+    result = await _invoke(agent, {"messages": [HumanMessage("read")]}, config, mode)
+
+    assert "<result>10</result>" in _last_eval(result), _last_eval(result)
+    assert slot._context is warm
 
 
 def test_before_agent_closes_stale_context_and_its_caches() -> None:
@@ -216,6 +240,27 @@ async def test_abefore_agent_closes_stale_context() -> None:
         slot = warm_slot(mw, "stale")
         await slot.eval_async("var leaked = 1")
         await mw.abefore_agent(state, MagicMock())  # type: ignore[arg-type]
+        assert slot._context is None
+    finally:
+        drop_slots(mw)
+
+
+def test_before_agent_keeps_context_only_if_it_matches_the_snapshot() -> None:
+    mw = CodeInterpreterMiddleware()
+    try:
+        state: dict[str, Any] = {"messages": [], "_quickjs_slot_id": "warm"}
+        slot = warm_slot(mw, "warm")
+        slot.eval_sync("var x = 1")
+        first = slot.create_snapshot()
+        slot.eval_sync("x = 2")
+        second = slot.create_snapshot()
+        warm = slot._context
+
+        mw.before_agent({**state, "_quickjs_snapshot_payload": second}, MagicMock())  # type: ignore[arg-type]
+        assert slot._context is warm
+
+        # A fork or time travel back to an older snapshot gets a fresh Context.
+        mw.before_agent({**state, "_quickjs_snapshot_payload": first}, MagicMock())  # type: ignore[arg-type]
         assert slot._context is None
     finally:
         drop_slots(mw)

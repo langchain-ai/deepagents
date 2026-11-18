@@ -139,7 +139,8 @@ async def test_after_agent_does_not_block_loop(
     state: dict[str, Any] = {"_quickjs_slot_id": slot_id}
     gap, _ = await _max_gap(mw.aafter_agent(state, None))  # type: ignore[arg-type]
     assert gap < MAX_GAP
-    assert slot._context is None
+    # `thread` mode keeps the snapshotted Context warm for the next turn.
+    assert (slot._context is None) == (mode != "thread")
 
 
 async def test_closing_an_evicted_slot_does_not_block_loop(

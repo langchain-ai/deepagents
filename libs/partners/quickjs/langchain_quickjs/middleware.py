@@ -556,12 +556,15 @@ class CodeInterpreterMiddleware(
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Assign a private slot and authenticate snapshots without creating a VM."""
-        # Never runs on resume, so a live Context here was left by a run that
-        # died before `after_agent`; close it so the next eval restores the
-        # snapshot. The slot's worker and Runtime stay warm.
+        # Never runs on resume. Keep a live Context only if it still matches
+        # the checkpoint's snapshot; one left by a run that died before
+        # `after_agent`, or behind a retry or fork, is closed so the next eval
+        # restores the snapshot. The slot's worker and Runtime stay warm.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            self._registry.close_context(slot_id, self._slot_config)
+            self._registry.close_context(
+                slot_id, self._slot_config, keep_snapshot=self._snapshot_for_eval(state)
+            )
         return self._prepare_slot(state)
 
     async def abefore_agent(
@@ -573,7 +576,9 @@ class CodeInterpreterMiddleware(
         # See `before_agent`: any live Context here was left by a dead run.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            await self._registry.aclose_context(slot_id, self._slot_config)
+            await self._registry.aclose_context(
+                slot_id, self._slot_config, keep_snapshot=self._snapshot_for_eval(state)
+            )
         return self._prepare_slot(state)
 
     def _drop_slot_caches(self, slot_id: str) -> None:
@@ -753,7 +758,7 @@ class CodeInterpreterMiddleware(
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Snapshot REPL state (`thread` mode) and close this turn's Context."""
+        """Snapshot REPL state, keeping the Context warm (`thread`), or close it."""
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
         if self._mode != "thread":
@@ -781,7 +786,6 @@ class CodeInterpreterMiddleware(
             )
             update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
-            slot.close_context()
             self._registry.release(slot)
         return update
 
@@ -818,6 +822,5 @@ class CodeInterpreterMiddleware(
             )
             update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
-            await slot.aclose_context()
             self._registry.release(slot)
         return update

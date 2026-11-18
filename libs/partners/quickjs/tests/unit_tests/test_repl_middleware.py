@@ -621,8 +621,8 @@ def test_per_thread_slot_has_own_worker_and_runtime(registry: _Registry) -> None
     assert slot_b._worker._name == "quickjs-worker-thread-b"
 
 
-def test_after_agent_evicts_current_thread_slot() -> None:
-    """`after_agent` snapshots state and evicts the resolved thread slot."""
+def test_after_agent_snapshots_and_keeps_context_warm() -> None:
+    """`after_agent` snapshots state and keeps the Context for the next turn."""
     mw = CodeInterpreterMiddleware()
     try:
         state = _new_slot_state(mw)
@@ -636,13 +636,13 @@ def test_after_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_of(mw, slot_id)._context is None
+        assert slot_of(mw, slot_id)._context is not None
     finally:
         drop_slots(mw)
 
 
-async def test_aafter_agent_evicts_current_thread_slot() -> None:
-    """`aafter_agent` snapshots state and evicts the resolved thread slot."""
+async def test_aafter_agent_snapshots_and_keeps_context_warm() -> None:
+    """`aafter_agent` snapshots state and keeps the Context for the next turn."""
     mw = CodeInterpreterMiddleware()
     try:
         state = _new_slot_state(mw)
@@ -655,7 +655,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_of(mw, slot_id)._context is None
+        assert slot_of(mw, slot_id)._context is not None
     finally:
         drop_slots(mw)
 

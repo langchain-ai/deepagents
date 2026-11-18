@@ -67,7 +67,7 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert slot_of(mw, slot_id)._context is None
+        assert slot_of(mw, slot_id)._context is not None
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = mw.before_agent(
@@ -92,7 +92,7 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
         await repl.eval_async("const answer = 42")
         update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert slot_of(mw, slot_id)._context is None
+        assert slot_of(mw, slot_id)._context is not None
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = await mw.abefore_agent(

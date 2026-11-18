@@ -421,11 +421,14 @@ async def aload_namespaced_skills(
     return skills
 
 
-SKILLS_SYSTEM_PROMPT = sdk_skills.SKILLS_SYSTEM_PROMPT.replace(
-    "**Available Skills:**",
+_SOURCE_LABELS_EXPLANATION = (
     'Sources labeled "Deepagents" are specific to this agent tool; sources labeled '
-    '"Agents" are shared across all agent tools on this machine.\n\n'
-    "**Available Skills:**",
+    '"Agents" are shared across all agent tools on this machine.'
+)
+SKILLS_SYSTEM_PROMPT = sdk_skills.SKILLS_SYSTEM_PROMPT.replace(
+    _SOURCE_LABELS_EXPLANATION + "\n\n", ""
+).replace(
+    "**Available Skills:**", _SOURCE_LABELS_EXPLANATION + "\n\n**Available Skills:**"
 )
 
 

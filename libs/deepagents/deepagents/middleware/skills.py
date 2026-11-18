@@ -155,7 +155,6 @@ from deepagents.middleware._skill_tools import (
     _unclaimed_include_names,
 )
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.filesystem import supports_execution
 
 logger = logging.getLogger(__name__)
 
@@ -875,6 +874,8 @@ You have access to a skills library that provides specialized capabilities and d
 
 {skills_locations}{skills_load_warnings}
 
+Sources labeled "Deepagents" are specific to this agent tool; sources labeled "Agents" are shared across all agent tools on this machine.
+
 **Available Skills:**
 
 {skills_list}
@@ -887,8 +888,7 @@ Skills follow a **progressive disclosure** pattern - you see their name and desc
 2. **Read the skill's full instructions**: Use `read_file` on the path shown in the skill list above.
     Pass `limit=1000` since the default of 100 lines is too small for most skill files.
 3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
-4. **Access supporting files**: Resolve relative paths in a skill's instructions against the directory containing its SKILL.md.
-    Use the resolved paths to read helper scripts, configs, or reference docs
+4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
 **When to Use Skills:**
 
@@ -896,8 +896,8 @@ Skills follow a **progressive disclosure** pattern - you see their name and desc
 - You need specialized knowledge or structured workflows
 - A skill provides proven patterns for complex tasks
 
-**Skill Scripts:**
-Skills may contain Python scripts or other executable files. {skill_script_usage}
+**Executing Skill Scripts:**
+Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
 
 **Example Workflow:**
 
@@ -906,7 +906,7 @@ User: "Can you research the latest developments in quantum computing?"
 1. Check available skills -> See "web-research" skill with its path
 2. Read the full skill file: `read_file(file_path="...", limit=1000)`
 3. Follow the skill's research workflow (search -> organize -> synthesize)
-4. Resolve supporting file paths against the skill's directory before using them
+4. Use any helper scripts with absolute paths
 
 Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!"""
 
@@ -1044,9 +1044,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 (do not include the trailing `Skills` in your label).
             system_prompt: System-prompt fragment template. Must contain
                 `{skills_locations}`, `{skills_load_warnings}`, and
-                `{skills_list}` slots for runtime substitution. The optional
-                `{skill_script_usage}` slot describes backend execution support.
-                Pass `None` to skip appending entirely (skills are still loaded into
+                `{skills_list}` slots for runtime substitution. Pass `None`
+                to skip appending entirely (skills are still loaded into
                 `state["skills_metadata"]`).
             tools: Tools the model sees only after reading a skill that
                 lists them in `metadata.include_tools`.
@@ -1158,12 +1157,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             skills_locations=skills_locations,
             skills_load_warnings=skills_load_warnings,
             skills_list=skills_list,
-            skill_script_usage=(
-                "You can read or execute scripts using their resolved paths. Only execute scripts whose paths are accessible "
-                "to the shell; translate host-mapped paths when needed. Read backend-only virtual files with `read_file` instead."
-                if supports_execution(self._backend)
-                else "Read scripts with `read_file`; this backend does not support execution."
-            ),
         )
 
         new_system_message = append_to_system_message(request.system_message, skills_section)

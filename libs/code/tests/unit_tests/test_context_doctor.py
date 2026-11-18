@@ -34,9 +34,11 @@ def test_skill_source_explanation_in_agent_and_context_doctor() -> None:
     result = middleware.modify_request(request)
     assert result.system_message is not None
     for prompt in (result.system_message.text, format_skills_prompt([])):
-        assert 'Sources labeled "Deepagents" are specific to this agent tool' in prompt
+        assert (
+            prompt.count('Sources labeled "Deepagents" are specific to this agent tool')
+            == 1
+        )
         assert '"Agents" are shared across all agent tools on this machine' in prompt
-        assert "Read scripts with `read_file`" in prompt
         assert "{skill_script_usage}" not in prompt
 
 

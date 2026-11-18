@@ -386,17 +386,25 @@ class _SlotConfig:
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
 
 
-class _ThreadREPL:
-    """One QuickJS Context with its console, PTC bridges and budgets.
+class _Slot:
+    """One LangGraph thread's QuickJS worker, Runtime and Context.
 
-    `quickjs_rs` objects are `!Send`: build, use and close a REPL only on its
-    slot's worker thread. Slots do the marshalling.
+    Builds nothing until the first eval. `quickjs_rs` objects are `!Send`, so
+    all QuickJS work runs on the slot's own worker thread; callers on any
+    thread or loop only wait on it. Evals run one at a time: one that starts
+    while another is running fails with `ConcurrentEval`. The Context lives
+    for a turn (`thread` and `turn` modes, closed by `end_turn`) or for one
+    eval (`call` mode); the worker and Runtime outlive turns.
     """
 
-    def __init__(
-        self, runtime: Runtime, config: _SlotConfig, task_calls: asyncio.Semaphore
-    ) -> None:
-        self._runtime = runtime
+    def __init__(self, name: str, config: _SlotConfig) -> None:
+        self.worker = ThreadWorker(name=name)  # starts its thread on first use
+        self.config = config
+        self.runtime: Runtime | None = None
+        self._ctx: Context | None = None
+        # Evals (or snapshots) running on the slot. A leased slot is never
+        # evicted.
+        self.leases = 0
         # The Context-level `timeout` is used as the cumulative budget
         # for sync evals. Async evals pass `timeout=` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
@@ -404,9 +412,27 @@ class _ThreadREPL:
         self._per_call_timeout = (
             float("inf") if config.timeout is None else config.timeout
         )
-        # Static budget config; mutable counters live in `_ptc_state`.
-        self._max_ptc_calls = config.max_ptc_calls
-        self._console = _ConsoleBuffer(config.max_stdout_chars)
+        self._task_calls = asyncio.Semaphore(config.max_subagent_concurrency)
+        # Mutable per-eval PTC state. Tracks call budget plus outer
+        # runtime/loop dispatch context for bridge invocations. Set while an
+        # eval runs, so bridge calls can't run outside one.
+        self._ptc_state: _PTCState | None = None
+
+    def _context(self) -> Context:
+        """Return the live Context, building it (and the Runtime) if needed.
+
+        Runs on the worker and never awaits, so concurrent first evals on its
+        single-threaded loop can't both build.
+        """
+        if self._ctx is not None:
+            return self._ctx
+        if self.runtime is None:
+            self.runtime = Runtime(
+                memory_limit=self.config.memory_limit,
+                transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+            )
+        self._ctx = self.runtime.new_context(timeout=self._per_call_timeout)
+        self._console = _ConsoleBuffer(self.config.max_stdout_chars)
         self._prepared_for_eval = False
         # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
@@ -422,21 +448,13 @@ class _ThreadREPL:
         # with an empty tool set still installs `tools = {}` (otherwise
         # `typeof tools.X` throws ReferenceError instead of returning
         # `"undefined"`).
-        self._tools_installed: bool = False
-        # Mutable per-eval PTC state. Tracks call budget plus outer
-        # runtime/loop dispatch context for bridge invocations. Allocated
-        # at eval start and cleared in finally so bridge calls can't run
-        # outside the current eval.
-        self._ptc_state: _PTCState | None = None
-        # Shared by every REPL on the slot, so parallel `call`-mode evals
-        # share one `task()` concurrency limit.
-        self._task_calls = task_calls
-        self._ctx: Context | None = runtime.new_context(timeout=self._per_call_timeout)
-        if config.capture_console:
+        self._tools_installed = False
+        if self.config.capture_console:
             self._install_console()
-        if config.subagents_enabled:
+        if self.config.subagents_enabled:
             self._register_task_bridge()
         self._register_fs_bridge()
+        return self._ctx
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -681,7 +699,7 @@ class _ThreadREPL:
                 raise ConcurrentEvalError(msg)
             state = self._ptc_state.consume_call_budget(
                 function_name=f"tools.{camel}",
-                max_ptc_calls=self._max_ptc_calls,
+                max_ptc_calls=self.config.max_ptc_calls,
             )
             self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
@@ -720,7 +738,7 @@ class _ThreadREPL:
             raise ConcurrentEvalError(msg)
         name = _fs.public_name(op)
         self._ptc_state = state.consume_call_budget(
-            function_name=name, max_ptc_calls=self._max_ptc_calls
+            function_name=name, max_ptc_calls=self.config.max_ptc_calls
         )
         backend = state.fs
         reply: dict[str, Any] = {}
@@ -741,17 +759,18 @@ class _ThreadREPL:
             return e.reply
         return reply
 
-    async def _acreate_snapshot(self) -> bytes:
-        ctx = self._require_ctx()
-        snapshot = ctx.create_snapshot()
-        return snapshot.to_bytes()
+    async def _acreate_snapshot(self) -> bytes | None:
+        if self._ctx is None:
+            return None
+        return self._ctx.create_snapshot().to_bytes()
 
     async def _arestore_snapshot(self, payload: bytes, *, inject_globals: bool) -> None:
-        ctx = self._require_ctx()
-        snapshot = Snapshot.from_bytes(payload)
-        self._runtime.restore_snapshot(
-            snapshot,
-            ctx,
+        if self.runtime is None or self._ctx is None:
+            msg = "QuickJS context is closed"
+            raise RuntimeError(msg)
+        self.runtime.restore_snapshot(
+            Snapshot.from_bytes(payload),
+            self._ctx,
             inject_globals=inject_globals,
         )
 
@@ -788,20 +807,23 @@ class _ThreadREPL:
     ) -> EvalOutcome:
         """Uses `ctx.eval_async` directly.
 
-        Overlapping evals on the same context surface as
-        `ConcurrentEvalError` (recorded in `EvalOutcome.error_type`).
-        We intentionally do not queue: a model dispatching overlapping
-        evals against shared state is almost always a prompting bug,
-        and a loud failure is a better signal than silent serialisation.
+        An eval that starts while another is running fails with
+        `ConcurrentEval`. We intentionally do not queue: a model dispatching
+        overlapping evals is almost always a prompting bug, and a loud
+        failure is a better signal than silent serialisation.
         """
-        ctx = self._require_ctx()
+        if self._ptc_state is not None:
+            return EvalOutcome(
+                error_type="ConcurrentEval",
+                error_message=(
+                    "another eval call is still running; make one call at a "
+                    "time and use Promise.all inside it for parallel work"
+                ),
+            )
+        ctx = self._context()
         outcome = EvalOutcome()
-        # Save/restore rather than clear-on-exit: a second eval that hits
-        # ConcurrentEvalError would otherwise null out the in-flight
-        # eval's state and orphan its bridge calls.
-        prev_ptc_state = self._ptc_state
         self._ptc_state = _PTCState(
-            remaining_calls=self._max_ptc_calls,
+            remaining_calls=self.config.max_ptc_calls,
             outer_runtime=outer_runtime,
             outer_loop=outer_loop,
             fs=fs,
@@ -886,8 +908,10 @@ class _ThreadREPL:
             outcome.error_message = e.error_message
             _clear_exception_references(e)
         finally:
-            self._ptc_state = prev_ptc_state
+            self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
+            if self.config.mode == "call":
+                self._close_context()
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
@@ -895,64 +919,48 @@ class _ThreadREPL:
         outcome.error_message = e.message
         outcome.error_stack = e.stack
 
-    def close(self) -> None:
-        if self._ctx is not None:
-            self._ctx.close()
-            self._ctx = None
-
-
-class _Slot:
-    """One LangGraph thread's QuickJS worker, Runtime and `task()` limit.
-
-    Builds nothing until the first eval. All QuickJS work runs on the slot's
-    own worker thread, so callers on any thread or loop only wait on it. The
-    worker and Runtime outlive turns; subclasses own how evals map to
-    Contexts and when those Contexts close.
-    """
-
-    def __init__(self, name: str, config: _SlotConfig) -> None:
-        self.worker = ThreadWorker(name=name)  # starts its thread on first use
-        self.config = config
-        self.runtime: Runtime | None = None
-        self.task_calls = asyncio.Semaphore(config.max_subagent_concurrency)
-        # Evals (or snapshots) running on the slot. A leased slot is never
-        # evicted.
-        self.leases = 0
+    def _close_context(self) -> None:
+        ctx, self._ctx = self._ctx, None
+        if ctx is not None:
+            ctx.close()
 
     def eval_sync(self, code: str, **kwargs: Any) -> EvalOutcome:
-        return self.worker.run_sync(self._aeval(code, **kwargs))
+        # Both sync and async entry points funnel through ctx.eval_async on
+        # the worker loop. Sync ctx.eval can't dispatch async host functions
+        # (PTC bridges are is_async=True), so routing sync callers through
+        # the async path is required for PTC to work under sync invocation.
+        return self.worker.run_sync(self._aeval_async(code, **kwargs))
 
     async def eval_async(self, code: str, **kwargs: Any) -> EvalOutcome:
-        return await self.worker.run_async(self._aeval(code, **kwargs))
-
-    async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
-        raise NotImplementedError
-
-    def _new_repl(self) -> _ThreadREPL:
-        """Build a Context on the warm Runtime. Runs on the worker; never awaits."""
-        if self.runtime is None:
-            self.runtime = Runtime(
-                memory_limit=self.config.memory_limit,
-                transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
-            )
-        return _ThreadREPL(self.runtime, self.config, self.task_calls)
+        return await self.worker.run_async(self._aeval_async(code, **kwargs))
 
     def create_snapshot(self) -> bytes | None:
-        """Snapshot the turn's Context, or `None` if there is none."""
-        return None
+        """Snapshot the live Context, or `None` if no eval ran this turn."""
+        if self._ctx is None:
+            return None
+        return self.worker.run_sync(self._acreate_snapshot())
 
     async def acreate_snapshot(self) -> bytes | None:
         """Async variant of `create_snapshot`."""
-        return None
+        if self._ctx is None:
+            return None
+        return await self.worker.run_async(self._acreate_snapshot())
 
     def end_turn(self) -> None:
-        """Close what the turn left open; the worker and Runtime stay warm."""
+        """Close the turn's Context; keep the worker and Runtime."""
+        if self._ctx is not None:
+            self.worker.run_sync(self._aend_turn())
 
     async def aend_turn(self) -> None:
         """Async variant of `end_turn`."""
+        if self._ctx is not None:
+            await self.worker.run_async(self._aend_turn())
+
+    async def _aend_turn(self) -> None:
+        self._close_context()
 
     def close(self) -> None:
-        """Close everything on the worker, then stop the worker."""
+        """Close the Context and Runtime on the worker, then stop the worker."""
         try:
             if self.runtime is not None:
                 self.worker.run_sync(self._aclose())
@@ -968,71 +976,10 @@ class _Slot:
             await self.worker.aclose()
 
     async def _aclose(self) -> None:
+        self._close_context()
         if self.runtime is not None:
             self.runtime.close()
             self.runtime = None
-
-
-class _TurnSlot(_Slot):
-    """A `thread`- or `turn`-mode slot: evals share one Context per turn."""
-
-    def __init__(self, name: str, config: _SlotConfig) -> None:
-        super().__init__(name, config)
-        self.repl: _ThreadREPL | None = None
-
-    async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
-        # Building the Context never awaits, so concurrent first evals on the
-        # worker's single-threaded loop can't both build one.
-        if self.repl is None:
-            self.repl = self._new_repl()
-        return await self.repl._aeval_async(code, **kwargs)  # noqa: SLF001
-
-    def create_snapshot(self) -> bytes | None:
-        if self.repl is None:
-            return None
-        return self.worker.run_sync(self._asnapshot())
-
-    async def acreate_snapshot(self) -> bytes | None:
-        if self.repl is None:
-            return None
-        return await self.worker.run_async(self._asnapshot())
-
-    async def _asnapshot(self) -> bytes | None:
-        if self.repl is None:
-            return None
-        return await self.repl._acreate_snapshot()  # noqa: SLF001
-
-    def end_turn(self) -> None:
-        if self.repl is not None:
-            self.worker.run_sync(self._aend_turn())
-
-    async def aend_turn(self) -> None:
-        if self.repl is not None:
-            await self.worker.run_async(self._aend_turn())
-
-    async def _aend_turn(self) -> None:
-        repl, self.repl = self.repl, None
-        if repl is not None:
-            repl.close()
-
-    async def _aclose(self) -> None:
-        await self._aend_turn()
-        await super()._aclose()
-
-
-class _CallSlot(_Slot):
-    """A `call`-mode slot: each eval gets its own Context, closed when it ends.
-
-    Parallel evals share the slot's Runtime, so its `memory_limit`, and its
-    `task()` limit.
-    """
-
-    async def _aeval(self, code: str, **kwargs: Any) -> EvalOutcome:
-        repl = self._new_repl()
-        try:
-            return await repl._aeval_async(code, **kwargs)  # noqa: SLF001
-        finally:
-            repl.close()
 
 
 class _Registry:
@@ -1074,8 +1021,7 @@ class _Registry:
         with self._lock:
             slot = self._slots.get(key)
             if slot is None:
-                slot_class = _CallSlot if config.mode == "call" else _TurnSlot
-                slot = slot_class(f"quickjs-worker-{thread_id[:8]}", config)
+                slot = _Slot(f"quickjs-worker-{thread_id[:8]}", config)
                 self._slots[key] = slot
             self._slots.move_to_end(key)
             slot.leases += 1

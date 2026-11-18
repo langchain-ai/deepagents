@@ -30,7 +30,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
-from langchain_quickjs._repl import _ThreadREPL
+from langchain_quickjs._repl import _Slot
 from langchain_quickjs._snapshot import (
     coerce_record,
     normalize_signing_key,
@@ -67,7 +67,7 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = mw.before_agent(
@@ -93,7 +93,7 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
         await repl.eval_async("const answer = 42")
         update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = await mw.abefore_agent(
@@ -195,7 +195,7 @@ def test_after_agent_clears_payload_on_snapshot_failure() -> None:
             "_quickjs_snapshot_payload": None,
             "_quickjs_snapshot_hmac": None,
         }
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
     finally:
         drop_slots(mw)
 
@@ -212,7 +212,7 @@ def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
             "_quickjs_snapshot_payload": None,
             "_quickjs_snapshot_hmac": None,
         }
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
     finally:
         drop_slots(mw)
 
@@ -233,7 +233,7 @@ async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
             "_quickjs_snapshot_payload": None,
             "_quickjs_snapshot_hmac": None,
         }
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
     finally:
         drop_slots(mw)
 
@@ -579,7 +579,7 @@ def test_mode_turn_keeps_reset_behavior() -> None:
         repl.eval_sync("globalThis.answer = 42")
         update = mw.after_agent(state=state, runtime=MagicMock())
         assert update is None
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
 
         before_update = mw.before_agent(
             state={"_quickjs_snapshot_payload": b"ignored"},
@@ -761,7 +761,7 @@ def test_before_agent_rejects_missing_hmac() -> None:
         )
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
 
-        with patch.object(_ThreadREPL, "_arestore_snapshot") as restore:
+        with patch.object(_Slot, "_arestore_snapshot") as restore:
             before_update = mw.before_agent(
                 state={
                     "_quickjs_slot_id": _signing_thread_id(mw),

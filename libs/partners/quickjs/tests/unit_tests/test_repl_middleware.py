@@ -33,8 +33,8 @@ from langchain_quickjs._repl import (
     _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
     _clear_exception_references,
     _Registry,
+    _Slot,
     _SlotConfig,
-    _TurnSlot,
 )
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
@@ -292,7 +292,7 @@ def test_rejects_invalid_mode() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_state_persists_across_evals(repl: _TurnSlot) -> None:
+def test_state_persists_across_evals(repl: _Slot) -> None:
     first = repl.eval_sync("let x = 40")
     assert first.error_type is None
     second = repl.eval_sync("x + 2")
@@ -300,7 +300,7 @@ def test_state_persists_across_evals(repl: _TurnSlot) -> None:
     assert second.result == "42"
 
 
-def test_threads_are_isolated(make_repl: Callable[..., _TurnSlot]) -> None:
+def test_threads_are_isolated(make_repl: Callable[..., _Slot]) -> None:
     a = make_repl(
         timeout=5.0,
         capture_console=True,
@@ -332,7 +332,7 @@ def test_registry_end_turn_keeps_worker_and_runtime(registry: _Registry) -> None
     slot.eval_sync("globalThis.answer = 42")
     runtime = slot.runtime
     registry.end_turn("thread-a", _CONFIG)
-    assert slot.repl is None
+    assert slot._ctx is None
     assert slot.eval_sync("typeof answer").result == "undefined"
     assert _get(registry, "thread-a") is slot
     assert slot.runtime is runtime
@@ -385,7 +385,7 @@ def test_registry_closes_idle_mid_turn_slot_but_not_a_running_eval(
 # ---------------------------------------------------------------------------
 
 
-def test_runtime_throw_becomes_error_block(repl: _TurnSlot) -> None:
+def test_runtime_throw_becomes_error_block(repl: _Slot) -> None:
     outcome = repl.eval_sync("throw new TypeError('bad')")
     assert outcome.error_type == "TypeError"
     assert "bad" in outcome.error_message
@@ -394,12 +394,12 @@ def test_runtime_throw_becomes_error_block(repl: _TurnSlot) -> None:
     assert "bad" in formatted
 
 
-def test_syntax_error_surfaces(repl: _TurnSlot) -> None:
+def test_syntax_error_surfaces(repl: _Slot) -> None:
     outcome = repl.eval_sync("1 +")
     assert outcome.error_type == "SyntaxError"
 
 
-def test_timeout(make_repl: Callable[..., _TurnSlot]) -> None:
+def test_timeout(make_repl: Callable[..., _Slot]) -> None:
     tight = make_repl(
         timeout=0.1,
         capture_console=True,
@@ -414,7 +414,7 @@ def test_timeout(make_repl: Callable[..., _TurnSlot]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_console_log_is_captured(repl: _TurnSlot) -> None:
+def test_console_log_is_captured(repl: _Slot) -> None:
     outcome = repl.eval_sync("console.log('hi', 2); 1 + 1")
     assert outcome.result == "2"
     assert "hi 2" in outcome.stdout
@@ -424,7 +424,7 @@ def test_console_log_is_captured(repl: _TurnSlot) -> None:
     assert "<result>2</result>" in formatted
 
 
-def test_console_can_be_disabled(make_repl: Callable[..., _TurnSlot]) -> None:
+def test_console_can_be_disabled(make_repl: Callable[..., _Slot]) -> None:
     quiet = make_repl(
         timeout=5.0,
         capture_console=False,
@@ -436,7 +436,7 @@ def test_console_can_be_disabled(make_repl: Callable[..., _TurnSlot]) -> None:
 
 
 def test_console_capture_is_bounded_at_append_time(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     bounded = make_repl(
         timeout=5.0,
@@ -453,7 +453,7 @@ def test_console_capture_is_bounded_at_append_time(
     assert "truncated" in formatted
 
 
-def test_console_overflow_preserves_prefix(make_repl: Callable[..., _TurnSlot]) -> None:
+def test_console_overflow_preserves_prefix(make_repl: Callable[..., _Slot]) -> None:
     bounded = make_repl(
         timeout=5.0,
         capture_console=True,
@@ -465,7 +465,7 @@ def test_console_overflow_preserves_prefix(make_repl: Callable[..., _TurnSlot]) 
 
 
 def test_console_truncation_state_resets_between_evals(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     bounded = make_repl(
         timeout=5.0,
@@ -481,7 +481,7 @@ def test_console_truncation_state_resets_between_evals(
 
 
 def test_console_truncation_marker_emits_with_zero_budget(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     bounded = make_repl(
         timeout=5.0,
@@ -501,7 +501,7 @@ def test_console_truncation_marker_emits_with_zero_budget(
 # ---------------------------------------------------------------------------
 
 
-def test_function_return_falls_back_to_handle_description(repl: _TurnSlot) -> None:
+def test_function_return_falls_back_to_handle_description(repl: _Slot) -> None:
     outcome = repl.eval_sync("(a, b) => a + b")
     assert outcome.error_type is None
     assert outcome.result_kind == "handle"
@@ -516,7 +516,7 @@ def test_function_return_falls_back_to_handle_description(repl: _TurnSlot) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_async_iife_returning_promise_is_unwrapped(repl: _TurnSlot) -> None:
+def test_async_iife_returning_promise_is_unwrapped(repl: _Slot) -> None:
     """Issue #3424: a final expression that is a Promise (e.g. a bare async
     IIFE) must surface its resolved value instead of the Promise object.
     """
@@ -528,14 +528,14 @@ def test_async_iife_returning_promise_is_unwrapped(repl: _TurnSlot) -> None:
     assert outcome.result == "456"
 
 
-def test_top_level_promise_expression_is_unwrapped(repl: _TurnSlot) -> None:
+def test_top_level_promise_expression_is_unwrapped(repl: _Slot) -> None:
     outcome = repl.eval_sync("Promise.resolve(7)")
     assert outcome.error_type is None
     assert outcome.result_kind is None
     assert outcome.result == "7"
 
 
-def test_top_level_await_marshals_resolved_value(repl: _TurnSlot) -> None:
+def test_top_level_await_marshals_resolved_value(repl: _Slot) -> None:
     """A `const x = await ...; x;` script must still marshal the resolved
     value, not the Promise — the existing top-level-await path is unaffected
     by the new handle-based eval flow.
@@ -546,14 +546,14 @@ def test_top_level_await_marshals_resolved_value(repl: _TurnSlot) -> None:
     assert outcome.result == "123"
 
 
-def test_rejected_promise_surfaces_as_jserror(repl: _TurnSlot) -> None:
+def test_rejected_promise_surfaces_as_jserror(repl: _Slot) -> None:
     outcome = repl.eval_sync("(async () => { throw new Error('iife-rejection'); })();")
     assert outcome.result is None
     assert outcome.error_type == "Error"
     assert "iife-rejection" in (outcome.error_message or "")
 
 
-def test_unwrapping_does_not_double_user_side_effects(repl: _TurnSlot) -> None:
+def test_unwrapping_does_not_double_user_side_effects(repl: _Slot) -> None:
     """The user program (and its console.log side effects) must run exactly
     once even when the final expression is a Promise that needs unwrapping.
     """
@@ -568,7 +568,7 @@ def test_unwrapping_does_not_double_user_side_effects(repl: _TurnSlot) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_large_result_is_truncated(repl: _TurnSlot) -> None:
+def test_large_result_is_truncated(repl: _Slot) -> None:
     outcome = repl.eval_sync('"x".repeat(5000)')
     formatted = format_outcome(outcome, max_result_chars=100)
     assert "truncated" in formatted
@@ -647,7 +647,7 @@ def test_after_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
     finally:
         drop_slots(mw)
 
@@ -666,7 +666,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert slot_of(mw, slot_id).repl is None
+        assert slot_of(mw, slot_id)._ctx is None
     finally:
         drop_slots(mw)
 
@@ -729,13 +729,13 @@ async def test_eval_without_middleware_initialized_slot_fails_fast() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_async_eval_basic(repl: _TurnSlot) -> None:
+async def test_async_eval_basic(repl: _Slot) -> None:
     outcome = await repl.eval_async("1 + 1")
     assert outcome.error_type is None
     assert outcome.result == "2"
 
 
-async def test_async_state_persists(repl: _TurnSlot) -> None:
+async def test_async_state_persists(repl: _Slot) -> None:
     """v0.2 module-with-async mode keeps realm-level bindings across calls."""
     first = await repl.eval_async("globalThis.counter = 10")
     assert first.error_type is None
@@ -743,7 +743,7 @@ async def test_async_state_persists(repl: _TurnSlot) -> None:
     assert second.result == "15"
 
 
-async def test_async_top_level_await(repl: _TurnSlot) -> None:
+async def test_async_top_level_await(repl: _Slot) -> None:
     """The feature this whole upgrade is about — awaiting a Promise works."""
     outcome = await repl.eval_async("await new Promise(resolve => resolve(42))")
     assert outcome.error_type is None
@@ -833,7 +833,7 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
     assert calls[0]["tool_input"]["runtime"].tool_call_id == calls[0]["tool_call_id"]
 
 
-async def test_async_task_global_propagates_graph_interrupt(repl: _TurnSlot) -> None:
+async def test_async_task_global_propagates_graph_interrupt(repl: _Slot) -> None:
     interrupt = GraphInterrupt([Interrupt(value={"action_requests": []})])
 
     async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
@@ -885,7 +885,7 @@ class _QueuedFanout:
         self.released.set()
         return "released"
 
-    async def run(self, repl: _TurnSlot, *, extra_ptc_call: bool = False) -> Any:
+    async def run(self, repl: _Slot, *, extra_ptc_call: bool = False) -> Any:
         task_tool = _task_tool_for_runnable(RunnableLambda(self.work))
         release_tool = StructuredTool.from_function(
             coroutine=self.release, name="release_tasks", description="Release tasks."
@@ -914,7 +914,7 @@ class _QueuedFanout:
 
 
 async def test_queued_identical_tasks_have_distinct_replay_stable_ids(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     attempts: list[list[str]] = []
     for _ in range(2):
@@ -932,7 +932,7 @@ async def test_queued_identical_tasks_have_distinct_replay_stable_ids(
 
 
 async def test_queued_tasks_do_not_restore_spent_ptc_budget(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     repl = make_repl(
         timeout=5.0,
@@ -948,7 +948,7 @@ async def test_queued_tasks_do_not_restore_spent_ptc_budget(
 
 
 async def test_failed_dispatch_still_consumes_its_ordinal(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     """Ordinals are positional, not success-gated.
 
@@ -1146,7 +1146,7 @@ async def test_eval_tool_does_not_install_subagent_when_disabled() -> None:
         drop_slots(mw)
 
 
-async def test_async_task_global_invokes_runner(repl: _TurnSlot) -> None:
+async def test_async_task_global_invokes_runner(repl: _Slot) -> None:
     calls: list[dict[str, Any]] = []
 
     def _sync(state: dict[str, Any], config: Any) -> dict[str, Any]:
@@ -1189,7 +1189,7 @@ async def test_async_task_global_invokes_runner(repl: _TurnSlot) -> None:
 
 
 async def test_async_task_global_not_installed_when_disabled(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     disabled = make_repl(
         timeout=5.0,
@@ -1231,7 +1231,7 @@ async def test_async_task_global_not_installed_when_disabled(
     ],
 )
 async def test_async_task_global_validation_errors_surface_as_eval_errors(
-    repl: _TurnSlot, code: str, message: str
+    repl: _Slot, code: str, message: str
 ) -> None:
     runnable = RunnableLambda(
         lambda state, config: {"messages": [AIMessage(content="sync")]},
@@ -1247,7 +1247,7 @@ async def test_async_task_global_validation_errors_surface_as_eval_errors(
 
 
 async def test_async_task_global_missing_task_tool_surfaces_as_eval_error(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     runtime = ToolRuntime(
         state={},
@@ -1269,7 +1269,7 @@ async def test_async_task_global_missing_task_tool_surfaces_as_eval_error(
 
 
 async def test_async_task_global_returns_declarative_structured_response_object(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     outcome = await repl.eval_async(
         "const schema = {"
@@ -1305,7 +1305,7 @@ async def test_async_task_global_returns_declarative_structured_response_object(
 
 
 async def test_async_task_global_rejects_compiled_response_schema(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     runnable = RunnableLambda(
         lambda state, config: {"messages": [AIMessage(content="sync")]},
@@ -1333,7 +1333,7 @@ async def test_async_task_global_rejects_compiled_response_schema(
 
 
 async def test_async_task_global_uses_last_non_empty_ai_message(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
         del state, config
@@ -1356,7 +1356,7 @@ async def test_async_task_global_uses_last_non_empty_ai_message(
 
 
 async def test_async_task_global_rejects_state_without_messages(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
         del state, config
@@ -1432,58 +1432,68 @@ async def test_async_task_global_limits_concurrency_per_repl(
         afunc=_counting_async,
     )
 
-    # In call mode, parallel evals (each with its own Context) share the limit.
-    evals = 2 if reset else 1
-    code = (
-        "const calls = [];"
-        f"for (let i = 0; i < {64 // evals}; i++) {{"
-        "  calls.push(task({"
-        "description: String(i), subagentType: 'worker', label: 'c' + i"
-        "}));"
-        "}"
-        "(await Promise.all(calls)).length"
-    )
     try:
-        outcomes = await asyncio.gather(
-            *(
-                slot.eval_async(code, outer_runtime=_subagent_runtime(runnable))
-                for _ in range(evals)
-            )
+        outcome = await slot.eval_async(
+            "const calls = [];"
+            "for (let i = 0; i < 64; i++) {"
+            "  calls.push(task({"
+            "description: String(i), subagentType: 'worker', label: 'c' + i"
+            "}));"
+            "}"
+            "(await Promise.all(calls)).length",
+            outer_runtime=_subagent_runtime(runnable),
         )
     finally:
         drop_slots(middleware)
 
-    assert [o.error_type for o in outcomes] == [None] * evals
-    assert [o.result for o in outcomes] == [str(64 // evals)] * evals
+    assert outcome.error_type is None
+    assert outcome.result == "64"
     assert runner.max_active == expected_limit
 
 
-async def test_async_promise_chain(repl: _TurnSlot) -> None:
+@pytest.mark.parametrize("mode", ["thread", "turn", "call"])
+async def test_overlapping_eval_fails_with_concurrent_eval(
+    make_repl: Callable[..., _Slot], mode: str
+) -> None:
+    async def _nap() -> str:
+        await asyncio.sleep(0.2)
+        return "ok"
+
+    nap = StructuredTool.from_function(coroutine=_nap, name="nap", description="Nap.")
+    slot = make_repl(mode=mode)
+    first = asyncio.ensure_future(slot.eval_async("await tools.nap({})", tools=[nap]))
+    await asyncio.sleep(0.05)
+    second = await slot.eval_async("2")
+    assert second.error_type == "ConcurrentEval"
+    assert (await first).error_type is None
+
+
+async def test_async_promise_chain(repl: _Slot) -> None:
     outcome = await repl.eval_async(
         "await Promise.resolve(1).then(x => x + 2).then(x => x * 10)"
     )
     assert outcome.result == "30"
 
 
-async def test_async_rejected_promise_surfaces_as_error(repl: _TurnSlot) -> None:
+async def test_async_rejected_promise_surfaces_as_error(repl: _Slot) -> None:
     outcome = await repl.eval_async("await Promise.reject(new TypeError('nope'))")
     assert outcome.error_type == "TypeError"
     assert "nope" in outcome.error_message
 
 
-async def test_async_sync_code_still_works(repl: _TurnSlot) -> None:
+async def test_async_sync_code_still_works(repl: _Slot) -> None:
     """Pure-sync code runs fine on the async path — no await needed."""
     outcome = await repl.eval_async("[1, 2, 3].map(x => x * 2)")
     assert outcome.result == "[2, 4, 6]"
 
 
-async def test_async_deadlock_detection(repl: _TurnSlot) -> None:
+async def test_async_deadlock_detection(repl: _Slot) -> None:
     """A top-level Promise with no resolver surfaces as a Deadlock error."""
     outcome = await repl.eval_async("await new Promise(() => {})")
     assert outcome.error_type == "Deadlock"
 
 
-async def test_async_concurrent_calls_surface_error(repl: _TurnSlot) -> None:
+async def test_async_concurrent_calls_surface_error(repl: _Slot) -> None:
     """Overlapping async evals on the same context surface as
     `ConcurrentEvalError` rather than silently serialising.
 
@@ -1515,7 +1525,7 @@ async def test_async_concurrent_calls_surface_error(repl: _TurnSlot) -> None:
     assert "ConcurrentEval" in {a.error_type, b.error_type}, (a, b)
 
 
-def test_sync_path_still_works(repl: _TurnSlot) -> None:
+def test_sync_path_still_works(repl: _Slot) -> None:
     """After the v0.2 split, the sync path continues to use `ctx.eval`."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"

@@ -30,7 +30,7 @@ from tests.unit_tests._slots import drop_slots, install_tools, slot_of
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from langchain_quickjs._repl import _TurnSlot
+    from langchain_quickjs._repl import _Slot
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -325,7 +325,7 @@ def test_render_ptc_prompt_rejects_invalid_js_identifiers() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_tool_invocation_from_repl(repl: _TurnSlot) -> None:
+async def test_tool_invocation_from_repl(repl: _Slot) -> None:
     calls: list[dict] = []
     install_tools(repl, [_greet_tool(calls)])
     outcome = await repl.eval_async('await tools.greet({name: "world", times: 2})')
@@ -336,7 +336,7 @@ async def test_tool_invocation_from_repl(repl: _TurnSlot) -> None:
 
 
 async def test_undefined_object_property_uses_schema_default(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     """A property passed as JS ``undefined`` is omitted so defaults apply."""
 
@@ -367,7 +367,7 @@ async def test_undefined_object_property_uses_schema_default(
     assert undefined.result == "ok:''"
 
 
-async def test_promise_all_runs_tools_concurrently(repl: _TurnSlot) -> None:
+async def test_promise_all_runs_tools_concurrently(repl: _Slot) -> None:
     """`Promise.all` on two tool calls resolves both before returning."""
     calls: list[dict] = []
     install_tools(repl, [_greet_tool(calls)])
@@ -384,7 +384,7 @@ async def test_promise_all_runs_tools_concurrently(repl: _TurnSlot) -> None:
 
 
 async def test_command_tool_output_is_visible_to_js(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     install_tools(repl, [_command_tool()])
     outcome = await repl.eval_async(
@@ -397,7 +397,7 @@ async def test_command_tool_output_is_visible_to_js(
 
 
 async def test_command_tool_does_not_change_eval_outcome_shape(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     install_tools(repl, [_command_tool()])
     first = await repl.eval_async("await tools.emitCommand({value: 7})")
@@ -410,7 +410,7 @@ async def test_command_tool_does_not_change_eval_outcome_shape(
     assert not hasattr(second, "commands")
 
 
-async def test_toolmessage_list_uses_last_message_content(repl: _TurnSlot) -> None:
+async def test_toolmessage_list_uses_last_message_content(repl: _Slot) -> None:
     install_tools(repl, [_tool_message_list_tool()])
     outcome = await repl.eval_async("await tools.emitMessages({value: 9})")
     assert outcome.error_type is None, outcome.error_message
@@ -418,7 +418,7 @@ async def test_toolmessage_list_uses_last_message_content(repl: _TurnSlot) -> No
 
 
 async def test_mixed_list_uses_tail_message(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     install_tools(repl, [_mixed_list_tool()])
     outcome = await repl.eval_async("await tools.emitMixed({value: 11})")
@@ -426,7 +426,7 @@ async def test_mixed_list_uses_tail_message(
     assert outcome.result == "from-list-tail=11"
 
 
-async def test_tool_failure_surfaces_as_js_error(repl: _TurnSlot) -> None:
+async def test_tool_failure_surfaces_as_js_error(repl: _Slot) -> None:
     def _boom(**_: object) -> str:
         msg = "tool exploded"
         raise RuntimeError(msg)
@@ -449,7 +449,7 @@ async def test_tool_failure_surfaces_as_js_error(repl: _TurnSlot) -> None:
 
 
 async def test_install_tools_skips_invalid_js_identifier_names(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     install_tools(repl, [_echo_tool("123bad")])
     outcome = await repl.eval_async('typeof tools["123bad"]')
@@ -458,7 +458,7 @@ async def test_install_tools_skips_invalid_js_identifier_names(
 
 
 async def test_tools_namespace_assignment_escapes_malicious_tool_name(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     from langchain_quickjs._repl import _render_tools_namespace_assignment
 
@@ -475,7 +475,7 @@ async def test_tools_namespace_assignment_escapes_malicious_tool_name(
     assert outcome2.result == "function"
 
 
-async def test_install_tools_is_idempotent(repl: _TurnSlot) -> None:
+async def test_install_tools_is_idempotent(repl: _Slot) -> None:
     """Calling install_tools twice with the same set is a no-op for the guest."""
     calls: list[dict] = []
     tool = _greet_tool(calls)
@@ -486,7 +486,7 @@ async def test_install_tools_is_idempotent(repl: _TurnSlot) -> None:
     assert len(calls) == 1
 
 
-async def test_install_tools_shrinks_namespace(repl: _TurnSlot) -> None:
+async def test_install_tools_shrinks_namespace(repl: _Slot) -> None:
     """Dropping a tool removes it from `globalThis.tools` on next install."""
     install_tools(repl, [_greet_tool(), _echo_tool("echo")])
     install_tools(repl, [_greet_tool()])
@@ -497,7 +497,7 @@ async def test_install_tools_shrinks_namespace(repl: _TurnSlot) -> None:
 
 
 async def test_ptc_host_call_budget_exceeded_surfaces_error(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     limited = make_repl(
         timeout=5.0,
@@ -519,7 +519,7 @@ async def test_ptc_host_call_budget_exceeded_surfaces_error(
 
 
 async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     limited = make_repl(
         timeout=5.0,
@@ -542,7 +542,7 @@ async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
 
 
 async def test_ptc_host_call_budget_resets_each_eval(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     limited = make_repl(
         timeout=5.0,
@@ -558,7 +558,7 @@ async def test_ptc_host_call_budget_resets_each_eval(
 
 
 async def test_ptc_host_call_budget_none_disables_limit(
-    make_repl: Callable[..., _TurnSlot],
+    make_repl: Callable[..., _Slot],
 ) -> None:
     unlimited = make_repl(
         timeout=5.0,
@@ -888,7 +888,7 @@ def _get_status_record() -> _Status:
 
 
 async def test_pydantic_return_arrives_as_object_matching_schema(
-    repl: _TurnSlot,
+    repl: _Slot,
 ) -> None:
     """BaseModel returns are dumped at the bridge so the JS shape matches the schema."""
     tool = StructuredTool.from_function(

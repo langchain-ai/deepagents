@@ -16,7 +16,7 @@ import pytest
 from quickjs_rs import Runtime
 
 from langchain_quickjs import CodeInterpreterMiddleware, _repl
-from langchain_quickjs._repl import PersistenceMode, _Registry, _SlotConfig, _ThreadREPL
+from langchain_quickjs._repl import PersistenceMode, _Registry, _Slot, _SlotConfig
 from tests.unit_tests._slots import warm_slot
 
 if TYPE_CHECKING:
@@ -96,9 +96,10 @@ async def test_first_eval_build_does_not_block_loop(
 async def test_concurrent_first_evals_build_one_runtime(
     registry: _Registry, slow_build: list[str]
 ) -> None:
-    slot = _get(registry, "shared-1", "call")
+    slot = _get(registry, "shared-1")
     outcomes = await asyncio.gather(*(slot.eval_async(f"{i} + 1") for i in range(3)))
-    assert [o.result for o in outcomes] == ["1", "2", "3"]
+    assert outcomes[0].result == "1"
+    assert all(o.error_type in {None, "ConcurrentEval"} for o in outcomes)
     assert slow_build == ["quickjs-worker-shared-1"]
 
 
@@ -107,13 +108,13 @@ async def test_fresh_context_does_not_block_loop(
 ) -> None:
     slot = _get(registry, "fresh-01", "call")
     await slot.eval_async("1")
-    original = _ThreadREPL.__init__
+    original = _Slot._install_console
 
-    def _slow_init(self: _ThreadREPL, *args: Any) -> None:
+    def _slow_install(self: _Slot) -> None:
         time.sleep(SLOW)
-        original(self, *args)
+        original(self)
 
-    monkeypatch.setattr(_ThreadREPL, "__init__", _slow_init)
+    monkeypatch.setattr(_Slot, "_install_console", _slow_install)
     gap, outcome = await _max_gap(slot.eval_async("1 + 1"))
     assert gap < MAX_GAP
     assert outcome.result == "2"
@@ -127,17 +128,17 @@ async def test_after_agent_does_not_block_loop(
     slot_id = f"after-{mode}"
     slot = warm_slot(mw, slot_id)
     await slot.eval_async("globalThis.x = 1")
-    original = _ThreadREPL.close
+    original = _Slot._close_context
 
-    def _slow_close(self: _ThreadREPL) -> None:
+    def _slow_close(self: _Slot) -> None:
         time.sleep(SLOW)
         original(self)
 
-    monkeypatch.setattr(_ThreadREPL, "close", _slow_close)
+    monkeypatch.setattr(_Slot, "_close_context", _slow_close)
     state: dict[str, Any] = {"_quickjs_slot_id": slot_id}
     gap, _ = await _max_gap(mw.aafter_agent(state, None))  # type: ignore[arg-type]
     assert gap < MAX_GAP
-    assert slot.repl is None
+    assert slot._ctx is None
 
 
 async def test_closing_an_evicted_slot_does_not_block_loop(

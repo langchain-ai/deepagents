@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from langchain_quickjs import middleware
-from langchain_quickjs._repl import _Registry, _SlotConfig, _TurnSlot
+from langchain_quickjs._repl import _Registry, _Slot, _SlotConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -22,12 +22,12 @@ def registry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Registry]:
 
 
 @pytest.fixture
-def make_repl() -> Iterator[Callable[..., _TurnSlot]]:
+def make_repl() -> Iterator[Callable[..., _Slot]]:
     """Build turn slots outside the registry; closed when the test ends."""
-    slots: list[_TurnSlot] = []
+    slots: list[_Slot] = []
 
-    def _make(**config: Any) -> _TurnSlot:
-        slots.append(_TurnSlot("quickjs-test", _SlotConfig(**config)))
+    def _make(**config: Any) -> _Slot:
+        slots.append(_Slot("quickjs-test", _SlotConfig(**config)))
         return slots[-1]
 
     yield _make
@@ -36,6 +36,6 @@ def make_repl() -> Iterator[Callable[..., _TurnSlot]]:
 
 
 @pytest.fixture
-def repl(make_repl: Callable[..., _TurnSlot]) -> _TurnSlot:
+def repl(make_repl: Callable[..., _Slot]) -> _Slot:
     """A turn slot with default settings: one Context per turn."""
     return make_repl()

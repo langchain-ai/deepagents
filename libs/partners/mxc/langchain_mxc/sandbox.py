@@ -158,12 +158,14 @@ class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
             timeout: Default per-command timeout in seconds. Must be positive.
             max_output_bytes: Output beyond this many bytes is truncated.
             executor_path: Path to the MXC executor. When `None`, the
-                `MXC_EXECUTOR_PATH` environment variable and the usual
-                `node_modules/@microsoft/mxc-sdk/bin/<arch>/` locations are searched.
+                `MXC_EXECUTOR_PATH` environment variable, the global npm
+                `node_modules` folders and `PATH` are searched. A project's
+                own `node_modules` is not searched.
 
         Raises:
-            ValueError: If `timeout` is not positive or `clipboard` is not a
-                recognised level.
+            ValueError: If `timeout` is not positive, `clipboard` is not a
+                recognised level, or the sandbox could write the executor or
+                its request folder.
             MXCExecutorNotFoundError: If no executor can be found; the message
                 explains how to install MXC.
             MXCUnsupportedPlatformError: On an unsupported operating system.
@@ -202,15 +204,27 @@ class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
             clipboard=clipboard,
             allow_input_injection=allow_input_injection,
         )
-        if any(is_under(self._host, str(requests), p) for p in self._policy.read_write_paths):
+        if self._sandbox_can_write(requests):
             self._finalizer()
             msg = f"read_write_paths must not include {requests.parent}: MXCSandbox keeps its sandbox policy files there"
+            raise ValueError(msg)
+        # The executor runs on the host before any sandbox exists, so a sandboxed
+        # command must not be able to replace it (for example a copy in root_dir/node_modules).
+        if self._sandbox_can_write(self._executor_path.absolute()) or self._sandbox_can_write(self._executor_path.resolve()):
+            self._finalizer()
+            msg = (
+                f"The MXC executor {self._executor_path} is inside a folder the sandbox can write, so a command could replace it. "
+                "Install @microsoft/mxc-sdk globally (`npm install -g @microsoft/mxc-sdk`) or point executor_path outside root_dir."
+            )
             raise ValueError(msg)
         if self._policy.dropped_paths:
             logger.warning("MXCSandbox %s ignored nonexistent paths: %s", self._sandbox_id, ", ".join(self._policy.dropped_paths))
 
         self._probe_lock = threading.Lock()
         self._probe_result: ProbeResult | None = None
+
+    def _sandbox_can_write(self, path: Path) -> bool:
+        return any(is_under(self._host, str(path), p) for p in self._policy.read_write_paths)
 
     # -- identity ----------------------------------------------------------
 
@@ -395,10 +409,12 @@ class MXCSandbox(FilesystemBackend, SandboxBackendProtocol):
         return "\n".join(parts) if parts else "<no output>"
 
     def _hidden_by_sandbox(self, path: str) -> bool:
-        """Whether a path the command saw as missing exists on the host but is outside the policy."""
-        if self._policy.is_allowed(path):
-            return False
-        return os.path.lexists(path) or os.path.isdir(os.path.dirname(path))
+        """Whether a path the command saw as missing is outside the policy.
+
+        Decided from the policy alone. Checking the host filesystem would let a
+        command learn which host paths exist by printing fake errors.
+        """
+        return not self._policy.is_allowed(path)
 
     def _denial_hint(self, outcome: Outcome, *, exit_code: int, command: str = "") -> str | None:  # noqa: C901 - one check per observed denial shape
         """One line naming what the sandbox blocked, or None."""

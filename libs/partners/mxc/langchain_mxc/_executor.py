@@ -132,29 +132,25 @@ def candidate_executor_paths(
     platform: str | None = None,
     machine: str | None = None,
     environ: Mapping[str, str] | None = None,
-    cwd: Path | None = None,
     home: Path | None = None,
 ) -> list[Path]:
     """List the places searched for the executor, in search order.
 
-    Order: `MXC_EXECUTOR_PATH`, `MXC_BIN_DIR`, `node_modules/@microsoft/mxc-sdk`
-    in the working directory and every parent, well-known global
-    `node_modules` folders, then `PATH`.
+    Order: `MXC_EXECUTOR_PATH`, `MXC_BIN_DIR`, well-known global `node_modules`
+    folders, then `PATH`. A project's own `node_modules` is not searched: a
+    project could ship its own executor, which runs on the host unsandboxed.
     """
     plat = platform or sys.platform
     env = os.environ if environ is None else environ
-    cwd = Path.cwd() if cwd is None else Path(cwd)
     home = Path.home() if home is None else Path(home)
     name = executor_name(plat)
     arch = sdk_arch(machine)
-    rel = Path("node_modules") / SDK_PACKAGE / "bin" / arch / name
 
     candidates: list[Path] = []
     if env.get(ENV_EXECUTOR_PATH):
         candidates.append(Path(env[ENV_EXECUTOR_PATH]).expanduser())
     if env.get(ENV_BIN_DIR):
         candidates.append(Path(env[ENV_BIN_DIR]).expanduser() / arch / name)
-    candidates.extend(directory / rel for directory in (cwd, *cwd.parents))
     candidates.extend(root / SDK_PACKAGE / "bin" / arch / name for root in _node_global_roots(plat, env, home))
     found_on_path = shutil.which(name)
     if found_on_path:
@@ -190,10 +186,9 @@ def install_instructions(platform: str | None = None, machine: str | None = None
     return (
         f"MXCSandbox needs the native MXC executor ({name}, {arch}) that ships inside the "
         f"{SDK_PACKAGE} npm package. Install it with Node.js 24 or newer:\n\n"
-        f"    npm install {SDK_PACKAGE}        # into ./node_modules of your project\n"
-        f"    npm install -g {SDK_PACKAGE}     # or globally\n\n"
-        "Then run from a directory that contains node_modules/@microsoft/mxc-sdk, or set "
-        f"{ENV_EXECUTOR_PATH}=<full path to {name}>, or pass executor_path=... to MXCSandbox. "
+        f"    npm install -g {SDK_PACKAGE}\n\n"
+        f"To use an executor installed elsewhere, set {ENV_EXECUTOR_PATH}=<full path to {name}> "
+        "or pass executor_path=... to MXCSandbox. It must be outside the folders the sandbox can write. "
         "Host requirements: Windows 11 24H2 (build 26100.9278+), macOS 15+, or Linux with "
         "bubblewrap 0.5+ and unprivileged user namespaces."
     )
@@ -205,7 +200,6 @@ def find_executor(
     platform: str | None = None,
     machine: str | None = None,
     environ: Mapping[str, str] | None = None,
-    cwd: Path | None = None,
     home: Path | None = None,
     use_npm: bool = True,
 ) -> Path:
@@ -217,7 +211,6 @@ def find_executor(
         platform: `sys.platform` override (tests).
         machine: `platform.machine()` override (tests).
         environ: Environment mapping override (tests).
-        cwd: Working directory override (tests).
         home: Home directory override (tests).
         use_npm: Whether to fall back to `npm root -g` when nothing else matches.
 
@@ -238,7 +231,7 @@ def find_executor(
         msg = f"executor_path {str(path)!r} does not exist or is not a file.\n\n{install_instructions(plat, machine)}"
         raise MXCExecutorNotFoundError(msg)
 
-    candidates = candidate_executor_paths(platform=plat, machine=machine, environ=environ, cwd=cwd, home=home)
+    candidates = candidate_executor_paths(platform=plat, machine=machine, environ=environ, home=home)
     for candidate in candidates:
         if candidate.is_file():
             return candidate

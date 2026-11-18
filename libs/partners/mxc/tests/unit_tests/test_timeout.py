@@ -220,3 +220,12 @@ def test_request_files_stay_outside_sandbox_writable_paths(monkeypatch: pytest.M
 def test_sandbox_rejects_write_access_to_request_folder(root: Path, dummy_executor: Path) -> None:
     with pytest.raises(ValueError, match="read_write_paths must not include"):
         MXCSandbox(root_dir=root, executor_path=dummy_executor, read_write_paths=[tempfile.gettempdir()])
+
+
+def test_sandbox_rejects_executor_the_sandbox_can_write(root: Path) -> None:
+    # A sandboxed command could replace it, and the next `execute` would run the replacement unsandboxed.
+    exe = root / "node_modules" / "@microsoft" / "mxc-sdk" / "bin" / "arm64" / "mxc-exec-mac"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    with pytest.raises(ValueError, match="inside a folder the sandbox can write"):
+        MXCSandbox(root_dir=root, executor_path=exe)

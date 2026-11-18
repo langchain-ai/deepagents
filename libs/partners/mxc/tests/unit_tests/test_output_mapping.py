@@ -327,6 +327,20 @@ def test_linux_hidden_path_gets_the_blocked_hint(sandbox: MXCSandbox, tmp_path: 
     assert redirect.output.endswith(BLOCKED_HINT.format(what=str(new_file)))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="simulates a Linux host with real POSIX paths")
+def test_linux_hint_does_not_reveal_whether_a_host_path_exists(sandbox: MXCSandbox, tmp_path: Path) -> None:
+    # The hint depends on the policy only, so a command cannot probe the host by printing fake errors.
+    sandbox._host = dataclasses.replace(sandbox._host, platform="linux")
+    real = tmp_path / "real.txt"
+    real.write_text("x")
+    fake = tmp_path / "does-not-exist" / "fake.txt"
+    for path in (real, fake):
+        response = sandbox._format_response(
+            result(stderr=f"cat: {path}: No such file or directory\n", returncode=1), effective_timeout=10, custom_timeout=False
+        )
+        assert response.output.endswith(BLOCKED_HINT.format(what=str(path)))
+
+
 def test_linux_genuinely_missing_file_inside_the_project_gets_no_hint(sandbox: MXCSandbox, root: Path) -> None:
     sandbox._host = dataclasses.replace(sandbox._host, platform="linux")
     missing = root / "nope.txt"

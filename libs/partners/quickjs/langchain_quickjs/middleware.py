@@ -5,7 +5,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.backends.protocol import BackendProtocol
@@ -54,7 +54,6 @@ from langchain_quickjs._repl import (
     PersistenceMode,
     _SlotConfig,
     _SnapshotRestoreError,
-    _ThreadSlot,
 )
 from langchain_quickjs._snapshot import (
     encode_snapshot,
@@ -405,9 +404,7 @@ class CodeInterpreterMiddleware(
             slot_id = middleware._slot_id(runtime.state)
             slot = middleware._registry.acquire(slot_id, middleware._slot_config)
             try:
-                if isinstance(slot, _ThreadSlot) and (
-                    snapshot := middleware._snapshot_for_eval(runtime.state)
-                ):
+                if snapshot := middleware._snapshot_for_eval(runtime.state):
                     slot.restore_snapshot(snapshot)
                 outcome = slot.eval_sync(
                     code,
@@ -429,9 +426,7 @@ class CodeInterpreterMiddleware(
             slot_id = middleware._slot_id(runtime.state)
             slot = await middleware._registry.aacquire(slot_id, middleware._slot_config)
             try:
-                if isinstance(slot, _ThreadSlot) and (
-                    snapshot := middleware._snapshot_for_eval(runtime.state)
-                ):
+                if snapshot := middleware._snapshot_for_eval(runtime.state):
                     await slot.arestore_snapshot(snapshot)
                 outcome = await slot.eval_async(
                     code,
@@ -733,18 +728,10 @@ class CodeInterpreterMiddleware(
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Snapshot REPL state (`thread` mode) and close this turn's Context."""
+        """Persist the slot's REPL state, if its mode keeps any, and end the turn."""
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
-        if self._mode != "thread":
-            self._registry.end_turn(slot_id, self._slot_config)
-            return None
-
-        # `thread` mode only builds `_ThreadSlot`s.
-        slot = cast(
-            "_ThreadSlot | None",
-            self._registry.lease_if_exists(slot_id, self._slot_config),
-        )
+        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""
@@ -778,15 +765,7 @@ class CodeInterpreterMiddleware(
         """Async variant of `after_agent`."""
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
-        if self._mode != "thread":
-            await self._registry.aend_turn(slot_id, self._slot_config)
-            return None
-
-        # `thread` mode only builds `_ThreadSlot`s.
-        slot = cast(
-            "_ThreadSlot | None",
-            self._registry.lease_if_exists(slot_id, self._slot_config),
-        )
+        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""

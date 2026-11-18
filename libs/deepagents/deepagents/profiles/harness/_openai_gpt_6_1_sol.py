@@ -29,12 +29,13 @@ Specify subagent_type to select the agent. Usage notes:
 """`task` tool description template; `{available_agents}` lists the subagents."""
 
 _GENERAL_PURPOSE_DESCRIPTION = (
-    "General-purpose agent for substantial, well-scoped work that benefits from a separate investigation, "
-    "an independent review of a concrete risk, or parallel work with a distinct deliverable. "
-    "Prefer direct tools for routine searches, small edits, and tightly coupled next steps. "
-    "Complexity or uncertainty about finding a file is not sufficient reason to delegate. "
-    "Keep discovery, implementation, and relevant checks for one small change with one implementation owner "
-    "instead of launching a fresh agent for each phase. A targeted independent review can still be useful. "
+    "General-purpose agent for substantial, independent work with its own deliverable, "
+    "such as a separate part of the solution that can proceed in parallel with yours. "
+    "Do not delegate reviews, audits, re-derivations, or verification of work you are doing or have done; "
+    "check it yourself with direct tools. "
+    "Do not hand off a phase (research, implementation, testing) of a task you own. "
+    "Prefer direct tools for searches, reading code, small edits, and tightly coupled next steps. "
+    "Complexity or uncertainty is not sufficient reason to delegate. "
     "This agent has the same capabilities as the main agent."
 )
 """General-purpose subagent description shown in the `task` tool listing."""

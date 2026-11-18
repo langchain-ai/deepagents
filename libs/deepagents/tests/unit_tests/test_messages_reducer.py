@@ -11,13 +11,12 @@ from __future__ import annotations
 from typing import Annotated
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import REMOVE_ALL_MESSAGES, _messages_delta_reducer
 from typing_extensions import TypedDict
-
-from deepagents._messages_reducer import _messages_delta_reducer
 
 
 def _build_graph(checkpointer: object) -> object:
@@ -133,3 +132,12 @@ async def test_human_message_id_stable_across_invocations_async() -> None:
 
     assert id_turn1 is not None
     assert id_turn1 == id_turn2, f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"
+
+
+def test_reducer_remove_all_messages_resets_state() -> None:
+    """`REMOVE_ALL_MESSAGES` drops prior state and earlier writes in the batch."""
+    old = HumanMessage(content="old", id="h0")
+    dropped = HumanMessage(content="dropped", id="h1")
+    kept = AIMessage(content="kept", id="a1")
+    result = _messages_delta_reducer([old], [[dropped], [RemoveMessage(id=REMOVE_ALL_MESSAGES), kept]])
+    assert result == [kept]

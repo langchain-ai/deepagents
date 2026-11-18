@@ -206,6 +206,8 @@ class _Slot:
             float("inf") if config.timeout is None else config.timeout
         )
         self._task_calls = asyncio.Semaphore(config.max_subagent_concurrency)
+        # Whether an eval is running. Evals run one at a time.
+        self._eval_running = False
         # Mutable per-eval PTC state. Tracks call budget plus outer
         # runtime/loop dispatch context for bridge invocations. Set while an
         # eval runs, so bridge calls can't run outside one.
@@ -580,7 +582,7 @@ class _Slot:
         overlapping evals is almost always a prompting bug, and a loud
         failure is a better signal than silent serialisation.
         """
-        if self._ptc_state is not None:
+        if self._eval_running:
             return EvalOutcome(
                 error_type="ConcurrentEval",
                 error_message=(
@@ -590,6 +592,7 @@ class _Slot:
             )
         ctx = self._ensure_context()
         outcome = EvalOutcome()
+        self._eval_running = True
         self._ptc_state = PTCState(
             remaining_calls=self._config.max_ptc_calls,
             outer_runtime=outer_runtime,
@@ -676,12 +679,14 @@ class _Slot:
             outcome.error_message = e.error_message
             _clear_exception_references(e)
         finally:
-            # Marks the slot idle again. Evals never nest (an overlapping one
-            # returns above before setting it), so there is no outer state to
-            # put back.
             self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
+            self._after_eval()
+            self._eval_running = False
         return outcome
+
+    def _after_eval(self) -> None:
+        """Run on the worker after each eval, before the next can start."""
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
         outcome.error_type = e.name
@@ -716,7 +721,7 @@ class _Slot:
     async def _aend_turn(self) -> None:
         # A forked subagent shares this slot; its turn ending must not close
         # the Context under a parent eval that is still running.
-        if self._ptc_state is None:
+        if not self._eval_running:
             self._close_context()
 
     def close(self) -> None:
@@ -807,14 +812,8 @@ class _TurnSlot(_Slot):
 class _CallSlot(_Slot):
     """A `call`-mode slot: each eval gets a fresh Context."""
 
-    async def _aeval_async(self, code: str, **kwargs: Any) -> EvalOutcome:
-        try:
-            return await super()._aeval_async(code, **kwargs)
-        finally:
-            # An overlapping eval returns early; leave the running one's
-            # Context open.
-            if self._ptc_state is None:
-                self._close_context()
+    def _after_eval(self) -> None:
+        self._close_context()
 
 
 _SLOT_CLASSES: dict[PersistenceMode, type[_Slot]] = {

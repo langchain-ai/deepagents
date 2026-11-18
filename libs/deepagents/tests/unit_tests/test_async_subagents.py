@@ -1642,6 +1642,41 @@ def _paused_client(*interrupts: dict[str, Any]) -> MagicMock:
 
 
 class TestPausedSubagentStatus:
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("status", ["waiting", "cancelled"])
+    async def test_check_follows_a_resume_that_already_paused_again(self, status: str, *, async_mode: bool) -> None:
+        def handle(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            if request.url.path == "/threads/thread_abc/runs/run_xyz":
+                return httpx.Response(200, json={"run_id": "run_xyz", "status": "success"})
+            if request.url.path == "/threads/thread_abc/runs":
+                return httpx.Response(200, json=[{"run_id": "run_resumed", "status": "success"}])
+            assert request.url.path == "/threads/thread_abc"
+            return httpx.Response(200, json={"status": "interrupted", "values": {}, "interrupts": {"t": [_APPROVAL]}})
+
+        check = _get_tool(_build_async_subagent_tools([_make_spec()]), "check_async_task")
+        runtime = _make_runtime_with_task(status=status)
+        transport = httpx.MockTransport(handle)
+        if async_mode:
+            async with httpx.AsyncClient(base_url="http://remote", transport=transport) as http_client:
+                with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+                    result = await check.coroutine(task_id="thread_abc", runtime=runtime)
+        else:
+            with (
+                httpx.Client(base_url="http://remote", transport=transport) as http_client,
+                patch("deepagents.middleware.async_subagents.get_sync_client", return_value=SyncLangGraphClient(http_client)),
+            ):
+                result = check.func(task_id="thread_abc", runtime=runtime)
+
+        parsed = json.loads(result.update["messages"][0].content)
+        assert parsed["status"] == status
+        if status == "waiting":
+            assert parsed["interrupts"] == [_APPROVAL]
+        else:
+            assert "interrupts" not in parsed
+        expected_run = "run_resumed" if status == "waiting" else "run_xyz"
+        assert result.update["async_tasks"]["thread_abc"]["run_id"] == expected_run
+
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_check_reports_waiting_with_question(self, mock_get_client: MagicMock) -> None:
         mock_get_client.return_value = _paused_client(_QUESTION)
@@ -2045,6 +2080,74 @@ def _pulled_events(update: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class TestParentPull:
+    async def test_parent_receives_each_question_from_resumed_child(self) -> None:
+        @tool
+        def ask() -> str:
+            """Ask for a repository and then confirm it."""
+            repo = interrupt("Which repo?")
+            approved = interrupt(f"Use {repo}?")
+            return f"{repo}: {approved}"
+
+        child = create_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=[{"name": "ask", "args": {}, "id": "ask_1"}])])),
+            tools=[ask],
+            checkpointer=InMemorySaver(),
+        )
+        child_config = {"configurable": {"thread_id": "thread_abc"}}
+        first = await child.ainvoke({"messages": [HumanMessage(content="Choose a repo.")]}, child_config)
+        server = _FakeServer(run={"run_id": "run_xyz", "status": "success"})
+
+        def pause(result: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "interrupted",
+                "values": {},
+                "interrupts": {"ask": [{"id": item.id, "value": item.value} for item in result["__interrupt__"]]},
+            }
+
+        server.thread_data["thread_abc"] = pause(first)
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="Waiting for a repo."), AIMessage(content="Waiting for confirmation.")]))
+        parent = create_deep_agent(model=model, subagents=[_make_spec("remote")], checkpointer=InMemorySaver())
+        parent_config = {"configurable": {"thread_id": "parent"}}
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
+            initial = await parent.ainvoke(_lead_state(messages=[HumanMessage(content="Check the child.")]), parent_config)
+            assert initial["async_tasks"]["thread_abc"]["status"] == "waiting"
+            resumed = await child.ainvoke(Command(resume="deepagents"), child_config)
+            server.thread_data["thread_abc"] = pause(resumed)
+            server.runs.list = AsyncMock(return_value=[{"run_id": "run_resumed", "status": "success"}])
+
+            result = await parent.ainvoke({"messages": [HumanMessage(content="I answered the first question.")]}, parent_config)
+
+        notices = [message for message in model.call_history[-1]["messages"] if get_notification_metadata(message)]
+        assert len(notices) == 2
+        assert "Which repo?" in notices[0].text
+        assert "Use deepagents?" in notices[1].text
+        assert result["async_tasks"]["thread_abc"]["run_id"] == "run_resumed"
+
+    @pytest.mark.parametrize("hook", ["abefore_agent", "abefore_model", "aafter_model"])
+    async def test_resumed_task_pausing_again_reports_the_new_question(self, hook: str) -> None:
+        """Two human requests can happen without the parent observing the run between them."""
+        server = _FakeServer(
+            {"thread_abc": {"status": "interrupted", "values": {}, "interrupts": {"t": [_APPROVAL]}}},
+            {"run_id": "run_xyz", "status": "success"},
+        )
+        server.runs.list = AsyncMock(return_value=[{"run_id": "run_resumed", "status": "success"}])
+        state = _lead_state("waiting", messages=[AIMessage(content="Waiting for the repo name.")])
+
+        update = await _pull(hook, state, server)
+
+        assert update is not None
+        assert [(event["status"], event["run_id"]) for event in _pulled_events(update)] == [("waiting", "run_resumed")]
+        assert "deploy" in _text(update["messages"][0])
+        assert update["async_tasks"]["thread_abc"]["run_id"] == "run_resumed"
+        if hook == "aafter_model":
+            assert update["jump_to"] == "model"
+
+        state["async_tasks"] = update["async_tasks"]
+        server.run = {"run_id": "run_resumed", "status": "success"}
+        repeated = await _pull(hook, state, server)
+        assert not (repeated or {}).get("messages")
+        assert not (repeated or {}).get("jump_to")
+
     async def test_run_cancelled_on_the_server_is_reported(self) -> None:
         server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})
 

@@ -922,9 +922,10 @@ def _task_status(run: Run, thread: Thread | None) -> str:
     return _THREAD_TO_TASK_STATUS.get(thread.get("status"), "success")
 
 
-def _needs_latest_run(run: Run, thread: Thread | None) -> bool:
-    """Whether a newer run exists than the tracked one, e.g. after a resume from another client."""
-    return run["status"] == "success" and thread is not None and thread.get("status") in {"busy", "error"}
+def _needs_latest_run(run: Run, thread: Thread, task: AsyncTask) -> bool:
+    """Whether the thread may have advanced past the tracked run."""
+    status = thread.get("status")
+    return run["status"] == "success" and (status in {"busy", "error"} or (status == "interrupted" and task["status"] != "cancelled"))
 
 
 def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
@@ -942,7 +943,7 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
     if run["status"] != "success":
         return run, None
     thread = client.threads.get(thread_id=task["thread_id"])
-    if _needs_latest_run(run, thread):
+    if _needs_latest_run(run, thread, task):
         run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     return run, thread
 
@@ -955,7 +956,7 @@ async def _aobserve(client: LangGraphClient, task: AsyncTask) -> tuple[Run, Thre
     if run["status"] != "success":
         return run, None
     thread = await client.threads.get(thread_id=task["thread_id"])
-    if _needs_latest_run(run, thread):
+    if _needs_latest_run(run, thread, task):
         run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     return run, thread
 
@@ -1712,7 +1713,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if status == task["status"] and run["run_id"] == task["run_id"]:
                 continue
             records[task["task_id"]] = _observed(task, status, run["run_id"])
-            if status != task["status"] and (event := _check_event(task, run, thread, status)):
+            if event := _check_event(task, run, thread, status):
                 messages.append(_notification_message(event))
         update: dict[str, Any] = {"async_tasks": records} if records else {}
         if messages:

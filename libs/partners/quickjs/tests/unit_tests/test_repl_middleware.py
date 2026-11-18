@@ -338,17 +338,6 @@ def test_registry_end_turn_keeps_worker_and_runtime(registry: _Registry) -> None
     assert slot._runtime is runtime
 
 
-def test_call_mode_gives_each_eval_its_own_context_on_the_warm_runtime(
-    registry: _Registry,
-) -> None:
-    slot = _get(registry, "thread-a", _SlotConfig(mode="call"))
-    slot.eval_sync("globalThis.answer = 42")
-    runtime = slot._runtime
-    assert runtime is not None
-    assert slot.eval_sync("typeof answer").result == "undefined"
-    assert slot._runtime is runtime
-
-
 def _thread_ids(registry: _Registry) -> list[str]:
     return [thread_id for thread_id, _ in registry._slots]
 
@@ -1451,19 +1440,15 @@ async def test_async_task_global_limits_concurrency_per_repl(
     assert runner.max_active == expected_limit
 
 
-@pytest.mark.parametrize("mode", ["thread", "turn", "call"])
-async def test_overlapping_eval_fails_with_concurrent_eval(
-    make_repl: Callable[..., _Slot], mode: str
-) -> None:
+async def test_overlapping_eval_fails_with_concurrent_eval(repl: _Slot) -> None:
     async def _nap() -> str:
         await asyncio.sleep(0.2)
         return "ok"
 
     nap = StructuredTool.from_function(coroutine=_nap, name="nap", description="Nap.")
-    slot = make_repl(mode=mode)
-    first = asyncio.ensure_future(slot.eval_async("await tools.nap({})", tools=[nap]))
+    first = asyncio.ensure_future(repl.eval_async("await tools.nap({})", tools=[nap]))
     await asyncio.sleep(0.05)
-    second = await slot.eval_async("2")
+    second = await repl.eval_async("2")
     assert second.error_type == "ConcurrentEval"
     assert (await first).error_type is None
 

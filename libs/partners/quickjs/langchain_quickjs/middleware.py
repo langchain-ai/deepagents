@@ -52,6 +52,7 @@ from langchain_quickjs._repl import (
     _REGISTRY,
     EvalOutcome,
     PersistenceMode,
+    _Slot,
     _SlotConfig,
     _SnapshotRestoreError,
 )
@@ -330,7 +331,6 @@ class CodeInterpreterMiddleware(
             else None
         )
         self._slot_config = _SlotConfig(
-            mode=self._mode,
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
@@ -404,9 +404,9 @@ class CodeInterpreterMiddleware(
             slot_id = middleware._slot_id(runtime.state)
             slot = middleware._registry.acquire(slot_id, middleware._slot_config)
             try:
-                if snapshot := middleware._snapshot_for_eval(runtime.state):
-                    slot.restore_snapshot(snapshot)
-                outcome = slot.eval_sync(
+                outcome = middleware._eval(
+                    slot,
+                    runtime.state,
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     tools=middleware._tools_for_eval(slot_id),
@@ -426,9 +426,9 @@ class CodeInterpreterMiddleware(
             slot_id = middleware._slot_id(runtime.state)
             slot = await middleware._registry.aacquire(slot_id, middleware._slot_config)
             try:
-                if snapshot := middleware._snapshot_for_eval(runtime.state):
-                    await slot.arestore_snapshot(snapshot)
-                outcome = await slot.eval_async(
+                outcome = await middleware._aeval(
+                    slot,
+                    runtime.state,
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     tools=middleware._tools_for_eval(slot_id),
@@ -466,6 +466,28 @@ class CodeInterpreterMiddleware(
         return (
             self._ptc_tools_by_slot.get(slot_id, ()) if self._ptc is not None else None
         )
+
+    def _eval(
+        self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
+    ) -> EvalOutcome:
+        """Run one eval on `slot`, applying the persistence mode around it."""
+        if snapshot := self._snapshot_for_eval(state):
+            slot.restore_snapshot(snapshot)
+        outcome = slot.eval_sync(code, **kwargs)
+        if self._mode == "call":
+            slot.end_turn()
+        return outcome
+
+    async def _aeval(
+        self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
+    ) -> EvalOutcome:
+        """Async variant of `_eval`."""
+        if snapshot := self._snapshot_for_eval(state):
+            await slot.arestore_snapshot(snapshot)
+        outcome = await slot.eval_async(code, **kwargs)
+        if self._mode == "call":
+            await slot.aend_turn()
+        return outcome
 
     def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:
         """Return authenticated thread state for lazy restoration."""
@@ -728,9 +750,12 @@ class CodeInterpreterMiddleware(
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Persist the slot's REPL state, if its mode keeps any, and end the turn."""
+        """Snapshot REPL state (`thread` mode) and close this turn's Context."""
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
+        if self._mode != "thread":
+            self._registry.end_turn(slot_id, self._slot_config)
+            return None
         slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None
@@ -765,6 +790,9 @@ class CodeInterpreterMiddleware(
         """Async variant of `after_agent`."""
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
+        if self._mode != "thread":
+            await self._registry.aend_turn(slot_id, self._slot_config)
+            return None
         slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None

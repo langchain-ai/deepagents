@@ -172,7 +172,6 @@ async def _on_outer_loop(
 class _SlotConfig:
     """Settings for the interpreters one middleware creates."""
 
-    mode: PersistenceMode = "thread"
     memory_limit: int | None = 64 * 1024 * 1024
     timeout: float | None = 5.0
     capture_console: bool = True
@@ -189,8 +188,8 @@ class _Slot:
     all QuickJS work runs on the slot's own worker thread; callers on any
     thread or loop only wait on it. Evals run one at a time: one that starts
     while another is running fails with `ConcurrentEval`. The worker and
-    Runtime outlive turns. The Context lasts one eval in `call` mode and one
-    turn otherwise; `thread` mode carries its state across turns as snapshots.
+    Runtime outlive turns; the Context lives until `end_turn`. Persistence
+    modes are the middleware's business.
     """
 
     def __init__(self, name: str, config: _SlotConfig) -> None:
@@ -234,7 +233,7 @@ class _Slot:
             timeout=self._per_call_timeout
         )
         self._console = _ConsoleBuffer(self._config.max_stdout_chars)
-        # A Context restores the thread's snapshot once (`thread` mode).
+        # A Context restores a snapshot at most once.
         self._snapshot_restored = False
         # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
@@ -683,8 +682,6 @@ class _Slot:
         finally:
             self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
-            if self._config.mode == "call":
-                self._close_context()
             self._eval_running = False
         return outcome
 
@@ -709,18 +706,16 @@ class _Slot:
         return await self._worker.run_async(self._aeval_async(code, **kwargs))
 
     def restore_snapshot(self, payload: bytes) -> None:
-        """Restore a `thread`-mode snapshot into the Context, once per Context.
+        """Restore a snapshot into the Context, once per Context.
 
         Raises:
             _SnapshotRestoreError: If the payload can't be restored.
         """
-        if self._config.mode == "thread":
-            self._worker.run_sync(self._arestore_snapshot(payload))
+        self._worker.run_sync(self._arestore_snapshot(payload))
 
     async def arestore_snapshot(self, payload: bytes) -> None:
         """Async variant of `restore_snapshot`."""
-        if self._config.mode == "thread":
-            await self._worker.run_async(self._arestore_snapshot(payload))
+        await self._worker.run_async(self._arestore_snapshot(payload))
 
     async def _arestore_snapshot(self, payload: bytes) -> None:
         context = self._ensure_context()
@@ -737,14 +732,14 @@ class _Slot:
             raise _SnapshotRestoreError(msg) from exc
 
     def create_snapshot(self) -> bytes | None:
-        """Snapshot the Context in `thread` mode; `None` if there's nothing to keep."""
-        if self._config.mode != "thread" or self._context is None:
+        """Snapshot the Context, or `None` if no eval ran this turn."""
+        if self._context is None:
             return None
         return self._worker.run_sync(self._acreate_snapshot())
 
     async def acreate_snapshot(self) -> bytes | None:
         """Async variant of `create_snapshot`."""
-        if self._config.mode != "thread" or self._context is None:
+        if self._context is None:
             return None
         return await self._worker.run_async(self._acreate_snapshot())
 

@@ -16,7 +16,7 @@ import pytest
 from quickjs_rs import Runtime
 
 from langchain_quickjs import CodeInterpreterMiddleware, _repl
-from langchain_quickjs._repl import PersistenceMode, _Registry, _Slot, _SlotConfig
+from langchain_quickjs._repl import _Registry, _Slot, _SlotConfig
 from tests.unit_tests._slots import warm_slot
 
 if TYPE_CHECKING:
@@ -27,8 +27,8 @@ SLOW = 0.3
 MAX_GAP = 0.15
 
 
-def _get(registry: _Registry, thread_id: str, mode: PersistenceMode = "thread") -> Any:
-    slot = registry.acquire(thread_id, _SlotConfig(mode=mode))
+def _get(registry: _Registry, thread_id: str) -> Any:
+    slot = registry.acquire(thread_id, _SlotConfig())
     registry.release(slot)
     return slot
 
@@ -106,8 +106,9 @@ async def test_concurrent_first_evals_build_one_runtime(
 async def test_fresh_context_does_not_block_loop(
     registry: _Registry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    slot = _get(registry, "fresh-01", "call")
+    slot = _get(registry, "fresh-01")
     await slot.eval_async("1")
+    await slot.aend_turn()
     original = _Slot._install_console
 
     def _slow_install(self: _Slot) -> None:

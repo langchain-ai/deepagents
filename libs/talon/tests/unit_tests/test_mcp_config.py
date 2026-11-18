@@ -525,3 +525,91 @@ def test_auto_approve_allows_a_tool_filter_change_that_reuses_a_stored_secret(tm
     saved = json.loads(path.read_text())["mcpServers"]["example"]
     assert saved["allowedTools"] == ["read_*"]
     assert saved["headers"] == {"Authorization": "Bearer real-secret"}
+
+
+@pytest.mark.parametrize("placeholder_count", [1, 24, 28])
+def test_approved_enable_preserves_miscounted_redacted_allowlist(tmp_path, placeholder_count):
+    path = tmp_path / ".mcp.json"
+    original = {
+        "mcpServers": {
+            "example": {
+                "url": "https://private.test/mcp",
+                "headers": {"Authorization": "Bearer private"},
+                "allowedTools": [f"private_tool_{index}" for index in range(23)],
+                "enabled": False,
+                "description": "operator note",
+            },
+            "other": {"command": "private"},
+        },
+        "metadata": "private",
+    }
+    path.write_text(json.dumps(original))
+    view, update = MCPConfigStore(path, lambda: None, auto_approve=False).tools()
+    stored = view.invoke({})
+    server = stored["mcpServers"]["example"]
+    server["enabled"] = True
+    server["allowedTools"] = ["<redacted>"] * placeholder_count
+
+    result = update.invoke(
+        {"server_name": "example", "server": server, "expected_revision": stored["revision"]}
+    )
+
+    assert result["status"] == "updated"
+    original["mcpServers"]["example"]["enabled"] = True
+    assert json.loads(path.read_text()) == original
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"args": ["new", "<redacted>"]}, "No stored value for redacted field"),
+        ({"enabled": "false"}, "MCP enabled must be a boolean"),
+    ],
+)
+def test_update_reports_safe_validation_reason(config_tools, caplog, change, reason):
+    path, view, update, updates = config_tools
+    path.parent.mkdir()
+    original = {"mcpServers": {"example": {"command": "private", "args": ["secret"]}}}
+    path.write_text(json.dumps(original))
+    stored = view.invoke({})
+    server = stored["mcpServers"]["example"] | change
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.mcp_config"):
+        result = update.invoke(
+            {"server_name": "example", "server": server, "expected_revision": stored["revision"]}
+        )
+
+    assert result == {"status": "error", "message": reason}
+    assert reason in caplog.text
+    for value in ("private", "secret"):
+        assert value not in json.dumps(result)
+        assert value not in caplog.text
+    assert json.loads(path.read_text()) == original
+    assert updates == []
+
+
+@pytest.mark.parametrize("args", [[], ["<redacted>", "new"]])
+def test_empty_and_mixed_lists_remain_complete_replacements(config_tools, args):
+    path, _, _, _ = config_tools
+    view, update = MCPConfigStore(path, lambda: None, auto_approve=False).tools()
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "example": {"command": "private", "args": ["first", "second", "third"]}
+                }
+            }
+        )
+    )
+    stored = view.invoke({})
+    server = stored["mcpServers"]["example"]
+    server["args"] = args
+
+    result = update.invoke(
+        {"server_name": "example", "server": server, "expected_revision": stored["revision"]}
+    )
+
+    assert result["status"] == "updated"
+    expected = ["first", "new"] if args else []
+    assert json.loads(path.read_text())["mcpServers"]["example"]["args"] == expected

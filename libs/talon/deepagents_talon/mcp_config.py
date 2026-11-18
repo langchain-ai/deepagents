@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from langchain_core.tools import tool
+from pydantic import ValidationError
 
 from deepagents_talon.mcp_oauth import MCPOAuthConfigError, parse_oauth_config
 
@@ -60,6 +61,10 @@ _ENUMS = {
 _TOOL_FILTER_FIELDS = frozenset({"allowedTools", "disabledTools"})
 _LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK_POLL_SECONDS = 0.05
+
+
+class _InvalidUpdateError(ValueError):
+    """A replacement failed validation with a credential-safe diagnostic."""
 
 
 class _UnsafeUpdateError(ValueError):
@@ -239,11 +244,20 @@ class MCPConfigStore:
                 raw, document = self._read()
                 if not hmac.compare_digest(self._revision(raw), revision):
                     return {"status": "conflict", "message": "Read the configuration again."}
-                self._replace_server(document, name, server)
+                try:
+                    self._replace_server(document, name, server)
+                except (ValueError, TypeError) as exc:
+                    msg = (
+                        "Invalid MCP server settings."
+                        if isinstance(exc, ValidationError)
+                        else str(exc)
+                    )
+                    logger.warning("MCP configuration update rejected: %s", msg)
+                    raise _InvalidUpdateError(msg) from None
                 _atomic_write(self._path, document)
         except TimeoutError:
             return {"status": "conflict", "message": "Configuration is busy; try again."}
-        except (_UnsafeUpdateError, MCPOAuthConfigError) as exc:
+        except (_InvalidUpdateError, _UnsafeUpdateError, MCPOAuthConfigError) as exc:
             return {"status": "error", "message": str(exc)}
         except OSError, ValueError, TypeError, RecursionError:
             return {
@@ -430,6 +444,8 @@ def _restore(value: object, previous: object) -> object:
         old = previous if isinstance(previous, dict) else {}
         return {key: _restore(item, old.get(key)) for key, item in value.items()}
     if isinstance(value, list):
+        if value and all(item == _REDACTED for item in value) and isinstance(previous, list):
+            return previous.copy()
         old_list = previous if isinstance(previous, list) else []
         return [
             _restore(item, old_list[i] if i < len(old_list) else None)

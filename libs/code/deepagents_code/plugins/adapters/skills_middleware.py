@@ -421,6 +421,14 @@ async def aload_namespaced_skills(
     return skills
 
 
+SKILLS_SYSTEM_PROMPT = sdk_skills.SKILLS_SYSTEM_PROMPT.replace(
+    "**Available Skills:**",
+    'Sources labeled "Deepagents" are specific to this agent tool; sources labeled '
+    '"Agents" are shared across all agent tools on this machine.\n\n'
+    "**Available Skills:**",
+)
+
+
 class PluginSkillsMiddleware(SkillsMiddleware):
     """Load namespaced plugin skills without extending the SDK source API.
 
@@ -439,7 +447,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         *,
         backend: BackendProtocol,
         sources: Sequence[CodeSkillSource],
-        system_prompt: str | None = sdk_skills.SKILLS_SYSTEM_PROMPT,
+        system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
         path_base: Path | None = None,
         tools: Sequence[BaseTool] = (),
     ) -> None:

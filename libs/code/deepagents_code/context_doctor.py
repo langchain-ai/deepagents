@@ -114,7 +114,7 @@ def format_skills_prompt(
     Returns:
         The formatted skills prompt.
     """
-    from deepagents.middleware.skills import SKILLS_SYSTEM_PROMPT
+    from deepagents_code.plugins.adapters.skills_middleware import SKILLS_SYSTEM_PROMPT
 
     lines: list[str] = []
     for skill in skills:
@@ -134,6 +134,9 @@ def format_skills_prompt(
         skills_locations=skills_locations,
         skills_load_warnings="",
         skills_list=skills_list,
+        skill_script_usage=(
+            "Read scripts with `read_file`; this backend does not support execution."
+        ),
     )
 
 

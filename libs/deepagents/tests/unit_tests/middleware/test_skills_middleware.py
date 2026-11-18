@@ -24,7 +24,9 @@ from langgraph.constants import CONF
 from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
 from langgraph.store.memory import InMemoryStore
 
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
@@ -2358,6 +2360,29 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
 
 
 # --- system_prompt override / suppression --------------------------------
+
+
+@pytest.mark.parametrize("executable", [False, True])
+@pytest.mark.parametrize("composite", [False, True])
+def test_skill_script_guidance_matches_backend(tmp_path: Path, *, executable: bool, composite: bool) -> None:
+    backend = LocalShellBackend(root_dir=tmp_path) if executable else FilesystemBackend(root_dir=tmp_path)
+    if composite:
+        backend = CompositeBackend(default=backend, routes={"/skills/": StateBackend()})
+    middleware = SkillsMiddleware(backend=backend, sources=["/skills/"])
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),
+        messages=[],
+        state={"messages": []},
+    )
+    result = middleware.modify_request(request)
+    assert result.system_message is not None
+    prompt = result.system_message.text
+    assert ("You can read or execute scripts" in prompt) is executable
+    assert ("this backend does not support execution" in prompt) is not executable
+    assert "against the directory containing its SKILL.md" in prompt
+    assert 'Sources labeled "Deepagents"' not in prompt
+    if executable:
+        assert "Read backend-only virtual files with `read_file` instead" in prompt
 
 
 def test_init_rejects_non_str_system_prompt() -> None:

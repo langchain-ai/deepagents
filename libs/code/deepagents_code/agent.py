@@ -2843,7 +2843,7 @@ def create_cli_agent(
     if enable_memory or enable_skills:
         agent_dir = ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
-        if not agent_md.exists():
+        if not agent_md.is_symlink() and not agent_md.exists():
             # Create empty file for user customizations
             # Base instructions are loaded fresh from get_system_prompt()
             agent_md.touch()
@@ -3146,7 +3146,18 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
-        memory_sources = [str(get_user_agent_md_path(assistant_id))]
+        memory_sources: list[str] = []
+        user_agent_md_path = get_user_agent_md_path(assistant_id)
+        try:
+            memory_sources.append(str(user_agent_md_path.resolve(strict=True)))
+        except FileNotFoundError:
+            pass
+        except OSError, RuntimeError:
+            logger.warning(
+                "Could not resolve user memory path %s",
+                user_agent_md_path,
+                exc_info=True,
+            )
         project_agent_md_paths = (
             project_context.project_agent_md_paths()
             if project_context is not None

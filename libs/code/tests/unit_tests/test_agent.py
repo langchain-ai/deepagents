@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentMiddleware, AgentState
     from langchain.messages import ToolCall
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import RunnableConfig
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
@@ -2303,6 +2304,64 @@ class TestCreateCliAgentSkillsSources:
 
 class TestCreateCliAgentMemorySources:
     """Test that `create_cli_agent` wires project AGENTS.md into memory sources."""
+
+    @pytest.mark.parametrize("source", ["symlink", "absent", "dangling", "loop"])
+    async def test_user_memory_fresh_turn(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        source: str,
+    ) -> None:
+        """User memory links load safely or are skipped before a model call."""
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        settings = TestCreateCliAgentMemoryAutoSave._mock_settings(tmp_path)
+        agent_dir = tmp_path / "agent"
+        user_path = (tmp_path if source == "absent" else agent_dir) / "AGENTS.md"
+        target = tmp_path / "shared.md"
+        if source == "symlink":
+            target.write_text("Remember the shared user preference.")
+            user_path.symlink_to(target)
+        elif source == "dangling":
+            user_path.symlink_to(target)
+        elif source == "loop":
+            user_path.symlink_to(user_path)
+
+        model = _make_fake_chat_model()
+        monkeypatch.setattr(
+            GenericFakeChatModel, "bind_tools", lambda self, *_args, **_kwargs: self
+        )
+        with (
+            patch("deepagents_code.agent.credentials", settings),
+            _patch_agent_paths(agent_dir=agent_dir, skills_dir=tmp_path / "skills"),
+            patch(
+                "deepagents_code.agent.get_user_agent_md_path", return_value=user_path
+            ),
+            patch("deepagents._models.init_chat_model", return_value=model),
+        ):
+            agent, _ = create_cli_agent(
+                model=model,
+                assistant_id="test",
+                enable_skills=False,
+                enable_shell=False,
+                interactive=False,
+                checkpointer=InMemorySaver(),
+            )
+            config: RunnableConfig = {"configurable": {"thread_id": "memory-test"}}
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": "Hi"}]}, config=config
+            )
+            state = await agent.aget_state(config)
+
+        assert result["messages"][-1].content == "ok"
+        if source == "symlink":
+            assert state.values["memory_contents"] == {str(target): target.read_text()}
+        else:
+            assert not state.values["memory_contents"]
+        if source == "loop":
+            assert "Could not resolve user memory path" in caplog.text
+            assert str(user_path) in caplog.text
 
     def test_project_agent_md_paths_in_memory_sources(self, tmp_path: Path) -> None:
         """Project AGENTS.md paths should be passed to MemoryMiddleware sources."""

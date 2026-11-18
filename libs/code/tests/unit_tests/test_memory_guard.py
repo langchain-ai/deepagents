@@ -49,11 +49,17 @@ def _success(name: str = "edit_file") -> ToolMessage:
     return ToolMessage(content="ok", name=name, tool_call_id="call-1", status="success")
 
 
-def test_edit_inside_managed_block_is_reverted(tmp_path) -> None:
+@pytest.mark.parametrize("symlink", [False, True])
+def test_edit_inside_managed_block_is_reverted(
+    tmp_path: Path, *, symlink: bool
+) -> None:
     """An edit that rewrites the managed block is restored and reported as error."""
     path = tmp_path / "agent" / "AGENTS.md"
     _managed_file(path, "Ada", extra="\nKeep this note.\n")
-    middleware = ManagedMemoryGuardMiddleware([str(path)])
+    user_path = tmp_path / "AGENTS.md"
+    if symlink:
+        user_path.symlink_to(path)
+    middleware = ManagedMemoryGuardMiddleware([user_path if symlink else path])
 
     def handler(_request: ToolCallRequest) -> ToolMessage:
         path.write_text(

@@ -211,6 +211,15 @@ class _Slot:
         # eval runs, so bridge calls can't run outside one.
         self._ptc_state: PTCState | None = None
 
+    def _ensure_runtime(self) -> QjsRuntime:
+        """Return the Runtime, building it if needed. Runs on the worker."""
+        if self._runtime is None:
+            self._runtime = QjsRuntime(
+                memory_limit=self._config.memory_limit,
+                transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+            )
+        return self._runtime
+
     def _ensure_context(self) -> QjsContext:
         """Return the live Context, building it (and the Runtime) if needed.
 
@@ -219,12 +228,9 @@ class _Slot:
         """
         if self._context is not None:
             return self._context
-        if self._runtime is None:
-            self._runtime = QjsRuntime(
-                memory_limit=self._config.memory_limit,
-                transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
-            )
-        self._context = self._runtime.new_context(timeout=self._per_call_timeout)
+        self._context = self._ensure_runtime().new_context(
+            timeout=self._per_call_timeout
+        )
         self._console = _ConsoleBuffer(self._config.max_stdout_chars)
         # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
@@ -550,13 +556,9 @@ class _Slot:
         return reply
 
     async def _aprepare_for_eval(
-        self,
-        snapshot_payload: bytes | None,
-        tools: Sequence[BaseTool] | None,
-        fs: BackendProtocol | None,
+        self, tools: Sequence[BaseTool] | None, fs: BackendProtocol | None
     ) -> None:
         """Bind the current tools and `fs` on the owning worker."""
-        del snapshot_payload  # only `_ThreadSlot` restores snapshots
         if tools is not None:
             await self._ainstall_tools(tools)
         if fs is not None:
@@ -567,7 +569,6 @@ class _Slot:
         code: str,
         *,
         outer_runtime: ToolRuntime | None = None,
-        snapshot_payload: bytes | None = None,
         tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
         fs: BackendProtocol | None = None,
@@ -596,7 +597,7 @@ class _Slot:
             fs=fs,
         )
         try:
-            await self._aprepare_for_eval(snapshot_payload, tools, fs)
+            await self._aprepare_for_eval(tools, fs)
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and
@@ -675,6 +676,9 @@ class _Slot:
             outcome.error_message = e.error_message
             _clear_exception_references(e)
         finally:
+            # Marks the slot idle again. Evals never nest (an overlapping one
+            # returns above before setting it), so there is no outer state to
+            # put back.
             self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
@@ -741,8 +745,9 @@ class _Slot:
 class _ThreadSlot(_Slot):
     """A `thread`-mode slot: REPL state carries across turns as snapshots.
 
-    The first eval on each new Context restores the thread's last snapshot;
-    `after_agent` snapshots the Context before `end_turn` closes it.
+    The middleware restores the thread's last snapshot into each new Context
+    before its first eval, and snapshots the Context in `after_agent` before
+    `end_turn` closes it.
     """
 
     def __init__(self, name: str, config: _SlotConfig) -> None:
@@ -751,38 +756,36 @@ class _ThreadSlot(_Slot):
         # restores once.
         self._restored_context: QjsContext | None = None
 
-    async def _aprepare_for_eval(
-        self,
-        snapshot_payload: bytes | None,
-        tools: Sequence[BaseTool] | None,
-        fs: BackendProtocol | None,
-    ) -> None:
-        ctx = self._require_context()
-        if self._restored_context is not ctx:
-            self._restored_context = ctx
-            if snapshot_payload:
-                try:
-                    await self._arestore_snapshot(snapshot_payload, inject_globals=True)
-                except Exception as exc:  # best-effort restore path
-                    logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
-                    msg = "Failed to restore QuickJS snapshot"
-                    raise _SnapshotRestoreError(msg) from exc
-        await super()._aprepare_for_eval(None, tools, fs)
+    def restore_snapshot(self, payload: bytes) -> None:
+        """Restore `payload` into the Context, once per Context, before evals.
+
+        Raises:
+            _SnapshotRestoreError: If the payload can't be restored.
+        """
+        self._worker.run_sync(self._arestore_snapshot(payload))
+
+    async def arestore_snapshot(self, payload: bytes) -> None:
+        """Async variant of `restore_snapshot`."""
+        await self._worker.run_async(self._arestore_snapshot(payload))
+
+    async def _arestore_snapshot(self, payload: bytes) -> None:
+        context = self._ensure_context()
+        if self._restored_context is context:
+            return
+        self._restored_context = context
+        try:
+            self._ensure_runtime().restore_snapshot(
+                QjsSnapshot.from_bytes(payload), context, inject_globals=True
+            )
+        except Exception as exc:  # best-effort restore path
+            logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
+            msg = "Failed to restore QuickJS snapshot"
+            raise _SnapshotRestoreError(msg) from exc
 
     async def _acreate_snapshot(self) -> bytes | None:
         if self._context is None:
             return None
         return self._context.create_snapshot().to_bytes()
-
-    async def _arestore_snapshot(self, payload: bytes, *, inject_globals: bool) -> None:
-        if self._runtime is None or self._context is None:
-            msg = "QuickJS context is closed"
-            raise RuntimeError(msg)
-        self._runtime.restore_snapshot(
-            QjsSnapshot.from_bytes(payload),
-            self._context,
-            inject_globals=inject_globals,
-        )
 
     def create_snapshot(self) -> bytes | None:
         """Snapshot the live Context, or `None` if no eval ran this turn."""

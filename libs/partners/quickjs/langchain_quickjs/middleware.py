@@ -405,10 +405,13 @@ class CodeInterpreterMiddleware(
             slot_id = middleware._slot_id(runtime.state)
             slot = middleware._registry.acquire(slot_id, middleware._slot_config)
             try:
+                if isinstance(slot, _ThreadSlot) and (
+                    snapshot := middleware._snapshot_for_eval(runtime.state)
+                ):
+                    slot.restore_snapshot(snapshot)
                 outcome = slot.eval_sync(
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
-                    snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     fs=middleware._fs,
                 )
@@ -426,10 +429,13 @@ class CodeInterpreterMiddleware(
             slot_id = middleware._slot_id(runtime.state)
             slot = await middleware._registry.aacquire(slot_id, middleware._slot_config)
             try:
+                if isinstance(slot, _ThreadSlot) and (
+                    snapshot := middleware._snapshot_for_eval(runtime.state)
+                ):
+                    await slot.arestore_snapshot(snapshot)
                 outcome = await slot.eval_async(
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
-                    snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     outer_loop=asyncio.get_running_loop(),
                     fs=middleware._fs,

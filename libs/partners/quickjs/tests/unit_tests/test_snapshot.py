@@ -76,9 +76,8 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
         )
         restore_slot_id = _assert_slot_update(before_update)
         restored = warm_slot(mw, restore_slot_id)
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
         drop_slots(mw)
 
@@ -102,9 +101,8 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
         )
         restore_slot_id = _assert_slot_update(before_update)
         restored = warm_slot(mw, restore_slot_id)
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
         drop_slots(mw)
 
@@ -401,7 +399,8 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
         )
         slot_id = _assert_slot_update(before_update)
         repl2 = warm_slot(mw, slot_id)
-        repl2.eval_sync("globalThis.y = 2", snapshot_payload=prior_full)
+        repl2.restore_snapshot(prior_full)
+        repl2.eval_sync("globalThis.y = 2")
         second = mw.after_agent(
             state={
                 "_quickjs_slot_id": slot_id,
@@ -422,7 +421,8 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
             state={"_quickjs_snapshot_payload": final}, runtime=MagicMock()
         )
         restored = warm_slot(mw, _assert_slot_update(restore_update))
-        assert restored.eval_sync("x + y", snapshot_payload=final).result == "3"
+        restored.restore_snapshot(final)
+        assert restored.eval_sync("x + y").result == "3"
     finally:
         drop_slots(mw)
 
@@ -743,9 +743,8 @@ def test_signed_snapshot_roundtrip_restores() -> None:
         )
         assert before_update is None
         restored = warm_slot(mw, _signing_thread_id(mw))
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
         drop_slots(mw)
 
@@ -883,9 +882,8 @@ async def test_asigned_snapshot_roundtrip_restores() -> None:
         )
         assert before_update is None
         restored = warm_slot(mw, _signing_thread_id(mw))
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
         drop_slots(mw)
 
@@ -913,9 +911,8 @@ def test_no_key_restores_without_verification() -> None:
         )
         assert before_update is None
         restored = warm_slot(mw, _signing_thread_id(mw))
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
         drop_slots(mw)
 
@@ -1010,10 +1007,10 @@ async def test_restore_error_reaches_tool_boundary_before_code_runs(
 
     async def evaluate():
         if invoke_mode == "ainvoke":
-            return await repl.eval_async(
-                "globalThis.executed = true", snapshot_payload=b"invalid"
-            )
-        return repl.eval_sync("globalThis.executed = true", snapshot_payload=b"invalid")
+            await repl.arestore_snapshot(b"invalid")
+        else:
+            repl.restore_snapshot(b"invalid")
+        return repl.eval_sync("globalThis.executed = true")
 
     try:
         with pytest.raises(

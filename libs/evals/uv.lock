@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.14.*"
 resolution-markers = [
     "platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -1966,7 +1966,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.3.12"
+version = "0.4.0"
 source = { editable = "../partners/quickjs" }
 dependencies = [
     { name = "bsdiff4" },

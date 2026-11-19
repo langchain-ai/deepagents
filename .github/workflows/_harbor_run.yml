@@ -973,6 +973,7 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
+          HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           agent_args=()
           case "$HARBOR_AGENT_IMPL" in
             codex|claude-code|pi)
@@ -1005,7 +1006,6 @@ jobs:
                 --agent-kwarg graph="$HARBOR_AGENT_GRAPH")
               ;;
           esac
-          HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
           # The override uses a dedicated var the tau3 step never writes, so it

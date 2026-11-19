@@ -1142,6 +1142,15 @@ jobs:
           case "$HARBOR_AGENT_IMPL" in
             codex|claude-code|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
           esac
+          # Codex defaults the `openai` provider to remote compaction, which
+          # Fireworks lacks; a custom provider compacts locally instead.
+          codex_fireworks_config=$(jq -cn --arg url "$FIREWORKS_BASE_URL/v1" '{
+            model_provider: "fireworks",
+            model_providers: {fireworks: {
+              name: "Fireworks", base_url: $url, env_key: "OPENAI_API_KEY",
+              wire_api: "responses", capabilities: {remote_compaction: "unsupported"}
+            }}
+          }')
           # Fireworks serves OpenAI Responses and Anthropic Messages, so each CLI
           # reaches it through its native protocol as a custom endpoint.
           case "$HARBOR_AGENT_IMPL:$model_provider" in
@@ -1158,16 +1167,13 @@ jobs:
                   agent_args+=(--agent-kwarg context_window=1048573)
                 fi
               else
-                # Codex defaults the `openai` provider to remote compaction, which
-                # Fireworks lacks; a custom provider compacts locally instead.
-                codex_config=$(jq -cn --arg url "$FIREWORKS_BASE_URL/v1" '{
-                  model_provider: "fireworks",
-                  model_providers: {fireworks: {
-                    name: "Fireworks", base_url: $url, env_key: "OPENAI_API_KEY",
-                    wire_api: "responses", capabilities: {remote_compaction: "unsupported"}
-                  }}
-                }')
-                agent_args+=(--agent-kwarg "config=$codex_config")
+                agent_args+=(--agent-kwarg "config=$codex_fireworks_config")
+              fi
+              ;;
+            codex:openai)
+              # openai_endpoint=fireworks reaches the same Fireworks Responses API.
+              if [ "$HARBOR_OPENAI_ENDPOINT" = fireworks ]; then
+                agent_args+=(--agent-kwarg "config=$codex_fireworks_config")
               fi
               ;;
             claude-code:fireworks)

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
-from acp import text_block, update_agent_message
 from acp.exceptions import RequestError
 from acp.interfaces import Client
 from acp.schema import (
@@ -137,7 +136,10 @@ async def test_acp_agent_prompt_streams_text() -> None:
         if entry["type"] != "session_update":
             continue
         update = entry["update"]
-        if update == update_agent_message(text_block("Hello!")):
+        if update == AgentMessageChunk(
+            session_update="agent_message_chunk",
+            content=TextContentBlock(type="text", text="Hello!"),
+        ):
             texts.append("Hello!")
     assert texts == ["Hello!"]
 
@@ -1246,7 +1248,10 @@ async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:
     assert resp.stop_reason == "end_turn"
 
     assert any(
-        e["update"] == update_agent_message(text_block("blue"))
+        e["update"]
+        == AgentMessageChunk(
+            session_update="agent_message_chunk", content=TextContentBlock(type="text", text="blue")
+        )
         for e in client.events
         if e["type"] == "session_update"
     )
@@ -1269,7 +1274,11 @@ async def test_acp_agent_with_prebuilt_langchain_agent_end_to_end() -> None:
     assert resp.stop_reason == "end_turn"
 
     assert any(
-        e["update"] == update_agent_message(text_block("Hello!"))
+        e["update"]
+        == AgentMessageChunk(
+            session_update="agent_message_chunk",
+            content=TextContentBlock(type="text", text="Hello!"),
+        )
         for e in client.events
         if e["type"] == "session_update"
     )
@@ -1561,7 +1570,11 @@ async def test_acp_agent_hitl_waits_for_interrupt_checkpoint() -> None:
     assert len(permission_requests) == 1
     assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
     assert any(
-        e["update"] == update_agent_message(text_block("File written successfully"))
+        e["update"]
+        == AgentMessageChunk(
+            session_update="agent_message_chunk",
+            content=TextContentBlock(type="text", text="File written successfully"),
+        )
         for e in client.events
         if e["type"] == "session_update"
     )

@@ -4,29 +4,81 @@
 
 ## [0.4.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.12...langchain-quickjs==0.4.0) (2026-11-19)
 
+langchain-quickjs 0.4.0 is out! Code mode gets a real filesystem, tools that actually update your agent's state, and a much lighter footprint.
+
+### 📁 `fs` in code mode
+
+Code can now read and write the agent's files directly, the same files its file tools see, through a Node-style `fs` global. Pass `fs=True` with `create_deep_agent` (or pass any backend yourself):
+
+```python
+agent = create_deep_agent(
+    model,
+    middleware=[CodeInterpreterMiddleware(ptc=True, fs=True)],
+)
+```
+
+One eval can now do what used to take a dozen file-tool round trips:
+
+```js
+const files = await fs.readdir("/reports");
+const totals = {};
+for (const name of files.filter((f) => f.endsWith(".json"))) {
+  const { region, revenue } = JSON.parse(await fs.readFile(`/reports/${name}`));
+  totals[region] = (totals[region] ?? 0) + revenue;
+}
+await fs.writeFile("/summary.json", JSON.stringify(totals, null, 2));
+```
+
+It has `readFile`, `writeFile`, `readdir`, `access` and `rm`, all async, and errors come back as Node errors (`err.code === "ENOENT"`).
+
+### 🔁 Tools called from code now respect `Command`
+
+Before, when a tool returned `Command(update=...)` and you called it from code, the update was silently dropped. Now it lands in graph state just like a normal tool call, later calls in the same eval see it, and your JS gets the tool's message back:
+
+```python
+@tool
+def save_plan(plan: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
+    """Save the plan to state."""
+    return Command(update={
+        "plan": plan,
+        "messages": [ToolMessage("plan saved", tool_call_id=tool_call_id)],
+    })
+```
+
+```js
+await tools.savePlan({ plan: "1. research 2. draft" }); // "plan saved", and state.plan is set
+```
+
+### ⚡ Faster startup, lower overhead
+
+Interpreters are now created on the first eval, not when the agent starts, so threads that never run code never pay for one. Closing them no longer blocks the event loop, and runs that error or get cancelled release their interpreter cleanly. The code-mode system prompt is cached by content, so it isn't re-rendered every turn.
+
+Also in this release: one `tools.*` proxy (with `defer_loading` tools still callable), typed signatures for MCP tools, and quickjs-rs 0.3.0.
+
+> **Heads up:** JS state saved by 0.3.x won't restore, so existing threads start from a fresh JS context on their next eval.
 
 ### ⚠ BREAKING CHANGES
 
-* **quickjs:** keep QuickJS slots warm in a process-wide LRU ([#7790](https://github.com/langchain-ai/deepagents/issues/7790))
-* **quickjs:** upgrade to quickjs-rs 0.3.0
+* keep QuickJS slots warm in a process-wide LRU ([#7790](https://github.com/langchain-ai/deepagents/issues/7790))
+* upgrade to quickjs-rs 0.3.0
 
 ### Features
 
-* **quickjs:** add `writeFile`, `readdir`, `access`, and `rm` to `fs` ([#7638](https://github.com/langchain-ai/deepagents/issues/7638)) ([0cef0a8](https://github.com/langchain-ai/deepagents/commit/0cef0a8e3ec34de25e826305dce076b86cedc8bb))
-* **quickjs:** add an opt-in `fs.readFile` over the agent's backend ([#7637](https://github.com/langchain-ai/deepagents/issues/7637)) ([e4c8748](https://github.com/langchain-ai/deepagents/commit/e4c8748d4cc5fd86c5569d82464927912524bd67))
-* **quickjs:** let `fs=True` use the agent's backend ([#7669](https://github.com/langchain-ai/deepagents/issues/7669)) ([94657a4](https://github.com/langchain-ai/deepagents/commit/94657a47f8d47acfc17c19157f823b7bdd902994))
-* **quickjs:** upgrade to quickjs-rs 0.3.0 ([d60e40e](https://github.com/langchain-ai/deepagents/commit/d60e40e30731cdc3bd6a1e1ee2412316d97b290e))
+* add `writeFile`, `readdir`, `access`, and `rm` to `fs` ([#7638](https://github.com/langchain-ai/deepagents/issues/7638)) ([0cef0a8](https://github.com/langchain-ai/deepagents/commit/0cef0a8e3ec34de25e826305dce076b86cedc8bb))
+* add an opt-in `fs.readFile` over the agent's backend ([#7637](https://github.com/langchain-ai/deepagents/issues/7637)) ([e4c8748](https://github.com/langchain-ai/deepagents/commit/e4c8748d4cc5fd86c5569d82464927912524bd67))
+* let `fs=True` use the agent's backend ([#7669](https://github.com/langchain-ai/deepagents/issues/7669)) ([94657a4](https://github.com/langchain-ai/deepagents/commit/94657a47f8d47acfc17c19157f823b7bdd902994))
+* upgrade to quickjs-rs 0.3.0 ([d60e40e](https://github.com/langchain-ai/deepagents/commit/d60e40e30731cdc3bd6a1e1ee2412316d97b290e))
 
 
 ### Bug Fixes
 
-* **quickjs:** apply state updates from `tools.*` calls in eval ([#7838](https://github.com/langchain-ai/deepagents/issues/7838)) ([c6bde12](https://github.com/langchain-ai/deepagents/commit/c6bde125f5974a12f64d56e0fb1058100ed7d59b))
-* **quickjs:** close slots left open by failed runs and idle slots ([#7463](https://github.com/langchain-ai/deepagents/issues/7463)) ([1a7d602](https://github.com/langchain-ai/deepagents/commit/1a7d602a7ef6b54269bbb268e4bbc71f27ada0f9))
-* **quickjs:** don't evict a slot while a cancelled eval still runs ([#7850](https://github.com/langchain-ai/deepagents/issues/7850)) ([533e4b3](https://github.com/langchain-ai/deepagents/commit/533e4b3046dfa5e915c5eed86e8a7d3b01319446))
-* **quickjs:** keep QuickJS slots warm in a process-wide LRU ([#7790](https://github.com/langchain-ai/deepagents/issues/7790)) ([beeb0a0](https://github.com/langchain-ai/deepagents/commit/beeb0a032e65a86910a280a1037bbf3f8e24fe26)), refs [#7262](https://github.com/langchain-ai/deepagents/issues/7262) [#5387](https://github.com/langchain-ai/deepagents/issues/5387) [#4546](https://github.com/langchain-ai/deepagents/issues/4546) [#6311](https://github.com/langchain-ai/deepagents/issues/6311)
-* **quickjs:** parent PTC calls and `task()` subagents on the eval run ([#7665](https://github.com/langchain-ai/deepagents/issues/7665)) ([f2a6e02](https://github.com/langchain-ai/deepagents/commit/f2a6e02dc8e2dcb05885c5133b94102ccc79b794))
-* **quickjs:** render dict (MCP) `args_schema` inline in PTC signatures ([#7464](https://github.com/langchain-ai/deepagents/issues/7464)) ([41841fc](https://github.com/langchain-ai/deepagents/commit/41841fc2e2424e5b78bc2875718fb1feb6e2dbc4))
-* **quickjs:** steer code mode to `Promise.allSettled` for parallel calls ([#7871](https://github.com/langchain-ai/deepagents/issues/7871)) ([40cdd33](https://github.com/langchain-ai/deepagents/commit/40cdd334d831e5c6737708811cc0335ec6105ac6))
+* apply state updates from `tools.*` calls in eval ([#7838](https://github.com/langchain-ai/deepagents/issues/7838)) ([c6bde12](https://github.com/langchain-ai/deepagents/commit/c6bde125f5974a12f64d56e0fb1058100ed7d59b))
+* close slots left open by failed runs and idle slots ([#7463](https://github.com/langchain-ai/deepagents/issues/7463)) ([1a7d602](https://github.com/langchain-ai/deepagents/commit/1a7d602a7ef6b54269bbb268e4bbc71f27ada0f9))
+* don't evict a slot while a cancelled eval still runs ([#7850](https://github.com/langchain-ai/deepagents/issues/7850)) ([533e4b3](https://github.com/langchain-ai/deepagents/commit/533e4b3046dfa5e915c5eed86e8a7d3b01319446))
+* keep QuickJS slots warm in a process-wide LRU ([#7790](https://github.com/langchain-ai/deepagents/issues/7790)) ([beeb0a0](https://github.com/langchain-ai/deepagents/commit/beeb0a032e65a86910a280a1037bbf3f8e24fe26)), refs [#7262](https://github.com/langchain-ai/deepagents/issues/7262) [#5387](https://github.com/langchain-ai/deepagents/issues/5387) [#4546](https://github.com/langchain-ai/deepagents/issues/4546) [#6311](https://github.com/langchain-ai/deepagents/issues/6311)
+* parent PTC calls and `task()` subagents on the eval run ([#7665](https://github.com/langchain-ai/deepagents/issues/7665)) ([f2a6e02](https://github.com/langchain-ai/deepagents/commit/f2a6e02dc8e2dcb05885c5133b94102ccc79b794))
+* render dict (MCP) `args_schema` inline in PTC signatures ([#7464](https://github.com/langchain-ai/deepagents/issues/7464)) ([41841fc](https://github.com/langchain-ai/deepagents/commit/41841fc2e2424e5b78bc2875718fb1feb6e2dbc4))
+* steer code mode to `Promise.allSettled` for parallel calls ([#7871](https://github.com/langchain-ai/deepagents/issues/7871)) ([40cdd33](https://github.com/langchain-ai/deepagents/commit/40cdd334d831e5c6737708811cc0335ec6105ac6))
 
 ## [0.3.12](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.11...langchain-quickjs==0.3.12) (2026-11-07)
 

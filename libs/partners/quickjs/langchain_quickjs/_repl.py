@@ -38,13 +38,14 @@ from langchain_quickjs._format import (
     stringify,
 )
 from langchain_quickjs._ptc import (
+    TOOLS_CALL,
+    TOOLS_NAMES,
     PTCCallBudgetExceededError,
     PTCState,
-    bridge_symbol_name,
     inject_tool_args,
     is_valid_js_identifier,
     normalize_tool_input,
-    render_tools_namespace_assignment,
+    render_tools_namespace,
     synth_tool_call_id,
     to_camel_case,
     uses_injected_tool_call_id,
@@ -245,23 +246,15 @@ class _Slot:
         self._console = _ConsoleBuffer(self._config.max_stdout_chars)
         # A Context restores a snapshot at most once.
         self._snapshot_restored = False
-        # PTC state. `_registered_tools` tracks which camel-case names
-        # have already had their host-function bridge installed on the
-        # QuickJS context. Host functions cannot be un-registered, so we
-        # never remove entries from here — changes to the exposed set
-        # are reflected by rewriting `globalThis.tools` (see
-        # install_tools) to include only the currently-active subset.
-        self._registered_tools: dict[str, BaseTool] = {}
-        self._bridge_symbols: dict[str, str] = {}
-        self._active_tool_names: frozenset[str] = frozenset()
-        # Tracks whether `globalThis.tools` has been assigned at least
-        # once. Distinct from `_active_tool_names` so the first call
-        # with an empty tool set still installs `tools = {}` (otherwise
-        # `typeof tools.X` throws ReferenceError instead of returning
-        # `"undefined"`).
+        # PTC tools by camel-case name. `install_tools` swaps this map; the
+        # guest reaches it through `__tools_call` / `__tools_names`.
+        self._tools: dict[str, BaseTool] = {}
+        # Whether `globalThis.tools` has been defined. Without PTC it stays
+        # undefined.
         self._tools_installed = False
         if self._config.capture_console:
             self._install_console()
+        self._register_tools_bridge()
         if self._config.subagents_enabled:
             self._register_task_bridge()
         self._register_fs_bridge()
@@ -305,7 +298,6 @@ class _Slot:
         )
 
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
-        ctx = self._require_context()
         name_to_tool: dict[str, BaseTool] = {}
         for tool in tools:
             camel = to_camel_case(tool.name)
@@ -317,32 +309,10 @@ class _Slot:
                 )
                 continue
             name_to_tool[camel] = tool
-        target_names = frozenset(name_to_tool)
-        if target_names == self._active_tool_names and self._tools_installed:
-            # Fast path: stable toolset, nothing to do. Keep the bridge's
-            # dispatch target pointer current in case tool objects rotate
-            # while keeping the same names. Guard with `_tools_installed`
-            # so the empty → empty transition on first call still installs
-            # a `tools = {}` global — otherwise `typeof tools.x` hits a
-            # ReferenceError instead of returning "undefined".
-            self._registered_tools.update(name_to_tool)
-            return
-
-        # Register host-function bridges for tools we haven't seen before.
-        for camel, tool in name_to_tool.items():
-            if camel not in self._registered_tools:
-                self._bridge_symbols[camel] = self._register_tool_bridge(camel)
-            self._registered_tools[camel] = tool
-
-        # Rewrite globalThis.tools. Building the object inside a single
-        # eval keeps assignments atomic from the model's point of view —
-        # there's no moment where tools is half-populated. The trailing
-        # `undefined` sidesteps the MarshalError on object returns
-        # (same trick as the console install).
-        bridges = {camel: self._bridge_symbols[camel] for camel in target_names}
-        ctx.eval(render_tools_namespace_assignment(bridges))
-        self._active_tool_names = target_names
-        self._tools_installed = True
+        self._tools = name_to_tool
+        if not self._tools_installed:
+            self._require_context().eval(render_tools_namespace())
+            self._tools_installed = True
 
     @staticmethod
     def _validate_task_payload(
@@ -485,26 +455,25 @@ class _Slot:
 
         return await _on_outer_loop(_call, outer_loop)
 
-    def _register_tool_bridge(self, camel: str) -> str:
-        """Install a host-function bridge for one camel-cased tool name.
+    def _register_tools_bridge(self) -> None:
+        """Install the host functions behind the guest's `tools` proxy.
 
-        The bridge is async so `eval_async`'s driving loop can await
-        `tool.ainvoke` without blocking the event loop. We look the
-        tool up through `self._registered_tools` on every call so a
-        later `install_tools` that swaps the underlying object (same
-        name, different instance) is picked up without re-registration.
+        `_call` looks the tool up in `self._tools` on every call, so
+        `install_tools` swapping the map is picked up without touching
+        the guest.
         """
         ctx = self._require_context()
-        registered = self._registered_tools
 
-        async def _bridge(raw_input: Any = None) -> Any:
-            tool = registered.get(camel)
+        def _names() -> list[str]:
+            return list(self._tools)
+
+        async def _call(camel: str, raw_input: Any = None) -> Any:
+            tool = self._tools.get(camel)
             if tool is None:
-                # Shouldn't happen — we only rewrite `globalThis.tools`
-                # with names currently in the map — but if a race causes
-                # it, fail loud.
-                msg = f"tool '{camel}' not registered"
-                raise RuntimeError(msg)
+                # A function captured before `install_tools` dropped it. Fail
+                # the eval as calling a missing `tools.*` would, not the run.
+                msg = f"tools.{camel} is no longer available"
+                raise _TaskBridgeError(TypeError(msg))
             if self._ptc_state is None:
                 msg = "PTC bridge called outside active eval"
                 raise ConcurrentEvalError(msg)
@@ -528,9 +497,8 @@ class _Slot:
             )
             return coerce_tool_output_for_ptc(result)
 
-        bridge_symbol = bridge_symbol_name(camel)
-        ctx.register(bridge_symbol, _bridge, is_async=True)
-        return bridge_symbol
+        ctx.register(TOOLS_NAMES, _names)
+        ctx.register(TOOLS_CALL, _call, is_async=True)
 
     def _register_fs_bridge(self) -> None:
         ctx = self._require_context()

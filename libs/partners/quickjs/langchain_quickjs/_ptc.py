@@ -5,7 +5,7 @@ PTC exposes the agent's LangChain tools inside the JavaScript REPL as
 N serial tool calls, the model writes one `eval` that loops / parallelises
 / chains tools in-code:
 
-    const [a, b] = await Promise.all([
+    const [a, b] = await Promise.allSettled([
         tools.search({query: "foo"}),
         tools.search({query: "bar"}),
     ]);

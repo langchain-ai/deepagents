@@ -573,7 +573,7 @@ class _Slot:
                 error_type="ConcurrentEval",
                 error_message=(
                     "another eval call is still running; make one call at a "
-                    "time and use Promise.all inside it for parallel work"
+                    "time and use Promise.allSettled inside it for parallel work"
                 ),
             )
         ctx = self._ensure_context()

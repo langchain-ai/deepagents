@@ -457,17 +457,17 @@ async def test_install_tools_skips_invalid_js_identifier_names(
 
 
 async def test_dropped_tool_kept_by_code_fails_the_eval(repl: _Slot) -> None:
-    install_tools(repl, [_echo_tool()])
+    await ainstall_tools(repl, [_echo_tool()])
     kept = await repl.eval_async("globalThis.keep = tools.echo; typeof keep")
     assert kept.result == "function"
-    install_tools(repl, [_echo_tool("other")])
+    await ainstall_tools(repl, [_echo_tool("other")])
     outcome = await repl.eval_async("await keep({msg: 'x'})")
     assert outcome.error_type == "TypeError"
     assert outcome.error_message == "tools.echo is no longer available"
 
 
 async def test_tools_proxy_behaves_like_a_plain_object(repl: _Slot) -> None:
-    install_tools(repl, [_echo_tool()])
+    await ainstall_tools(repl, [_echo_tool()])
     outcome = await repl.eval_async(
         "[typeof tools.echo, typeof tools.missing, 'echo' in tools,"
         " Object.keys(tools).join(','), JSON.stringify(tools),"

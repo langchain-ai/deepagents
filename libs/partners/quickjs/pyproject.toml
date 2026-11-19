@@ -94,6 +94,9 @@ ignore-var-parameters = true  # ignore missing documentation for *args and **kwa
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
 [tool.coverage.run]
 omit = ["tests/*"]
 

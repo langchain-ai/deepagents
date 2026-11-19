@@ -29,6 +29,7 @@ from deepagents_code.client.remote_client import RemoteAgent, format_agent_excep
 from deepagents_code.model_retry import CodeModelRetryMiddleware
 from deepagents_code.output_truncation import (
     EmptyTruncatedReplyMiddleware,
+    EmptyTruncatedReplyRecovery,
     ModelOutputTruncatedError,
     OutputTruncation,
     SubagentTruncatedReplyMiddleware,
@@ -656,3 +657,191 @@ async def test_raised_refusal_without_message_propagates(*, asynchronous: bool) 
 
     with pytest.raises(ModelRefusalError):
         await _guard_refusal(error, asynchronous=asynchronous)
+
+
+# The shape reported in #7761: Anthropic reasoning only, stopped at max_tokens.
+_ANTHROPIC_MAX_TOKENS = {
+    "model_provider": "anthropic",
+    "model_name": "claude-haiku-5-5",
+    "stop_reason": "max_tokens",
+}
+
+
+def _headless_request(
+    model: str = "anthropic:claude-haiku-5-5",
+) -> ModelRequest:
+    return ModelRequest(
+        model=cast("BaseChatModel", model),
+        messages=[HumanMessage(content="run")],
+        tools=[],
+        system_prompt="base prompt",
+        state={"messages": []},
+        runtime=cast("Any", SimpleNamespace(context={"model": None})),
+    )
+
+
+async def _headless_stack(
+    responses: list[ModelResponse[Any]],
+    *,
+    request: ModelRequest | None = None,
+    asynchronous: bool = False,
+) -> tuple[ModelResponse[Any], list[ModelRequest]]:
+    """Run the guard outside the recovery, as headless `create_cli_agent` does.
+
+    Returns:
+        The final response and every request the model received.
+    """
+    guard = EmptyTruncatedReplyMiddleware()
+    recovery = EmptyTruncatedReplyRecovery()
+    remaining = list(responses)
+    seen: list[ModelRequest] = []
+
+    def model_call(request: ModelRequest) -> ModelResponse[Any]:
+        seen.append(request)
+        return remaining.pop(0)
+
+    request = _headless_request() if request is None else request
+    if asynchronous:
+        amodel_call = AsyncMock(side_effect=model_call)
+
+        async def ahandler(inner: ModelRequest) -> ModelResponse[Any]:
+            return await recovery.awrap_model_call(inner, amodel_call)
+
+        return await guard.awrap_model_call(request, ahandler), seen
+    response = guard.wrap_model_call(
+        request, lambda inner: recovery.wrap_model_call(inner, model_call)
+    )
+    return response, seen
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "stalled",
+    [
+        pytest.param(
+            _response(
+                [{"type": "thinking", "thinking": "Planning...", "signature": "s"}],
+                metadata=_ANTHROPIC_MAX_TOKENS,
+            ),
+            id="anthropic-reasoning-only",
+        ),
+        pytest.param(_response([]), id="openai-responses-empty"),
+        pytest.param(_response(metadata={"finish_reason": "length"}), id="length"),
+    ],
+)
+async def test_headless_recovery_retries_empty_truncated_reply_once(
+    stalled: ModelResponse[Any], *, asynchronous: bool
+) -> None:
+    recovered = _response(metadata={"stop_reason": "tool_use"}, with_tool_call=True)
+
+    response, seen = await _headless_stack(
+        [stalled, recovered], asynchronous=asynchronous
+    )
+
+    assert response is recovered
+    assert len(seen) == 2
+    assert seen[0].system_prompt == "base prompt"
+    retry_prompt = seen[1].system_prompt or ""
+    assert retry_prompt.startswith("base prompt\n\n<output_limit_recovery>")
+    assert seen[1].messages == seen[0].messages
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_guard_raises_when_headless_recovery_still_empty(
+    *, asynchronous: bool
+) -> None:
+    stalled = _response([], metadata=_ANTHROPIC_MAX_TOKENS)
+
+    with pytest.raises(ModelOutputTruncatedError, match=r"\(max_tokens\)"):
+        await _headless_stack([stalled, stalled], asynchronous=asynchronous)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(_response("Partial answer"), id="partial-text"),
+        pytest.param(_response(with_tool_call=True), id="partial-tool-call"),
+        pytest.param(_response(metadata={"finish_reason": "stop"}), id="normal-empty"),
+        pytest.param(
+            _response(
+                metadata={"model_provider": "anthropic", "stop_reason": "refusal"}
+            ),
+            id="refusal",
+        ),
+        pytest.param(_response(metadata={"finish_reason": "SAFETY"}), id="filtered"),
+        pytest.param(
+            _response(
+                metadata={
+                    "model_provider": "anthropic",
+                    "stop_reason": "model_context_window_exceeded",
+                }
+            ),
+            id="context-window",
+        ),
+        pytest.param(
+            ModelResponse(
+                result=[
+                    AIMessage(
+                        content="",
+                        invalid_tool_calls=[
+                            {
+                                "name": "ls",
+                                "args": '{"path":',
+                                "id": "call-1",
+                                "error": "Invalid JSON",
+                            }
+                        ],
+                        response_metadata={"finish_reason": "length"},
+                    )
+                ]
+            ),
+            id="interrupted-tool-call",
+        ),
+        pytest.param(
+            ModelResponse(
+                result=[
+                    AIMessage(
+                        content="",
+                        response_metadata={"finish_reason": "length"},
+                        usage_metadata={
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                        },
+                    )
+                ]
+            ),
+            id="zero-usage",
+        ),
+    ],
+)
+def test_headless_recovery_leaves_other_replies_alone(
+    response: ModelResponse[Any],
+) -> None:
+    recovery = EmptyTruncatedReplyRecovery()
+    calls = MagicMock(return_value=response)
+
+    assert recovery.wrap_model_call(_headless_request(), calls) is response
+    calls.assert_called_once()
+
+
+def test_headless_recovery_defers_to_glm_recovery() -> None:
+    """The measured GLM stall keeps its own recovery: one retry, not two."""
+    guard = EmptyTruncatedReplyMiddleware()
+    recovery = EmptyTruncatedReplyRecovery()
+    glm = _GlmTerminalStallRecovery()
+    stalled = _response(metadata={"finish_reason": "length"})
+    remaining = [stalled, stalled, stalled]
+
+    def model_call(_request: ModelRequest) -> ModelResponse[Any]:
+        return remaining.pop(0)
+
+    with pytest.raises(ModelOutputTruncatedError):
+        guard.wrap_model_call(
+            _glm_request(),
+            lambda request: recovery.wrap_model_call(
+                request, lambda inner: glm.wrap_model_call(inner, model_call)
+            ),
+        )
+
+    assert len(remaining) == 1

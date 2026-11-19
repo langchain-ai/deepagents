@@ -3,8 +3,10 @@
 LangChain has no normalized stop reason, so each provider's raw metadata is
 read here. `output_truncation` classifies one message. `EmptyTruncatedReplyMiddleware`
 turns an empty, truncated reply into a typed error, so the run fails visibly
-instead of ending as a silent success with nothing to show. Subagent failures
-become task-tool errors, while partial answers carry a warning to the parent.
+instead of ending as a silent success with nothing to show. On headless stacks,
+`EmptyTruncatedReplyRecovery` first retries an empty reply cut off at the output
+limit once. Subagent failures become task-tool errors, while partial answers
+carry a warning to the parent.
 """
 
 from __future__ import annotations
@@ -295,7 +297,7 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
 
     This middleware never retries. It must wrap the retry middleware, so the
     error is not retried, and any recovery middleware that may still repair
-    the reply.
+    the reply, such as `EmptyTruncatedReplyRecovery` on headless stacks.
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
@@ -415,6 +417,103 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
                 raise
             response = ModelResponse(result=[error.raw_message])
         self._check(response, request)
+        return response
+
+
+_EMPTY_REPLY_RECOVERY_SUFFIX: Final = """\
+<output_limit_recovery>
+Your previous attempt used its entire output budget without producing a reply or \
+a tool call. Keep any reasoning short, then continue the task: call the next tool \
+you need, or give your final answer.
+</output_limit_recovery>"""
+"""One-shot instruction for retrying an empty reply cut off at the output limit."""
+
+
+def _is_fireworks_glm_5p2(model: str | BaseChatModel) -> bool:
+    # Imported here: `_glm_5p2_profile` imports this module.
+    from deepagents_code._glm_5p2_profile import _is_fireworks_glm_5p2_model
+
+    return _is_fireworks_glm_5p2_model(model)
+
+
+class EmptyTruncatedReplyRecovery(AgentMiddleware):
+    """Retry once when a headless reply hit the output limit before any output.
+
+    A model can spend its whole output budget on reasoning and stop with no
+    text and no tool call. Interactively, `EmptyTruncatedReplyMiddleware` shows
+    that as an error and the user retries. A headless run has nobody to retry,
+    so the error ends the run. This middleware retries such a reply once, with
+    a short instruction appended to the system prompt.
+
+    Only an empty reply stopped by the output token limit is retried. Partial
+    replies, interrupted tool calls, refusals, content filters, context window
+    errors, and replies with zero reported usage pass through unchanged. If the
+    retry is empty too, it is returned as is and the outer guard raises.
+
+    `create_cli_agent` installs this only on headless stacks, inside
+    `EmptyTruncatedReplyMiddleware`. The measured Fireworks GLM-5.2 stall has
+    its own recovery, so this skips that model to keep to one retry per turn.
+    """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
+    @staticmethod
+    def _should_recover(response: ModelResponse, request: ModelRequest) -> bool:
+        message = _final_ai_message(response)
+        if (
+            message is None
+            or has_visible_reply(message)
+            or message.invalid_tool_calls
+            or _reported_no_usage(message)
+        ):
+            return False
+        truncation = output_truncation(message)
+        if truncation is None or truncation.reason != MAX_OUTPUT_TOKENS:
+            return False
+        return not _is_fireworks_glm_5p2(request.model)
+
+    @staticmethod
+    def _recovery_request(request: ModelRequest) -> ModelRequest:
+        prompt = request.system_prompt
+        return request.override(
+            system_prompt=(
+                f"{prompt}\n\n{_EMPTY_REPLY_RECOVERY_SUFFIX}"
+                if prompt
+                else _EMPTY_REPLY_RECOVERY_SUFFIX
+            )
+        )
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Retry once when the reply was cut off before any output.
+
+        Returns:
+            The original response, or the response to the one retry.
+        """
+        response = handler(request)
+        if self._should_recover(response, request):
+            logger.warning("Empty reply hit the output token limit; retrying once")
+            response = handler(self._recovery_request(request))
+        return response
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Retry once when the reply was cut off before any output.
+
+        Returns:
+            The original response, or the response to the one retry.
+        """
+        response = await handler(request)
+        if self._should_recover(response, request):
+            logger.warning("Empty reply hit the output token limit; retrying once")
+            response = await handler(self._recovery_request(request))
         return response
 
 

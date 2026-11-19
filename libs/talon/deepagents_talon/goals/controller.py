@@ -13,16 +13,25 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronSchedule
-from deepagents_talon.cron.scheduler import SILENT_SENTINEL
 from deepagents_talon.goals.errors import GoalLedgerCorruptError, GoalLedgerError
-from deepagents_talon.goals.models import GoalCharter, GoalScope
+from deepagents_talon.goals.ledger import ItemChange
+from deepagents_talon.goals.models import CLOSED_WORK, GoalCharter, GoalScope
+from deepagents_talon.goals.scope import ReadScope
+from deepagents_talon.goals.work import (
+    DiscoveryResult,
+    GoalTurn,
+    ItemResult,
+    discovery_prompt,
+    item_prompt,
+    parse_result,
+)
 from deepagents_talon.observability import log_event
 
 if TYPE_CHECKING:
@@ -30,7 +39,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.cron.jobs import CronJob, CronJobStore, CronOrigin
     from deepagents_talon.goals.ledger import GoalLedger
-    from deepagents_talon.goals.models import Goal
+    from deepagents_talon.goals.models import Goal, RunResult, WorkItem
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +48,9 @@ GOAL_USAGE = (
     "/goal <outcome> — start a draft goal.\n"
     "/goal edit <field>: <value> — one field per line. Fields: "
     "outcome, sources, exclusions, progress, kpi, baseline, horizon, review, cadence, "
-    "decisions. Separate list entries with `;`; send `none` to clear a field.\n"
+    "decisions. Separate list entries with `;`; send `none` to clear a field. "
+    "Scheduled checks can read only sources written as `tool:<read-only tool>` or "
+    "`path:/absolute/dir`; other sources are guidance.\n"
     "/goal confirm <revision> — activate or update the goal from that exact revision.\n"
     "/goal status — show the goal, its schedule, and its work.\n"
     "/goal remove — stop the goal and remove its scheduled jobs."
@@ -63,6 +74,12 @@ _FIELDS: dict[str, str] = {
 _LIST_FIELDS = frozenset({"sources", "exclusions", "decisions_required"})
 _CLEAR = frozenset({"none", "-"})
 _JOB_PREFIX = "goal:"
+
+MAX_OPEN_ITEMS = 5
+"""Open work items at which discovery pauses until some close."""
+
+DECISION_TTL = timedelta(days=7)
+"""How long a requested owner decision stays valid."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,26 +150,136 @@ class GoalController:
             return handler(request, args[0] if args else "")
         return self._start(request, argument)
 
-    def on_fire(self, job: CronJob) -> str:
-        """Handle a goal job firing; never invokes the model.
+    def reconcile(self) -> None:
+        """Expire stale leases and reflect goal job state, once at host startup."""
+        self.ledger.reconcile_leases(now=self.now())
+        for goal in self.ledger.list_goals(states={"active", "paused"}):
+            self._mirror_job(goal)
 
-        Scheduled work turns are not wired yet, so a live goal only records a
-        quiet check. A job whose goal is gone or removed is disabled.
+    def prepare_fire(self, job: CronJob, *, ttl: timedelta) -> GoalTurn | None:
+        """Decide whether a goal job fire needs a model turn, and lease it.
+
+        Recovery runs first: expired leases become unknown and a paused or
+        missing job is reflected in the goal. No turn is leased unless the
+        goal is active; a due planned item wins over discovery, and discovery
+        is skipped once `MAX_OPEN_ITEMS` items are open.
 
         Args:
             job: Claimed goal-owned cron job.
+            ttl: Lease length; must outlast the host's scheduled-run timeout.
 
         Returns:
-            The silent sentinel, so the scheduler delivers nothing.
+            The leased turn, or `None` when no model call is needed.
         """
         goal = self.ledger.get_goal(job.goal_id or "")
         if goal is None or _orphaned(goal, job):
             self.store.edit_job(job.id, origin=job.origin, enabled=False)
             log_event(logger, "goal.orphan_job_disabled", job_id=job.id, goal_id=job.goal_id)
-            return SILENT_SENTINEL
+            return None
+        self.ledger.reconcile_leases(now=self.now())
         goal = self._mirror_job(goal)
-        log_event(logger, "goal.quiet_check", goal_id=goal.id, state=goal.state)
-        return SILENT_SENTINEL
+        try:
+            turn = self._lease_turn(goal, ttl) if goal.state == "active" else None
+        except GoalLedgerError as exc:
+            log_event(logger, "goal.lease_skipped", goal_id=goal.id, reason=str(exc))
+            return None
+        if turn is None:
+            log_event(logger, "goal.quiet_check", goal_id=goal.id, state=goal.state)
+        return turn
+
+    def finish_turn(
+        self, turn: GoalTurn, *, text: str | None, failure: RunResult | None = None
+    ) -> None:
+        """Validate a goal turn's reply and record it against its lease.
+
+        Args:
+            turn: Turn returned by `prepare_fire`.
+            text: Final model text, or `None` when the turn failed.
+            failure: `timeout` or `error` when the turn did not finish.
+        """
+        try:
+            if failure is not None or text is None:
+                self._fail(turn, failure or "error", "the turn did not finish")
+            elif turn.item_id is None:
+                self._finish_discovery(turn, text)
+            else:
+                self._finish_item(turn, turn.item_id, text)
+        except GoalLedgerError as exc:
+            log_event(logger, "goal.result_dropped", goal_id=turn.goal_id, reason=str(exc))
+
+    def _lease_turn(self, goal: Goal, ttl: timedelta) -> GoalTurn | None:
+        charter, revision = goal.confirmed_charter, goal.confirmed_revision
+        if charter is None or revision is None:
+            return None
+        now = self.now()
+        scope = ReadScope.from_sources(charter.sources)
+        items = self.ledger.list_items(goal.id)
+        due = next((item for item in items if _due(item, now)), None)
+        if due is not None:
+            run = self.ledger.lease_run(
+                goal.id, goal_revision=revision, item_id=due.id, ttl=ttl, now=now
+            )
+            leased = self.ledger.get_item(due.id) or due
+            return GoalTurn(goal.id, run.id, due.id, item_prompt(charter, leased), scope)
+        if sum(item.status not in CLOSED_WORK for item in items) >= MAX_OPEN_ITEMS:
+            return None
+        run = self.ledger.lease_run(goal.id, goal_revision=revision, ttl=ttl, now=now)
+        return GoalTurn(goal.id, run.id, None, discovery_prompt(charter, items), scope)
+
+    def _finish_discovery(self, turn: GoalTurn, text: str) -> None:
+        result = parse_result(text, DiscoveryResult)
+        if result is None:
+            self._fail(turn, "error", "the reply was not a valid discovery result")
+            return
+        self.ledger.finish_run(
+            turn.run_id, result="ok", detail=result.summary or None, now=self.now()
+        )
+        found = result.candidate
+        if found is None:
+            return
+        item, created = self.ledger.add_candidate(
+            turn.goal_id,
+            source_key=found.source_key,
+            source_version=found.source_version,
+            evidence=found.evidence,
+            now=self.now(),
+        )
+        if created:
+            change = ItemChange(status="planned", next_step=found.next_step or None)
+            self.ledger.update_item(item.id, change, now=self.now())
+
+    def _finish_item(self, turn: GoalTurn, item_id: str, text: str) -> None:
+        result = parse_result(text, ItemResult)
+        if result is None or (result.status == "awaiting_decision" and not result.proposal):
+            self._fail(turn, "error", "the reply was not a valid work item result")
+            return
+        change = ItemChange(
+            status=result.status,
+            next_step=result.next_step,
+            evidence=result.evidence,
+            artifact=result.artifact,
+            outcome=result.outcome,
+        )
+        try:
+            self.ledger.finish_run(
+                turn.run_id,
+                result="ok",
+                change=change,
+                detail=result.summary or None,
+                now=self.now(),
+            )
+        except GoalLedgerError as exc:
+            self._fail(turn, "error", str(exc))
+            return
+        if result.status == "awaiting_decision" and result.proposal:
+            expires = self.now() + DECISION_TTL
+            self.ledger.request_decision(
+                item_id, proposal=result.proposal, expires_at=expires, now=self.now()
+            )
+
+    def _fail(self, turn: GoalTurn, result: RunResult, detail: str) -> None:
+        self.ledger.finish_run(turn.run_id, result=result, detail=detail, now=self.now())
+        log_event(logger, "goal.turn_failed", goal_id=turn.goal_id, result=result, detail=detail)
 
     def _start(self, request: GoalRequest, outcome: str) -> str:
         if self.ledger.goal_for_conversation(request.scope) is not None:
@@ -310,6 +437,10 @@ class GoalController:
         ]
 
 
+def _due(item: WorkItem, now: datetime) -> bool:
+    return item.status == "planned" and (item.retry_at is None or item.retry_at <= now)
+
+
 def _orphaned(goal: Goal, job: CronJob) -> bool:
     """Whether a goal job no longer belongs to a live goal.
 
@@ -371,7 +502,7 @@ def _review(goal: Goal) -> str:
     if missing:
         names = ", ".join("progress" if name == "progress_test" else name for name in missing)
         parts.append(f"Still needed: {names}. Set them with /goal edit, for example:")
-        parts.append("/goal edit sources: linear:SEC; github:org/repo")
+        parts.append("/goal edit sources: tool:linear_list_issues; path:/srv/security/reports")
     elif goal.revision != goal.confirmed_revision:
         parts.append(_SCOPE_NOTICE)
         parts.append(f"Send /goal confirm {goal.revision} to use this revision.")

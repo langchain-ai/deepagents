@@ -87,6 +87,8 @@ first, so an in-flight turn is never silently orphaned.
 """
 
 TERMINAL_WORK: frozenset[WorkStatus] = frozenset({"done", "abandoned"})
+CLOSED_WORK: frozenset[WorkStatus] = TERMINAL_WORK | _to("failed")
+"""Statuses that no longer count as open work."""
 
 _RECORD_CONFIG = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 

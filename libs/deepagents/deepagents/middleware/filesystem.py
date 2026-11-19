@@ -1663,9 +1663,7 @@ Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
 - Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
-- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
-
-Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
+- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}"""
 
 EXECUTE_TOOL_DESCRIPTION = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
     search_guidance=_EXECUTE_SEARCH_GUIDANCE,

@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from langchain_quickjs import CodeInterpreterMiddleware, _repl
 from tests._common import FakeChatModel
+from tests.unit_tests._slots import slot_of, slots_of
 
 InvokeMode = Literal["invoke", "ainvoke"]
 
@@ -348,7 +349,7 @@ def lookup() -> str:
 async def test_model_only_turn_never_allocates_runtime(
     monkeypatch, invoke_mode, mode, ptc
 ) -> None:
-    monkeypatch.setattr(_repl, "Runtime", _forbid_allocation)
+    monkeypatch.setattr(_repl, "QjsRuntime", _forbid_allocation)
     monkeypatch.setattr(_repl, "ThreadWorker", _forbid_allocation)
     middleware = CodeInterpreterMiddleware(mode=mode, ptc=ptc)
     agent = create_agent(
@@ -378,7 +379,8 @@ async def test_first_eval_initializes_runtime_and_current_tools(
     )
     result = await _invoke(agent, invoke_mode, {})
     assert _results(result) == ["<result>available</result>"]
-    assert not middleware._registry._slots
+    # `thread` mode keeps the snapshotted Context warm for the next turn.
+    assert all((s._context is None) == (mode != "thread") for s in slots_of(middleware))
 
 
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
@@ -422,7 +424,7 @@ async def test_signed_snapshot_survives_model_only_turns_and_rebuilt_agent(
     persisted = checkpoint(agent)
     assert all(persisted)
     with monkeypatch.context() as forbidden:
-        forbidden.setattr(_repl, "Runtime", _forbid_allocation)
+        forbidden.setattr(_repl, "QjsRuntime", _forbid_allocation)
         forbidden.setattr(_repl, "ThreadWorker", _forbid_allocation)
         await _invoke(agent, invoke_mode, config)
         assert checkpoint(agent) == persisted
@@ -474,7 +476,7 @@ async def test_live_bindings_change_before_first_and_subsequent_eval(
         original = prepare([lookup])
         assert original == prepare([lookup])
         prepare([replacement])
-        assert middleware._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+        assert slot_of(middleware, state["_quickjs_slot_id"]) is None
         result = await evaluate("await tools.lookup({})")
         assert result.content == "<result>replacement</result>"
         prepare([lookup])
@@ -485,4 +487,5 @@ async def test_live_bindings_change_before_first_and_subsequent_eval(
         assert result.content == "<result>undefined</result>"
     finally:
         middleware.after_agent(state, None)
-    assert not middleware._registry._slots
+    # `thread` mode keeps the snapshotted Context warm for the next turn.
+    assert all((s._context is None) == (mode != "thread") for s in slots_of(middleware))

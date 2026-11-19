@@ -1932,6 +1932,46 @@ class TestResolvedPathPermissions:
         when = _make_fs_when_predicate(rules, "write", "file_path", "exact", backend=backend)
         assert when(_FakeReq({"file_path": "/work/link/new.txt"})) is False
 
+    _INTERRUPT_READ = (FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt"),)
+
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("ls", {"path": "/work"}),
+            ("glob", {"pattern": "**/*.txt", "path": "/work"}),
+            ("grep", {"pattern": "", "path": "/work", "output_mode": "content"}),
+        ],
+    )
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_bulk_results_needing_approval_outside_search_root_dropped(self, tmp_path, name, args, *, use_async: bool) -> None:
+        backend = self._backend(tmp_path)
+        rules = list(self._INTERRUPT_READ)
+        assert _build_interrupt_on_from_permissions(rules, backend)[name]["when"](_FakeReq(args)) is False
+        invoke = _ainvoke_with_permissions if use_async else _invoke_with_permissions
+        result = invoke(self._tool(backend, name), args, rules, backend=backend)
+        output = str(await result if use_async else result)
+        assert "notes" in output
+        assert "alias.txt" not in output
+        assert "/work/link" not in output
+        assert "TOPSECRET" not in output
+
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("ls", {"path": "/work/link"}),
+            ("glob", {"pattern": "*", "path": "/work/link"}),
+            ("glob", {"pattern": "**/key.txt"}),
+            ("grep", {"pattern": "TOPSECRET", "path": "/work/link"}),
+            ("grep", {"pattern": "TOPSECRET"}),
+        ],
+    )
+    def test_bulk_results_within_paused_scope_kept(self, tmp_path, name, args) -> None:
+        backend = self._backend(tmp_path)
+        rules = list(self._INTERRUPT_READ)
+        assert _build_interrupt_on_from_permissions(rules, backend)[name]["when"](_FakeReq(args)) is True
+        result = _invoke_with_permissions(self._tool(backend, name), args, rules, backend=backend)
+        assert "key.txt" in str(result)
+
     def test_escape_outside_root_refused(self, tmp_path):
         outside = tmp_path / "outside"
         outside.mkdir()

@@ -3120,6 +3120,7 @@ class TestLoadToolsConcurrency:
 
         def _warm() -> None:
             events.append(("warm", threading.get_ident()))
+            _warm_mcp_adapter_imports()
 
         with patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm):
             tools, manager, _infos = await _load_tools_from_config(self._config("only"))
@@ -3601,6 +3602,39 @@ class TestSelectiveProjectMcpTrust:
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
         )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_symlinked_approval_root_does_not_block_event_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An approval saved under a symlinked path must not block the loop.
+
+        Normalizing the saved root calls `Path.resolve()`, which calls
+        `os.readlink` for a symlinked component. `langgraph dev` runs
+        BlockBuster on the server loop, so a synchronous trust-list load
+        crashed server startup.
+        """
+        from blockbuster import BlockBuster
+
+        project = tmp_path / "project"
+        project.mkdir()
+        servers = {"docs": self._stdio()}
+        self._write_project_config(project, servers)
+        link = tmp_path / "link"
+        link.symlink_to(tmp_path)
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, link / "project", servers, ["docs"])
+
+        guard = BlockBuster()
+        guard.functions["os.readlink"].activate()
+        try:
+            merged = await self._resolve_merged(
+                project, monkeypatch, user_config=user_config, trust_project_mcp=False
+            )
+        finally:
+            guard.deactivate()
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}

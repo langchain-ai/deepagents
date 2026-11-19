@@ -219,6 +219,40 @@ class TestIsEditableInstall:
         with patch("deepagents._version.distributions", return_value=[renamed]):
             assert _is_editable_install() is True
 
+    def test_scan_is_filtered_by_name(self) -> None:
+        """Only `deepagents` records may be enumerated, not every installed package.
+
+        An unfiltered `distributions()` reads `METADATA` for the whole
+        environment, which stalled the first `create_deep_agent()` on large
+        installs long enough to trip Temporal's workflow deadlock detector.
+        """
+        with patch("deepagents._version.distributions", return_value=[]) as mock:
+            _is_editable_install()
+        mock.assert_called_once_with(name="deepagents")
+
+    def test_name_filter_finds_editable_behind_shadowing_egg_info(self, tmp_path: Path, editable_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Real `sys.path` lookup: the filter must yield every `deepagents` record.
+
+        Mirrors running from a checkout, where a gitignored `deepagents.egg-info/`
+        on the cwd precedes the editable `*.dist-info` in site-packages.
+        """
+        shadow = tmp_path / "cwd"
+        site = tmp_path / "site-packages"
+        shadow.mkdir()
+        site.mkdir()
+        _real_dist(
+            shadow,
+            dirname="deepagents.egg-info",
+            metadata_name="PKG-INFO",
+        )
+        _real_dist(
+            site,
+            dirname="deepagents-0.7.0.dist-info",
+            direct_url=_editable_json(editable_root),
+        )
+        monkeypatch.setattr("sys.path", [str(shadow), str(site)])
+        assert _is_editable_install() is True
+
     def test_false_when_no_distributions(self) -> None:
         with patch("deepagents._version.distributions", return_value=[]):
             assert _is_editable_install() is False

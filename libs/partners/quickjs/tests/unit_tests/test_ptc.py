@@ -7,7 +7,8 @@ the REPL so one `eval` can orchestrate many tool invocations.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+from unittest.mock import patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -15,16 +16,21 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
-from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
 from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs._prompt import _tool_block_key
 from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
     to_camel_case,
 )
-from langchain_quickjs._repl import _ThreadREPL
+from tests.unit_tests._slots import drop_slots, install_tools, slot_of
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from langchain_quickjs._repl import _Slot
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -178,42 +184,6 @@ def _mixed_list_tool(name: str = "emit_mixed") -> BaseTool:
     )
 
 
-@pytest.fixture
-def worker() -> ThreadWorker:
-    w = ThreadWorker()
-    try:
-        yield w
-    finally:
-        w.close()
-
-
-@pytest.fixture
-def runtime(worker: ThreadWorker) -> Runtime:
-    async def _make() -> Runtime:
-        return Runtime()
-
-    rt = worker.run_sync(_make())
-    try:
-        yield rt
-    finally:
-
-        async def _close() -> None:
-            rt.close()
-
-        worker.run_sync(_close())
-
-
-@pytest.fixture
-def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(
-        worker,
-        runtime,
-        timeout=5.0,
-        capture_console=True,
-        max_stdout_chars=4000,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Filtering
 # ---------------------------------------------------------------------------
@@ -355,9 +325,9 @@ def test_render_ptc_prompt_rejects_invalid_js_identifiers() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_tool_invocation_from_repl(repl: _ThreadREPL) -> None:
+async def test_tool_invocation_from_repl(repl: _Slot) -> None:
     calls: list[dict] = []
-    repl.install_tools([_greet_tool(calls)])
+    install_tools(repl, [_greet_tool(calls)])
     outcome = await repl.eval_async('await tools.greet({name: "world", times: 2})')
     assert outcome.error_type is None, outcome.error_message
     # tool returned the string "hi world x2"
@@ -366,7 +336,7 @@ async def test_tool_invocation_from_repl(repl: _ThreadREPL) -> None:
 
 
 async def test_undefined_object_property_uses_schema_default(
-    repl: _ThreadREPL,
+    repl: _Slot,
 ) -> None:
     """A property passed as JS ``undefined`` is omitted so defaults apply."""
 
@@ -382,7 +352,7 @@ async def test_undefined_object_property_uses_schema_default(
         func=_fn,
         args_schema=_In,
     )
-    repl.install_tools([tool])
+    install_tools(repl, [tool])
 
     empty = await repl.eval_async("await tools.myTool({})")
     assert empty.error_type is None, empty.error_message
@@ -397,10 +367,10 @@ async def test_undefined_object_property_uses_schema_default(
     assert undefined.result == "ok:''"
 
 
-async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
+async def test_promise_all_runs_tools_concurrently(repl: _Slot) -> None:
     """`Promise.all` on two tool calls resolves both before returning."""
     calls: list[dict] = []
-    repl.install_tools([_greet_tool(calls)])
+    install_tools(repl, [_greet_tool(calls)])
     outcome = await repl.eval_async(
         "const results = await Promise.all([\n"
         '  tools.greet({name: "a"}),\n'
@@ -414,9 +384,9 @@ async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
 
 
 async def test_command_tool_output_is_visible_to_js(
-    repl: _ThreadREPL,
+    repl: _Slot,
 ) -> None:
-    repl.install_tools([_command_tool()])
+    install_tools(repl, [_command_tool()])
     outcome = await repl.eval_async(
         "await tools.emitCommand({value: 1});\n"
         "await tools.emitCommand({value: 2});\n"
@@ -427,9 +397,9 @@ async def test_command_tool_output_is_visible_to_js(
 
 
 async def test_command_tool_does_not_change_eval_outcome_shape(
-    repl: _ThreadREPL,
+    repl: _Slot,
 ) -> None:
-    repl.install_tools([_command_tool()])
+    install_tools(repl, [_command_tool()])
     first = await repl.eval_async("await tools.emitCommand({value: 7})")
     assert first.error_type is None, first.error_message
     assert first.result == "value=7"
@@ -440,23 +410,23 @@ async def test_command_tool_does_not_change_eval_outcome_shape(
     assert not hasattr(second, "commands")
 
 
-async def test_toolmessage_list_uses_last_message_content(repl: _ThreadREPL) -> None:
-    repl.install_tools([_tool_message_list_tool()])
+async def test_toolmessage_list_uses_last_message_content(repl: _Slot) -> None:
+    install_tools(repl, [_tool_message_list_tool()])
     outcome = await repl.eval_async("await tools.emitMessages({value: 9})")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "second=9"
 
 
 async def test_mixed_list_uses_tail_message(
-    repl: _ThreadREPL,
+    repl: _Slot,
 ) -> None:
-    repl.install_tools([_mixed_list_tool()])
+    install_tools(repl, [_mixed_list_tool()])
     outcome = await repl.eval_async("await tools.emitMixed({value: 11})")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "from-list-tail=11"
 
 
-async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
+async def test_tool_failure_surfaces_as_js_error(repl: _Slot) -> None:
     def _boom(**_: object) -> str:
         msg = "tool exploded"
         raise RuntimeError(msg)
@@ -470,7 +440,7 @@ async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
         func=_boom,
         args_schema=_In,
     )
-    repl.install_tools([tool])
+    install_tools(repl, [tool])
     outcome = await repl.eval_async(
         "try { await tools.boom({x: 1}); 'no-throw' } catch (e) { e.message }"
     )
@@ -479,22 +449,22 @@ async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
 
 
 async def test_install_tools_skips_invalid_js_identifier_names(
-    repl: _ThreadREPL,
+    repl: _Slot,
 ) -> None:
-    repl.install_tools([_echo_tool("123bad")])
+    install_tools(repl, [_echo_tool("123bad")])
     outcome = await repl.eval_async('typeof tools["123bad"]')
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "undefined"
 
 
 async def test_tools_namespace_assignment_escapes_malicious_tool_name(
-    repl: _ThreadREPL,
+    repl: _Slot,
 ) -> None:
-    from langchain_quickjs._repl import _render_tools_namespace_assignment
+    from langchain_quickjs._ptc import render_tools_namespace_assignment
 
     malicious = 'x"]; globalThis.__ptc_pwned = "yes"; //'
     quoted = json.dumps(malicious)
-    js = _render_tools_namespace_assignment({malicious: "__console_log"})
+    js = render_tools_namespace_assignment({malicious: "__console_log"})
 
     outcome = await repl.eval_async(f"{js}; typeof globalThis.__ptc_pwned")
     assert outcome.error_type is None, outcome.error_message
@@ -505,21 +475,21 @@ async def test_tools_namespace_assignment_escapes_malicious_tool_name(
     assert outcome2.result == "function"
 
 
-async def test_install_tools_is_idempotent(repl: _ThreadREPL) -> None:
+async def test_install_tools_is_idempotent(repl: _Slot) -> None:
     """Calling install_tools twice with the same set is a no-op for the guest."""
     calls: list[dict] = []
     tool = _greet_tool(calls)
-    repl.install_tools([tool])
-    repl.install_tools([tool])
+    install_tools(repl, [tool])
+    install_tools(repl, [tool])
     outcome = await repl.eval_async('await tools.greet({name: "x"})')
     assert outcome.result == "hi x x1"
     assert len(calls) == 1
 
 
-async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
+async def test_install_tools_shrinks_namespace(repl: _Slot) -> None:
     """Dropping a tool removes it from `globalThis.tools` on next install."""
-    repl.install_tools([_greet_tool(), _echo_tool("echo")])
-    repl.install_tools([_greet_tool()])
+    install_tools(repl, [_greet_tool(), _echo_tool("echo")])
+    install_tools(repl, [_greet_tool()])
     outcome = await repl.eval_async("typeof tools.echo")
     assert outcome.result == "undefined"
     outcome2 = await repl.eval_async("typeof tools.greet")
@@ -527,17 +497,15 @@ async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
 
 
 async def test_ptc_host_call_budget_exceeded_surfaces_error(
-    worker: ThreadWorker, runtime: Runtime
+    make_repl: Callable[..., _Slot],
 ) -> None:
-    limited = _ThreadREPL(
-        worker,
-        runtime,
+    limited = make_repl(
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,
         max_ptc_calls=2,
     )
-    limited.install_tools([_greet_tool()])
+    install_tools(limited, [_greet_tool()])
     outcome = await limited.eval_async(
         "await tools.greet({name: 'a'});\n"
         "await tools.greet({name: 'b'});\n"
@@ -551,17 +519,15 @@ async def test_ptc_host_call_budget_exceeded_surfaces_error(
 
 
 async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
-    worker: ThreadWorker, runtime: Runtime
+    make_repl: Callable[..., _Slot],
 ) -> None:
-    limited = _ThreadREPL(
-        worker,
-        runtime,
+    limited = make_repl(
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,
         max_ptc_calls=1,
     )
-    limited.install_tools([_greet_tool()])
+    install_tools(limited, [_greet_tool()])
     outcome = await limited.eval_async(
         "try {\n"
         "  await tools.greet({name: 'ok'});\n"
@@ -576,17 +542,15 @@ async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
 
 
 async def test_ptc_host_call_budget_resets_each_eval(
-    worker: ThreadWorker, runtime: Runtime
+    make_repl: Callable[..., _Slot],
 ) -> None:
-    limited = _ThreadREPL(
-        worker,
-        runtime,
+    limited = make_repl(
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,
         max_ptc_calls=1,
     )
-    limited.install_tools([_greet_tool()])
+    install_tools(limited, [_greet_tool()])
     first = await limited.eval_async("await tools.greet({name: 'a'})")
     second = await limited.eval_async("await tools.greet({name: 'b'})")
     assert first.error_type is None, first.error_message
@@ -594,17 +558,15 @@ async def test_ptc_host_call_budget_resets_each_eval(
 
 
 async def test_ptc_host_call_budget_none_disables_limit(
-    worker: ThreadWorker, runtime: Runtime
+    make_repl: Callable[..., _Slot],
 ) -> None:
-    unlimited = _ThreadREPL(
-        worker,
-        runtime,
+    unlimited = make_repl(
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4_000,
         max_ptc_calls=None,
     )
-    unlimited.install_tools([_greet_tool()])
+    install_tools(unlimited, [_greet_tool()])
     outcome = await unlimited.eval_async(
         "await tools.greet({name: 'a'});\n"
         "await tools.greet({name: 'b'});\n"
@@ -711,7 +673,7 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     state = {"_quickjs_slot_id": "ptc-shared-slot"}
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
     mw._prepare_for_call(req)
-    assert mw._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+    assert slot_of(mw, state["_quickjs_slot_id"]) is None
     runtime = ToolRuntime(
         state=state,
         context={},
@@ -727,7 +689,7 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
         )
         assert result.content == "<result>function</result>"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 async def test_middleware_eval_tool_returns_tool_message_only() -> None:
@@ -926,7 +888,7 @@ def _get_status_record() -> _Status:
 
 
 async def test_pydantic_return_arrives_as_object_matching_schema(
-    repl: _ThreadREPL,
+    repl: _Slot,
 ) -> None:
     """BaseModel returns are dumped at the bridge so the JS shape matches the schema."""
     tool = StructuredTool.from_function(
@@ -940,7 +902,7 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
     assert "count: number" in prompt
 
     # And the bridge delivers an object with those fields, not a string.
-    repl.install_tools([tool])
+    install_tools(repl, [tool])
     outcome = await repl.eval_async(
         "const r = await tools.getStatus({});\n`${typeof r}:${r.status}:${r.count}`"
     )
@@ -1003,3 +965,47 @@ def test_recursive_model_back_reference_renders_unknown() -> None:
     body = _ptc_body([tool])
     assert "  children?: { value: number; children?: unknown[] }[];" in body
     assert "): Promise<{ value: number; children?: unknown[] }>" in body
+
+
+class _LookupArgs(BaseModel):
+    key: str = Field(description="Key to look up.")
+
+
+def _lookup_tool() -> BaseTool:
+    def _fn(key: str) -> str:
+        return key
+
+    return StructuredTool.from_function(
+        name="lookup",
+        description="Look up a key.",
+        func=_fn,
+        args_schema=_LookupArgs,
+    )
+
+
+def test_render_ptc_prompt_reuses_blocks_across_tool_instances() -> None:
+    """Tools rebuilt per run (same name, schema, return type) render once."""
+    first = render_ptc_prompt([_lookup_tool()])
+    with patch(
+        "langchain_quickjs._prompt._safe_json_schema", side_effect=AssertionError
+    ):
+        assert render_ptc_prompt([_lookup_tool()]) == first
+
+
+def test_render_ptc_prompt_keys_dict_schemas_by_content() -> None:
+    """MCP-style dict schemas share the `dict` class but must not collide."""
+
+    def _mcp_tool(prop: str) -> BaseTool:
+        return StructuredTool(
+            name="mcp",
+            description="An MCP tool.",
+            args_schema={
+                "type": "object",
+                "properties": {prop: {"type": "string"}},
+                "required": [prop],
+            },
+            func=lambda **_: "ok",
+        )
+
+    assert _tool_block_key(_mcp_tool("query")) == _tool_block_key(_mcp_tool("query"))
+    assert _tool_block_key(_mcp_tool("query")) != _tool_block_key(_mcp_tool("path"))

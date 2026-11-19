@@ -6,6 +6,8 @@ import contextlib
 import inspect
 import json
 import re
+import threading
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from langchain_core.utils.json_schema import dereference_refs
@@ -30,13 +32,33 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "{repl_intro_line}\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
-    "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
-    "unavailable or stubbed).\n"
+    "{sandbox_line}\n"
     "{side_effects_line}\n"
     "- {timeout_line}Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
+FS_SYSTEM_PROMPT = """
+
+### Files: `fs`
+
+`fs` is a global over this agent's files, the same files your file tools see. \
+Its functions return Promises, as Node's `fs/promises` does (`fs.promises` is \
+the same API), and read and write UTF-8 text only. Paths are absolute; relative \
+paths resolve from `/`.
+
+- `await fs.readFile(path)` returns the whole file as a string, without line \
+numbers or headers, as in `JSON.parse(await fs.readFile("/a.json"))`.
+- `await fs.writeFile(path, text)` creates or replaces a file, creating parent \
+directories.
+- `await fs.readdir(dir)` lists entry names. `await fs.access(path)` rejects \
+with `ENOENT` if the path is missing; as a boolean, \
+`await fs.access(path).then(() => true, () => false)`.
+- `await fs.rm(path, { recursive, force })` deletes as Node's does: a directory \
+needs `recursive: true`, and `force: true` ignores a missing path.
+- Errors are Node errors: check `err.code`, such as `ENOENT`, `EISDIR`, or \
+`EACCES`.
+- There are no sync functions such as `readFileSync`, no streams or callbacks, \
+and no `require`."""
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
 
 ### Dispatching Subagents with `task`
@@ -276,6 +298,7 @@ def render_repl_system_prompt(
     memory_limit_mb: int,
     mode: Literal["thread", "turn", "call"],
     ptc_attached: bool = False,
+    files_attached: bool = False,
 ) -> str:
     """Render the base REPL system prompt text for `CodeInterpreterMiddleware`.
 
@@ -283,10 +306,27 @@ def render_repl_system_prompt(
     tools are exposed as the `tools.*` namespace it points the model at the
     API reference; otherwise it states the REPL is pure computation.
     """
+    if files_attached:
+        sandbox_line = (
+            "- Runtime sandbox: no network, stdlib, or wall-clock APIs (`fetch`, "
+            "`process`, real `Date.now()` are unavailable or stubbed). Files are "
+            "reachable through `fs`, documented below."
+        )
+    else:
+        sandbox_line = (
+            "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
+            "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
+            "unavailable or stubbed)."
+        )
     if ptc_attached:
         side_effects_line = (
             "- External side effects from inside the REPL are only reachable "
             "via the `tools.*` namespace documented in the API reference below."
+        )
+    elif files_attached:
+        side_effects_line = (
+            "- Apart from `fs`, the REPL has no access to host tools or the "
+            "network. Return values to communicate results."
         )
     else:
         side_effects_line = (
@@ -323,6 +363,7 @@ def render_repl_system_prompt(
     return _REPL_SYSTEM_PROMPT_TEMPLATE.format(
         repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
+        sandbox_line=sandbox_line,
         side_effects_line=side_effects_line,
         timeout_line=("" if timeout is None else f"Timeout: {timeout}s per call. "),
         memory_limit_mb=memory_limit_mb,
@@ -358,7 +399,9 @@ def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str
     )
 
 
-def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> str:
+def render_eval_tool_description(
+    *, mode: Literal["thread", "turn", "call"], files_attached: bool = False
+) -> str:
     """Render the public eval tool description."""
     if mode == "call":
         state_line = (
@@ -377,9 +420,11 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
         )
     return (
         "Execute JavaScript in a sandboxed REPL. "
-        f"{state_line} No filesystem, network, or real clock. "
+        f"{state_line} No {'' if files_attached else 'filesystem, '}network, "
+        "or real clock. "
         "Top-level `await` is supported; a final-expression Promise resolves "
-        "before the call returns."
+        "before the call returns. Only one call can run at a time: do not "
+        "issue parallel calls; use `Promise.all` inside a single call instead."
     )
 
 
@@ -402,17 +447,7 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
-    blocks: list[str] = []
-    for tool in tools:
-        camel = to_camel_case(tool.name)
-        schema = _safe_json_schema(tool)
-        return_type = _render_return_type(tool)
-        signature = _render_signature(camel, schema, return_type=return_type)
-        description = (
-            (tool.description or "").strip().splitlines()[0] if tool.description else ""
-        )
-        blocks.append(f"/** {description} */\n{signature}")
-    body = "\n\n".join(blocks)
+    body = "\n\n".join(_render_tool_block(tool) for tool in tools)
     return (
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
@@ -455,6 +490,50 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         f"{body}\n"
         "```"
     )
+
+
+# Rendered blocks, shared across middleware instances and threads so agents
+# rebuilt per run don't render them again. Keyed on what a block is built from.
+_TOOL_BLOCKS: OrderedDict[tuple[Any, ...], str] = OrderedDict()
+_TOOL_BLOCKS_LOCK = threading.Lock()
+_MAX_TOOL_BLOCKS = 256
+
+
+def _render_tool_block(tool: BaseTool) -> str:
+    key = _tool_block_key(tool)
+    if key is not None:
+        with _TOOL_BLOCKS_LOCK:
+            if (block := _TOOL_BLOCKS.get(key)) is not None:
+                _TOOL_BLOCKS.move_to_end(key)
+                return block
+    signature = _render_signature(
+        to_camel_case(tool.name),
+        _safe_json_schema(tool),
+        return_type=_render_return_type(tool),
+    )
+    description = (
+        (tool.description or "").strip().splitlines()[0] if tool.description else ""
+    )
+    block = f"/** {description} */\n{signature}"
+    if key is not None:
+        with _TOOL_BLOCKS_LOCK:
+            _TOOL_BLOCKS[key] = block
+            if len(_TOOL_BLOCKS) > _MAX_TOOL_BLOCKS:
+                _TOOL_BLOCKS.popitem(last=False)
+    return block
+
+
+def _tool_block_key(tool: BaseTool) -> tuple[Any, ...] | None:
+    """Key a tool's block by content; `None` (not cached) if that's unhashable."""
+    schema = tool.args_schema
+    if isinstance(schema, dict):  # e.g. MCP tools: key on the schema itself
+        schema = json.dumps(schema, sort_keys=True, default=str)
+    key = (tool.name, tool.description, schema, _return_annotation(tool))
+    try:
+        hash(key)
+    except TypeError:  # e.g. an `Annotated[..., {dict}]` return annotation
+        return None
+    return key
 
 
 def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
@@ -502,16 +581,20 @@ def _render_signature(
 # `_json_schema_to_ts` we use for input args.
 
 
+def _return_annotation(tool: BaseTool) -> Any:
+    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    annotation = inspect.Signature.empty
+    if target is not None:
+        with contextlib.suppress(TypeError, ValueError, NameError):
+            signature = inspect.signature(target)
+            resolved = get_type_hints(target)
+            annotation = resolved.get("return", signature.return_annotation)
+    return annotation
+
+
 def _render_return_type(tool: BaseTool) -> str:
     """Render the return annotation as a TS type, defaulting to `unknown`."""
-    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
-    if target is None:
-        return "unknown"
-    annotation = inspect.Signature.empty
-    with contextlib.suppress(TypeError, ValueError, NameError):
-        signature = inspect.signature(target)
-        resolved = get_type_hints(target)
-        annotation = resolved.get("return", signature.return_annotation)
+    annotation = _return_annotation(tool)
     if annotation is inspect.Signature.empty or annotation is Any:
         return "unknown"
     try:

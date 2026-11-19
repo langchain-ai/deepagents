@@ -5,6 +5,7 @@ import os
 import threading
 from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -79,6 +80,23 @@ def _make_model(attrs: dict) -> MagicMock:
     for key, value in attrs.items():
         setattr(model, key, value)
     return model
+
+
+class _FakeEntryPoints(list):
+    """Stand-in for `importlib.metadata.EntryPoints` supporting `select(group=)`."""
+
+    def select(self, *, group: str) -> list[MagicMock]:
+        return [ep for ep in self if ep.group == group]
+
+
+def _fake_entry_point(group: str, name: str, target: object) -> MagicMock:
+    """Build a mock entry point in `group` whose `load()` returns `target`."""
+    ep = MagicMock()
+    ep.group = group
+    ep.name = name
+    ep.value = f"mod:{name}"
+    ep.load.return_value = target
+    return ep
 
 
 class TestResolveModel:
@@ -1415,22 +1433,63 @@ class TestProfilePluginLoader:
             with _builtin_profiles._BOOTSTRAP_CONDITION:
                 _builtin_profiles._BOOTSTRAP_CONDITION.notify_all()
 
-    def test_iterates_both_entry_point_groups(self) -> None:
-        """Loader must query both provider and harness entry-point groups."""
+    def test_both_groups_from_a_single_entry_point_scan(self) -> None:
+        """Both groups must come from one enumeration, each routed to its own group.
+
+        Every `entry_points()` call reads `entry_points.txt` for the whole
+        environment, and this runs on the first `create_deep_agent()`, so a
+        per-group call would double that cost.
+        """
         from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
             _HARNESS_PROFILE_GROUP,
             _PROVIDER_PROFILE_GROUP,
             _ensure_builtin_profiles_loaded,
         )
 
+        provider_plugin = MagicMock()
+        harness_plugin = MagicMock()
+        unrelated_plugin = MagicMock()
+        eps = [
+            _fake_entry_point(_PROVIDER_PROFILE_GROUP, "p", provider_plugin),
+            _fake_entry_point(_HARNESS_PROFILE_GROUP, "h", harness_plugin),
+            _fake_entry_point("console_scripts", "u", unrelated_plugin),
+        ]
+
         with patch(
             "deepagents.profiles._builtin_profiles.entry_points",
-            return_value=[],
+            return_value=_FakeEntryPoints(eps),
         ) as mock:
             _ensure_builtin_profiles_loaded()
 
-        groups = {call.kwargs["group"] for call in mock.call_args_list}
-        assert groups == {_PROVIDER_PROFILE_GROUP, _HARNESS_PROFILE_GROUP}
+        mock.assert_called_once_with()
+        provider_plugin.assert_called_once_with()
+        harness_plugin.assert_called_once_with()
+        unrelated_plugin.assert_not_called()
+
+    def test_discovers_plugins_from_real_entry_points(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Unmocked `importlib.metadata`: both groups resolve from an installed `dist-info`.
+
+        Guards the stdlib return shape across supported Pythons — on 3.11 a bare
+        `entry_points()` is a `SelectableGroups` mapping, not `EntryPoints`.
+        """
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _HARNESS_PROFILE_GROUP,
+            _PROVIDER_PROFILE_GROUP,
+            _discover_profile_plugins,
+        )
+
+        dist_info = tmp_path / "fake_profile_plugin-1.0.dist-info"
+        dist_info.mkdir()
+        (dist_info / "METADATA").write_text("Metadata-Version: 2.1\nName: fake-profile-plugin\nVersion: 1.0\n")
+        (dist_info / "entry_points.txt").write_text(
+            f"[{_PROVIDER_PROFILE_GROUP}]\nprov = fake_mod:register_provider\n\n[{_HARNESS_PROFILE_GROUP}]\nharn = fake_mod:register_harness\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        plugins = _discover_profile_plugins()
+
+        assert [ep.value for ep in plugins[_PROVIDER_PROFILE_GROUP] if ep.name == "prov"] == ["fake_mod:register_provider"]
+        assert [ep.value for ep in plugins[_HARNESS_PROFILE_GROUP] if ep.name == "harn"] == ["fake_mod:register_harness"]
 
     def test_broken_plugin_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
         """A plugin whose `load()` raises must not prevent sibling plugins from running.
@@ -1456,17 +1515,15 @@ class TestProfilePluginLoader:
         good.value = "mod:register"
         good.load.return_value = good_called
 
-        def fake_entry_points(*, group: str) -> list[MagicMock]:
-            if group == "deepagents.provider_profiles":
-                return [broken, good]
-            return []
+        broken.group = "deepagents.provider_profiles"
+        good.group = "deepagents.provider_profiles"
 
         with (
             caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
             pytest.warns(UserWarning, match="failed to load entry point"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
-                side_effect=fake_entry_points,
+                return_value=_FakeEntryPoints([broken, good]),
             ),
         ):
             _ensure_builtin_profiles_loaded()
@@ -1490,6 +1547,7 @@ class TestProfilePluginLoader:
         ep = MagicMock()
         ep.name = "weird"
         ep.value = "mod:CONST"
+        ep.group = "deepagents.provider_profiles"
         ep.load.return_value = "not callable"
 
         with (
@@ -1497,7 +1555,7 @@ class TestProfilePluginLoader:
             pytest.warns(UserWarning, match="did not resolve to a callable"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
-                return_value=[ep],
+                return_value=_FakeEntryPoints([ep]),
             ),
         ):
             _ensure_builtin_profiles_loaded()
@@ -1520,13 +1578,14 @@ class TestProfilePluginLoader:
         ep.name = "angry"
         ep.value = "mod:register"
         ep.load.return_value = MagicMock(side_effect=RuntimeError("bad"))
+        ep.group = "deepagents.provider_profiles"
 
         with (
             caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
             pytest.warns(UserWarning, match="registration callable .* raised"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
-                return_value=[ep],
+                return_value=_FakeEntryPoints([ep]),
             ),
         ):
             _ensure_builtin_profiles_loaded()
@@ -1535,7 +1594,7 @@ class TestProfilePluginLoader:
         assert any("registration callable" in rec.message and "raised" in rec.message for rec in error_records)
 
     def test_entry_points_call_itself_raises(self, caplog: pytest.LogCaptureFixture) -> None:
-        """If `entry_points(group=...)` raises, the loader must log and continue."""
+        """If `entry_points()` raises, the loader must log and continue."""
         from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
             _ensure_builtin_profiles_loaded,
         )
@@ -1564,14 +1623,11 @@ class TestProfilePluginLoader:
         ep.value = "mod:register"
         ep.load.return_value = plugin
 
-        def fake_entry_points(*, group: str) -> list[MagicMock]:
-            if group == "deepagents.provider_profiles":
-                return [ep]
-            return []
+        ep.group = "deepagents.provider_profiles"
 
         with patch(
             "deepagents.profiles._builtin_profiles.entry_points",
-            side_effect=fake_entry_points,
+            return_value=_FakeEntryPoints([ep]),
         ):
             _ensure_builtin_profiles_loaded()
             _ensure_builtin_profiles_loaded()
@@ -1605,14 +1661,12 @@ class TestProfilePluginLoader:
         ep_b.value = "mod:b"
         ep_b.load.return_value = plugin_b
 
-        def fake_entry_points(*, group: str) -> list[MagicMock]:
-            if group == "deepagents.provider_profiles":
-                return [ep_a, ep_b]
-            return []
+        ep_a.group = "deepagents.provider_profiles"
+        ep_b.group = "deepagents.provider_profiles"
 
         with patch(
             "deepagents.profiles._builtin_profiles.entry_points",
-            side_effect=fake_entry_points,
+            return_value=_FakeEntryPoints([ep_a, ep_b]),
         ):
             _ensure_builtin_profiles_loaded()
 
@@ -1634,14 +1688,11 @@ class TestProfilePluginLoader:
         ep.value = "mod:register"
         ep.load.return_value = plugin_registers_harness
 
-        def fake_entry_points(*, group: str) -> list[MagicMock]:
-            if group == "deepagents.harness_profiles":
-                return [ep]
-            return []
+        ep.group = "deepagents.harness_profiles"
 
         with patch(
             "deepagents.profiles._builtin_profiles.entry_points",
-            side_effect=fake_entry_points,
+            return_value=_FakeEntryPoints([ep]),
         ):
             _ensure_builtin_profiles_loaded()
 
@@ -1696,7 +1747,7 @@ class TestProfilePluginLoader:
         with (
             caplog.at_level(logging.INFO, logger="deepagents.profiles.provider.provider_profiles"),
             caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
-            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=_FakeEntryPoints()),
             patch.object(_openrouter, "register", side_effect=flaky_register),
             patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
         ):
@@ -1755,7 +1806,7 @@ class TestProfilePluginLoader:
             return original_wait(timeout)
 
         with (
-            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=_FakeEntryPoints()),
             patch.object(_openai, "register", side_effect=slow_register),
             patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
         ):
@@ -1807,7 +1858,7 @@ class TestProfilePluginLoader:
             return original_wait(timeout)
 
         with (
-            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=_FakeEntryPoints()),
             patch.object(_anthropic_opus_4_7, "register", side_effect=slow_register),
             patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
         ):

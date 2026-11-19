@@ -126,7 +126,7 @@ For PRs, `typeToLabel` in `pr-labeler-config.json` maps the title's commit type:
 | `ci` | `type:ci` |
 | `chore` | `type:chore` |
 | `revert` | `type:revert` |
-| `release` | `auto:release-pr` (from `releaseLabel`, not `typeToLabel` — see [`auto:*`](#auto---lifecycle-and-release-automation)) |
+| `release` | `auto:release-pr` (from `releaseLabel`, not `typeToLabel` — see [`auto:*`](#auto--lifecycle-and-release-automation)) |
 
 The `!` marker immediately before `:` (for example, `feat(sdk)!:` or `feat!:`) adds `type:breaking` (`breakingLabel` in the config) alongside the work type. The label parser does not recognize `feat!(sdk):`. A recognized title edit replaces stale managed type labels and removes the breaking label when `!` is dropped; unrecognized titles preserve the previous classification. Live labeling, backfill, and release PR labeling share this behavior. Scope/file labels remain additive. Newly created type labels receive descriptions from `labelDescriptions` in the same config.
 
@@ -140,7 +140,7 @@ Each unblocks a gate that is otherwise red. Every one is read-only and must be c
 | --- | --- |
 | `ci:skip-title-lint` | `pr_lint.yml` Conventional Commits title check |
 | `ci:allow-scope-mismatch` | `pr_scope_file_check.yml` (title scope vs changed package dirs) |
-| `ci:allow-lockfile-release` | `release_please_scope_check.yml` lockfile scope check |
+| `ci:allow-lockfile-release` | `release_please_scope_check.yml` multi-package release scope check (the name predates lockfile exclusion) |
 | `ci:ack-markdown` | `markdown_file_check.yml` (non-`docs` PR adds `.md` files) |
 | `ci:ack-readme` | `project_readme_check.yml` (non-`docs` PR edits a project README) |
 | `ci:ack-release-deps` | `check_release_deps.yml`, `check_sdk_pin.yml` dependency freshness |

@@ -1,141 +1,232 @@
 ---
 type: model and profile configuration
 title: Profiles and Models
-description: Explains the separate SDK construction and harness profile systems, and how dcode admits, constructs, retries, and optionally summarizes with models.
-tags: [models, sdk-profiles, dcode, provider-configuration, retries, summarization]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-10T08:04:01.717Z
+description: Explains SDK profiles and the separate dcode and Talon model control planes, including startup defaults, policy, catalog selection, retries, compaction, and classifier-backed Auto mode.
+tags: [models, sdk-profiles, dcode, talon, provider-configuration, retries]
 sources:
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-18abc7e59899514f067032b2
+    resource: repo://libs/code/deepagents_code/auto_mode.py
+  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
+    resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
+  - id: openwiki-source-55d5c39401ac52584ce1f973
+    resource: repo://libs/code/deepagents_code/configurable_model.py
+  - id: openwiki-source-52d96f61bc4737f02a18cf79
+    resource: repo://libs/code/deepagents_code/configuration/resolver.py
+  - id: openwiki-source-2d5bc2a1a6685429db181b39
+    resource: repo://libs/code/deepagents_code/configuration/service.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-7e241f30f5c7753642ea34d5
+    resource: repo://libs/code/deepagents_code/model_api.py
+  - id: openwiki-source-5afb93f98c34330c27609db2
+    resource: repo://libs/code/deepagents_code/model_catalog.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
-  - id: openwiki-source-c100a7d2ff8c43af8ad1b816
-    resource: repo://libs/code/deepagents_code/offload_middleware.py
+  - id: openwiki-source-2197a24480aac91a9ddcb920
+    resource: repo://libs/code/deepagents_code/provider_tool_search.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-50173942904153d619b9ae0d
-    resource: repo://libs/deepagents/deepagents/_models.py
+  - id: openwiki-source-563d8f99b354174d66aab140
+    resource: repo://libs/code/tests/unit_tests/test_configurable_model.py
+  - id: openwiki-source-f19a136d937a20fe9bcb0b29
+    resource: repo://libs/code/tests/unit_tests/test_provider_tool_search_extra.py
+  - id: openwiki-source-510074a1c07e7ddc05cddcb0
+    resource: repo://libs/code/tests/unit_tests/test_provider_tool_search.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-b27554b5c0e5b26fae2efb38
     resource: repo://libs/deepagents/deepagents/profiles/__init__.py
-  - id: openwiki-source-f94d6bc3bb6ebd1565c1732f
-    resource: repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py
-  - id: openwiki-source-59612eea63cbfafbd628feda
-    resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-1098130d42873f13aba9f5c2
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-19T08:04:44.778Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-19T08:04:44.778Z
 ---
 
 # Profiles and Models
 
-"Profile" has several deliberately separate meanings. SDK **ProviderProfile** controls construction of a chat-model client from a string specification. SDK **HarnessProfile** controls the agent stack after a model has been built. dcode capability profiles describe model capabilities; they inform discovery and runtime features, but do not authorize construction. `models.allowed` is the dcode admission boundary.
+"Profile" has different meanings at three boundaries. In the Deep Agents SDK, a **ProviderProfile** changes how a string model specification becomes a client and a **HarnessProfile** changes the agent graph around that client. In dcode, capability profiles are display and validation metadata, while `models.allowed` is the construction policy. Talon has its own environment-based catalog and turn-local switching; it is not a dcode session.
 
-## Responsibilities and extension boundary
+## Control-plane map
 
-| Mechanism | Key | Controls | Does not control |
+| Plane | Owner and key | Controls | Does not control |
 | --- | --- | --- | --- |
-| SDK `ProviderProfile` | `provider` or `provider:model` | `init_chat_model` kwargs, dynamic kwargs, and pre-initialization checks | Prompts, tools, and graph middleware |
-| SDK `HarnessProfile` | `provider` or `provider:model` | Prompt assembly, tool visibility, middleware, and default-subagent behavior | Model-client construction |
-| dcode capability profile | `provider:model` | Advertised capabilities such as context and reasoning support | Constructor kwargs or admission |
-| dcode `models.allowed` | canonical `provider:model` | Whether dcode may construct a resolved model | Provider enablement or display metadata |
+| SDK `ProviderProfile` | Deep Agents; `provider` or `provider:model` | `init_chat_model` kwargs, dynamic kwargs, and pre-initialization checks | Prompts, tools, graph middleware |
+| SDK `HarnessProfile` | Deep Agents; `provider` or `provider:model` | Prompts, tool visibility, middleware, and default subagent behavior | Model-client construction |
+| dcode capability profile | dcode; `provider:model` | Advertised input, context, tool, and output capabilities | Client kwargs or admission |
+| dcode `models.allowed` | dcode configuration | Whether dcode may construct a canonical model | Provider enablement or display metadata |
+| Talon catalog | Talon host environment | Models an interactive Talon chat may select | dcode policy, auth store, and retries |
 
-Both SDK registries are beta APIs and registrations are additive: a later registration layers over the existing entry instead of replacing it. Register an SDK profile before constructing the model or graph that needs it.
+## SDK profiles: construction versus harness
+
+Both SDK registries are beta APIs. Registration layers settings onto an existing registration rather than replacing it, so applications should register before resolving models or building graphs.
 
 ```mermaid
 flowchart TD
-    Input["String specification or model instance"] --> Instance{"Model instance"}
-    Instance -->|Yes| Existing["Keep construction unchanged"]
-    Instance -->|No| Provider["Resolve ProviderProfile"]
+    Input["String specification or model instance"] --> Existing{"Already a model instance"}
+    Existing -->|Yes| Kept["Keep construction unchanged"]
+    Existing -->|No| Provider["Resolve ProviderProfile"]
     Provider --> Client["Construct with init_chat_model"]
-    Existing --> Harness["Resolve HarnessProfile"]
+    Kept --> Harness["Resolve HarnessProfile"]
     Client --> Harness
     Harness --> Agent["Assemble Deep Agents graph"]
 ```
 
-Diagram: provider profiles participate only in string-model construction, while harness profiles shape the assembled agent.
+*Provider profiles participate in string-model construction, while harness profiles shape the assembled agent.*
 
-### Provider profiles: string construction only
+### ProviderProfile
 
-`resolve_model()` returns a supplied `BaseChatModel` unchanged. For a string, it applies the matching provider profile and passes the resulting kwargs to `init_chat_model`. A provider-level profile is the base; an exact `provider:model` profile overlays it. Static kwargs merge with the exact profile winning; chained `pre_init` hooks and factories run base first. Factory output supersedes static profile kwargs, while caller kwargs have final precedence. A failed `pre_init` aborts construction before its factory or `init_chat_model` run.
+`resolve_model()` passes an existing `BaseChatModel` through unchanged. For a string, it applies the resolved provider profile and then calls `init_chat_model`. A provider-wide profile supplies the base; an exact `provider:model` profile overlays it. Static values merge with the exact value winning, `pre_init` hooks and factories run base first, factory results override static values, and explicit caller kwargs have final precedence. A failed pre-initialization hook prevents its factory and client construction.
 
-A `ProviderProfile` is therefore the place for client defaults, environment-derived kwargs, attribution headers, and preflight checks. It is not an agent-behavior customization point. The profile's static `init_kwargs` are defensively copied and read-only, so mutating a caller-owned mapping after registration does not alter future construction.
+Use ProviderProfile for constructor defaults, environment-derived settings, attribution headers, and preflight checks—not graph behavior. Its registered `init_kwargs` are defensively copied and immutable, preventing later mutation of the caller's mapping from changing model construction.
 
-### Harness profiles: graph assembly
+### HarnessProfile and assembly limits
 
-`create_deep_agent()` resolves the matching `HarnessProfile` after resolving the main model. Exact keys merge over provider keys field by field; it similarly resolves a profile for each declarative synchronous subagent according to that subagent's model. The caller prompt is assembled as `USER`, then profile `BASE`, then profile `SUFFIX`.
+`create_deep_agent()` resolves the main model's harness profile and resolves profiles for declarative synchronous subagents from each subagent's model. Exact model fields overlay provider fields before prompt, tool-description, and middleware changes. Prompt fragments assemble in `USER`, `BASE`, `SUFFIX` order.
 
-A harness profile can override tool descriptions, exclude tools, alter the default general-purpose subagent, and add static or factory `extra_middleware`. Extra middleware applies to the main agent, generated general-purpose subagent, and declarative synchronous subagents that the SDK assembles. It cannot be injected into already compiled subagents or remote asynchronous subagents. `HarnessProfileConfig` is the YAML/JSON-friendly subset and intentionally excludes this runtime-only middleware facility.
+A harness profile can change tool descriptions, hide model-visible tools, alter the default general-purpose subagent, and add static or factory `extra_middleware`. It reaches the main agent, generated general-purpose subagent, and SDK-assembled declarative synchronous subagents. It cannot modify an already compiled subagent or remote asynchronous subagent, whose graphs are independently owned. The file-friendly `HarnessProfileConfig` deliberately excludes runtime-only middleware.
 
-Middleware exclusion is deliberately stricter than tool exclusion. The filesystem and synchronous-subagent middleware are protected scaffolding; excluding either fails rather than creating a silently broken agent. An exclusion that matches no assembled middleware also fails. Use `excluded_tools` to hide tools from the model: the tool exclusion layer runs after tool-injecting and custom middleware.
+Middleware exclusions cannot remove required filesystem or synchronous-subagent scaffolding, and an unmatched exclusion fails assembly. Prefer `excluded_tools` when the aim is to hide a tool from the model: this filter runs after tool-injecting and custom middleware. It is a model-visibility control, not authorization.
 
-### Registry lifecycle and plugins
+Profile bootstrap is lazy, coordinated across threads, and runs once. Built-ins load directly before third-party provider and harness entry-point hooks layer on top. A broken built-in fails bootstrap and restores the prior registry; a broken third-party plugin is logged and skipped.
 
-Profile bootstrap occurs lazily on first registry access. One thread loads it while other threads wait, and same-thread re-entry during plugin registration is allowed. Built-in provider and harness registrations run by direct import first. A built-in failure restores the pre-bootstrap registries and propagates; it is an SDK defect, not an optional integration. Third-party zero-argument entry-point hooks from `deepagents.provider_profiles` and `deepagents.harness_profiles` run afterward, so they layer on the built-ins. Entry-point discovery or plugin failures are warned about and skipped, preserving usable built-ins.
+`create_deep_agent()` adds prompt-caching middleware to main, generated general-purpose, and declarative synchronous-subagent stacks. Anthropic caching activates lazily per Anthropic request. Bedrock and Fireworks are optional integrations: an absent module omits the integration, while unrelated import failures propagate. The lookup caches classes or their absence but constructs a fresh middleware instance for every stack.
 
-## dcode construction policy and precedence
+## dcode: startup configuration and construction
 
-`create_model()` accepts an explicit `provider:model` specification or a bare model name, resolves the effective provider, and returns a `ModelResult` rather than mutating global runtime state directly. That result includes the resolved provider/model identity, profile-derived context and unsupported-modality metadata, the effective retry budget, and the explicit CLI retry setting needed if a later switch uses another provider.
+The manifest defines model defaults: `[models].default` is the launch default, `recent` records a switch, `summarization_default` supplies an optional compaction model, and `auto_classifier` supplies an optional Auto reviewer. `auto_classifier_timeout` is a 1–300-second decision-batch limit. `models.providers` may declare custom providers, but its `class_path` is a trusted code boundary: dcode imports and instantiates that `BaseChatModel` class with process privileges.
+
+Manifest resolution ranks managed policy, CLI, retained runtime reload, environment, user `config.toml`, and typed defaults. Managed configuration outranks user configuration; `models.allowed` is an enforced managed-policy key.
 
 ```mermaid
 flowchart TD
     Request["Requested model specification"] --> Resolve["Canonicalize provider and model"]
     Resolve --> Allowed{"models.allowed permits it"}
     Allowed -->|No| Denied["Raise ModelNotAllowedError"]
-    Allowed -->|Yes| Credentials["Bridge and validate credentials"]
-    Credentials --> Profile["Layer config and ProviderProfile"]
-    Profile --> Retries["Resolve retry ownership and budget"]
-    Retries --> Build["Codex, class_path, or init_chat_model"]
+    Allowed -->|Yes| Credentials["Bridge and check credentials"]
+    Credentials --> Profile["Layer configuration and ProviderProfile"]
+    Profile --> Retries["Resolve retry budget and disable known SDK retries"]
+    Retries --> Build["Codex class_path or init_chat_model"]
     Build --> Result["Return ModelResult"]
 ```
 
-Diagram: dcode performs policy admission before provider-facing construction work.
+*dcode performs policy admission before credential work, provider hooks, or provider imports.*
 
-The allowlist is applied after provider inference but before credential bridging, profile hooks or factories, and provider imports. Thus a denied model cannot cause those side effects. After admission, stored `/auth` credentials may be bridged to the environment; dcode then checks explicitly configured credentials unless the provider supports implicit authentication. Missing credentials become an actionable typed error.
+`create_model()` accepts `provider:model` or a bare name, infers and canonicalizes the provider, and returns a `ModelResult` rather than immediately mutating global runtime state. The result carries resolved identity, profile-derived metadata, the effective retry budget, and the explicit CLI retry override needed for later cross-provider switching.
 
-Construction kwargs layer from provider/per-model dcode configuration and stored credentials through SDK provider-profile output to `extra_kwargs`; runtime kwargs normally win. dcode translates arbitrary provider-profile hook or factory failures into `ModelConfigError` so model-construction failures follow its actionable error path. A configured provider `class_path` bypasses `init_chat_model` and imports/instantiates the named `BaseChatModel` class, making it a trusted configuration boundary.
+The allowlist runs after inference but before credential bridging, ProviderProfile hooks or factories, and provider imports. A denied model therefore causes none of those side effects. After admission, dcode may bridge stored `/auth` credentials into the environment and performs an early credential check except for implicit-auth providers; errors are typed and actionable.
 
-After construction, dcode overlays configured capability-profile fields and then `--profile-override` fields onto `model.profile`; the CLI override is strict if assignment fails. Capability data is descriptive: a missing profile warns, while an explicit `tool_calling=False` fails capability validation for an agent model.
+Construction layers provider and per-model configuration, stored credentials, and SDK ProviderProfile output before `extra_kwargs`, which normally win. dcode converts arbitrary ProviderProfile hook/factory errors into `ModelConfigError`. It constructs `openai_codex` through its OAuth-aware model class, a configured `class_path` directly, or other providers through `init_chat_model`. Afterwards it overlays configured capability values and then `--profile-override` values; an assignment rejected by the model fails strictly. Missing capability data warns, but explicit `tool_calling=False` fails agent-model validation.
 
-## Retry ownership and runtime switching
+### Retries and compaction
 
-dcode owns the visible model-node retry budget to avoid nested provider SDK loops multiplying requests. The effective budget is selected in descending precedence:
+dcode owns the visible retry budget in model-node middleware. Its precedence is `--max-retries`, `[retries.<provider>].max_retries`, `[retries].max_retries`, then the built-in default of `5`; `0` disables retries. Known provider SDK retry loops are forced off after kwargs merge so retries are not multiplied. The concrete model receives the effective budget, allowing request-time model switches to use their own provider policy rather than stale middleware state. Auxiliary callers such as summary generation use the stamped budget too, with a default-and-warning fallback for unstamped models.
 
-1. `--max-retries`
-2. `[retries.<provider>].max_retries`
-3. `[retries].max_retries`
-4. Built-in default `5`
+`--summarization-model` overrides `[models].summarization_default`; an absent or blank override reuses the main model. Dedicated construction is deferred until compaction, avoiding provider imports on the pre-first-paint path. `_LazySummaryModel` serializes setup and invocation, warns once and falls back to the main model if construction fails, and restores main-model token-counting, trim, and retry tuning if a dedicated invocation fails. A successful dedicated model gets dcode retry handling, provider-specific counting, and a history budget of four fifths of a positive input window; this preserves `--max-retries 0` rather than using LangChain's generic summary retries.
 
-`0` disables dcode retries. dcode identifies known provider retry kwargs—or a configured `[retries.<provider>].param` override—and forces the provider loop to its disable value after user kwargs have been merged. For an unknown provider whose retry control cannot be identified, it keeps the SDK behavior and emits a warning with the configuration escape hatch.
+### Runtime switching, cache identity, and resume state
 
-The resolved budget is attached to the concrete model. `ConfigurableModelMiddleware` can rebuild a request model from runtime context without recompiling the graph; the retry middleware then reads the budget on that request's model, so a switch to another provider uses that provider's configuration. Policy denials always propagate. Other construction errors can retain the current model unless strict resolution is enabled.
+`ConfigurableModelMiddleware` is the per-invocation control point. It reads `model` and `model_params` from `runtime.context`, resolves a different requested model through `create_model()`, and shallow-merges request parameters without recompiling the graph. A policy denial is always propagated; an ordinary construction error either fails a strict-resolution call or leaves the current model in place. On a cross-provider switch away from Anthropic it removes Anthropic-only request settings, and it rewrites the `### Model Identity` prompt section from the returned `ModelResult`, not process-global state.
 
-## Dedicated summarization model
+After a successful call, the middleware checkpoints the actual resolved specification, the runtime-only parameter overrides, a request-start timestamp, and cache endpoint/parameter identity. It writes the timestamp only when it can derive the accompanying model identity, preventing a stale endpoint or a permanent false "model changed" warning. Configuration-derived effective parameters are kept in a dedicated cache-identity channel rather than `_model_params`, because the latter is replayed as session overrides on resume.
 
-`--summarization-model` selects a model used only for context-compaction summaries. When the flag is absent, dcode uses `[models].summarization_default`; absent both, summaries use the main agent model. An explicit blank CLI value selects the same main-model fallback. Resolution is intentionally deferred until the first summary so an invalid dedicated model does not delay launch with provider imports.
+OpenAI-provider calls receive an additive per-install `prompt_cache_key` by default; the key is shared across the install's threads, while an explicitly supplied key wins. Set `[models].openai_prompt_cache_key = false` or `DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY=false` for a compatible endpoint that rejects the optional field. Fireworks calls instead add the thread ID as `prompt_cache_key` and `x-session-affinity` when absent. These request hints are separate from provider-native MCP discovery below.
 
-When compaction first needs a configured dedicated model, `_LazySummaryModel` constructs it under the captured environment and serializes configuration and invocations with locks. On construction failure it logs once and summarizes with the main model; if the dedicated model later fails to generate a summary, it restores main-model token counting, trimming, and retries, then retries that summary with the main model. It resets the dedicated configuration so a later compaction may try the override again. Blocking-event-loop failures are programming errors and are re-raised rather than degraded.
+## Provider-native MCP tool discovery
 
-A successful dedicated model receives dcode's retry invoker, its provider-appropriate token counter, and an input history limit of four fifths of its positive `max_input_tokens` (with a conservative fallback otherwise). Replacing LangChain's generic summary retry wrapper is significant: `--max-retries 0` remains effective for summaries too.
+When `[models].provider_tool_search` is enabled (the default, also controlled by `DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH`), `create_cli_agent()` installs `MCPProviderToolSearchMiddleware` on the main stack and applicable synchronous subagent stacks only when MCP tools exist. The middleware preserves executor registrations and considers only the supplied MCP-tool object identities; ordinary tools and skill-only MCP tools remain outside the deferred set.
 
-## Package constraints and operations
+```mermaid
+flowchart TD
+    Request["Model request with visible tools"] --> Select["Resolve runtime-selected model"]
+    Select --> Native{"Verified native provider route"}
+    Native -->|Yes| Deferred["Defer eligible MCP tools and add native search"]
+    Native -->|No| Eager["Keep all tools eager and warn once"]
+    Deferred --> Invoke["Provider request"]
+    Eager --> Invoke
+    Invoke --> History["Strip incompatible native-search history on provider switch"]
+```
 
-The current dcode package is `0.2.6`, requires Python `>=3.14,<3.15`, and pins `deepagents==0.7.35`. Deep Agents `0.7.35` supports Python `>=3.11,<4.0` and requires LangChain `>=1.4.9,<2.0.0`, LangChain Core `>=1.7.6,<2.0.0`, `langchain-anthropic>=1.7.10,<2.0.0`, and `langchain-google-genai>=4.4.3,<5.0.0`. The SDK's broader Python range does not expand dcode's release contract.
+*Only eligible MCP tools are deferred, and a model switch re-evaluates native-search support for that request.*
 
-The dcode core includes Anthropic, Google GenAI, and OpenAI integrations. Other providers are optional extras; install the matching extra before selecting that provider. In particular, a profile registration does not install its underlying provider integration.
+Native search is deliberately narrow: it supports exact `ChatOpenAI` models using the Responses API and exact `ChatAnthropic` models on the provider's direct endpoint or a recognized HTTPS LangSmith gateway native-format route. Built-in model-name gates apply until upstream profiles expose the capability; a boolean `profile.provider_tool_search` can explicitly enable or disable detection, but cannot make Chat Completions compatible. Unsupported models, untrusted look-alike gateways, and unsupported routes retain eager tool schemas and emit one warning per model type/name rather than failing the call.
 
-Focused regression coverage lives in `libs/code/tests/unit_tests/test_config.py` for model creation and retry configuration, `test_main.py` for CLI summarization precedence, `test_compact_tool.py` for lazy summary-model fallback and retry behavior, and the Deep Agents profile tests for construction and graph-profile semantics. When changing this area, preserve the admission-before-side-effects ordering, retry ownership, and the construction-versus-harness boundary.
+Before forwarding a request the middleware removes native search result blocks that the selected provider cannot replay, including nested non-standard blocks and OpenAI `tool_outputs`. It creates the upstream provider middleware per request after runtime selection, so deferred schemas never mutate the original tool object or executor registration. This preserves ordinary HITL approval and MCP execution: provider search discovers the schema, while dcode still executes an approved selected MCP tool locally.
+
+## Classifier-backed Auto mode
+
+Auto is an authorization path, not a general model-selection convenience. `AutoModeHITLMiddleware` first applies deterministic policy and sends the remaining tool-call batch to a structured-output classifier. The classifier defaults to the main agent model when no separate model is selected. A distinct `provider:model` comes from `--auto-classifier-model`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, or `[models].auto_classifier`; when none is configured, startup may select a lightweight default for the main provider. An explicitly blank CLI flag is preserved as an inherit sentinel, overriding configured/default classifiers and returning review to the main model.
+
+```mermaid
+flowchart TD
+    Calls["Gated tool-call batch"] --> Policy["Deterministic Auto policy"]
+    Policy --> Fixed{"Decision already fixed"}
+    Fixed -->|Yes| Route["Apply policy decision"]
+    Fixed -->|No| Select["Resolve per-run or startup classifier"]
+    Select --> Review["Structured classifier review"]
+    Review --> Valid{"Valid response"}
+    Valid -->|Yes| Route
+    Valid -->|No| Deny["Deny unavailable batch or require human"]
+    Deny --> Route
+```
+
+*Auto only authorizes a batch after deterministic policy or a validated classifier result; classifier failures do not silently approve it.*
+
+A runtime `classifier_model` context value wins over startup configuration, enabling `/auto model` without rebuilding the graph. A distinct classifier is built lazily in the workspace environment and cached by specification; construction has a separate timeout, and review has the configured batch deadline. The distinct construction disables preserved-thinking binding because classifier history does not replay thinking blocks. A failure to build or invoke a classifier fails closed: the affected batch is denied as unavailable or escalated to human approval after the configured fallback conditions. A repeated construction fault is latched until a successful review, so later batches ask for human approval instead of silently repeating denials. Counter-state write failures also require human approval.
+
+Startup performs cheap policy, provider-recognition, and credential checks for a configured classifier without importing LangChain. A policy-blocked classifier is downgraded to inheriting the already-approved main model so it cannot abort agent construction; other detected problems are warned and remain fail-closed at review time. The classifier uses the same `create_model()` policy and retry ownership when it is actually built.
+
+## dcode inference-host catalog and picker
+
+In a client/server session, the workspace-bound inference host—not the client's Python environment—owns catalog discovery, provider readiness, canonical model resolution, and display metadata. The host returns strict presentation-only payloads. `ModelCatalog` includes model specifications, scalar capability fields, provider readiness/labels, policy presentation, and the retained current spec; constructor kwargs and arbitrary extensions do not cross the boundary. `ModelMetadata` is a frozen, validated, provider-independent exchange type and never contains a model object or credentials.
+
+```mermaid
+sequenceDiagram
+    participant Picker as TUI picker
+    participant Client as Remote client
+    participant Host as Inference host
+    participant Workspace as Bound workspace
+    Picker->>Client: Load catalog and current specification
+    Client->>Host: Request thread catalog
+    Host->>Workspace: Resolve configuration and environment
+    Host->>Host: Discover allowed models and readiness
+    Host-->>Client: Presentation-only catalog
+    Client-->>Picker: Validated ModelCatalog
+    Picker->>Client: Validate proposed model
+    Client->>Host: Resolve without inference
+    Host-->>Picker: Canonical ModelMetadata
+```
+
+*The inference host owns discovery and validation; the client renders and commits only safe metadata.*
+
+Discovery applies enabled-provider and allowlist policy, surfaces allowed recommendations, retains an allowed active spec if discovery omits it, and separately includes known enabled providers so setup/readiness can be presented without model rows. Per-provider discovery failures are logged and skipped. Main-role catalog requests use main `profile_overrides`; auxiliary roles do not. The recommended-only selector also retains the active model and recent selections while catalog loading preserves typed filter input.
+
+Before persisting a main, classifier, or summarization default, the picker resolves the selection asynchronously through the inference host and writes only the returned canonical specification on success. It avoids duplicate work and does not save after dismissal or failure. Explicit catalog models rejected by `models.allowed` are stopped before installation or authentication setup; unavailable but allowed providers can lead to setup flows. Ambiguous model strings are deferred to host resolution rather than guessed locally.
+
+## Talon is a separate runtime
+
+Talon does not use dcode's `models.allowed`, `/auth` credential store, `ModelResult`, or retry policy. It applies SDK `apply_provider_profile` before `init_chat_model`, then calls `create_deep_agent`; compatible SDK provider and harness profiles and prompt caching therefore apply to its main agent and SDK-assembled synchronous subagents.
+
+Talon discovers tool-capable models advertised by installed provider packages and limits them to credentials in Talon's own environment. It accepts an interactive switch only when the exact specification is in that catalog (the graph default is always included), builds and caches the accepted model before activation, and binds it in turn-local state. `ModelSelectionMiddleware` substitutes it for main-agent calls, while Talon replaces the summarizer slot so context sizing follows the selected model, all without graph recompilation. Failed or stale selections leave the default model usable; subagents retain their own models.
+
+## Compatibility and change checklist
+
+`deepagents-code` 0.2.11 requires Python `>=3.14,<3.15` and pins `deepagents==0.7.40`. Deep Agents 0.7.40 supports Python `>=3.11,<4.0` and requires LangChain `>=1.5.2,<2.0.0`, LangChain Core `>=1.8.3,<2.0.0`, `langchain-anthropic >=1.7.11,<2.0.0`, and `langchain-google-genai >=4.4.3,<5.0.0`. dcode includes Anthropic, Google GenAI, and OpenAI integration floors, with further provider integrations as extras. `deepagents-talon` 0.1.0 requires Python `>=3.14,<3.15` and depends on `deepagents>=0.7.40` and `deepagents-code>=0.2.11,<1.0.0`.
+
+Focused changes should preserve these invariants: admission precedes construction side effects; only the host determines remote readiness; catalog payloads remain presentation-safe; model defaults are validated before persistence; dcode has one retry owner; an unavailable Auto classifier never grants approval; and Talon's catalog/environment does not become a back door into dcode policy.
 
 ## Related pages
 
-- [Middleware stack](/openwiki/architecture/middleware-stack.md)
+- [Code agent architecture](/openwiki/architecture/code-agent.md)
 - [Configuration layering](/openwiki/concepts/config-layering.md)
-- [Development](/openwiki/operations/development.md)
-- [Run a dcode session](/openwiki/workflows/run-dcode-session.md)
+- [MCP integration](/openwiki/integrations/mcp.md)
+- [Quickstart](/openwiki/quickstart.md)
+- [Permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md)
+- [Testing guide](/openwiki/testing/testing-guide.md)

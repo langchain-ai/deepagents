@@ -65,7 +65,7 @@ async def test_cli_acp_mode_starts_session_and_exits() -> None:
     env["PYTHONUNBUFFERED"] = "1"
 
     proc = await asyncio.create_subprocess_exec(
-        "deepagents",
+        "dcode",
         "--acp",
         "--no-mcp",
         stdin=aio_subprocess.PIPE,

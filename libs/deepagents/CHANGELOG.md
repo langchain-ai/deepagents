@@ -2,6 +2,52 @@
 
 # Deep Agents Changelog
 
+## [0.7.40](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.39...deepagents==0.7.40) (2026-11-18)
+
+### Bug Fixes
+
+- Preserve output from timed-out shell commands. ([#6349](https://github.com/langchain-ai/deepagents/pull/6349))
+- Clean up cancelled shell commands. ([#5907](https://github.com/langchain-ai/deepagents/pull/5907))
+- Avoid warning-filter race conditions in `warn_deprecated`. ([#7749](https://github.com/langchain-ai/deepagents/pull/7749))
+
+### Performance Improvements
+
+- Discover profile plugins in a single entry-point scan. ([#7755](https://github.com/langchain-ai/deepagents/pull/7755))
+
+## [0.7.39](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.38...deepagents==0.7.39) (2026-11-16)
+
+### Bug Fixes
+
+- Fixed streaming of asynchronous subagent runs to apps that join them ([#7722](https://github.com/langchain-ai/deepagents/pull/7722)).
+- Fixed uploads containing NUL bytes by storing them as base64 in `StoreBackend` ([#7710](https://github.com/langchain-ai/deepagents/pull/7710)).
+
+### Performance Improvements
+
+- Limited editable-install scans to `deepagents` records ([#7752](https://github.com/langchain-ai/deepagents/pull/7752)).
+
+## [0.7.38](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.37...deepagents==0.7.38) (2026-11-13)
+
+### Bug Fixes
+
+- Exclude results from `ls`, `grep`, and `glob` when a symlink resolves outside the approved search scope. ([#7706](https://github.com/langchain-ai/deepagents/pull/7706))
+
+## [0.7.37](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.36...deepagents==0.7.37) (2026-11-12)
+
+### Bug Fixes
+
+- Cache optional prompt-caching provider lookups in the SDK ([#7585](https://github.com/langchain-ai/deepagents/pull/7585)).
+
+## [0.7.36](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.35...deepagents==0.7.36) (2026-11-12)
+
+### Features
+
+- Pass the agent's backend to middleware that requests it ([#7668](https://github.com/langchain-ai/deepagents/pull/7668)).
+- Record the subagent's checkpoint namespace on the `task` tool message ([#7580](https://github.com/langchain-ai/deepagents/pull/7580)).
+
+### Bug Fixes
+
+- Prevent `FilesystemBackend.download_files` from hanging on FIFO files ([#7663](https://github.com/langchain-ai/deepagents/pull/7663)).
+
 ## [0.7.35](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.34...deepagents==0.7.35) (2026-11-09)
 
 ### Bug Fixes

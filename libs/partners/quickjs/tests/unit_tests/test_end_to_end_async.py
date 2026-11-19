@@ -406,3 +406,55 @@ async def test_ptc_state_updates_apply_once_after_interrupt_and_resume() -> None
 
     _assert_result_contains(_eval_tool_message(result).content, "yes")
     assert result["claims"] == {"c1": "v1"}
+
+
+@tool("slow")
+async def slow_tool() -> str:
+    """Sleep briefly so a sibling eval overlaps this one."""
+    await asyncio.sleep(0.1)
+    return "done"
+
+
+async def test_quickjs_mode_call_overlapping_eval_fails_loudly() -> None:
+    """Of two overlapping `mode="call"` evals, one fails and the other finishes."""
+    model = FakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "await tools.slow({})"},
+                            "id": "call_slow",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "eval",
+                            "args": {"code": "await tools.slow({})"},
+                            "id": "call_fast",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="finished"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(mode="call", ptc=[slow_tool])],
+    )
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="go")]})
+
+    contents = {
+        m.tool_call_id: m.content
+        for m in result["messages"]
+        if isinstance(m, ToolMessage) and m.name == "eval"
+    }
+    # The tool node may start either eval first; exactly one of them wins.
+    failed = [c for c in contents.values() if '<error type="ConcurrentEval">' in c]
+    assert len(failed) == 1
+    assert sum("done" in c for c in contents.values()) == 1
+    assert result["messages"][-1].content == "finished"

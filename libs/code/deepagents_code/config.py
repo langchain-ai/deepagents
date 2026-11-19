@@ -2466,9 +2466,11 @@ def _compute_charset_mode() -> CharsetMode:
     if mode == "ascii":
         return CharsetMode.ASCII
 
-    encoding = getattr(sys.stdout, "encoding", "") or ""
-    if "utf" in encoding.lower():
-        return CharsetMode.UNICODE
+    # A stream that names its encoding decides: Git Bash exports a UTF-8
+    # `LANG`, yet Windows encodes redirected output with the ANSI code page.
+    encoding = getattr(sys.stdout, "encoding", None)
+    if encoding:
+        return CharsetMode.UNICODE if "utf" in encoding.lower() else CharsetMode.ASCII
     lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
     return CharsetMode.UNICODE if "utf" in lang.lower() else CharsetMode.ASCII
 
@@ -4684,11 +4686,11 @@ def is_yolo_switcher_enabled() -> bool:
 
 
 def is_openai_prompt_cache_key_enabled() -> bool:
-    """Return whether OpenAI model calls should carry a per-thread cache key.
+    """Return whether OpenAI model calls should carry a per-install cache key.
 
     Resolves the `models.openai_prompt_cache_key` option from env/`config.toml`,
     defaulting to enabled. When disabled, `ConfigurableModelMiddleware` stops
-    injecting the thread ID as an OpenAI `prompt_cache_key` (a user-supplied key
+    injecting its per-install OpenAI `prompt_cache_key` (a user-supplied key
     is still forwarded). This is the opt-out for OpenAI-compatible endpoints that
     reject unknown request fields.
     """

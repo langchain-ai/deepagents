@@ -810,6 +810,17 @@ def test_filesystem_download_directory_as_file(tmp_path: Path):
     assert responses[0].error == "is_directory"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
+@pytest.mark.timeout(10)
+def test_filesystem_download_fifo_fails_without_waiting_for_a_writer(tmp_path: Path):
+    os.mkfifo(tmp_path / "pipe")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    [response] = be.download_files(["/pipe"])
+
+    assert (response.content, response.error) == (None, "file_not_found")
+
+
 @pytest.mark.parametrize(
     ("pattern", "expected_file"),
     [

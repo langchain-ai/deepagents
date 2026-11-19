@@ -2,6 +2,44 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.11](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.10...deepagents-code==0.2.11) (2026-11-18)
+
+### Bug Fixes
+
+- Honor MCP hook approval policies ([#7766](https://github.com/langchain-ai/deepagents/pull/7766)).
+- Wait for background worker cleanup to complete during shutdown ([#7810](https://github.com/langchain-ai/deepagents/pull/7810)).
+
+## [0.2.10](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.9...deepagents-code==0.2.10) (2026-11-17)
+
+### Features
+
+- Report agent status to terminals using OSC 7501 ([#7772](https://github.com/langchain-ai/deepagents/pull/7772)).
+
+### Bug Fixes
+
+- Load MCP trust lists without blocking the server event loop ([#7798](https://github.com/langchain-ai/deepagents/pull/7798)).
+- Show a working upgrade command in the ACP import error message ([#7780](https://github.com/langchain-ai/deepagents/pull/7780)).
+
+## [0.2.9](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.8...deepagents-code==0.2.9) (2026-11-16)
+
+### Features
+
+- Updated stable model recommendations ([#7734](https://github.com/langchain-ai/deepagents/pull/7734)).
+
+### Performance Improvements
+
+- Limited editable-SDK scanning to `deepagents` records ([#7756](https://github.com/langchain-ai/deepagents/pull/7756)).
+
+## [0.2.8](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.7...deepagents-code==0.2.8) (2026-11-13)
+
+### Features
+
+- Set `DEEPAGENTS_CODE=1` in the local shell environment. ([#7701](https://github.com/langchain-ai/deepagents/pull/7701))
+
+### Bug Fixes
+
+- Replace unencodable characters in redirected output. ([#7717](https://github.com/langchain-ai/deepagents/pull/7717))
+
 ## [0.2.7](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.6...deepagents-code==0.2.7) (2026-11-10)
 
 ### Features

@@ -3,9 +3,6 @@ type: integration architecture
 title: Sandbox and Partner Integrations
 description: How dcode acquires remote sandbox backends and how the separately packaged QuickJS middleware persists JavaScript state and bridges to agent capabilities. Explains the authorization and containment limits of filesystem, tool, and subagent bridges.
 tags: [dcode, sandbox, integrations, providers, modal, quickjs, filesystem]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-18T08:03:59.609Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -51,7 +48,10 @@ sources:
     resource: repo://libs/partners/runloop/pyproject.toml
   - id: openwiki-source-03a39f44d8ccfde2fd47e57a
     resource: repo://libs/partners/vercel/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-18T08:03:59.609Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-19T08:04:44.778Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-19T08:04:44.778Z" }
 ---
 
 # Sandbox and Partner Integrations
@@ -83,7 +83,7 @@ flowchart TD
 
 The dcode Modal provider resolves `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` from the workspace environment, including `DEEPAGENTS_CODE_`-prefixed resolution. Both values produce a credentialed Modal client. A partial pair is rejected rather than silently falling back to the server identity; with neither value, Modal default authentication is used. The selected client looks up or creates the `deepagents-sandbox` app.
 
-For a new resource, it creates a Modal sandbox with `/workspace` as the working directory and polls `echo ready` until the startup deadline; failure to become ready terminates it. A supplied ID is attached with `Sandbox.from_id`. The result is a `ModalSandbox`, which exposes Modal `object_id` as its backend ID and executes commands through `bash -c`, returning combined stdout/stderr, the Modal exit code, and `truncated=False`. Its default command timeout is 30 minutes; explicit `0` keeps Modal's indefinite-wait meaning.
+For a new resource, it creates a Modal sandbox with `/workspace` as the working directory and polls `echo ready` until the startup deadline; if that deadline expires, it terminates the sandbox before raising. A supplied ID is attached with `Sandbox.from_id`. The result is a `ModalSandbox`, which exposes Modal `object_id` as its backend ID and executes commands through `bash -c`, returning combined stdout/stderr, the Modal exit code, and `truncated=False`. Its default command timeout is 30 minutes; explicit `0` keeps Modal's indefinite-wait meaning.
 
 `ModalSandbox` performs byte transfers one item at a time, preserving request order. Non-absolute paths become `invalid_path`; recognized Modal filesystem errors are normalized to `file_not_found`, `permission_denied`, or `is_directory`. Unrecognized provider errors, such as `SandboxFilesystemFileTooLargeError`, propagate; a mapped error for one item does not prevent later items from running. Its inherited `BaseSandbox` listing, search, read, write, and edit helpers are conveniences built on shell execution and raw transfer primitives, and do not reduce the shell-capability trust boundary.
 
@@ -91,7 +91,7 @@ The Modal integration suite supplies real credentials only when both `MODAL_TOKE
 
 ## Partner package compatibility
 
-Partner integrations are independently released distributions. The release manifest currently lists Deep Agents `0.7.39`, dcode `0.2.10`, Daytona `0.0.9`, Modal `0.0.8`, Runloop `0.0.7`, Vercel Sandbox `0.0.2`, and QuickJS `0.3.12`. Daytona, Modal, Runloop, and Vercel require Python `>=3.11,<4.0` and Deep Agents `>=0.7.39,<0.8.0`. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.39`, depends normally on `langchain-quickjs>=0.3.12,<0.5.0`, and makes the `quickjs` extra empty solely for backwards-compatible install commands. Its remote-provider extras include `langchain-modal>=0.0.8`.
+Partner integrations are independently released distributions. The release manifest currently lists Deep Agents `0.7.40`, dcode `0.2.11`, Daytona `0.0.9`, Modal `0.0.8`, Runloop `0.0.7`, Vercel Sandbox `0.0.2`, and QuickJS `0.3.12`. Daytona, Modal, Runloop, and Vercel require Python `>=3.11,<4.0` and Deep Agents `>=0.7.40,<0.8.0`. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.40`, depends normally on `langchain-quickjs>=0.3.12,<0.5.0`, and makes the `quickjs` extra empty solely for backwards-compatible install commands. Its remote-provider extras include `langchain-modal>=0.0.8`.
 
 `langchain-quickjs` itself is version `0.3.12`, supports Python `>=3.11,<4.0`, and bounds Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4` in its package manifest. Maintain each package's dependency manifest and lock independently rather than hand-editing a lockfile.
 

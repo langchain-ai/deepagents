@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2dbdd2eaddebb9c083ba92706b3c2a090e011188ad52732acfae00c7d8e56c08",
+  "pageVersion": "sha256:647d20122a69183e647ad69c845eea1525a370f6fe5442b5fb2a3af9ec0aa0f3",
   "claims": [
     {
       "id": "claim_c99866f7307a4171a2332376a9dd8ed4",
-      "statement": "deepagents-code 0.2.10 requires Python 3.14 (below 3.15) and depends on deepagents-acp version 0.0.13 or later, so dcode ACP deployments follow dcode's stricter Python requirement rather than deepagents-acp's standalone Python 3.11 floor.",
+      "statement": "deepagents-code 0.2.11 requires Python 3.14 (below 3.15) and depends on deepagents-acp version 0.0.13 or later, so dcode ACP deployments follow dcode's stricter Python requirement rather than deepagents-acp's standalone Python 3.11 floor.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml#L5-L29",
@@ -16,7 +16,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L14",
-          "version": "repo-lines-v1:sha256:9959d80de92e0555f49922b44adc1dde20ef1ed231e673902f09fbfc9ffa3fb0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+          "version": "repo-lines-v1:sha256:39918a2c83fb5e7ebacd79130a0a22f80d25262393dd9430c1e1f797ad14f6cd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
         }
       ]
     },
@@ -54,7 +54,7 @@
       "evidence": [
         {
           "resource": "repo://libs/acp/deepagents_acp/server.py#L181-L211",
-          "version": "repo-lines-v1:sha256:a354d06e349b6f862d2bde990a6995e3bb4e0493c866b4e099e11093d44a26b8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwNzQ3Y2MzY2MzOTZjMGM0ZWRiNzEyY2UwNGJmMWM5NTAwNmFmNTc2MTA1NzAzOWQ5NzAyMjZiMGVmMDIxZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxMGY3NGQxNjhmZThhNjBlNDhkZWI2YTI0YTdhMDY5OTEwMTU0NTE2MWFhMjliYzJkZjk5ZTE1YTVhYjZlN2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzNjQyOWRiNjJkOTczZDFkNjA0MTVhMWU0MDQxYmYyZjg2NTQzNTY4YWE3NDU4YmI2NTY4MGQ5YjQxYTc5MmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOGI5Y2MwZmJmZGU2Y2ZlMGRiNjFlMTBjOGFmYTkzNzg4NDkxZTY5ZWViZGRhMjJkNWZjOWUzODkxODNlMzYifQ"
+          "version": "repo-lines-v1:sha256:6e541d6e447b33e8801a4ec7cae33cbae867a06373a38b46c2a78dbe605b1cbd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwNzQ3Y2MzY2MzOTZjMGM0ZWRiNzEyY2UwNGJmMWM5NTAwNmFmNTc2MTA1NzAzOWQ5NzAyMjZiMGVmMDIxZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxMGY3NGQxNjhmZThhNjBlNDhkZWI2YTI0YTdhMDY5OTEwMTU0NTE2MWFhMjliYzJkZjk5ZTE1YTVhYjZlN2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzNjQyOWRiNjJkOTczZDFkNjA0MTVhMWU0MDQxYmYyZjg2NTQzNTY4YWE3NDU4YmI2NTY4MGQ5YjQxYTc5MmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOGI5Y2MwZmJmZGU2Y2ZlMGRiNjFlMTBjOGFmYTkzNzg4NDkxZTY5ZWViZGRhMjJkNWZjOWUzODkxODNlMzYifQ"
         },
         {
           "resource": "repo://libs/acp/deepagents_acp/server.py#L761-L790",
@@ -62,21 +62,25 @@
         },
         {
           "resource": "repo://libs/acp/deepagents_acp/server.py#L818-L921",
-          "version": "repo-lines-v1:sha256:7a4d1feecf6e01a51d1d8c36dfefc57fa1e3d79ed264c6ff58fdbc2115dbd25d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMzVjZjExMGRiZTUwNjFmNDk3Yjg1NjlhN2MwN2M3ODM3YTRlZTJhZmQyMzM1OGFkYWJkNDY5M2U3MDA2MjY1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzYTk0NjVkOWNkNmYwZjAyYzYyYTNjNDQ2YTk0OTFkYzg1MjJlMWQzZGQ2OTVjNTc4OGUwNWZlYjZjNTE2NjAyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzZDA1NWFhNDcyZmFiMzVmMjUzODY5ZDNlYzE0ZmQzZThhYTRmZjY3N2NkNTUwMjgzODA3M2U1ZDdjMWFhMjI4In0"
+          "version": "repo-lines-v1:sha256:5ac00815be69a400d5030ab043861b20019b85ee3503a5c585db70b7041a37c9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMzVjZjExMGRiZTUwNjFmNDk3Yjg1NjlhN2MwN2M3ODM3YTRlZTJhZmQyMzM1OGFkYWJkNDY5M2U3MDA2MjY1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzYTk0NjVkOWNkNmYwZjAyYzYyYTNjNDQ2YTk0OTFkYzg1MjJlMWQzZGQ2OTVjNTc4OGUwNWZlYjZjNTE2NjAyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzZDA1NWFhNDcyZmFiMzVmMjUzODY5ZDNlYzE0ZmQzZThhYTRmZjY3N2NkNTUwMjgzODA3M2U1ZDdjMWFhMjI4In0"
         }
       ]
     },
     {
       "id": "claim_ee0e3c9c0ba84530a42062158a30a69e",
-      "statement": "ACP prompt handling converts multimodal ACP blocks, streams LangGraph messages and updates, hides subagent and local-context content, projects tool and plan updates, and returns cancelled when its per-session cancellation flag is observed.",
+      "statement": "ACP prompt handling converts text, image, resource, and embedded-resource blocks, streams LangGraph messages and updates, hides subagent and local-context content, projects tool and plan updates, and returns cancelled when its per-session cancellation flag is observed; audio blocks currently raise NotImplementedError.",
       "evidence": [
         {
-          "resource": "repo://libs/acp/deepagents_acp/server.py#L602-L751",
-          "version": "repo-lines-v1:sha256:cf248833cceccb1a4e5b6900964aa998e813c50860b24c1c3e0752b270d305db:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiYmRhMTg2OTUwNTU5NDEwOWRmNTFmZTZkNzY2ZGJkOThkYjc0NjE3OTFmMjRlNzhkZWNjYzdiNTJkNTA1YmE5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0M2RjMzJmN2YyZDlkNGQyN2M2Mjg3N2QyZDQxOGFkYjZhMzUwNDAyMTlkZjdiOWVkMTEwOTE0MmQ1OWQ1NjBmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MDY5MzFlYmUyY2JjYTM5YTNiOWNlNmIxMjU3Mzk0MWZiMTVhMWRlNzM0ZGFjZWI3MjBmMGI4MGI4NjRhNDIwIn0"
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L599-L756",
+          "version": "repo-lines-v1:sha256:69d2311a6a54deed7a1b1667a372d43617d25ba6c0d99f79904aa501f6bb7646:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiYmRhMTg2OTUwNTU5NDEwOWRmNTFmZTZkNzY2ZGJkOThkYjc0NjE3OTFmMjRlNzhkZWNjYzdiNTJkNTA1YmE5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0M2RjMzJmN2YyZDlkNGQyN2M2Mjg3N2QyZDQxOGFkYjZhMzUwNDAyMTlkZjdiOWVkMTEwOTE0MmQ1OWQ1NjBmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MDY5MzFlYmUyY2JjYTM5YTNiOWNlNmIxMjU3Mzk0MWZiMTVhMWRlNzM0ZGFjZWI3MjBmMGI4MGI4NjRhNDIwIn0"
         },
         {
-          "resource": "repo://libs/acp/deepagents_acp/server.py#L948-L1141",
-          "version": "repo-lines-v1:sha256:30a68b916865c93cc83b78deabc45d3da786ba95663eeb6def89c09fc6c9e35e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiYjc3MzY0MTYyZmQxYjYyMDg5Nzg0ZTVlYjMzOWJkNDIwYjQ3ZGE5M2U3MzE5MjdjN2M4ZjRiZDBkNzlkNjJjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyZTIwM2Q2YTNjMTVhNTU0ZjVlN2NiYzA5M2FlNWU3OWQ1ZTljYjljMDdjNmFlNzJmOGY0NjdkYThhNzhjNGQ2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzNDBlYTE0OTBlZGJmMzZkNTUzNWY4YzQ0NjFmY2VhYzNlZGIwOTVlYjA1ODFlMjkyMzA1MzdjNTA1ZTk4MzQ2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkNmM5ZTQyNTc4MWQyZDYzM2NlYzA2MTg5ZWU1MzJjMDNiYjkzZGRmMWI0NDJhNzIzYTI2MzY1NzIxZGY5Zjk2In0"
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L958-L1157",
+          "version": "repo-lines-v1:sha256:236ca3ceddaaf03ea7b7931ea39a6be460e4cfe30a95b9ff4a01a460cbcec0a5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiYjc3MzY0MTYyZmQxYjYyMDg5Nzg0ZTVlYjMzOWJkNDIwYjQ3ZGE5M2U3MzE5MjdjN2M4ZjRiZDBkNzlkNjJjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyZTIwM2Q2YTNjMTVhNTU0ZjVlN2NiYzA5M2FlNWU3OWQ1ZTljYjljMDdjNmFlNzJmOGY0NjdkYThhNzhjNGQ2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzNDBlYTE0OTBlZGJmMzZkNTUzNWY4YzQ0NjFmY2VhYzNlZGIwOTVlYjA1ODFlMjkyMzA1MzdjNTA1ZTk4MzQ2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkNmM5ZTQyNTc4MWQyZDYzM2NlYzA2MTg5ZWU1MzJjMDNiYjkzZGRmMWI0NDJhNzIzYTI2MzY1NzIxZGY5Zjk2In0"
+        },
+        {
+          "resource": "repo://libs/acp/deepagents_acp/utils.py#L19-L99",
+          "version": "repo-lines-v1:sha256:4f6830797869f8311d0a1f6a130172fe686ebf44982e10e9537cd25b43db9c06:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlNTNhZDE2MDhkMGViMTMzMjkwNWU2MGVjNTNjY2NlNjIxMDk3MzIwNmRmNmQ4ZmI3ZjExNGIwYjI0Y2U5OGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlM2IyNTIyM2M4Y2UwYTM5MGJiZDk2YzA1MTJjZTgzMDc2N2M2NDU0NDEwMjkyYzQxYzg1ZGZmMmFmZWZmMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA3ZmUzZTRhYWI3YmNhMWZmMzkyNWI0MzVmYWI5YzE2ZDMxOWNkZjMzZWZkNDg4ODk1Nzc5MGMwMDU1YmEwYTAifQ"
         }
       ]
     },
@@ -211,10 +215,20 @@
           "version": "repo-lines-v1:sha256:3fc313278488a2c4579aaa61bf5745cb7ef4c76f05de3132802422aba2b2c14c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwZDY2ZGZjYWZmMDE4NjgwY2IyOWM4MzZjMzJmMjYxMjdkYTRlMWQ2M2JmYzI2NWU2NWNkZmFiMjkwZjczMTAxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwODkxODJhYWY2OTE1MzhmMzFiYTYwYTRiNTExMDc0YTQyODFjNTg0MDcwZWZmNDljZDgxZDhkZGM4ZWZkNjQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0MjIxZmNjNWJlNTgyODU4OGNkY2EwYWM2YWE2YmQ3NjdmY2MwMWMzNGQ4MWVlMjdhMmQ2OTYyOWQ3NmUxZmQxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         }
       ]
+    },
+    {
+      "id": "claim_c4c89eb0bb80447f8a2f623f0e019ca1",
+      "statement": "The adapter's stdio handshake test spawns an ACP server process, negotiates the installed protocol version, and creates a session without invoking the supplied graph factory, detecting transport or SDK API drift before prompt execution.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/tests/test_stdio_handshake.py#L13-L52",
+          "version": "repo-lines-v1:sha256:f9006098b262bbace6cee54f73ec47760852374d5306a0763686ac3c013d3a40:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5ZDU2NDFkYzQ4NDBlZjVkMWQ3ZTM5YTJhMTMyN2U2MjgxODI0ZThiODQ4NGM5ZTVlM2EzYWY3MjZhMjVhNWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5Yzk2Yjg3NDk0MDE1MTljMWU0YzQxMjU0ZDkwNThkODFhOGJjMTBiOGRjNWE0ZWQzM2EyZDQwOWU2NWFhN2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzNDI4OWE1OWYzNzZhZTc0ODMzOGIyY2I0OTM1YjRhOWJkNmY5ODIxOGM2NmUxMjM3OThjMDdkZmM3YjY2NDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-18T08:03:59.609Z"
+    "at": "2026-11-19T08:04:44.778Z"
   }
 }

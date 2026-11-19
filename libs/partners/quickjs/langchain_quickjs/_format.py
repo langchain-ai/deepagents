@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel
-from quickjs_rs import UNDEFINED
+from quickjs_rs import Undefined
 
 if TYPE_CHECKING:
     from langchain_quickjs._repl import EvalOutcome
@@ -40,7 +40,7 @@ def stringify(value: Any) -> str:
 def _format_jsvalue(value: Any) -> str:
     if value is None:
         return "null"
-    if value is UNDEFINED:
+    if isinstance(value, Undefined):
         return "undefined"
     if isinstance(value, bool):
         return "true" if value else "false"

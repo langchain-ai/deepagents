@@ -4,8 +4,8 @@ EXAMPLE_PACKAGE_DIRS := $(patsubst %/,%,$(patsubst $(MAKEFILE_DIR)%,%,$(dir $(wi
 PACKAGE_DIRS := $(sort $(LIB_PACKAGE_DIRS) $(EXAMPLE_PACKAGE_DIRS))
 
 # Map package dirs to their required Python version
-# acp requires 3.14, everything else uses 3.12
-python_version = $(if $(filter acp,$1),3.14,3.12)
+# code, evals, and talon require 3.14; everything else uses 3.12
+python_version = $(if $(filter code evals talon,$1),3.14,3.12)
 
 .PHONY: help lock no-cache lock-bump lock-check hygiene lint format bench-all
 

@@ -2,6 +2,13 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.11](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.10...deepagents-code==0.2.11) (2026-11-18)
+
+### Bug Fixes
+
+- Honor MCP hook approval policies ([#7766](https://github.com/langchain-ai/deepagents/pull/7766)).
+- Wait for background worker cleanup to complete during shutdown ([#7810](https://github.com/langchain-ai/deepagents/pull/7810)).
+
 ## [0.2.10](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.9...deepagents-code==0.2.10) (2026-11-17)
 
 ### Features

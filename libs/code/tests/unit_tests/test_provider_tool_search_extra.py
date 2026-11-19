@@ -205,7 +205,15 @@ def test_openai_search_stream_roundtrip(base_url: str | None) -> None:
 
 
 @pytest.mark.parametrize(
-    "model_name", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]
+    "model_name",
+    [
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
+    ],
 )
 async def test_async_provider_request(model_name: str) -> None:
     payloads = []

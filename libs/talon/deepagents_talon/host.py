@@ -41,9 +41,10 @@ from deepagents_talon.channels.base import (
 from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
-from deepagents_talon.cron.jobs import CronJobStore
-from deepagents_talon.cron.scheduler import is_silent
+from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
+from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.effort import effort_levels, normalize_effort
+from deepagents_talon.goals import GoalController, GoalLedger, GoalRequest, GoalScope
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -102,7 +103,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
-    from deepagents_talon.cron.jobs import CronJob, CronOrigin
+    from deepagents_talon.cron.jobs import CronJob
     from deepagents_talon.questions import Question, QuestionHandler
     from deepagents_talon.speech import VoiceTranscriber
 
@@ -120,6 +121,9 @@ _SMART_MODEL_COMMAND = chat_commands.SMART_MODEL
 _EFFORT_COMMAND = chat_commands.EFFORT
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
 _PAIR_COMMAND = chat_commands.PAIR
+_GOAL_COMMAND = chat_commands.GOAL
+_GOAL_UNAVAILABLE_MESSAGE = "Goals need the scheduler, which is not running on this host."
+_GOAL_NO_SENDER_MESSAGE = "Goals need a sender this channel can identify."
 _PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
 _PAIR_DM_ONLY_MESSAGE = "Run /pair in a direct message with this assistant."
 _PAIR_DISABLED_MESSAGE = "Sender pairing is not enabled on this channel."
@@ -376,6 +380,18 @@ class TalonHost:
         self._turn_senders: dict[str, set[tuple[str, str | None]]] = {}
         self._stopped = asyncio.Event()
         self._running = False
+        self._goals: GoalController | None = None
+
+    @property
+    def goals(self) -> GoalController | None:
+        """Goal controller over the scheduler's store, or `None` without a scheduler."""
+        store = getattr(self.scheduler, "store", None)
+        if not isinstance(store, CronJobStore):
+            return None
+        if self._goals is None or self._goals.store is not store:
+            ledger = GoalLedger(goal_dir=self.config.goal_dir)
+            self._goals = GoalController(ledger=ledger, store=store)
+        return self._goals
 
     async def _agent_failure_message(self, conversation_id: str) -> str:
         check = getattr(self.agent, "has_tool_activity", None)
@@ -656,7 +672,17 @@ class TalonHost:
     ) -> bool:
         """Dispatch commands while the caller holds the conversation lock."""
         command = _command_name(message.text)
-        if command == _RESET_ALL_HISTORY_COMMAND:
+        replies: dict[str | None, Callable[[], Awaitable[str]]] = {
+            _PAIR_COMMAND: lambda: self._pair_command(channel, message, provider),
+            _MODEL_COMMAND: lambda: self._model_command(channel, message),
+            _SMART_MODEL_COMMAND: lambda: self._smart_model_command(channel, message),
+            _EFFORT_COMMAND: lambda: self._effort_command(channel, message),
+            _GOAL_COMMAND: lambda: self._goal_command(message, provider),
+        }
+        if (respond := replies.get(command)) is not None:
+            reply = await respond()
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        elif command == _RESET_ALL_HISTORY_COMMAND:
             await self._reset_all_history(
                 channel,
                 message.conversation_id,
@@ -680,21 +706,37 @@ class TalonHost:
             await self._reload_mcp_configuration(channel, message.conversation_id)
         elif command == _CONTEXT_DOCTOR_COMMAND:
             await self._context_doctor(channel, message.conversation_id, conversation_root)
-        elif command == _PAIR_COMMAND:
-            reply = await self._pair_command(channel, message, provider)
-            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
-        elif command == _MODEL_COMMAND:
-            reply = await self._model_command(channel, message)
-            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
-        elif command == _SMART_MODEL_COMMAND:
-            reply = await self._smart_model_command(channel, message)
-            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
-        elif command == _EFFORT_COMMAND:
-            reply = await self._effort_command(channel, message)
-            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         else:
             return False
         return True
+
+    async def _goal_command(self, message: ChannelMessage, provider: str | None) -> str:
+        """Run `/goal`; the owner's text edits the goal and never reaches the model."""
+        if self.goals is None:
+            return _GOAL_UNAVAILABLE_MESSAGE
+        if not message.sender_id:
+            return _GOAL_NO_SENDER_MESSAGE
+        history_chat = message.metadata.get("history_chat")
+        request = GoalRequest(
+            scope=GoalScope(
+                channel=provider,
+                conversation_id=message.conversation_id,
+                owner_id=message.sender_id,
+            ),
+            origin=CronOrigin(
+                conversation_id=message.conversation_id,
+                channel=provider,
+                message_id=message.message_id,
+                sender_id=message.sender_id,
+                history_chat=(
+                    history_chat
+                    if provider in {"discord", "slack"} and isinstance(history_chat, str)
+                    else None
+                ),
+            ),
+            argument=_command_argument(message.text),
+        )
+        return await asyncio.to_thread(self.goals.handle, request)
 
     async def _pair_command(
         self,
@@ -1407,6 +1449,10 @@ class TalonHost:
                 the job stopped the run, so the scheduler records it as failed
                 and delivers nothing.
         """
+        if job.goal_id is not None:
+            if self.goals is None:
+                return SILENT_SENTINEL
+            return await asyncio.to_thread(self.goals.on_fire, job)
         conversation_root = f"{job.id}{_CRON_THREAD_SUFFIX}"
         conversation_id = f"{conversation_root}:{uuid4().hex}"
         async with self._conversation_lock(conversation_root):

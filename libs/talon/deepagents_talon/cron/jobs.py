@@ -177,6 +177,7 @@ class CronJobDict(TypedDict):
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
+    goal_id: NotRequired[str | None]
 
 
 class CronJobWireDict(TypedDict):
@@ -199,6 +200,7 @@ class CronJobWireDict(TypedDict):
     claimed_at: str | None
     deliver_to: DeliverTo
     skills: list[str]
+    goal_id: str | None
 
 
 class CronStoreDict(TypedDict):
@@ -681,6 +683,8 @@ class CronJob:
         deliver_to: Where results post when the origin is a channel thread:
             `channel` posts to the parent channel, `thread` replies in the thread.
         skills: Skill names whose full instructions load into each run.
+        goal_id: Goal that owns this job, or `None` for an ordinary job. A
+            goal-owned job fires the goal controller instead of a model turn.
     """
 
     id: str
@@ -700,6 +704,7 @@ class CronJob:
     claimed_at: datetime | None = None
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
+    goal_id: str | None = None
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -751,6 +756,7 @@ class CronJob:
             "claimed_at": _to_optional_epoch(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
+            "goal_id": self.goal_id,
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -781,6 +787,7 @@ class CronJob:
             "claimed_at": _format_optional_time(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
+            "goal_id": self.goal_id,
         }
 
     @classmethod
@@ -823,6 +830,8 @@ class CronJob:
             ),
             # Jobs saved before this field existed pin no skills.
             skills=pinned_skills(_list_field(record, "skills")),
+            # Jobs saved before this field existed belong to no goal.
+            goal_id=_optional_str_field(record, "goal_id"),
         )
 
 
@@ -875,6 +884,7 @@ class CronJobStore:
         until: datetime | None = None,
         deliver_to: DeliverTo = "channel",
         skills: Sequence[str] = (),
+        goal_id: str | None = None,
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -888,6 +898,7 @@ class CronJobStore:
             until: Optional last instant a recurring job may run, inclusive.
             deliver_to: Whether a thread origin's results post to its channel or thread.
             skills: Skill names to pin to each run; see `pinned_skills`.
+            goal_id: Goal that owns the job, if any.
             now: Creation time override for deterministic tests.
 
         Returns:
@@ -924,6 +935,7 @@ class CronJobStore:
                 until=until,
                 deliver_to=deliver_to,
                 skills=pinned,
+                goal_id=goal_id,
             )
             jobs = [*self.list_jobs(), job]
             self._write_jobs(jobs)

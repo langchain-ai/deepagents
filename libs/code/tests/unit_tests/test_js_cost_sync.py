@@ -58,4 +58,6 @@ def test_sync_tool_execution(
             "<result>2</result>" if tool_name == "js_eval" else "ordinary result"
         )
     finally:
-        interpreter._registry.close()
+        slots = interpreter._registry._slots
+        for key in [key for key in slots if key[1] == interpreter._slot_config]:
+            slots.pop(key).close()

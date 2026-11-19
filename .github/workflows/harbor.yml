@@ -145,7 +145,7 @@ on:
         default: "3"
         type: string
       n_retries:
-        description: "Max retries per trial on transient failure (e.g. a LangSmith snapshot build error). 0 = no retries."
+        description: "Max retries per errored trial. Uses Harbor's default retry policy: setup, provider and network errors are retried; agent timeouts and budget overruns, refusals, config errors and verifier failures are not. 0 = no retries."
         required: true
         default: "0"
         type: string

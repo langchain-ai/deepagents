@@ -397,6 +397,43 @@ async def test_registry_keeps_slot_of_cancelled_eval_until_js_stops(
     assert _thread_ids(registry) == ["thread-a", "thread-b"]
 
 
+async def test_close_context_waits_out_a_cancelled_tool_call(
+    registry: _Registry,
+) -> None:
+    started = threading.Event()
+
+    async def _slow() -> str:
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        finally:
+            await asyncio.sleep(0.1)  # still unwinding when the turn ends
+        return "ok"
+
+    tool = StructuredTool.from_function(
+        name="slow", description="Sleeps.", coroutine=_slow
+    )
+    slot = _get(registry, "thread-a")
+    slot.eval_sync("1")  # build the Runtime before timing anything
+    task = asyncio.create_task(
+        slot.eval_async(
+            "try { await tools.slow({}) } finally { globalThis.cleaned = true }",
+            tools=[tool],
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Ending the turn right away must not close the Context under the JS
+    # still unwinding on the worker.
+    await registry.aclose_context("thread-a", _CONFIG)
+    while slot.eval_running:  # noqa: ASYNC110  # cleared on the worker thread
+        await asyncio.sleep(0.01)
+    assert (await slot.eval_async("cleaned")).result == "true"
+
+
 # ---------------------------------------------------------------------------
 # Error formatting
 # ---------------------------------------------------------------------------

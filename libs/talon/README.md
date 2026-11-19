@@ -137,7 +137,9 @@ precedence; unknown or duplicate plugin schemes fail startup. The plugin API is
 experimental and may change with Talon.
 
 Archives require one writer per assistant. Retrieval scans at most 500
-records and raises an error if it cannot complete the page within that budget.
+records, or 10,000 for time-filtered session reads. Transcript reads raise an
+error with a continuation cursor if that budget runs out before finding a match.
+A short transcript page can be continued; only an empty page means no matches remain.
 
 Set `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1` to add semantic matches to keyword
 search. Select an embedding adapter independently of the history database:

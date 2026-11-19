@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 import aiosqlite
 import pytest
@@ -436,11 +437,14 @@ async def test_read_conversation_filters_a_review_window_by_role():
     ]
 
 
-async def test_read_conversation_rejects_a_cursor_from_another_session():
+@pytest.mark.parametrize("since", [None, "2026-11-12T00:00:00Z"])
+async def test_read_conversation_rejects_a_cursor_from_another_session(since):
     archive = await _review_archive()
     tools = _review_tools(archive)
     foreign = (await archive.entries(WHATSAPP, session_id="other"))[0]["cursor"]
-    result = await tools["read_conversation"].ainvoke({"session_id": "day", "after": foreign})
+    result = await tools["read_conversation"].ainvoke(
+        {"session_id": "day", "after": foreign, "since": since}
+    )
     assert f"Cursor {foreign} is not a chunk of session 'day'" in result
 
 
@@ -476,3 +480,57 @@ async def test_list_conversations_filters_sessions_active_in_a_window():
     assert [item["session_id"] for item in recent] == ["other"]
     early = await listing.ainvoke({"until": "2026-11-11T12:00:00Z"})
     assert [item["session_id"] for item in early] == ["day"]
+
+
+@pytest.mark.parametrize("until", [None, "2026-11-12T23:59:59Z"])
+async def test_time_window_reads_cross_scan_windows_without_skipping_matches(until):
+    archive = StoreConversationArchive(InMemoryStore(), namespace=("long-window",))
+    await archive.append(
+        WHATSAPP,
+        "long",
+        "2026-11-11T09:00:00+00:00",
+        [HumanMessage("old", id=str(index)) for index in range(5100)],
+    )
+    for index, timestamp in enumerate(
+        [
+            "2026-11-12T12:00:00+00:00",
+            "2026-11-13T12:00:00+00:00",
+            "2026-11-11T12:00:00+00:00",
+            "2026-11-12T10:00:00+00:00",
+        ]
+    ):
+        await archive.append(
+            WHATSAPP, "long", timestamp, [HumanMessage(f"recent {index}", id=f"r{index}")]
+        )
+    read = _review_tools(archive)["read_conversation"]
+    arguments = {"session_id": "long", "since": "2026-11-12T00:00:00Z", "until": until, "limit": 1}
+    first = await read.ainvoke(arguments)
+    assert [entry["text"] for entry in first] == ["recent 0"]
+    entries = list(first)
+    while page := await read.ainvoke({**arguments, "after": entries[-1]["cursor"]}):
+        assert isinstance(page, list)
+        entries.extend(page)
+    expected = ["recent 0", "recent 3"] if until else ["recent 0", "recent 1", "recent 3"]
+    assert [entry["text"] for entry in entries] == expected
+    assert [entry["text"] for entry in await read.ainvoke({"session_id": "long", "limit": 1})] == [
+        "old"
+    ]
+    where = TranscriptFilter(since=datetime.fromisoformat(arguments["since"]))
+    assert (
+        await archive.text_entries(
+            WHATSAPP, query="", session_id="long", after=0, limit=5, partial=True, where=where
+        )
+        == []
+    )
+    assert await read.ainvoke({**arguments, "since": "2026-11-14T00:00:00Z", "until": None}) == []
+
+
+async def test_time_window_ceiling_returns_a_valid_continuation(monkeypatch):
+    monkeypatch.setattr("deepagents_talon.store_archive._MAX_WINDOW_SCAN", 5)
+    archive = await _review_archive()
+    read = _review_tools(archive)["read_conversation"]
+    arguments = {"session_id": "day", "since": "2026-11-13T00:00:00Z"}
+    result = await read.ainvoke(arguments)
+    assert "call again with after=" in result
+    resume = int(result.split("after=")[1].split()[0])
+    assert await read.ainvoke({**arguments, "after": resume}) == []

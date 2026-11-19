@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
 _MAX_PAGE_SIZE = 20
 _MAX_SCAN = 500
+_MAX_WINDOW_SCAN = 10_000
 _MAX_SEARCH_PAGES = 32
 
 
@@ -404,23 +405,10 @@ class StoreConversationArchive:
         partial: bool = False,
         where: TranscriptFilter | None = None,
     ) -> list[ArchiveEntry]:
-        """Read scoped transcripts by ordering link, for this archive's own adapters.
-
-        Args:
-            scope: Trusted channel and chat identity.
-            query: Literal words to match against complete message revisions.
-            session_id: Read this session chronologically when supplied.
-            after: Previous result cursor.
-            limit: Maximum entries to return.
-            partial: Stop at the scan budget instead of raising; only for ranked
-                candidate generation, never for a page that claims completeness.
-            where: Role and time criteria applied after the scope check.
-
-        Raises:
-            ArchiveCursorError: A session read's `after` is not one of its visible chunks.
-            ScanLimitError: The scan budget is exhausted and `partial` is not set; its
-                `resume` cursor continues the read.
-        """
+        """Read scoped transcripts, raising with a continuation if an empty scan is incomplete."""
+        budget = _MAX_SCAN
+        if session_id and not partial and where and (where.since or where.until):
+            budget = _MAX_WINDOW_SCAN
         async with self.records.access():
             start = await self._read_start(scope, session_id, after)
             if start is None:
@@ -428,7 +416,9 @@ class StoreConversationArchive:
             hits: list[ArchiveEntry] = []
             scanned = after
             try:
-                async for _, record in self._retrieval_chain(*start, partial=partial):
+                async for _, record in self._retrieval_chain(
+                    *start, partial=partial, budget=budget
+                ):
                     entry = await self.visible(record, scope)
                     if entry is None or (session_id and entry["session_id"] != session_id):
                         continue
@@ -476,13 +466,13 @@ class StoreConversationArchive:
         return cursor, link
 
     async def _retrieval_chain(
-        self, cursor: int, link: str, *, partial: bool = False
+        self, cursor: int, link: str, *, partial: bool = False, budget: int = _MAX_SCAN
     ) -> AsyncIterator[tuple[int, Record]]:
         scanned = 0
         async for identifier, record in self.records.chain(cursor, link):
             yield identifier, record
             scanned += 1
-            if scanned == _MAX_SCAN and number(record, link):
+            if scanned == budget and number(record, link):
                 # Ranked retrieval already scores a bounded candidate pool, so a
                 # truncated scan only narrows it. An empty page from entries() or
                 # a short one from conversations() claims completeness, so
@@ -490,7 +480,7 @@ class StoreConversationArchive:
                 if partial:
                     return
                 msg = (
-                    "Conversation history scan limit exceeded (500 records); "
+                    f"Conversation history scan limit exceeded ({budget} records); "
                     "no partial page returned"
                 )
                 raise ScanLimitError(msg)
@@ -505,24 +495,7 @@ class StoreConversationArchive:
         limit: int = 5,
         where: TranscriptFilter | None = None,
     ) -> list[ArchiveEntry]:
-        """Read or search bounded, scoped transcripts.
-
-        Scans at most 500 ordering records, including skipped, filtered, and deleted
-        records. A page cut short by that budget still holds every match it scanned;
-        continue after its last cursor until a page is empty.
-
-        Args:
-            scope: Trusted channel and chat identity.
-            query: Literal words to match against complete message revisions.
-            session_id: Read this session chronologically when supplied.
-            after: Previous result cursor.
-            limit: Maximum result count, from 1 to 20.
-            where: Role and time criteria for returned chunks.
-
-        Raises:
-            ArchiveCursorError: A session read's `after` is not one of its visible chunks.
-            ScanLimitError: The budget ran out before any match; `resume` continues it.
-        """
+        """Read scoped transcripts with a 10,000-record time-window budget, else 500."""
         _bounds(after, limit)
         await self.setup()
         return await self.text_entries(

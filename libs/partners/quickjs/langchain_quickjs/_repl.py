@@ -217,6 +217,11 @@ class _Slot:
         # eval runs, so bridge calls can't run outside one.
         self._ptc_state: PTCState | None = None
 
+    @property
+    def eval_running(self) -> bool:
+        """Whether an eval is running, even one whose caller was cancelled."""
+        return self._eval_running
+
     def _ensure_runtime(self) -> QjsRuntime:
         """Return the Runtime, building it if needed. Runs on the worker."""
         if self._runtime is None:
@@ -862,8 +867,9 @@ class _Registry:
             for other, old in list(self._slots.items()):  # least recent first
                 if excess <= 0:
                     break
-                # Never close a slot with an eval running on it.
-                if self._leases[old]:
+                # Never close a slot with an eval running on it. A cancelled
+                # caller drops its lease before the JS on the worker stops.
+                if self._leases[old] or old.eval_running:
                     continue
                 del self._slots[other]
                 stale.append(old)

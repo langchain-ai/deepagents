@@ -557,7 +557,11 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        model_json_schema = getattr(tool.tool_call_schema, "model_json_schema", None)
+        schema = tool.tool_call_schema
+        # MCP adapters (and other dict-based tools) pass raw JSON Schema.
+        if isinstance(schema, dict):
+            return dereference_refs(schema)
+        model_json_schema = getattr(schema, "model_json_schema", None)
         if callable(model_json_schema):
             return dereference_refs(model_json_schema())
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort
@@ -583,7 +587,7 @@ def _render_signature(
     for key, prop in props.items():
         optional = "" if key in required else "?"
         type_str = _json_schema_to_ts(prop)
-        desc = prop.get("description")
+        desc = prop.get("description") if isinstance(prop, dict) else None
         prefix = f"/**\n *{desc}\n */ " if desc else ""
         fields.append(f"  {prefix}{key}{optional}: {type_str};")
     body = "\n".join(fields) if fields else ""
@@ -621,8 +625,11 @@ def _render_return_type(tool: BaseTool) -> str:
     return _json_schema_to_ts(dereference_refs(schema))
 
 
-def _json_schema_to_ts(prop: dict[str, Any]) -> str:
+def _json_schema_to_ts(prop: dict[str, Any] | bool) -> str:  # noqa: FBT001  # bool subschema
     """JSON-Schema → TS type renderer for `$ref`-free (dereferenced) schemas."""
+    # Raw (e.g. MCP) schemas may use boolean subschemas: `true` means any value.
+    if not isinstance(prop, dict):
+        return "unknown"
     if "const" in prop:
         return json.dumps(prop["const"])
     if "enum" in prop:

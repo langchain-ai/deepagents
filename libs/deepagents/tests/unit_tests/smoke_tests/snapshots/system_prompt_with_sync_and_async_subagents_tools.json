@@ -1,7 +1,7 @@
 [
   {
     "function": {
-      "description": "Lists all files in a directory.\n\nThis is useful for exploring the filesystem and finding the right file to read or edit.\nYou should almost ALWAYS use this tool before using the read_file or edit_file tools.",
+      "description": "Lists all files in a directory.\n\nThis is useful for exploring the filesystem and finding the right file to read or edit.",
       "name": "ls",
       "parameters": {
         "properties": {
@@ -20,7 +20,7 @@
   },
   {
     "function": {
-      "description": "Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file. Use `offset`/`limit` to page through large files instead of reading them whole.\n- A status header, `@@ field | field | ... @@`, sits above the file content, and every line after it is verbatim file content. When content is truncated, there may be an explanation before the header. Never include the header when editing.\n- Speculatively batch multiple `read_file` calls in one response when several files may be useful.\n- An empty file returns a system-reminder warning in place of contents.\n- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.\n- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- Always read a file before editing it.",
+      "description": "Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file. Use `offset`/`limit` to page through large files instead of reading them whole.\n- A status header, `@@ field | field | ... @@`, sits above the file content, and every line after it is verbatim file content. When content is truncated, there may be an explanation before the header. Never include the header when editing.\n- Speculatively batch multiple `read_file` calls in one response when several files may be useful.\n- An empty file returns a system-reminder warning in place of contents.\n- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.\n- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only",
       "name": "read_file",
       "parameters": {
         "properties": {
@@ -73,7 +73,7 @@
   },
   {
     "function": {
-      "description": "Performs exact string replacements in files.\n\nUsage:\n- You must read the file before editing.\n- Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.\n- Prefer editing an existing file over creating a new one.\n- Only use emojis if the user explicitly requests it.",
+      "description": "Performs exact string replacements in files.\n\nUsage:\n- You must read the file before editing.\n- Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.\n- Only use emojis if the user explicitly requests it.",
       "name": "edit_file",
       "parameters": {
         "properties": {
@@ -247,7 +247,7 @@
   },
   {
     "function": {
-      "description": "Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.\n\nAvailable async agent types:\n- remote-researcher: Researches topics on a remote LangGraph server\n- remote-analyst: Analyzes data on a remote LangGraph server\n\n## Usage notes:\n1. This tool launches a background task and returns immediately with a task ID for internal coordination. Briefly describe the delegated work and whether you are continuing other work or waiting for results. Omit task IDs from user-facing replies unless explicitly requested or necessary for actionable troubleshooting. Do NOT immediately check status.\n2. You'll usually be told when a task finishes, fails or needs input, so don't check just to see if it's done; use `check_async_task` when the user asks or a notification says to.\n3. Use `update_async_task` to send new instructions to a running task.\n4. Multiple async subagents can run concurrently \u2014 launch several and let them run in the background.\n5. The subagent runs on a remote server, so it has its own tools and capabilities.\n6. A task with status `waiting` is waiting for a human (an approval or an answer). The user answers it directly; you can't answer or approve it for them. Keep working, and tell the user it's waiting if they ask.",
+      "description": "Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.\n\nAvailable async agent types:\n- remote-researcher: Researches topics on a remote LangGraph server\n- remote-analyst: Analyzes data on a remote LangGraph server\n\n## Usage notes:\n1. The task ID is for internal coordination. Briefly describe the delegated work and whether you are continuing other work or waiting for results. Omit task IDs from user-facing replies unless explicitly requested or necessary for actionable troubleshooting. Do NOT immediately check status.\n2. You'll usually be told when a task finishes, fails or needs input, so don't check just to see if it's done; use `check_async_task` when the user asks or a notification says to.\n3. Use `update_async_task` to send new instructions to a running task.\n4. Multiple async subagents can run concurrently \u2014 launch several and let them run in the background.\n5. The subagent runs on a remote server, so it has its own tools and capabilities.\n6. A task with status `waiting` is waiting for a human (an approval or an answer). The user answers it directly; you can't answer or approve it for them. Keep working, and tell the user it's waiting if they ask.",
       "name": "start_async_task",
       "parameters": {
         "properties": {

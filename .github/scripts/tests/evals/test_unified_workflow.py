@@ -299,10 +299,11 @@ def test_unified_dispatch_forwards_retry_and_timeout_controls() -> None:
     assert "--retry-if-reward-below" not in reusable
     assert "retry_include_exceptions" not in workflow
     assert "retry_exclude_exceptions" not in workflow
-    assert "--retry-include" not in reusable
+    assert '"${retry_args[@]}"' in run_harbor
+    assert "--retry-include AgentSetupTimeoutError" in harbor
     assert "--retry-exclude" not in reusable
     assert "actual_retries=" in latest_job
-    assert "Configured retries per failed trial (--max-retries)" in summary
+    assert "Configured retries per setup-failed trial (--max-retries)" in summary
     assert "Agent timeout multiplier" in summary
     assert "Actual retries" in summary
 

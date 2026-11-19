@@ -38,6 +38,14 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
+# Streaming makes the read timeout an idle timeout rather than a cap on the
+# whole generation; seconds are (connect, read).
+_FIREWORKS_DEFAULTS: dict[str, Any] = {
+    "streaming": True,
+    "timeout": (10, 300),
+    "max_retries": 6,
+}
+
 # Bounds on the gated `web_search` tool (see `_web_search_tool`).
 _WEB_SEARCH_MAX_RESULTS = 10
 _WEB_SEARCH_MAX_CHARS = 20_000
@@ -150,6 +158,16 @@ def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, An
     nested["reasoning_effort"] = "high"
 
 
+def _apply_fireworks_defaults(model_spec: str, model_kwargs: dict[str, Any]) -> None:
+    """Bound Fireworks requests so a stalled response retries instead of hanging."""
+    if not model_spec.startswith("fireworks:"):
+        return
+    for key, value in _FIREWORKS_DEFAULTS.items():
+        model_kwargs.setdefault(key, value)
+    if "request_timeout" in model_kwargs:
+        model_kwargs.pop("timeout")
+
+
 def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     """Build the chat model, applying provider-specific eval defaults.
 
@@ -160,14 +178,16 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     explicitly for `openai:` models.
 
     The GLM-5.2 eval profiles additionally default `reasoning_effort` to
-    `"high"` via `_apply_glm_5_2_reasoning_default`. A caller-supplied
-    `model_kwargs` value still wins in both cases.
+    `"high"` via `_apply_glm_5_2_reasoning_default`, and `fireworks:` models
+    get streaming, timeouts, and retries via `_apply_fireworks_defaults`. A
+    caller-supplied `model_kwargs` value still wins in each case.
     """
     name = _model_name(configurable)
     kwargs = _model_kwargs(configurable)
     if name.startswith("openai:") and "use_responses_api" not in kwargs:
         kwargs["use_responses_api"] = True
     _apply_glm_5_2_reasoning_default(name, kwargs)
+    _apply_fireworks_defaults(name, kwargs)
     return init_chat_model(name, **kwargs)
 
 

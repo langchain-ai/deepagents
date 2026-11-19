@@ -170,7 +170,7 @@ def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
 
     dependencies = json.loads(config_path.read_text())["dependencies"]
 
-    assert "langchain-fireworks>=1.4.4" in dependencies
+    assert "langchain-fireworks>=1.7.3" in dependencies
     assert not any(dependency.startswith("fireworks-ai") for dependency in dependencies)
 
 
@@ -526,7 +526,7 @@ def test_make_graph_preserves_top_level_glm_reasoning_effort(
         }
     )
 
-    assert captured_kwargs[0] == {"reasoning_effort": "max"}
+    assert captured_kwargs[0]["reasoning_effort"] == "max"
 
 
 @pytest.mark.parametrize(

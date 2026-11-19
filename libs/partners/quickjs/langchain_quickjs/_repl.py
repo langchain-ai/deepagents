@@ -42,10 +42,12 @@ from langchain_quickjs._ptc import (
     TOOLS_NAMES,
     PTCCallBudgetExceededError,
     PTCState,
+    UnsupportedCommandError,
     inject_tool_args,
     is_valid_js_identifier,
     normalize_tool_input,
     render_tools_namespace,
+    send_state_updates,
     synth_tool_call_id,
     to_camel_case,
     uses_injected_tool_call_id,
@@ -495,6 +497,7 @@ class _Slot:
                 outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
+            send_state_updates(state.outer_runtime, f"tools.{camel}", result)
             return coerce_tool_output_for_ptc(result)
 
         ctx.register(TOOLS_NAMES, _names)
@@ -619,6 +622,10 @@ class _Slot:
             # agent can shorten its script rather than crash.
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
+            _clear_exception_references(e)
+        except UnsupportedCommandError as e:
+            outcome.error_type = "UnsupportedCommand"
+            outcome.error_message = str(e)
             _clear_exception_references(e)
         except QjsTimeoutError as e:
             outcome.error_type = "Timeout"

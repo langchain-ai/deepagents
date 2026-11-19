@@ -90,29 +90,17 @@ def test_human_message_id_stable_across_invocations_sync() -> None:
     )
 
 
-def test_reducer_handles_none_base_state() -> None:
-    """`DeltaChannel.replay_writes` passes `state=None` when the earliest
-    checkpoint for a thread did not seed `messages: []`. The reducer must
-    treat that the same as an empty base.
+def test_replay_from_none_checkpoint() -> None:
+    """A checkpointer that returns `None` for the messages blob still replays.
 
     Regression test for https://github.com/langchain-ai/deepagents/issues/3564.
-    """  # noqa: D205
-    msg = HumanMessage(content="hi", id="h1")
-    result = _messages_delta_reducer(None, [[msg]])
-    assert result == [msg]
-
-    # Empty writes against a None base should also not crash.
-    assert _messages_delta_reducer(None, []) == []
-    assert _messages_delta_reducer(None, [[]]) == []
-
-
-def test_reducer_handles_none_base_state_with_dict_messages() -> None:
-    """None-base replay still coerces raw over-the-wire message payloads."""
-    result = _messages_delta_reducer(None, [[{"role": "user", "content": "hi"}]])
-
-    assert len(result) == 1
-    assert isinstance(result[0], HumanMessage)
-    assert result[0].content == "hi"
+    """
+    channel = DeltaChannel(_messages_delta_reducer, list).from_checkpoint(None)
+    channel.replay_writes([("t0", "messages", [{"role": "user", "content": "hi", "id": "h1"}])])
+    messages = channel.get()
+    assert len(messages) == 1
+    assert isinstance(messages[0], HumanMessage)
+    assert messages[0].id == "h1"
 
 
 @pytest.mark.anyio

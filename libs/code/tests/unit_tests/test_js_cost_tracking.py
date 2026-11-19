@@ -39,7 +39,6 @@ from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware, _cost_task
 from deepagents_code.cost_tracking import CostTrackingMiddleware
 
-_INTERPRETERS: list[CostAwareCodeInterpreterMiddleware] = []
 _CONFIG: RunnableConfig = {"configurable": {"thread_id": "js-cost"}}
 
 
@@ -83,9 +82,6 @@ def controlled_cost(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     token = cost_tracking._RECORDER_VAR.set(cost_tracking._SessionCostRecorder())
     yield
     cost_tracking._RECORDER_VAR.reset(token)
-    for interpreter in _INTERPRETERS:
-        interpreter._registry.close()
-    _INTERPRETERS.clear()
 
 
 def _call(code: str, *, message_id: str = "parent-call") -> AIMessage:
@@ -128,7 +124,6 @@ def _parent(
     mode: Literal["thread", "turn", "call"] = "thread",
 ) -> CompiledStateGraph:
     interpreter = CostAwareCodeInterpreterMiddleware(tool_name="js_eval", mode=mode)
-    _INTERPRETERS.append(interpreter)
     middleware: list[AgentMiddleware[Any, Any, Any]] = [
         CostTrackingMiddleware(nested=nested),
         SubAgentMiddleware(
@@ -204,9 +199,6 @@ async def _assert_accounting(
 
 
 def _fresh_runtime() -> None:
-    for interpreter in _INTERPRETERS:
-        interpreter._registry.close()
-    _INTERPRETERS.clear()
     cost_tracking._RECORDER_VAR.set(cost_tracking._SessionCostRecorder())
 
 
@@ -653,7 +645,6 @@ async def test_structured_result_and_unrelated_state_are_isolated() -> None:
             return {"unrelated": "child-only"}
 
     interpreter = CostAwareCodeInterpreterMiddleware(tool_name="js_eval", mode="call")
-    _INTERPRETERS.append(interpreter)
     child_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         CostTrackingMiddleware(nested=True),
         ChildState(),

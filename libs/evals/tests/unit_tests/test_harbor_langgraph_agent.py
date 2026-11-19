@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING
 import pytest
 from deepagents_code.config import runtime_state
 from fastmcp import FastMCP
+from harbor.agents.installed.langgraph import LangGraph
 from langchain.mcp import MCPAdapter
 from langchain_core.tools import BaseTool
 
-from deepagents_harbor.agent import DeepAgentsLangGraph
 from deepagents_harbor.langgraph_project import langgraph_agent
 
 if TYPE_CHECKING:
@@ -781,15 +781,15 @@ def test_make_bare_graph_rejects_invalid_skills_dir(
         )
 
 
-def test_deepagents_langgraph_forwards_task_skills_dir(tmp_path: Path) -> None:
+def test_harbor_langgraph_agent_forwards_task_skills_dir(tmp_path: Path) -> None:
     project = Path(langgraph_agent.__file__).parent
-    agent = DeepAgentsLangGraph(
-        project_path=project, logs_dir=tmp_path, skills_dir="/app/.agents/skills"
+    agent = LangGraph(
+        project_path=project, graph="bare", logs_dir=tmp_path, skills_dir="/app/.agents/skills"
     )
-    plain = DeepAgentsLangGraph(project_path=project, logs_dir=tmp_path)
+    plain = LangGraph(project_path=project, graph="bare", logs_dir=tmp_path)
 
-    assert agent.configurable["skills_dir"] == "/app/.agents/skills"
-    assert "skills_dir" not in plain.configurable
+    assert json.loads(agent._runtime_configurable_json({}))["skills_dir"] == "/app/.agents/skills"
+    assert "skills_dir" not in json.loads(plain._runtime_configurable_json({}))
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

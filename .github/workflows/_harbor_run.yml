@@ -79,6 +79,10 @@ on:
         # Passed to the chat model constructor as `reasoning_effort`. Empty = provider default.
         type: string
         default: ""
+      openai_endpoint:
+        # Endpoint serving `openai:` models to the agent (e.g. fireworks); verifiers stay on OpenAI. Empty = OpenAI.
+        type: string
+        default: ""
       env_build_timeout_multiplier:
         # Scales each task's environment.build_timeout_sec (harbor's client-side
         # wait). Note: it does NOT extend the LangSmith build service's own limit.
@@ -366,6 +370,7 @@ jobs:
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
+      HARBOR_OPENAI_ENDPOINT: ${{ inputs.openai_endpoint }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
@@ -390,6 +395,7 @@ jobs:
       HARBOR_DRBENCH_JUDGE: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
+      FIREWORKS_BASE_URL: "https://api.fireworks.ai/inference"
       OLLAMA_HOST: "https://ollama.com"
     steps:
       - name: "🔑 Verify sandbox credentials"
@@ -397,7 +403,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -452,6 +458,36 @@ jobs:
               exit 1
               ;;
           esac
+
+          # Agent endpoint for `openai:` models, read by the Run Harbor step.
+          agent_openai_url="$OPENAI_BASE_URL"
+          agent_openai_key=OPENAI_API_KEY
+          agent_openai_store=""
+          case "$HARBOR_OPENAI_ENDPOINT" in
+            "") ;;
+            fireworks)
+              agent_openai_url="$FIREWORKS_BASE_URL/v1"
+              agent_openai_key=FIREWORKS_API_KEY
+              # Rejects stored Responses under zero data retention.
+              agent_openai_store=false
+              ;;
+            *)
+              echo "::error::Unsupported openai_endpoint: $HARBOR_OPENAI_ENDPOINT"
+              exit 1
+              ;;
+          esac
+          if [ -n "$HARBOR_OPENAI_ENDPOINT" ]; then
+            if [ "$model_provider" != "openai" ]; then
+              echo "::error::openai_endpoint applies only to openai: models ($HARBOR_MODEL)"
+              exit 1
+            fi
+            [ -z "${!agent_openai_key}" ] && missing+=("$agent_openai_key")
+          fi
+          {
+            echo "HARBOR_AGENT_OPENAI_URL=$agent_openai_url"
+            echo "HARBOR_AGENT_OPENAI_KEY=$agent_openai_key"
+            echo "HARBOR_AGENT_OPENAI_STORE=$agent_openai_store"
+          } >> "$GITHUB_ENV"
 
           if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
             missing+=("OPENAI_API_KEY")
@@ -696,7 +732,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -819,13 +855,20 @@ jobs:
           esac
 
           # Allowlist the effort; Harbor splats model_kwargs into init_chat_model.
-          reasoning_args=()
+          model_kwargs=()
           case "$HARBOR_REASONING_EFFORT" in
             "") ;;
             minimal|low|medium|high|xhigh)
-              reasoning_args=(--agent-kwarg "model_kwargs={\"reasoning_effort\": \"$HARBOR_REASONING_EFFORT\"}") ;;
+              model_kwargs+=("\"reasoning_effort\": \"$HARBOR_REASONING_EFFORT\"") ;;
             *) echo "::error::Invalid reasoning_effort (minimal|low|medium|high|xhigh): $HARBOR_REASONING_EFFORT"; exit 1 ;;
           esac
+          if [ "$HARBOR_AGENT_OPENAI_STORE" = "false" ]; then
+            model_kwargs+=('"store": false')
+          fi
+          reasoning_args=()
+          if [ ${#model_kwargs[@]} -gt 0 ]; then
+            reasoning_args=(--agent-kwarg "model_kwargs={$(IFS=,; echo "${model_kwargs[*]}")}")
+          fi
 
           dataset_args=(--dataset "$HARBOR_DATASET")
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
@@ -983,6 +1026,7 @@ jobs:
               model_provider="${HARBOR_MODEL%%:*}"
               case "$HARBOR_AGENT_IMPL:$model_provider" in
                 codex:openai|claude-code:anthropic|pi:openai|pi:anthropic) ;;
+                codex:fireworks|claude-code:fireworks|pi:fireworks) ;;
                 *) echo "::error::$HARBOR_AGENT_IMPL does not support $model_provider models"; exit 1 ;;
               esac
               agent_args=(--agent "$HARBOR_AGENT_IMPL")
@@ -1063,18 +1107,18 @@ jobs:
           # A non-default URL (e.g. a gateway) fails pi here rather than being bypassed.
           model_provider="${HARBOR_MODEL%%:*}"
           verifier_env_args+=(--verifier-env "OPENAI_BASE_URL=$OPENAI_BASE_URL")
-          if [ "$HARBOR_AGENT_IMPL" = "pi" ] && [ "$OPENAI_BASE_URL" != "https://api.openai.com/v1" ]; then
-            echo "::error::pi needs a model_api agent arg to use a custom OPENAI_BASE_URL ($OPENAI_BASE_URL)"
+          if [ "$HARBOR_AGENT_IMPL" = "pi" ] && [ "$HARBOR_AGENT_OPENAI_URL" != "https://api.openai.com/v1" ]; then
+            echo "::error::pi needs a model_api agent arg to use a custom OPENAI_BASE_URL ($HARBOR_AGENT_OPENAI_URL)"
             exit 1
           fi
           if [ "$HARBOR_AGENT_IMPL" = "pi" ] || [ "$model_provider" != "openai" ]; then
             unset OPENAI_BASE_URL
           else
-            agent_env_args+=(--agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}')
+            agent_env_args+=(--agent-env "OPENAI_BASE_URL=$HARBOR_AGENT_OPENAI_URL")
           fi
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
-            openai)       agent_env_args+=(--agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}') ;;
+            openai)       agent_env_args+=(--agent-env "OPENAI_API_KEY=\${$HARBOR_AGENT_OPENAI_KEY}") ;;
             google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
             openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
             baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
@@ -1098,7 +1142,51 @@ jobs:
           case "$HARBOR_AGENT_IMPL" in
             codex|claude-code|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
           esac
-
+          # Fireworks serves OpenAI Responses and Anthropic Messages, so each CLI
+          # reaches it through its native protocol as a custom endpoint.
+          case "$HARBOR_AGENT_IMPL:$model_provider" in
+            codex:fireworks|pi:fireworks)
+              agent_model="openai/${HARBOR_MODEL#*:}"
+              agent_env_args+=(
+                --agent-env 'OPENAI_API_KEY=${FIREWORKS_API_KEY}'
+                --agent-env "OPENAI_BASE_URL=$FIREWORKS_BASE_URL/v1"
+              )
+              if [ "$HARBOR_AGENT_IMPL" = pi ]; then
+                agent_args+=(--agent-kwarg model_api=openai-responses --agent-kwarg max_output_tokens=262144)
+                # Pi assumes a 128K window for unrecognized models and compacts near 112K.
+                if [ "$HARBOR_MODEL" = fireworks:accounts/fireworks/models/glm-5p3 ]; then
+                  agent_args+=(--agent-kwarg context_window=1048573)
+                fi
+              else
+                # Codex defaults the `openai` provider to remote compaction, which
+                # Fireworks lacks; a custom provider compacts locally instead.
+                codex_config=$(jq -cn --arg url "$FIREWORKS_BASE_URL/v1" '{
+                  model_provider: "fireworks",
+                  model_providers: {fireworks: {
+                    name: "Fireworks", base_url: $url, env_key: "OPENAI_API_KEY",
+                    wire_api: "responses", capabilities: {remote_compaction: "unsupported"}
+                  }}
+                }')
+                agent_args+=(--agent-kwarg "config=$codex_config")
+              fi
+              ;;
+            claude-code:fireworks)
+              agent_model="anthropic/${HARBOR_MODEL#*:}"
+              # Claude Code omits effort for model IDs it doesn't recognize.
+              agent_env_args+=(
+                --agent-env 'ANTHROPIC_API_KEY=${FIREWORKS_API_KEY}'
+                --agent-env "ANTHROPIC_BASE_URL=$FIREWORKS_BASE_URL"
+                --agent-env CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+              )
+              # Harbor forwards this from the host env; the CLI default is 32000.
+              export CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536
+              # Unrecognized model IDs otherwise get an assumed 200K window.
+              if [ "$HARBOR_MODEL" = fireworks:accounts/fireworks/models/glm-5p3 ]; then
+                agent_env_args+=(--agent-env CLAUDE_CODE_MAX_CONTEXT_TOKENS=1048573)
+                export CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000
+              fi
+              ;;
+          esac
           uv run harbor run \
             --yes \
             "${agent_args[@]}" \

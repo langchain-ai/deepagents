@@ -45,7 +45,8 @@ from langchain_core.messages import (
     get_notification_metadata,
 )
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import BaseTool, StructuredTool, Tool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -1515,6 +1516,77 @@ def _build_async_subagent_tools(
         _build_cancel_tool(clients),
         _build_list_tasks_tool(clients),
     ]
+
+
+def _refuse_fork_async_tool(*_args: Any, **_kwargs: Any) -> str:
+    """Refuse remote task operations in a fork."""
+    return "You are a subagent and cannot start or manage the parent's async tasks. Complete this task yourself."
+
+
+async def _arefuse_fork_async_tool(*args: Any, **kwargs: Any) -> str:
+    """Async version of the fork's refusal."""
+    return _refuse_fork_async_tool(*args, **kwargs)
+
+
+def _mirror_fork_async_tool(tool: BaseTool) -> BaseTool:
+    """Mirror only the model-visible definition, not the tool's execution behavior."""
+    try:
+        definition = convert_to_openai_tool(tool)
+        function = definition["function"]
+        parameters = json.loads(json.dumps(function["parameters"], allow_nan=False))
+        extras = json.loads(json.dumps(tool.extras, allow_nan=False)) if tool.extras is not None else None
+        if isinstance(tool, Tool) and not tool.args_schema:
+            mirror = Tool(
+                name=tool.name, description=tool.description, extras=extras, func=_refuse_fork_async_tool, coroutine=_arefuse_fork_async_tool
+            )
+        else:
+            mirror = StructuredTool(
+                name=tool.name,
+                description=tool.description,
+                args_schema=parameters,
+                extras=extras,
+                func=_refuse_fork_async_tool,
+                coroutine=_arefuse_fork_async_tool,
+            )
+        matches = json.dumps(definition, allow_nan=False) == json.dumps(convert_to_openai_tool(mirror), allow_nan=False)
+    except (KeyError, TypeError, ValueError, RecursionError) as exc:
+        msg = f"Cannot safely mirror async subagent tool {tool.name!r} into a fork. Use a client-side tool with a serializable, reproducible schema."
+        raise ValueError(msg) from exc
+    if not matches or (extras and "provider_tool_definition" in extras):
+        msg = f"Cannot safely mirror async subagent tool {tool.name!r} into a fork. Use a client-side tool with a serializable, reproducible schema."
+        raise ValueError(msg)
+    return mirror
+
+
+class _ForkAsyncToolsMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    """Mirror async tool schemas without retaining their remote clients or hooks."""
+
+    def __init__(self, source: "AsyncSubAgentMiddleware") -> None:
+        self._name = source.name
+        self.excluded_as = type(source)
+        self.system_prompt = source.system_prompt
+        self.tools = [_mirror_fork_async_tool(tool) for tool in source.tools]
+
+    @property
+    def name(self) -> str:
+        """Preserve the source middleware's name."""
+        return self._name
+
+    def wrap_model_call(
+        self, request: ModelRequest[ContextT], handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]]
+    ) -> ModelResponse[ResponseT]:
+        """Preserve the parent's async guidance without its task hooks."""
+        if self.system_prompt is not None:
+            return handler(request.override(system_message=append_to_system_message(request.system_message, self.system_prompt)))
+        return handler(request)
+
+    async def awrap_model_call(
+        self, request: ModelRequest[ContextT], handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]]
+    ) -> ModelResponse[ResponseT]:
+        """Async version of the prompt-preserving wrapper."""
+        if self.system_prompt is not None:
+            return await handler(request.override(system_message=append_to_system_message(request.system_message, self.system_prompt)))
+        return await handler(request)
 
 
 def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:

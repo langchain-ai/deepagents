@@ -46,7 +46,7 @@ from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware, _ForkAsyncToolsMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -715,11 +715,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # override, and so its middleware stack (including any factory-based
     # `extra_middleware`) isn't built and then discarded.
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
-    async_subagents: list[AsyncSubAgent] = []
+    async_subagents = [cast("AsyncSubAgent", spec) for spec in subagents or [] if "graph_id" in spec]
+    async_middleware = AsyncSubAgentMiddleware(async_subagents=async_subagents) if async_subagents else None
     for spec in subagents or []:
         if "graph_id" in spec:
-            # Then spec is an AsyncSubAgent
-            async_subagents.append(cast("AsyncSubAgent", spec))
             continue
         if _is_compiled_subagent(spec):
             # CompiledSubAgent - use as-is
@@ -756,6 +755,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
+            if is_forked and async_middleware is not None:
+                subagent_middleware.append(async_middleware)
             # Core names captured before the tail so new spec middleware (and a
             # fork's inherited parent middleware) splices in ahead of it,
             # including ahead of Skills.
@@ -809,6 +810,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             )
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
+            if is_forked:
+                fork_own_middleware = spec.get("middleware", [])
+                inherited_async_middleware = [m for m in [async_middleware, *(middleware or ())] if isinstance(m, AsyncSubAgentMiddleware)]
+                subagent_middleware = [
+                    _ForkAsyncToolsMiddleware(m)
+                    if isinstance(m, AsyncSubAgentMiddleware)
+                    and any(m is inherited for inherited in inherited_async_middleware)
+                    and not any(m is own for own in fork_own_middleware)
+                    else m
+                    for m in subagent_middleware
+                ]
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
@@ -947,10 +959,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ]
     )
 
-    if async_subagents:
+    if async_middleware is not None:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+        deepagent_middleware.append(async_middleware)
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.

@@ -6,7 +6,6 @@ the REPL so one `eval` can orchestrate many tool invocations.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import patch
 
@@ -457,22 +456,28 @@ async def test_install_tools_skips_invalid_js_identifier_names(
     assert outcome.result == "undefined"
 
 
-async def test_tools_namespace_assignment_escapes_malicious_tool_name(
-    repl: _Slot,
-) -> None:
-    from langchain_quickjs._ptc import render_tools_namespace_assignment
+async def test_dropped_tool_kept_by_code_fails_the_eval(repl: _Slot) -> None:
+    install_tools(repl, [_echo_tool()])
+    kept = await repl.eval_async("globalThis.keep = tools.echo; typeof keep")
+    assert kept.result == "function"
+    install_tools(repl, [_echo_tool("other")])
+    outcome = await repl.eval_async("await keep({msg: 'x'})")
+    assert outcome.error_type == "TypeError"
+    assert outcome.error_message == "tools.echo is no longer available"
 
-    malicious = 'x"]; globalThis.__ptc_pwned = "yes"; //'
-    quoted = json.dumps(malicious)
-    js = render_tools_namespace_assignment({malicious: "__console_log"})
 
-    outcome = await repl.eval_async(f"{js}; typeof globalThis.__ptc_pwned")
+async def test_tools_proxy_behaves_like_a_plain_object(repl: _Slot) -> None:
+    install_tools(repl, [_echo_tool()])
+    outcome = await repl.eval_async(
+        "[typeof tools.echo, typeof tools.missing, 'echo' in tools,"
+        " Object.keys(tools).join(','), JSON.stringify(tools),"
+        " tools.hasOwnProperty('echo'), tools.hasOwnProperty('x'), `${tools}`]"
+        ".join('|')"
+    )
     assert outcome.error_type is None, outcome.error_message
-    assert outcome.result == "undefined"
-
-    outcome2 = await repl.eval_async(f"{js}; typeof globalThis.tools[{quoted}]")
-    assert outcome2.error_type is None, outcome2.error_message
-    assert outcome2.result == "function"
+    assert outcome.result == (
+        "function|undefined|true|echo|{}|true|false|[object Object]"
+    )
 
 
 async def test_install_tools_is_idempotent(repl: _Slot) -> None:
@@ -651,6 +656,80 @@ def test_middleware_ptc_prompt_follows_each_slots_own_tools() -> None:
     assert "Search globex issues." in globex_prompt
     assert "acme" not in globex_prompt
     assert "Search acme pull requests." in swapped
+
+
+def _deferred(tool: BaseTool) -> BaseTool:
+    """Copy `tool` the way `ProviderToolSearchMiddleware` defers it."""
+    return tool.model_copy(update={"extras": {"defer_loading": True}})
+
+
+def test_middleware_ptc_omits_deferred_tools_from_prompt() -> None:
+    from types import SimpleNamespace
+
+    mw = CodeInterpreterMiddleware(ptc=["greet", "echo"])
+    tools = [_deferred(_greet_tool()), _echo_tool()]
+    state = {"_quickjs_slot_id": "ptc-deferred"}
+    prompt = mw._prepare_for_call(SimpleNamespace(tools=tools, state=state))
+    assert "tools.echo(" in prompt
+    assert "tools.greet(" not in prompt
+    assert "found through tool search" in prompt
+    assert [t.name for t in mw._ptc_tools_by_slot["ptc-deferred"]] == [
+        "greet",
+        "echo",
+    ]
+
+
+def test_middleware_ptc_prompt_has_no_search_line_without_deferred_tools() -> None:
+    from types import SimpleNamespace
+
+    mw = CodeInterpreterMiddleware(ptc=["greet"])
+    state = {"_quickjs_slot_id": "ptc-not-deferred"}
+    prompt = mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()], state=state))
+    assert "tools.greet(" in prompt
+    assert "tool search" not in prompt
+
+
+def test_middleware_ptc_reads_deferral_from_request_tools() -> None:
+    """An explicit `ptc` tool is deferred when the request carries it deferred.
+
+    The request also holds the provider's tool search spec, a plain dict.
+    """
+    from types import SimpleNamespace
+
+    greet = _greet_tool()
+    mw = CodeInterpreterMiddleware(ptc=[greet])
+    tools = [_deferred(greet), {"type": "tool_search"}]
+    state = {"_quickjs_slot_id": "ptc-deferred-request"}
+    prompt = mw._prepare_for_call(SimpleNamespace(tools=tools, state=state))
+    assert "### API Reference" not in prompt
+    assert "found through tool search" in prompt
+
+
+async def test_deferred_tool_is_callable_from_eval() -> None:
+    from types import SimpleNamespace
+
+    calls: list[dict] = []
+    mw = CodeInterpreterMiddleware(ptc=["greet"])
+    state = {"_quickjs_slot_id": "ptc-deferred-eval"}
+    tools = [_deferred(_greet_tool(calls))]
+    mw._prepare_for_call(SimpleNamespace(tools=tools, state=state))
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="deferred-ptc",
+        store=None,
+    )
+    try:
+        result = await mw.tools[0].ainvoke(
+            {"runtime": runtime, "code": 'await tools.greet({ name: "Ada" })'}
+        )
+        assert result.content == "<result>hi Ada x1</result>"
+        assert calls == [{"name": "Ada", "times": 1}]
+    finally:
+        drop_slots(mw)
 
 
 def test_middleware_ptc_requires_private_slot_state() -> None:
@@ -967,6 +1046,49 @@ def test_recursive_model_back_reference_renders_unknown() -> None:
     assert "): Promise<{ value: number; children?: unknown[] }>" in body
 
 
+def _dict_schema_tool(name: str, schema: dict[str, Any]) -> BaseTool:
+    """A tool whose `args_schema` is raw JSON Schema, as MCP adapters build."""
+    return StructuredTool(
+        name=name, description="MCP tool.", args_schema=schema, func=lambda **_: None
+    )
+
+
+def test_dict_schema_renders_fields_with_refs_inline() -> None:
+    """MCP-style dict schemas render their fields, with `$defs` inlined."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "service": {"type": "string"},
+            "regions": {"type": "array", "items": {"$ref": "#/$defs/Region"}},
+        },
+        "required": ["service"],
+        "$defs": {
+            "Region": {"type": "object", "properties": {"name": {"type": "string"}}}
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("request_rollout_check", schema)])
+    assert "Record<string, unknown>" not in body
+    assert "  service: string;\n  regions?: { name?: string }[];" in body
+
+
+def test_dict_schema_recursive_ref_renders_unknown() -> None:
+    """A recursive `$ref` in a dict schema is cut off as `unknown`."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"root": {"$ref": "#/$defs/Node"}},
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}
+                },
+            }
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("walk", schema)])
+    assert "  root?: { children?: unknown[] };" in body
+
+
 class _LookupArgs(BaseModel):
     key: str = Field(description="Key to look up.")
 
@@ -1009,3 +1131,19 @@ def test_render_ptc_prompt_keys_dict_schemas_by_content() -> None:
 
     assert _tool_block_key(_mcp_tool("query")) == _tool_block_key(_mcp_tool("query"))
     assert _tool_block_key(_mcp_tool("query")) != _tool_block_key(_mcp_tool("path"))
+
+
+def test_dict_schema_boolean_subschemas_render_unknown() -> None:
+    """Boolean subschemas (`true` = any value) render as `unknown`."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "value": True,
+            "either": {"anyOf": [True, {"type": "string"}]},
+            "nested": {"type": "object", "properties": {"a": True}},
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("mcp", schema)])
+    assert "  value?: unknown;" in body
+    assert "  either?: unknown | string;" in body
+    assert "  nested?: { a?: unknown };" in body

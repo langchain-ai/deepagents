@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import pytest
 from deepagents_code.config import runtime_state
 from fastmcp import FastMCP
+from harbor.agents.installed.langgraph import LangGraph
 from langchain.mcp import MCPAdapter
 from langchain_core.tools import BaseTool
 
@@ -778,6 +779,17 @@ def test_make_bare_graph_rejects_invalid_skills_dir(
         langgraph_agent.make_bare_graph(
             {"configurable": {"model": "p:m", "cwd": str(tmp_path), "skills_dir": skills_dir}}
         )
+
+
+def test_harbor_langgraph_agent_forwards_task_skills_dir(tmp_path: Path) -> None:
+    project = Path(langgraph_agent.__file__).parent
+    agent = LangGraph(
+        project_path=project, graph="bare", logs_dir=tmp_path, skills_dir="/app/.agents/skills"
+    )
+    plain = LangGraph(project_path=project, graph="bare", logs_dir=tmp_path)
+
+    assert json.loads(agent._runtime_configurable_json({}))["skills_dir"] == "/app/.agents/skills"
+    assert "skills_dir" not in json.loads(plain._runtime_configurable_json({}))
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

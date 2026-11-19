@@ -2545,6 +2545,8 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
         tool_name = name if isinstance(name, str) and name else "unknown"
         lines.append(f"{index}. `{tool_name}`")
         args = action.get("args")
+        if tool_name == "update_mcp_server":
+            args = _mcp_approval_args(args)
         if isinstance(args, dict) and args:
             lines.append(f"Args: `{_json_preview(args)}`")
         elif args not in (None, {}, []):
@@ -2556,6 +2558,19 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
     else:
         lines.append("Reply `👍` / `approve` to run or `👎` / `deny` to skip.")
     return "\n".join(lines)
+
+
+def _mcp_approval_args(value: object) -> object:
+    """Summarize stored MCP values, retaining field paths and mixed-list positions."""
+    if value == "<redacted>":
+        return "<kept>"
+    if isinstance(value, dict):
+        return {key: _mcp_approval_args(item) for key, item in value.items()}
+    if isinstance(value, list):
+        if value and all(item == "<redacted>" for item in value):
+            return f"({len(value)} stored values preserved)"
+        return [_mcp_approval_args(item) for item in value]
+    return value
 
 
 def _json_preview(value: object) -> str:

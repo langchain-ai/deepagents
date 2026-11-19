@@ -1,11 +1,11 @@
 ---
 type: observability mechanism
 title: Trace Attribution
-description: How dcode uses bounded Git checkout evidence to label the traced work of one agent turn without affecting tool execution. Covers middleware installation, per-turn baselines, privacy limits, failure backoff, and retrospective LangSmith metadata updates.
+description: How dcode uses bounded Git checkout evidence to label the traced work of one agent turn without affecting tool execution. Covers middleware placement, per-turn baselines, privacy limits, failure backoff, and retrospective LangSmith metadata updates.
 tags: [dcode, observability, tracing, langsmith, git, privacy]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-11T08:04:08.950Z
+    at: 2026-11-18T08:03:59.609Z
 sources:
   - id: openwiki-source-b1a0880848a5075f2c358358
     resource: repo://libs/code/deepagents_code/_env_vars.py
@@ -31,7 +31,7 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_git_trace.py
   - id: openwiki-source-d8ac92b7d01d6c8ed92689c6
     resource: repo://libs/code/tests/unit_tests/test_turn_trace.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-18T08:03:59.609Z" }
 ---
 
 # Trace Attribution
@@ -40,7 +40,7 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 
 ## Installation and configuration
 
-`create_cli_agent` creates one `GitTraceMiddleware` and places it first in the main middleware stack and in each dcode-created subagent stack. The middleware closes over the execution backend. Its working directory is the sandbox default when a sandbox is selected, otherwise the effective local cwd. Its `TracePolicy` omits middleware input payload processing.
+`create_cli_agent` creates one `GitTraceMiddleware`, bound to the execution backend. Its working directory is the sandbox default when a sandbox is selected, otherwise the effective local cwd. The shared middleware instance is placed at the start of the main stack and is the initial entry in every dcode-created subagent stack. When skills are enabled, a subagent's `PluginSkillsMiddleware` is subsequently inserted before it; code that relies on wrapping order must account for that exception. Its `TracePolicy` omits middleware input payload processing.
 
 Attribution is enabled by default through `tracing.git_attribution`. Set `DEEPAGENTS_CODE_GIT_ATTRIBUTION` to a falsy value, including an empty value, or set `[tracing].git_attribution = false` to omit the middleware entirely. This is the strongest operational opt-out: no Git inspection is started around tools. It is appropriate for privacy-sensitive or very large workspaces.
 

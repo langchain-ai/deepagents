@@ -140,7 +140,7 @@ Each unblocks a gate that is otherwise red. Every one is read-only and must be c
 | --- | --- |
 | `ci:skip-title-lint` | `pr_lint.yml` Conventional Commits title check |
 | `ci:allow-scope-mismatch` | `pr_scope_file_check.yml` (title scope vs changed package dirs) |
-| `ci:allow-lockfile-release` | `release_please_scope_check.yml` lockfile scope check |
+| `ci:allow-lockfile-release` | `release_please_scope_check.yml` multi-package release scope check (the name predates lockfile exclusion) |
 | `ci:ack-markdown` | `markdown_file_check.yml` (non-`docs` PR adds `.md` files) |
 | `ci:ack-readme` | `project_readme_check.yml` (non-`docs` PR edits a project README) |
 | `ci:ack-release-deps` | `check_release_deps.yml`, `check_sdk_pin.yml` dependency freshness |

@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for dcode model catalogs, SDK local-shell lifecycle and pipe handling, Talon hooks and research subagents, optional-dependency metadata, and release-note automation.
+- [Testing Guide](testing-guide.md) - Focused, hermetic validation routes for ACP stdio negotiation, dcode model and Auto-mode boundaries, provider-native tool search, Talon host behavior, and the SDK deprecation adapter.

@@ -1,38 +1,35 @@
 # Pre-merge blocking check for release-please scope fan-out.
 #
 # Why this exists:
-#   release-please scopes a commit to a package by the file PATHS it touches —
-#   it has no notion of "this file is just a lockfile" or "this dependency bound
-#   only exists so another package's feature builds." When a bump-worthy commit
-#   (a `feat:`/`fix:` in one package) also touches files under other managed
-#   package paths — lockfiles, `pyproject.toml` lower bounds, etc. —
-#   release-please attributes the bump-worthy commit to those packages and opens
-#   a release PR for each. This is the general fan-out sibling of the
-#   empty-commit fan-out that the empty-commit guard in release-please.yml blocks;
-#   see "Lockfile churn fan-out" and "Multi-component fan-out" in
-#   .github/RELEASING.md.
+#   release-please scopes a commit to a package by the file PATHS it touches,
+#   not by the title scope. When a bump-worthy commit (a `feat:`/`fix:` in one
+#   package) also changes release-relevant files under another managed package
+#   path — a `pyproject.toml` bound, source — release-please attributes the
+#   commit to that package too and opens a release PR for each. Files under a
+#   package's `exclude-paths` in release-please-config.json (`tests/`, `uv.lock`)
+#   don't count, so relocking dependents is fine. This is the general sibling of
+#   the empty-commit fan-out that the empty-commit guard in release-please.yml
+#   blocks; see "Multi-component fan-out" in .github/RELEASING.md.
 #
 #   This check inspects the PR's title type and changed files at PR time. When a
-#   bump-worthy PR either:
-#     1. edits real (non-lockfile) files in more than one managed component, or
-#     2. changes only a lockfile inside a managed package,
-#   it posts a sticky comment naming the affected packages and FAILS the check.
-#   When the condition is resolved (or the title isn't bump-worthy) the comment
-#   is removed and the check passes.
+#   bump-worthy PR changes release-relevant files in more than one managed
+#   component, it posts a sticky comment naming them and FAILS the check. When
+#   the condition is resolved (or the title isn't bump-worthy) the comment is
+#   removed and the check passes.
 #
 # Escape hatch:
-#   Cross-package releases are occasionally legitimate (e.g. a leaf-package
-#   security bump, or a deliberate coordinated multi-package bump). Apply the
-#   `ci:allow-lockfile-release` label to acknowledge the fan-out and let the PR
-#   pass; the `labeled` trigger re-runs the check so the red clears without a
+#   Cross-package releases are occasionally legitimate (e.g. a deliberate
+#   coordinated multi-package bump). Apply the `ci:allow-lockfile-release` label
+#   (the name predates lockfile exclusion) to acknowledge the fan-out and let the
+#   PR pass; the `labeled` trigger re-runs the check so the red clears without a
 #   new commit. A companion workflow (`release_fanout_bypass_warn.yml`) posts a
 #   loud sticky listing the components that will still fan out.
 #
 # To actually gate merges, add this check to the branch's required status checks.
 #
 # How it stays faithful to release-please:
-#   - Package path -> component map and the bump-worthy type set are both read
-#     from release-please-config.json by the helper script — see
+#   - Package paths, exclude-paths, components, and the bump-worthy type set are
+#     all read from release-please-config.json by the helper script — see
 #     .github/scripts/release/check_lockfile_release_scope.py for the rationale.
 #
 # Trust model:
@@ -112,9 +109,8 @@ jobs:
               per_page: 100,
             });
             // listFiles is hard-capped by GitHub at 3000 files regardless of
-            // pagination. A truncated list would make a package look
-            // lockfile-only when its real edits are past the cap (false block)
-            // or hide a lockfile past the cap (false pass). Fail closed if the
+            // pagination. A truncated list could hide a second package's
+            // release-relevant edits past the cap (false pass). Fail closed if the
             // collected count doesn't match the PR's reported total.
             const expected = context.payload.pull_request.changed_files;
             // Without a numeric reported total we cannot verify completeness, so
@@ -160,7 +156,7 @@ jobs:
             # silently disables the gate. Emit a *warning* (not a notice) so the
             # desync surfaces in the Checks UI rather than only the fold-out log.
             echo "::warning::Detector '$detector' absent on base revision; scope check is NOT enforcing. Expected only on the bootstrapping PR or a pre-gate branch — otherwise the detector path here may be out of sync with the repo."
-            result='{"lockfile_only":[],"multi_component":[]}'
+            result='{"multi_component":[]}'
           else
             # A config-read error in the detector exits non-zero; under `set -e`
             # the command substitution propagates it and this step fails, so the
@@ -186,22 +182,17 @@ jobs:
             const STICKY_MARKER = '<!-- release-please-scope-check -->';
             const BYPASS_LABEL = 'ci:allow-lockfile-release';
             const SPLIT_RECIPE = [
-              'Split into:',
+              'Split so each bump-worthy PR changes published files in **one** package:',
               '',
-              '1. One feature/fix PR scoped to the **single** package that owns the user-facing change (`feat(code): ...` / `fix(cli): ...`).',
-              '2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does **not** open release PRs).',
+              '1. Land changes another package needs (e.g. a dependency bound in its `pyproject.toml`) first, in their own PR. That is a real change to that package and releases it.',
+              '2. Then land the feature/fix scoped to the package that owns it. Relocking other packages\' `uv.lock` in the same PR is fine: lockfiles and `tests/` are excluded and never release a package.',
             ].join('\n');
-            const RELEASING_LOCKFILE = '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)';
             const RELEASING_MULTI = '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)';
             const { number, labels } = context.payload.pull_request;
 
-            // Strict, fail-closed parse. Prefer the object shape with two arrays.
-            // During the bootstrap merge of this workflow (and any time base still
-            // has the pre-object detector), the trusted base checkout may print a
-            // legacy JSON array of lockfile-only component names ("[]" when clean).
-            // Accept that shape so the PR introducing the object detector is not
-            // blocked by its own rollout; multi_component is unavailable until
-            // the new detector is on base.
+            // Strict, fail-closed parse. The detector prints an object with a
+            // `multi_component` array. A `lockfile_only` key, if present, is
+            // ignored: `uv.lock` is in every package's exclude-paths.
             const raw = process.env.RESULT;
             if (raw === undefined || raw.trim() === '') {
               core.setFailed('Detector produced no output; cannot determine release scope. Failing closed.');
@@ -214,21 +205,11 @@ jobs:
               core.setFailed(`Detector output was not valid JSON: ${JSON.stringify(raw)} (${parseErr.message})`);
               return;
             }
-            if (Array.isArray(result)) {
-              if (result.some(c => typeof c !== 'string')) {
-                core.setFailed(`Legacy detector array contained a non-string entry: ${JSON.stringify(raw)}`);
-                return;
-              }
-              core.notice(
-                'Detector returned legacy lockfile-only array shape; multi_component fan-out is not enforceable until the object-shaped detector is on the PR base.',
-              );
-              result = { lockfile_only: result, multi_component: [] };
-            } else if (
+            if (
               !result ||
               typeof result !== 'object' ||
-              !Array.isArray(result.lockfile_only) ||
+              Array.isArray(result) ||
               !Array.isArray(result.multi_component) ||
-              result.lockfile_only.some(c => typeof c !== 'string') ||
               result.multi_component.some(c => typeof c !== 'string')
             ) {
               core.setFailed(`Detector output was not a fan-out result object: ${JSON.stringify(raw)}`);
@@ -236,8 +217,6 @@ jobs:
             }
 
             const multi = result.multi_component;
-            const lockOnly = result.lockfile_only;
-            const hasFanout = multi.length > 0 || lockOnly.length > 0;
 
             // Constant string comparison against the structured label payload —
             // no PR-author-controlled text reaches a code path.
@@ -285,7 +264,7 @@ jobs:
               }
             }
 
-            if (!hasFanout) {
+            if (multi.length === 0) {
               // Resolved (or title not bump-worthy): clear any stale comment and
               // pass. Wrapped so a cleanup hiccup can't turn a clean result red.
               try {
@@ -298,90 +277,42 @@ jobs:
             }
 
             const multiList = multi.map(c => `\`${c}\``).join(', ');
-            const lockList = lockOnly.map(c => `\`${c}\``).join(', ');
-            const allNames = [...multi, ...lockOnly];
 
             if (bypassed) {
               // Acknowledged as intentional via the bypass label: leave an
               // informational note (not a failure) and pass.
-              const lines = [
+              await upsertSticky([
                 STICKY_MARKER,
                 `ℹ️ **Release fan-out acknowledged** via the \`${BYPASS_LABEL}\` label.`,
                 '',
-                '**Consequence:** release-please will open a **separate release PR for every managed component this PR touches**, because the title is bump-worthy (`feat`/`fix`/etc.) and scoping is by changed file path.',
-              ];
-              if (multi.length) {
-                lines.push('', `Real-file multi-component hit(s): ${multiList}`);
-              }
-              if (lockOnly.length) {
-                lines.push('', `Lockfile-only package hit(s): ${lockList}`);
-              }
-              lines.push(
+                `**Consequence:** because the title is bump-worthy (\`feat\`/\`fix\`/etc.), release-please will open a **separate release PR** for each of: ${multiList}.`,
                 '',
                 'Remove the label to re-enable the block. Prefer the split recipe if this was unintentional:',
                 '',
                 SPLIT_RECIPE,
                 '',
                 RELEASING_MULTI,
-                RELEASING_LOCKFILE,
-              );
-              await upsertSticky(lines.join('\n'));
+              ].join('\n'));
               core.info(`Bypassed via ${BYPASS_LABEL} label.`);
               return;
             }
 
-            // Prefer the multi-component message when that is the primary
-            // signal; always surface both lists when both apply.
-            if (multi.length > 0) {
-              const singular = multi.length === 1;
-              const lines = [
-                STICKY_MARKER,
-                '⛔ **This bump-worthy PR touches real files in more than one release-please component.**',
-                '',
-                `Components with non-lockfile edits: ${multiList}`,
-              ];
-              if (lockOnly.length) {
-                lines.push('', `Also lockfile-only under: ${lockList}`);
-              }
-              lines.push(
-                '',
-                `Because the PR title is bump-worthy, release-please will open a **separate release PR** for ${singular ? 'this component' : 'each of these components'} (and any lockfile-only packages above). This check is **blocking**.`,
-                '',
-                '### To resolve',
-                '',
-                SPLIT_RECIPE,
-                '',
-                '### If intentional',
-                '',
-                `Apply the \`${BYPASS_LABEL}\` label to acknowledge the fan-out. The check re-runs and passes — but that still ships a release PR per touched component.`,
-                '',
-                RELEASING_MULTI,
-                RELEASING_LOCKFILE,
-              );
-              await upsertSticky(lines.join('\n'));
-              core.setFailed(`Multi-component release fan-out for: ${allNames.join(', ')}. Split the PR, or apply the '${BYPASS_LABEL}' label if intentional.`);
-              return;
-            }
-
-            {
-              const singular = lockOnly.length === 1;
-              await upsertSticky([
-                STICKY_MARKER,
-                '⛔ **This PR changes only a lockfile inside one or more release-please-managed packages.**',
-                '',
-                `Affected: ${lockList}`,
-                '',
-                `Because the PR title is bump-worthy, release-please will open a **separate release PR** for ${singular ? 'this package' : 'each of these packages'} — even though ${singular ? 'its' : 'their'} only change is a regenerated lockfile. This check is **blocking**.`,
-                '',
-                '### To resolve',
-                '',
-                SPLIT_RECIPE,
-                '',
-                '### If intentional',
-                '',
-                `Apply the \`${BYPASS_LABEL}\` label (e.g. a deliberate dependency bump shipping as a lockfile-only release). The check re-runs and passes — but that still ships a release PR per listed component.`,
-                '',
-                RELEASING_LOCKFILE,
-              ].join('\n'));
-              core.setFailed(`Lockfile-only release fan-out for: ${lockOnly.join(', ')}. Resolve, or apply the '${BYPASS_LABEL}' label if intentional.`);
-            }
+            await upsertSticky([
+              STICKY_MARKER,
+              '⛔ **This bump-worthy PR changes published files in more than one release-please component.**',
+              '',
+              `Components: ${multiList}`,
+              '',
+              'Because the PR title is bump-worthy, release-please will open a **separate release PR** for each of these components. Files under `exclude-paths` (`tests/`, `uv.lock`) are already ignored. This check is **blocking**.',
+              '',
+              '### To resolve',
+              '',
+              SPLIT_RECIPE,
+              '',
+              '### If intentional',
+              '',
+              `Apply the \`${BYPASS_LABEL}\` label to acknowledge the fan-out. The check re-runs and passes — but that still ships a release PR per listed component.`,
+              '',
+              RELEASING_MULTI,
+            ].join('\n'));
+            core.setFailed(`Multi-component release fan-out for: ${multi.join(', ')}. Split the PR, or apply the '${BYPASS_LABEL}' label if intentional.`);

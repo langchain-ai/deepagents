@@ -77,6 +77,8 @@ def _supported_provider(request: ModelRequest) -> str | None:
             "gpt-6-sol",
             "gpt-6-luna",
             "gpt-6.1-sol",
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
         }:
             return "openai"
     if type(model) is ChatAnthropic:

@@ -1484,6 +1484,35 @@ OPENAI_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
 """Capability fallbacks from https://developers.openai.com/api/docs/models/gpt-6.1-terra."""
 
 
+GOOGLE_GENAI_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "gemini-4-neon": {
+        "name": "Gemini 4 Neon",
+        "max_input_tokens": 1_048_576,
+        "max_output_tokens": 65_536,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": True,
+        "pdf_inputs": True,
+        "video_inputs": True,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "tool_choice": True,
+        "structured_output": True,
+        "temperature": False,
+        "image_url_inputs": True,
+        "image_tool_message": True,
+        "reasoning_effort_levels": ["low", "medium", "high"],
+        "reasoning_effort_default": "high",
+    },
+}
+"""Capability fallbacks matching the `langchain-google-genai` 4.5.1 profile.
+
+`xhigh` is omitted until `langchain-google-vertexai` allows `google-genai` 3.x,
+which `langchain-google-genai` 4.5+ requires to accept that level.
+"""
+
+
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
@@ -1548,6 +1577,9 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         fallbacks = {
             "langchain_anthropic.data._profiles": ANTHROPIC_MODEL_PROFILE_FALLBACKS,
             "langchain_openai.data._profiles": OPENAI_MODEL_PROFILE_FALLBACKS,
+            "langchain_google_genai.data._profiles": (
+                GOOGLE_GENAI_MODEL_PROFILE_FALLBACKS
+            ),
         }.get(module_path, {})
         if fallbacks:
             profiles = {

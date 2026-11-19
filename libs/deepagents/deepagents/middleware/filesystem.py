@@ -1657,6 +1657,8 @@ _EXECUTE_GLOB_SEARCH_GUIDANCE = "You MUST avoid using shell find for searches. I
 _EXECUTE_GLOB_BAD_EXAMPLE = "\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead"
 _EXECUTE_GREP_BAD_EXAMPLE = "\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead"
 
+# Only shown to the model when the backend implements SandboxBackendProtocol
+# (see `supports_execution`); otherwise `execute` is removed from the tool list.
 _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).
 
 Usage:

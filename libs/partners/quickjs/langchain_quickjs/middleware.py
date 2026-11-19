@@ -1,13 +1,11 @@
 """`CodeInterpreterMiddleware`: exposes a sandboxed JavaScript REPL tool."""
 
 import asyncio
-import contextlib
 import logging
-import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.backends.protocol import BackendProtocol
@@ -51,8 +49,11 @@ from langchain_quickjs._ptc import (
 )
 from langchain_quickjs._repl import (
     _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+    _REGISTRY,
     EvalOutcome,
-    _Registry,
+    PersistenceMode,
+    _Slot,
+    _SlotConfig,
     _SnapshotRestoreError,
 )
 from langchain_quickjs._snapshot import (
@@ -71,9 +72,6 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
-_DEFAULT_IDLE_TTL = 3600.0
-
-PersistenceMode = Literal["thread", "turn", "call"]
 
 
 class REPLState(AgentState):
@@ -116,13 +114,6 @@ def _resolve_mode(
         case _:
             msg = "`mode` must be one of 'thread', 'turn', or 'call'."
             raise ValueError(msg)
-
-
-def _same_tools(cached: tuple[BaseTool, ...], exposed: tuple[BaseTool, ...]) -> bool:
-    """Whether `exposed` is exactly the tools `cached` was rendered from."""
-    return len(cached) == len(exposed) and all(
-        a is b for a, b in zip(cached, exposed, strict=True)
-    )
 
 
 def _new_slot_id() -> str:
@@ -271,15 +262,6 @@ class CodeInterpreterMiddleware(
                 where the checkpointer is not fully trusted. Use the same key across
                 all processes that share a thread, and rotate it by starting fresh
                 threads.
-        idle_ttl: Seconds a REPL slot may sit unused before it is closed.
-            Slots are normally closed in `after_agent`; this bounds the ones
-            left behind when a run errors, is cancelled, has its stream closed,
-            or pauses on an interrupt that is never resumed. Slots in use by
-            an eval are never closed. A closed slot's next eval starts from the
-            last persisted snapshot, so a run resumed from an interrupt after
-            `idle_ttl` loses the JS state from that turn's earlier evals.
-            Expiry is checked whenever a slot is acquired or evicted. Defaults
-            to 3600 seconds (1 hour); `None` disables.
 
     Example:
         ```python
@@ -313,7 +295,6 @@ class CodeInterpreterMiddleware(
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
-        idle_ttl: float | None = _DEFAULT_IDLE_TTL,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -322,9 +303,6 @@ class CodeInterpreterMiddleware(
             raise ValueError(msg)
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
-            raise ValueError(msg)
-        if idle_ttl is not None and not idle_ttl > 0:
-            msg = "`idle_ttl` must be > 0 or None"
             raise ValueError(msg)
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
@@ -352,7 +330,7 @@ class CodeInterpreterMiddleware(
             if snapshot_signing_key is not None
             else None
         )
-        self._registry = _Registry(
+        self._slot_config = _SlotConfig(
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
@@ -360,13 +338,11 @@ class CodeInterpreterMiddleware(
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
-            idle_ttl=idle_ttl,
         )
+        self._registry = _REGISTRY
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
-        # Rendered `tools` namespace per slot, with the tools it was rendered from.
-        self._ptc_prompt_by_slot: dict[str, tuple[tuple[BaseTool, ...], str]] = {}
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
@@ -426,20 +402,19 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = middleware._registry.acquire(slot_id)
+            slot = middleware._registry.acquire(slot_id, middleware._slot_config)
             try:
-                outcome = slot.repl.eval_sync(
+                outcome = middleware._eval(
+                    slot,
+                    runtime.state,
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
-                    snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     fs=middleware._fs,
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
-                if middleware._mode == "call":
-                    middleware._registry.reset_repl(slot_id)
                 middleware._registry.release(slot)
             return _make_tool_output(outcome, runtime.tool_call_id)
 
@@ -449,12 +424,13 @@ class CodeInterpreterMiddleware(
             callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            slot = await middleware._registry.aacquire(slot_id)
+            slot = await middleware._registry.aacquire(slot_id, middleware._slot_config)
             try:
-                outcome = await slot.repl.eval_async(
+                outcome = await middleware._aeval(
+                    slot,
+                    runtime.state,
                     code,
                     outer_runtime=_with_eval_callbacks(runtime, callbacks),
-                    snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     outer_loop=asyncio.get_running_loop(),
                     fs=middleware._fs,
@@ -462,9 +438,7 @@ class CodeInterpreterMiddleware(
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
-                if middleware._mode == "call":
-                    middleware._registry.reset_repl(slot_id)
-                await middleware._registry.arelease(slot)
+                middleware._registry.release(slot)
             return _make_tool_output(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
@@ -491,6 +465,24 @@ class CodeInterpreterMiddleware(
         """Return current bindings without allocating an interpreter."""
         return (
             self._ptc_tools_by_slot.get(slot_id, ()) if self._ptc is not None else None
+        )
+
+    def _eval(
+        self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
+    ) -> EvalOutcome:
+        """Run one eval on `slot`, applying the persistence mode around it."""
+        if snapshot := self._snapshot_for_eval(state):
+            slot.restore_snapshot(snapshot)
+        return slot.eval_sync(code, close_context_after=self._mode == "call", **kwargs)
+
+    async def _aeval(
+        self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
+    ) -> EvalOutcome:
+        """Async variant of `_eval`."""
+        if snapshot := self._snapshot_for_eval(state):
+            await slot.arestore_snapshot(snapshot)
+        return await slot.eval_async(
+            code, close_context_after=self._mode == "call", **kwargs
         )
 
     def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:
@@ -557,11 +549,15 @@ class CodeInterpreterMiddleware(
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Assign a private slot and authenticate snapshots without creating a VM."""
-        # Never runs on resume, so a live slot here was left by a run that died
-        # before `after_agent`; close it so the next eval restores the snapshot.
+        # Never runs on resume. Keep a live Context only if it still matches
+        # the checkpoint's snapshot; one left by a run that died before
+        # `after_agent`, or behind a retry or fork, is closed so the next eval
+        # restores the snapshot. The slot's worker and Runtime stay warm.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            self._registry.evict(slot_id)
+            self._registry.close_context(
+                slot_id, self._slot_config, keep_snapshot=self._snapshot_for_eval(state)
+            )
         return self._prepare_slot(state)
 
     async def abefore_agent(
@@ -570,15 +566,16 @@ class CodeInterpreterMiddleware(
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `before_agent`."""
-        # See `before_agent`: any live slot here was left by a dead run.
+        # See `before_agent`: any live Context here was left by a dead run.
         if slot_id := state.get("_quickjs_slot_id"):
             self._drop_slot_caches(slot_id)
-            await self._registry.aevict(slot_id)
+            await self._registry.aclose_context(
+                slot_id, self._slot_config, keep_snapshot=self._snapshot_for_eval(state)
+            )
         return self._prepare_slot(state)
 
     def _drop_slot_caches(self, slot_id: str) -> None:
         self._ptc_tools_by_slot.pop(slot_id, None)
-        self._ptc_prompt_by_slot.pop(slot_id, None)
 
     def _prepare_slot(self, state: REPLState) -> dict[str, Any] | None:
         slot_id = state.get("_quickjs_slot_id")
@@ -684,19 +681,10 @@ class CodeInterpreterMiddleware(
         prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
         slot_id = self._slot_id(getattr(request, "state", {}))
         exposed_tools = tuple(exposed)
-        # Rendering the TS-ish signature block is cheap but not free, so it is
-        # cached. One middleware instance serves every run of a compiled
-        # graph, and concurrent runs may expose different tools under the
-        # same names, so the cache is per slot and keyed on tool identity.
         self._ptc_tools_by_slot[slot_id] = exposed_tools
-        cached = self._ptc_prompt_by_slot.get(slot_id)
-        if cached is None or not _same_tools(cached[0], exposed_tools):
-            cached = (
-                exposed_tools,
-                render_ptc_prompt(exposed_tools, tool_name=self._tool_name),
-            )
-            self._ptc_prompt_by_slot[slot_id] = cached
-        return self._with_fs(prompt + cached[1])
+        return self._with_fs(
+            prompt + render_ptc_prompt(exposed_tools, tool_name=self._tool_name)
+        )
 
     def _with_fs(self, prompt: str) -> str:
         if not self._fs_enabled:
@@ -763,33 +751,34 @@ class CodeInterpreterMiddleware(
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Snapshot REPL state (optional) and evict this turn's REPL slot."""
+        """Snapshot REPL state, keeping the Context warm (`thread`), or close it."""
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
         if self._mode != "thread":
-            self._registry.evict(slot_id)
+            self._registry.close_context(slot_id, self._slot_config)
             return None
-
-        slot = self._registry.lease_if_exists(slot_id)
+        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""
-        update: dict[str, Any]
+        update: dict[str, Any] | None
         try:
-            update = self._snapshot_update(
-                payload=slot.repl.create_snapshot(),
-                prior=prior,
-                slot_id=slot_id,
+            payload = slot.create_snapshot()
+            update = (
+                None
+                if payload is None
+                else self._snapshot_update(
+                    payload=payload, prior=prior, slot_id=slot_id
+                )
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for thread_id=%s",
+                "Failed to create QuickJS snapshot for slot_id=%s",
                 slot_id,
                 exc_info=True,
             )
             update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
-            self._registry.evict(slot_id)
             self._registry.release(slot)
         return update
 
@@ -798,46 +787,33 @@ class CodeInterpreterMiddleware(
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Async variant of `after_agent` snapshot+evict behavior."""
+        """Async variant of `after_agent`."""
         slot_id = self._slot_id(state)
         self._drop_slot_caches(slot_id)
         if self._mode != "thread":
-            await self._registry.aevict(slot_id)
+            await self._registry.aclose_context(slot_id, self._slot_config)
             return None
-
-        slot = self._registry.lease_if_exists(slot_id)
+        slot = self._registry.lease_if_exists(slot_id, self._slot_config)
         if slot is None:
             return None
         prior = state.get("_quickjs_snapshot_payload") or b""
-        update: dict[str, Any]
+        update: dict[str, Any] | None
         try:
-            update = self._snapshot_update(
-                payload=await slot.repl.acreate_snapshot(),
-                prior=prior,
-                slot_id=slot_id,
+            payload = await slot.acreate_snapshot()
+            update = (
+                None
+                if payload is None
+                else self._snapshot_update(
+                    payload=payload, prior=prior, slot_id=slot_id
+                )
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for thread_id=%s",
+                "Failed to create QuickJS snapshot for slot_id=%s",
                 slot_id,
                 exc_info=True,
             )
             update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
-            await self._registry.aevict(slot_id)
-            await self._registry.arelease(slot)
+            self._registry.release(slot)
         return update
-
-    def __del__(self) -> None:
-        """Best-effort Runtime cleanup on GC; never raises at shutdown."""
-        # During interpreter finalization the daemon worker threads can no
-        # longer take the GIL, so closing a slot (which waits on its worker)
-        # would block forever and the process would never exit. The OS
-        # reclaims the interpreters' memory at exit anyway.
-        if sys.is_finalizing():
-            return
-        # Wrapped in `contextlib.suppress` because __del__ must not raise
-        # during interpreter shutdown, when dependencies may already be
-        # half-unloaded.
-        with contextlib.suppress(Exception):
-            self._registry.close()

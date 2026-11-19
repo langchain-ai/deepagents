@@ -6,6 +6,8 @@ import contextlib
 import inspect
 import json
 import re
+import threading
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from langchain_core.utils.json_schema import dereference_refs
@@ -421,7 +423,8 @@ def render_eval_tool_description(
         f"{state_line} No {'' if files_attached else 'filesystem, '}network, "
         "or real clock. "
         "Top-level `await` is supported; a final-expression Promise resolves "
-        "before the call returns."
+        "before the call returns. Only one call can run at a time: do not "
+        "issue parallel calls; use `Promise.all` inside a single call instead."
     )
 
 
@@ -444,17 +447,7 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
-    blocks: list[str] = []
-    for tool in tools:
-        camel = to_camel_case(tool.name)
-        schema = _safe_json_schema(tool)
-        return_type = _render_return_type(tool)
-        signature = _render_signature(camel, schema, return_type=return_type)
-        description = (
-            (tool.description or "").strip().splitlines()[0] if tool.description else ""
-        )
-        blocks.append(f"/** {description} */\n{signature}")
-    body = "\n\n".join(blocks)
+    body = "\n\n".join(_render_tool_block(tool) for tool in tools)
     return (
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
@@ -497,6 +490,50 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         f"{body}\n"
         "```"
     )
+
+
+# Rendered blocks, shared across middleware instances and threads so agents
+# rebuilt per run don't render them again. Keyed on what a block is built from.
+_TOOL_BLOCKS: OrderedDict[tuple[Any, ...], str] = OrderedDict()
+_TOOL_BLOCKS_LOCK = threading.Lock()
+_MAX_TOOL_BLOCKS = 256
+
+
+def _render_tool_block(tool: BaseTool) -> str:
+    key = _tool_block_key(tool)
+    if key is not None:
+        with _TOOL_BLOCKS_LOCK:
+            if (block := _TOOL_BLOCKS.get(key)) is not None:
+                _TOOL_BLOCKS.move_to_end(key)
+                return block
+    signature = _render_signature(
+        to_camel_case(tool.name),
+        _safe_json_schema(tool),
+        return_type=_render_return_type(tool),
+    )
+    description = (
+        (tool.description or "").strip().splitlines()[0] if tool.description else ""
+    )
+    block = f"/** {description} */\n{signature}"
+    if key is not None:
+        with _TOOL_BLOCKS_LOCK:
+            _TOOL_BLOCKS[key] = block
+            if len(_TOOL_BLOCKS) > _MAX_TOOL_BLOCKS:
+                _TOOL_BLOCKS.popitem(last=False)
+    return block
+
+
+def _tool_block_key(tool: BaseTool) -> tuple[Any, ...] | None:
+    """Key a tool's block by content; `None` (not cached) if that's unhashable."""
+    schema = tool.args_schema
+    if isinstance(schema, dict):  # e.g. MCP tools: key on the schema itself
+        schema = json.dumps(schema, sort_keys=True, default=str)
+    key = (tool.name, tool.description, schema, _return_annotation(tool))
+    try:
+        hash(key)
+    except TypeError:  # e.g. an `Annotated[..., {dict}]` return annotation
+        return None
+    return key
 
 
 def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
@@ -544,16 +581,20 @@ def _render_signature(
 # `_json_schema_to_ts` we use for input args.
 
 
+def _return_annotation(tool: BaseTool) -> Any:
+    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    annotation = inspect.Signature.empty
+    if target is not None:
+        with contextlib.suppress(TypeError, ValueError, NameError):
+            signature = inspect.signature(target)
+            resolved = get_type_hints(target)
+            annotation = resolved.get("return", signature.return_annotation)
+    return annotation
+
+
 def _render_return_type(tool: BaseTool) -> str:
     """Render the return annotation as a TS type, defaulting to `unknown`."""
-    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
-    if target is None:
-        return "unknown"
-    annotation = inspect.Signature.empty
-    with contextlib.suppress(TypeError, ValueError, NameError):
-        signature = inspect.signature(target)
-        resolved = get_type_hints(target)
-        annotation = resolved.get("return", signature.return_annotation)
+    annotation = _return_annotation(tool)
     if annotation is inspect.Signature.empty or annotation is Any:
         return "unknown"
     try:

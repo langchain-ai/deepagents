@@ -24,7 +24,6 @@ The host functions that actually invoke each tool live on the slot in
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from dataclasses import dataclass, replace
@@ -43,7 +42,7 @@ from langchain_quickjs import _prompt
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Set as AbstractSet
 
     from deepagents.backends.protocol import BackendProtocol
     from langgraph.prebuilt import ToolRuntime
@@ -161,12 +160,17 @@ def _raise_on_invalid_ptc_tools(tools: Sequence[BaseTool]) -> None:
         raise ValueError(msg)
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
+def render_ptc_prompt(
+    tools: Sequence[BaseTool],
+    *,
+    tool_name: str = "eval",
+    deferred: AbstractSet[str] = frozenset(),
+) -> str:
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
     _raise_on_invalid_ptc_tools(tools)
-    return _prompt.render_ptc_prompt(tools, tool_name=tool_name)
+    return _prompt.render_ptc_prompt(tools, tool_name=tool_name, deferred=deferred)
 
 
 class PTCCallBudgetExceededError(RuntimeError):
@@ -335,28 +339,31 @@ def uses_injected_tool_call_id(tool: Any) -> bool:
     )
 
 
-def bridge_symbol_name(tool_name: str) -> str:
-    """Build a stable, JS-safe global symbol for one PTC bridge."""
-    # Keep only identifier-safe characters and salt with a short hash to
-    # avoid collisions when different source names sanitize similarly.
-    normalized = "".join(
-        c if c.isalnum() or c in {"_", "$"} else "_" for c in tool_name
+TOOLS_CALL = "__tools_call"
+TOOLS_NAMES = "__tools_names"
+
+
+def render_tools_namespace() -> str:
+    """Return JS that defines `globalThis.tools` as a proxy over the host.
+
+    Python owns the tool map: a call is `__tools_call(name, input)` and the
+    installed names come from `__tools_names()`, so changing the tool set
+    never touches the guest. Any other name, including inherited
+    `Object.prototype` members, reads from a plain object.
+    """
+    call = json.dumps(TOOLS_CALL)
+    names = json.dumps(TOOLS_NAMES)
+    return (
+        f"{{ const fn = (name) => (input) => globalThis[{call}](name, input);"
+        " const has = (name) => typeof name === 'string'"
+        f" && globalThis[{names}]().includes(name);"
+        " globalThis.tools = new Proxy({}, {"
+        " get(target, name) {"
+        " return has(name) ? fn(name) : Reflect.get(target, name); },"
+        " has(_, name) { return has(name); },"
+        f" ownKeys() {{ return globalThis[{names}](); }},"
+        " getOwnPropertyDescriptor(_, name) {"
+        " return has(name) ? { value: fn(name), enumerable: true,"
+        " configurable: true, writable: false } : undefined; },"
+        " }); } undefined"
     )
-    if not normalized or normalized[0].isdigit():
-        normalized = f"_{normalized}"
-    digest = hashlib.sha256(tool_name.encode("utf-8")).hexdigest()[:8]
-    return f"__tools_{normalized}_{digest}"
-
-
-def render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
-    """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = ["globalThis.tools = {};"]
-    for tool_name, bridge_symbol in sorted(bridges.items()):
-        quoted_tool_name = json.dumps(tool_name)
-        quoted_bridge_symbol = json.dumps(bridge_symbol)
-        statements.append(
-            "globalThis.tools"
-            f"[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
-        )
-    statements.append("undefined")
-    return " ".join(statements)

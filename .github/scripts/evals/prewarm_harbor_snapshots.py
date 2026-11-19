@@ -39,9 +39,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-tasks", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--timeout-sec", type=int, default=3600)
+    # Snapshot names include the disk size, so this must match the shards' value.
+    parser.add_argument("--override-storage-mb", type=int, default=0)
     args = parser.parse_args()
-    if args.concurrency < 1 or args.timeout_sec < 1 or args.n_tasks < 0:
-        parser.error("--concurrency and --timeout-sec must be >= 1, --n-tasks >= 0")
+    if (
+        args.concurrency < 1
+        or args.timeout_sec < 1
+        or min(args.n_tasks, args.override_storage_mb) < 0
+    ):
+        parser.error(
+            "--concurrency and --timeout-sec must be >= 1, "
+            "--n-tasks and --override-storage-mb >= 0"
+        )
     return args
 
 
@@ -66,7 +75,7 @@ def download_tasks(dataset: str, selected: list[str], out: Path) -> list[Path]:
 
 
 def environments(
-    task_dir: Path, scratch: Path
+    task_dir: Path, scratch: Path, override_storage_mb: int
 ) -> list[tuple[str, LangSmithEnvironment]]:
     from harbor.environments.langsmith import LangSmithEnvironment
     from harbor.models.task.task import Task
@@ -94,6 +103,7 @@ def environments(
             session_id="prewarm",
             trial_paths=paths,
             task_env_config=config,
+            override_storage_mb=override_storage_mb or None,
         )
         envs.append((f"{task.short_name}/{kind}", env))
     return envs
@@ -159,7 +169,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="prewarm-") as tmp:
         root = Path(tmp)
         task_dirs = download_tasks(args.dataset, selected, root / "tasks")
-        envs = [e for d in task_dirs for e in environments(d, root / "trials")]
+        envs = [
+            e
+            for d in task_dirs
+            for e in environments(d, root / "trials", args.override_storage_mb)
+        ]
         outcomes = asyncio.run(prepare_all(envs, args.concurrency, args.timeout_sec))
     write_summary(dict(zip((label for label, _ in envs), outcomes)))
 

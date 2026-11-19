@@ -319,6 +319,7 @@ jobs:
           HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           HARBOR_N_TASKS: ${{ inputs.n_tasks || '0' }}
           PREWARM_CONCURRENCY: ${{ inputs.prewarm_concurrency }}
+          PREWARM_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
           LANGSMITH_SANDBOX_API_URL: "https://aws.api.smith.langchain.com/v2/sandboxes"
@@ -327,7 +328,8 @@ jobs:
             --dataset "$HARBOR_DATASET" \
             --include-tasks "$HARBOR_INCLUDE_TASKS" \
             --n-tasks "$HARBOR_N_TASKS" \
-            --concurrency "$PREWARM_CONCURRENCY"
+            --concurrency "$PREWARM_CONCURRENCY" \
+            --override-storage-mb "$PREWARM_OVERRIDE_STORAGE_MB"
 
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"

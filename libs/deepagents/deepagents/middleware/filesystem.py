@@ -1568,8 +1568,7 @@ class ExecuteSchema(BaseModel):
 
 LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
 
-This is useful for exploring the filesystem and finding the right file to read or edit.
-You should almost ALWAYS use this tool before using the read_file or edit_file tools."""
+This is useful for exploring the filesystem and finding the right file to read or edit."""
 
 _READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.
 
@@ -1580,8 +1579,7 @@ Usage:
 - An empty file returns a system-reminder warning in place of contents.
 - Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.
 - Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).
-{multimodal_bullets}
-- Always read a file before editing it."""
+{multimodal_bullets}"""
 """Shared `read_file` description body for the text-only and video-aware variants.
 
 The two variants differ only in the `{first_line}` and `{multimodal_bullets}`
@@ -1610,7 +1608,6 @@ EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 Usage:
 - You must read the file before editing.
 - Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.
-- Prefer editing an existing file over creating a new one.
 - Only use emojis if the user explicitly requests it."""
 
 
@@ -1659,12 +1656,12 @@ _EXECUTE_GREP_BAD_EXAMPLE = "\n    - execute(command=\"grep -r 'pattern' .\")  #
 
 # Only shown to the model when the backend implements SandboxBackendProtocol
 # (see `supports_execution`); otherwise `execute` is removed from the tool list.
-_EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).
+_EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command and returns combined stdout/stderr with the exit code (truncated if very large).
 
 Usage:
-- Quote paths containing spaces (e.g. cd "/path/with spaces").
+- Quote paths containing spaces (e.g. ls "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
-- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
+- Use absolute paths and avoid `cd` so the working directory stays stable.
 - {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}"""
 
 EXECUTE_TOOL_DESCRIPTION = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(

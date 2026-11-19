@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
     # Framework
     "deepagents==0.7.40",
-    "langchain>=1.5.1,<2.0.0",
+    "langchain>=1.5.2,<2.0.0",
     # TODO: Remove this temporary floor once the pinned deepagents release
     # requires langchain-core>=1.7.2 for add_notification_metadata.
     "langchain-core>=1.8.3,<2.0.0",
@@ -41,7 +41,7 @@ dependencies = [
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.7.11,<2.0.0",
     "langchain-google-genai>=4.4.3,<5.0.0",
-    "langchain-openai>=1.8.2,<2.0.0",
+    "langchain-openai>=1.8.3,<2.0.0",
     # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
     "pydantic>=2.13.0,<3.0.0",
 
@@ -113,10 +113,10 @@ anthropic = ["langchain-anthropic>=1.7.11,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.6,<1.0.0"]
 bedrock = ["langchain-aws>=1.9.3,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
-deepseek = ["langchain-deepseek>=1.2.0,<2.0.0"]
+deepseek = ["langchain-deepseek>=1.2.1,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.7.3,<2.0.0"]
 google-genai = ["langchain-google-genai>=4.4.3,<5.0.0"]
-groq = ["langchain-groq>=1.2.0,<2.0.0"]
+groq = ["langchain-groq>=1.2.1,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.3,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.2,<2.0.0"]
 litellm = ["langchain-litellm>=0.11.2,<2.0.0"]
@@ -127,12 +127,12 @@ nvidia = [
     "langchain-nvidia-ai-endpoints>=1.5.0,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.8.2,<2.0.0"]
+openai = ["langchain-openai>=1.8.3,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.9,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.4.2,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
 vertex = ["langchain-google-vertexai>=3.3.0,<4.0.0"]
-xai = ["langchain-xai>=1.4.0,<2.0.0"]
+xai = ["langchain-xai>=1.4.1,<2.0.0"]
 all-providers = [
     "deepagents-code[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,meta,mistralai,nvidia,ollama,openai,openrouter,perplexity,together,vertex,xai]",
 ]

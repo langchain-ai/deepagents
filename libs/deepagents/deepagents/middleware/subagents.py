@@ -228,6 +228,47 @@ class SubAgent(TypedDict):
     - `dict[str, Any]`: A JSON schema dictionary
         (e.g., `{"type": "object", "properties": {...}, "required": [...]}`).
 
+    Forks and prompt caching:
+
+    A fork continues the parent's conversation, but its first model request may
+    differ from the parent's last request. That can reduce prompt-cache reuse:
+
+    - The fork adds its task to the history before running middleware. This can
+        trigger summarization or cause an older `write_file` argument to be
+        truncated when it falls outside the recent-message window.
+    - A declarative fork doesn't inherit the parent's `response_format`. The
+        format affects the request: `ToolStrategy` adds a schema tool, while
+        `ProviderStrategy` uses provider-native output settings.
+
+    If the fork also needs structured output, you can set the same format on both
+    parent and fork. The fork will then return JSON instead of its last message.
+    Matching formats alone doesn't guarantee a cache hit: history, models,
+    middleware, tools, and provider caching behavior can still differ. A bare
+    schema or `AutoStrategy` may choose different strategies for different models,
+    and a per-task override can replace the fork's configured format.
+
+    For example, to give a fork the parent's tool-based format:
+
+    ```python
+    from langchain.agents.structured_output import ToolStrategy
+    from pydantic import BaseModel
+    from deepagents import create_deep_agent
+
+    class Findings(BaseModel):
+        findings: str
+
+    output_format = ToolStrategy(Findings)
+    agent = create_deep_agent(
+        response_format=output_format,
+        subagents=[{
+            "name": "analyzer",
+            "description": "Analyzes data and returns structured findings",
+            "mode": "fork",
+            "response_format": output_format,
+        }],
+    )
+    ```
+
     Example:
         ```python
         from pydantic import BaseModel

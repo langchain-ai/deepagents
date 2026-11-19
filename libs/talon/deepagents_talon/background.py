@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import time
 from contextlib import aclosing, contextmanager
 from copy import copy
 from dataclasses import dataclass, field, replace
@@ -57,6 +58,12 @@ _SCHEDULED_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "talon_scheduled_turn", default=False
 )
 _MAX_TASKS = 128
+# Results from outside Talon share the job table, so their own cap keeps a noisy source
+# from starving subagent launches.
+_MAX_EXTERNAL = 32
+# The host can requeue an acknowledged result until it settles the turn that consumed it,
+# so an external delivery only reclaims results acknowledged well before that.
+_REQUEUE_GRACE_SECONDS = 900.0
 _MAX_RUNNING = 4
 _MAX_DELIVERIES = 3
 _TASK_TIMEOUT_SECONDS = 3600
@@ -137,6 +144,8 @@ class _Job:
     deliveries: int = 0
     tools: list[str] | None = None
     control: SubagentControl = field(default_factory=SubagentControl)
+    external: bool = False
+    notified_at: float = 0.0
 
     @property
     def status(self) -> str:
@@ -168,6 +177,7 @@ class BackgroundSubagents(AgentMiddleware):
         self._inline_slots = asyncio.Semaphore(_MAX_INLINE_RUNNING)
         self._inline_timeout = inline_timeout
         self._remote: dict[str, AsyncSubAgent] = {}
+        self._expected: dict[str, float] = {}
         self.messageable: frozenset[str] = frozenset()
 
         @tool
@@ -176,7 +186,11 @@ class BackgroundSubagents(AgentMiddleware):
         ) -> list[dict[str, str | list[str] | None]] | str:
             """Inspect this thread's subagents, including changed status and final results."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
-            jobs = [(key, job, job.status) for key, job in self._jobs.items() if job.owner == owner]
+            jobs = [
+                (key, job, job.status)
+                for key, job in self._jobs.items()
+                if job.owner == owner and not job.external
+            ]
             state = _LISTING_STATE.get() if jobs and not _IN_SUBAGENT.get() else None
             if state is not None and state.owner != owner:
                 state = None
@@ -190,7 +204,13 @@ class BackgroundSubagents(AgentMiddleware):
                 state.snapshot = snapshot
             consumed = _CONSUMED_RESULTS.get()
             if consumed is not None and consumed[0] == owner and not _IN_SUBAGENT.get():
-                consumed[1].update(self.results(owner))
+                # External results never appear in this listing, so they stay pending
+                # for the delivery turn that shows them.
+                consumed[1].update(
+                    (key, text)
+                    for key, text in self.results(owner).items()
+                    if not self._jobs[key].external
+                )
             listing = [
                 {
                     "task_id": key,
@@ -278,8 +298,31 @@ class BackgroundSubagents(AgentMiddleware):
         return middleware
 
     def owners(self) -> set[str]:
-        """Return threads with running work or unprocessed results."""
-        return {job.owner for job in self._jobs.values() if not job.cancelled and not job.notified}
+        """Return threads with running work, unprocessed results, or an expected reply."""
+        jobs = {job.owner for job in self._jobs.values() if not job.cancelled and not job.notified}
+        return jobs | {owner for owner in list(self._expected) if self.expects(owner)}
+
+    def expect(self, owner: str, seconds: float) -> None:
+        """Keep a thread's delivery route while a reply from outside Talon may arrive.
+
+        Args:
+            owner: Conversation thread that will receive the reply.
+            seconds: How long the reply may take.
+        """
+        deadline = time.monotonic() + seconds
+        self._expected[owner] = max(self._expected.get(owner, deadline), deadline)
+
+    def expects(self, owner: str) -> bool:
+        """Return whether a thread still awaits a reply; `cancel` ends the wait.
+
+        Args:
+            owner: Conversation thread to check.
+        """
+        deadline = self._expected.get(owner)
+        if deadline is not None and deadline <= time.monotonic():
+            del self._expected[owner]
+            return False
+        return deadline is not None
 
     async def awrap_model_call(
         self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
@@ -497,7 +540,9 @@ class BackgroundSubagents(AgentMiddleware):
             owner: Conversation thread receiving the results.
         """
         return {
-            key: f"Background subagent {job.name} ({key}) returned the following data. "
+            key: job.result
+            if job.external
+            else f"Background subagent {job.name} ({key}) returned the following data. "
             f"Process it in the context of the user's request.\n"
             f"<subagent_result>\n{job.result}\n</subagent_result>"
             for key, job in self._jobs.items()
@@ -506,6 +551,35 @@ class BackgroundSubagents(AgentMiddleware):
             and not job.cancelled
             and not job.notified
         }
+
+    def deliver(self, owner: str, name: str, text: str) -> bool:
+        """Queue an already-final result from outside Talon for the owner's next turn.
+
+        The text is passed to the main agent verbatim, so the caller frames it.
+        It then follows the same delivery, retry, and acknowledgement path as a
+        subagent result.
+
+        Args:
+            owner: Conversation thread receiving the result.
+            name: Short source label for logs.
+            text: Fully framed result text.
+
+        Returns:
+            Whether the result was queued; `False` when the job table is full.
+        """
+        settled = time.monotonic() - _REQUEUE_GRACE_SECONDS
+        for key in [
+            key
+            for key, job in self._jobs.items()
+            if (job.notified and job.notified_at < settled) or (job.external and job.cancelled)
+        ]:
+            del self._jobs[key]
+        external = sum(job.external and not job.notified for job in self._jobs.values())
+        if len(self._jobs) >= _MAX_TASKS or external >= _MAX_EXTERNAL:
+            logger.warning("Dropped external result from %s: job table full", name)
+            return False
+        self._jobs[f"external-{uuid4().hex}"] = _Job(owner, name, result=text, external=True)
+        return True
 
     def record_delivery_failure(self, results: dict[str, str]) -> list[str]:
         """Count one failed delivery and drop results the main agent cannot process.
@@ -524,7 +598,7 @@ class BackgroundSubagents(AgentMiddleware):
             job.deliveries += 1
             if job.deliveries < _MAX_DELIVERIES:
                 continue
-            job.notified = True
+            job.notified, job.notified_at = True, time.monotonic()
             job.result = f"{_UNDELIVERED_RESULT}\n{job.result}"
             dropped.append(key)
             logger.warning("Dropped undelivered background subagent result %s", key)
@@ -559,7 +633,7 @@ class BackgroundSubagents(AgentMiddleware):
         """
         for key in results:
             if key in self._jobs:
-                self._jobs[key].notified = True
+                self._jobs[key].notified, self._jobs[key].notified_at = True, time.monotonic()
 
     async def cancel(self, owner: str | None = None) -> bool:
         """Cancel a thread's workers and discard results, or clear all at shutdown.
@@ -570,6 +644,10 @@ class BackgroundSubagents(AgentMiddleware):
         Returns:
             Whether every selected worker has stopped.
         """
+        if owner is None:
+            self._expected.clear()
+        else:
+            self._expected.pop(owner, None)
         jobs = [job for job in self._jobs.values() if owner is None or job.owner == owner]
         for job in jobs:
             job.cancelled = True

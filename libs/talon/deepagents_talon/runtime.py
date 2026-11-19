@@ -56,6 +56,11 @@ from deepagents_talon.background import (
     _track_consumed_results,
 )
 from deepagents_talon.breakout import BREAKOUT_HANDLER, breakout
+from deepagents_talon.claude_sessions import (
+    SEND_TOOL,
+    ClaudeSessions,
+    enabled as claude_sessions_enabled,
+)
 from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
@@ -427,6 +432,9 @@ class DeepAgentRuntime:
             max_running=_positive_int_from_env(self.env, MAX_BACKGROUND_TASKS_ENV_KEY)
             or _MAX_RUNNING,
         )
+        self.claude_sessions = (
+            ClaudeSessions(self.background, self.env) if claude_sessions_enabled(self.env) else None
+        )
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)
         )
@@ -693,6 +701,8 @@ class DeepAgentRuntime:
         Raises:
             RuntimeError: If a background worker outlived its cancellation wait.
         """
+        if self.claude_sessions is not None:
+            await self.claude_sessions.close()
         if not await self.background.cancel():
             msg = "Background subagents did not stop; runtime resources remain open"
             raise RuntimeError(msg)
@@ -1030,6 +1040,10 @@ class DeepAgentRuntime:
         policy = snapshot.interrupt_on
         if self._smart_model is not None:
             policy["ask_for_help"] = {"allowed_decisions": ["approve", "reject"]}
+        if self.claude_sessions is not None:
+            # Reaching another session must never run unreviewed, so no policy file can
+            # turn this off: a missing tools.json entry would otherwise mean no prompt.
+            policy[SEND_TOOL] = {"allowed_decisions": ["approve", "reject"]}
         for name, config in policy.items():
             if config:
                 approval: InterruptOnConfig = (
@@ -1092,6 +1106,8 @@ class DeepAgentRuntime:
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
+        if self.claude_sessions is not None:
+            tools.extend(self.claude_sessions.tools)
         tools.extend(self.tools if runtime_tools is None else runtime_tools)
         return tools
 

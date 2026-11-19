@@ -59,7 +59,6 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset(
         SUMMARIZATION_EVENT_KEY,
         SUMMARIZATION_SESSION_ID_KEY,
         _SKILL_TOOLS_DISCLOSED_KEY,
-        "_quickjs_slot_id",
     }
 )
 """State a fork must not resume.

@@ -212,6 +212,9 @@ class _Slot:
         # cleared by the next eval. Kept whole (not hashed): comparing it is
         # far cheaper than hashing a multi-MB payload every turn.
         self._snapshot: bytes | None = None
+        # The last snapshot restored into or taken from the Context. Not
+        # cleared by evals: a fork launched mid-eval starts from it.
+        self._last_snapshot: bytes | None = None
         # Mutable per-eval PTC state. Tracks call budget plus outer
         # runtime/loop dispatch context for bridge invocations. Set while an
         # eval runs, so bridge calls can't run outside one.
@@ -704,6 +707,7 @@ class _Slot:
 
     def _dispose_context(self) -> None:
         self._snapshot = None
+        self._last_snapshot = None
         ctx, self._context = self._context, None
         if ctx is not None:
             ctx.close()
@@ -743,6 +747,7 @@ class _Slot:
             logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
             msg = "Failed to restore QuickJS snapshot"
             raise _SnapshotRestoreError(msg) from exc
+        self._last_snapshot = payload
 
     def create_snapshot(self) -> bytes | None:
         """Snapshot the Context, or `None` if no eval changed it since the last."""
@@ -761,9 +766,31 @@ class _Slot:
             return None
         payload = self._context.create_snapshot().to_bytes()
         # The Context now is this snapshot: it needs no restore to match it.
-        self._snapshot = payload
+        self._snapshot = self._last_snapshot = payload
         self._snapshot_restored = True
         return payload
+
+    def fork_snapshot(self) -> bytes | None:
+        """Snapshot the Context for a forked subagent to start from.
+
+        quickjs-rs can't snapshot a Context while an eval runs, so a fork
+        launched from inside one gets the last snapshot instead. Unlike
+        `create_snapshot`, this leaves the thread's own snapshot alone.
+        """
+        if self._context is None:
+            return None
+        return self._worker.run_sync(self._afork_snapshot())
+
+    async def afork_snapshot(self) -> bytes | None:
+        """Async variant of `fork_snapshot`."""
+        if self._context is None:
+            return None
+        return await self._worker.run_async(self._afork_snapshot())
+
+    async def _afork_snapshot(self) -> bytes | None:
+        if self._context is None or self._eval_running:
+            return self._last_snapshot
+        return self._context.create_snapshot().to_bytes()
 
     def close_context(self, *, keep_snapshot: bytes | None = None) -> None:
         """Close the Context and its REPL state; keep the worker and Runtime.
@@ -904,6 +931,24 @@ class _Registry:
                 await slot.aclose_context(keep_snapshot=keep_snapshot)
             finally:
                 self.release(slot)
+
+    def fork_snapshot(self, slot_id: str, config: _SlotConfig) -> bytes | None:
+        """Snapshot `slot_id` for a fork (see `_Slot.fork_snapshot`)."""
+        if (slot := self.lease_if_exists(slot_id, config)) is None:
+            return None
+        try:
+            return slot.fork_snapshot()
+        finally:
+            self.release(slot)
+
+    async def afork_snapshot(self, slot_id: str, config: _SlotConfig) -> bytes | None:
+        """Async variant of `fork_snapshot`."""
+        if (slot := self.lease_if_exists(slot_id, config)) is None:
+            return None
+        try:
+            return await slot.afork_snapshot()
+        finally:
+            self.release(slot)
 
 
 _REGISTRY = _Registry()

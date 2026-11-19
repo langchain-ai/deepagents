@@ -24,6 +24,7 @@ from collections.abc import (
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any
+from uuid import uuid4
 
 import pytest
 from deepagents import create_deep_agent
@@ -39,6 +40,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig  # noqa: TC002
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
@@ -732,39 +734,121 @@ async def test_ptc_and_task_runs_nest_under_eval(use_async: bool) -> None:
     assert recorder.runs["task"][1] == eval_run_id
 
 
-@pytest.mark.filterwarnings("ignore::langchain_core._api.LangChainBetaWarning")
-@pytest.mark.parametrize("use_async", [False, True])
-async def test_forked_subagent_evals_in_its_own_slot(use_async: bool) -> None:
-    """A `mode="fork"` subagent launched from `task()` evals in its own slot."""
-    fork_results: list[str] = []
+def _call(name: str, **args: Any) -> AIMessage:
+    tool_call = {"name": name, "args": args, "id": f"call_{uuid4().hex}"}
+    return AIMessage(content="", tool_calls=[{**tool_call, "type": "tool_call"}])
+
+
+def _subagent_case(
+    parent: list[AIMessage],
+    subagent_code: str,
+    *,
+    mode: str = "fork",
+    snapshot_signing_key: str | None = None,
+) -> tuple[Any, list[str]]:
+    """Build a parent whose subagent records one value from its own eval."""
+    seen: list[str] = []
 
     @tool
     def record(value: str) -> str:
         """Record a value."""
-        fork_results.append(value)
+        seen.append(value)
         return value
 
+    def middleware() -> CodeInterpreterMiddleware:
+        return CodeInterpreterMiddleware(
+            ptc=[record], snapshot_signing_key=snapshot_signing_key
+        )
+
+    subagent: dict[str, Any] = {
+        "name": "sub",
+        "description": "Does work.",
+        "system_prompt": "Do the work.",
+        "mode": mode,
+        "model": FakeChatModel(messages=_script(subagent_code)),
+    }
+    if mode == "isolated":
+        subagent["middleware"] = [middleware()]
     agent = create_deep_agent(
-        model=FakeChatModel(
-            messages=_script("await task({description: 'w', subagentType: 'forker'})")
-        ),
-        middleware=[CodeInterpreterMiddleware(ptc=[record])],
-        subagents=[
-            {
-                "name": "forker",
-                "description": "Does work.",
-                "system_prompt": "Do the work.",
-                "mode": "fork",
-                "model": FakeChatModel(
-                    messages=_script("await tools.record({value: String(6 * 7)})")
-                ),
-            }
-        ],
+        model=FakeChatModel(messages=iter([*parent, AIMessage(content="Done.")])),
+        middleware=[middleware()],
+        subagents=[subagent],
+        checkpointer=InMemorySaver(),
     )
+    return agent, seen
+
+
+async def _invoke(agent: Any, config: RunnableConfig, *, use_async: bool) -> Any:
     payload = {"messages": [HumanMessage(content="go")]}
     if use_async:
-        await agent.ainvoke(payload)
-    else:
-        await asyncio.to_thread(agent.invoke, payload)
+        return await agent.ainvoke(payload, config)
+    return await asyncio.to_thread(agent.invoke, payload, config)
 
-    assert fork_results == ["42"]
+
+@pytest.mark.filterwarnings("ignore::langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("snapshot_signing_key", [None, "k"])
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_forked_subagent_evals_in_its_own_slot(
+    use_async: bool, snapshot_signing_key: str | None
+) -> None:
+    """A fork from JS `task()` starts from the parent's last snapshot.
+
+    The parent is mid-eval, so the fork can't see `b`; its own `c` stays out of
+    the parent.
+    """
+    agent, seen = _subagent_case(
+        [
+            _call("eval", code="var a = 1"),
+            AIMessage(content="Done."),
+            _call(
+                "eval",
+                code="var b = 2; await task({description: 'w', subagentType: 'sub'})",
+            ),
+            _call("eval", code="typeof c"),
+        ],
+        "var c = 3; await tools.record({value: [typeof a, typeof b].join()})",
+        snapshot_signing_key=snapshot_signing_key,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "t"}}
+    await _invoke(agent, config, use_async=use_async)
+    result = await _invoke(agent, config, use_async=use_async)
+
+    assert seen == ["number,undefined"]
+    _assert_result_contains(_eval_tool_message(result).text, "undefined")
+
+
+@pytest.mark.filterwarnings("ignore::langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_fork_from_task_tool_call_sees_live_state(use_async: bool) -> None:
+    """A fork from a `task` tool call clones the parent's live REPL."""
+    agent, seen = _subagent_case(
+        [
+            _call("eval", code="var a = 1"),
+            _call("task", description="w", subagent_type="sub"),
+            _call("eval", code="typeof c"),
+        ],
+        "var c = 3; await tools.record({value: typeof a})",
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "t"}}
+    result = await _invoke(agent, config, use_async=use_async)
+
+    assert seen == ["number"]
+    _assert_result_contains(_eval_tool_message(result).text, "undefined")
+    state = agent.get_state(config).values
+    assert state["_quickjs_fork_source"] == state["_quickjs_slot_id"]
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_isolated_subagent_starts_empty(use_async: bool) -> None:
+    """An isolated subagent gets a fresh REPL, not the parent's."""
+    agent, seen = _subagent_case(
+        [
+            _call("eval", code="var a = 1"),
+            _call("task", description="w", subagent_type="sub"),
+        ],
+        "await tools.record({value: typeof a})",
+        mode="isolated",
+    )
+    await _invoke(agent, {"configurable": {"thread_id": "t"}}, use_async=use_async)
+
+    assert seen == ["undefined"]

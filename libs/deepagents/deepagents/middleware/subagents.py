@@ -69,8 +69,7 @@ session ID lets the subagent generate its own, and dropping a prior structured r
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
 describe the parent's last model call; the fork records its own. Skills the parent
 has yet to pin are the parent's own. The rubric grades the parent's whole goal,
-not the fork's task. The QuickJS slot is the parent's live interpreter, busy with
-the eval that launched the fork; the fork gets its own.
+not the fork's task.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"

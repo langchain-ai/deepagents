@@ -1513,6 +1513,27 @@ which `langchain-google-genai` 4.5+ requires to accept that level.
 """
 
 
+OPENROUTER_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "google/gemini-4-neon": {
+        "name": "Gemini 4 Neon",
+        "max_input_tokens": 1_048_576,
+        "max_output_tokens": 65_536,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": True,
+        "video_inputs": True,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "attachment": True,
+        "temperature": True,
+        "tool_call_streaming": True,
+    },
+}
+"""Capability fallbacks until `langchain-openrouter` ships a Gemini 4 Neon profile."""
+
+
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
@@ -1580,6 +1601,7 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
             "langchain_google_genai.data._profiles": (
                 GOOGLE_GENAI_MODEL_PROFILE_FALLBACKS
             ),
+            "langchain_openrouter.data._profiles": OPENROUTER_MODEL_PROFILE_FALLBACKS,
         }.get(module_path, {})
         if fallbacks:
             profiles = {

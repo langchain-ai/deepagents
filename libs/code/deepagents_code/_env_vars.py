@@ -500,11 +500,13 @@ PROVIDER_TOOL_SEARCH = "DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH"
 """Toggle native MCP tool discovery on verified endpoints (defaults to on)."""
 
 OPENAI_PROMPT_CACHE_KEY = "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY"
-"""Toggle injecting a per-thread OpenAI `prompt_cache_key` (defaults to on).
+"""Toggle injecting a per-install OpenAI `prompt_cache_key` (defaults to on).
 
-When enabled, OpenAI-provider model calls receive the active thread ID as a
-top-level `prompt_cache_key`, giving more reliable prompt-cache prefix routing
-across turns. It is attempted for every model whose provider resolves to
+When enabled, OpenAI-provider model calls receive a top-level `prompt_cache_key`
+of the form `dcode_v1:<install id>`, where the install ID is a random value
+persisted in the profile state directory. Every thread from the same install
+shares the key, so the common system-prompt prefix stays in one cache group
+across sessions. It is attempted for every model whose provider resolves to
 `openai` regardless of base URL (official API, the LangSmith gateway, and other
 OpenAI-compatible endpoints), because the field is optional and additive. Set to
 a falsy value (`0`, `false`, `no`, `off`) to opt out for endpoints that reject

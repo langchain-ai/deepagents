@@ -263,7 +263,7 @@ def test_runtime_model_switch_serialization(monkeypatch: pytest.MonkeyPatch) -> 
             messages=[],
             runtime=MagicMock(context=CLIContextSchema(model="openai:gpt-4.1")),
         ),
-        openai_prompt_cache_key=False,
+        openai_prompt_cache_key=None,
         cli_max_retries=None,
     )
     switched_graph = create_agent(

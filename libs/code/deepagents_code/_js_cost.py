@@ -66,15 +66,18 @@ class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
 
         tools = [tool for tool in request.tools if isinstance(tool, BaseTool)]
         prompt = super()._prepare_for_call(request.override(tools=list(tools)))
-        exposed = self._ptc_tools_by_slot.get(self._slot_id(request.state), ())
+        slot = self._slot_id(request.state)
+        cached = self._ptc_prompt_by_slot.get(slot)
+        if cached is None:
+            return prompt
+        exposed, reference = cached
         visible = [
             tool for tool in exposed if not (tool.extras or {}).get("defer_loading")
         ]
         if len(visible) == len(exposed):
             return prompt
-        reference = render_ptc_prompt(exposed, tool_name=self._tool_name)
         replacement = render_ptc_prompt(visible, tool_name=self._tool_name)
-        return prompt.replace(reference, replacement, 1)
+        return prompt.removesuffix(reference) + replacement
 
     @override
     def wrap_tool_call(

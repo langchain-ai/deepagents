@@ -1,11 +1,11 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the action contract, its CLI distribution boundary, state lifecycle, safeguards, verification, and release controls.
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the composite action contract, published CLI boundary, state lifecycle, safeguards, verification, and release safety.
 tags: [github-actions, dcode, deepagents-code, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-18T08:03:59.609Z
+    at: 2026-11-19T08:04:44.778Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -27,7 +27,7 @@ sources:
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-18T08:03:59.609Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-19T08:04:44.778Z" }
 ---
 
 # GitHub Action Integration
@@ -82,6 +82,8 @@ flowchart TD
     Execute --> Publish["Capture response and exit code"]
     Publish --> Save{"Memory enabled"}
     Save -->|"Yes always"| Persist["Save memory cache"]
+    Save -->|"No"| Finish["Finish"]
+    Persist --> Finish
 ```
 
 *The composite action restores state before dcode and attempts cache saving after its run even when it fails.*
@@ -126,7 +128,7 @@ The action pipes combined output to `tee` but captures `PIPESTATUS[0]`, so a suc
 
 ## Published CLI and release contract
 
-The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. The current source package is `deepagents-code` `0.2.10`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.39` runtime dependency. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change.
+The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. The current source package is `deepagents-code` `0.2.11`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.40` runtime dependency. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change.
 
 `deepagents-code` is a release-managed PyPI package. The release workflow maps it to `libs/code`, builds from a resolved exact release SHA, and stamps that SHA into its build through `DEEPAGENTS_CODE_BUILD_COMMIT`; this keeps the distribution and eventual tag tied to the same source tree. Before publishing, the release checks that the code package's exact SDK pin is at least the workspace SDK version unless an operator explicitly enables `dangerous-skip-sdk-pin-check`. That bypass is for an intentional older pin, not routine release use.
 

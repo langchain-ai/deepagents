@@ -4,16 +4,16 @@ title: Profiles and Models
 description: Explains SDK profiles and the separate dcode and Talon model control planes, including startup defaults, policy, catalog selection, retries, compaction, and classifier-backed Auto mode.
 tags: [models, sdk-profiles, dcode, talon, provider-configuration, retries]
 sources:
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-18abc7e59899514f067032b2
     resource: repo://libs/code/deepagents_code/auto_mode.py
-  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
-    resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
     resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
+  - id: openwiki-source-55d5c39401ac52584ce1f973
+    resource: repo://libs/code/deepagents_code/configurable_model.py
   - id: openwiki-source-52d96f61bc4737f02a18cf79
     resource: repo://libs/code/deepagents_code/configuration/resolver.py
   - id: openwiki-source-2d5bc2a1a6685429db181b39
@@ -24,46 +24,30 @@ sources:
     resource: repo://libs/code/deepagents_code/model_api.py
   - id: openwiki-source-5afb93f98c34330c27609db2
     resource: repo://libs/code/deepagents_code/model_catalog.py
-  - id: openwiki-source-4a7b6def251b42596a410ebc
-    resource: repo://libs/code/deepagents_code/model_config.py
-  - id: openwiki-source-ece74ecc87a2bc395b3ce368
-    resource: repo://libs/code/deepagents_code/model_metadata.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
-  - id: openwiki-source-c100a7d2ff8c43af8ad1b816
-    resource: repo://libs/code/deepagents_code/offload_middleware.py
-  - id: openwiki-source-e9a7ab29b270179f4eea7107
-    resource: repo://libs/code/deepagents_code/tui/widgets/model_selector.py
+  - id: openwiki-source-2197a24480aac91a9ddcb920
+    resource: repo://libs/code/deepagents_code/provider_tool_search.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-e012c5898b6bc6cb1317467d
-    resource: repo://libs/code/tests/unit_tests/test_model_catalog.py
-  - id: openwiki-source-50173942904153d619b9ae0d
-    resource: repo://libs/deepagents/deepagents/_models.py
+  - id: openwiki-source-563d8f99b354174d66aab140
+    resource: repo://libs/code/tests/unit_tests/test_configurable_model.py
+  - id: openwiki-source-f19a136d937a20fe9bcb0b29
+    resource: repo://libs/code/tests/unit_tests/test_provider_tool_search_extra.py
+  - id: openwiki-source-510074a1c07e7ddc05cddcb0
+    resource: repo://libs/code/tests/unit_tests/test_provider_tool_search.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-7a16b9a53a07e882b7305459
-    resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
   - id: openwiki-source-b27554b5c0e5b26fae2efb38
     resource: repo://libs/deepagents/deepagents/profiles/__init__.py
-  - id: openwiki-source-f94d6bc3bb6ebd1565c1732f
-    resource: repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py
-  - id: openwiki-source-59612eea63cbfafbd628feda
-    resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-1098130d42873f13aba9f5c2
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
-    resource: repo://libs/talon/deepagents_talon/model_selection.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
-    resource: repo://libs/talon/pyproject.toml
+generated: { by: "openwiki/0.4.2", at: "2026-11-19T08:04:44.778Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-18T08:03:59.609Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-18T08:03:59.609Z" }
+    at: 2026-11-19T08:04:44.778Z
 ---
 
 # Profiles and Models
@@ -147,6 +131,35 @@ dcode owns the visible retry budget in model-node middleware. Its precedence is 
 
 `--summarization-model` overrides `[models].summarization_default`; an absent or blank override reuses the main model. Dedicated construction is deferred until compaction, avoiding provider imports on the pre-first-paint path. `_LazySummaryModel` serializes setup and invocation, warns once and falls back to the main model if construction fails, and restores main-model token-counting, trim, and retry tuning if a dedicated invocation fails. A successful dedicated model gets dcode retry handling, provider-specific counting, and a history budget of four fifths of a positive input window; this preserves `--max-retries 0` rather than using LangChain's generic summary retries.
 
+### Runtime switching, cache identity, and resume state
+
+`ConfigurableModelMiddleware` is the per-invocation control point. It reads `model` and `model_params` from `runtime.context`, resolves a different requested model through `create_model()`, and shallow-merges request parameters without recompiling the graph. A policy denial is always propagated; an ordinary construction error either fails a strict-resolution call or leaves the current model in place. On a cross-provider switch away from Anthropic it removes Anthropic-only request settings, and it rewrites the `### Model Identity` prompt section from the returned `ModelResult`, not process-global state.
+
+After a successful call, the middleware checkpoints the actual resolved specification, the runtime-only parameter overrides, a request-start timestamp, and cache endpoint/parameter identity. It writes the timestamp only when it can derive the accompanying model identity, preventing a stale endpoint or a permanent false "model changed" warning. Configuration-derived effective parameters are kept in a dedicated cache-identity channel rather than `_model_params`, because the latter is replayed as session overrides on resume.
+
+OpenAI-provider calls receive an additive per-install `prompt_cache_key` by default; the key is shared across the install's threads, while an explicitly supplied key wins. Set `[models].openai_prompt_cache_key = false` or `DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY=false` for a compatible endpoint that rejects the optional field. Fireworks calls instead add the thread ID as `prompt_cache_key` and `x-session-affinity` when absent. These request hints are separate from provider-native MCP discovery below.
+
+## Provider-native MCP tool discovery
+
+When `[models].provider_tool_search` is enabled (the default, also controlled by `DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH`), `create_cli_agent()` installs `MCPProviderToolSearchMiddleware` on the main stack and applicable synchronous subagent stacks only when MCP tools exist. The middleware preserves executor registrations and considers only the supplied MCP-tool object identities; ordinary tools and skill-only MCP tools remain outside the deferred set.
+
+```mermaid
+flowchart TD
+    Request["Model request with visible tools"] --> Select["Resolve runtime-selected model"]
+    Select --> Native{"Verified native provider route"}
+    Native -->|Yes| Deferred["Defer eligible MCP tools and add native search"]
+    Native -->|No| Eager["Keep all tools eager and warn once"]
+    Deferred --> Invoke["Provider request"]
+    Eager --> Invoke
+    Invoke --> History["Strip incompatible native-search history on provider switch"]
+```
+
+*Only eligible MCP tools are deferred, and a model switch re-evaluates native-search support for that request.*
+
+Native search is deliberately narrow: it supports exact `ChatOpenAI` models using the Responses API and exact `ChatAnthropic` models on the provider's direct endpoint or a recognized HTTPS LangSmith gateway native-format route. Built-in model-name gates apply until upstream profiles expose the capability; a boolean `profile.provider_tool_search` can explicitly enable or disable detection, but cannot make Chat Completions compatible. Unsupported models, untrusted look-alike gateways, and unsupported routes retain eager tool schemas and emit one warning per model type/name rather than failing the call.
+
+Before forwarding a request the middleware removes native search result blocks that the selected provider cannot replay, including nested non-standard blocks and OpenAI `tool_outputs`. It creates the upstream provider middleware per request after runtime selection, so deferred schemas never mutate the original tool object or executor registration. This preserves ordinary HITL approval and MCP execution: provider search discovers the schema, while dcode still executes an approved selected MCP tool locally.
+
 ## Classifier-backed Auto mode
 
 Auto is an authorization path, not a general model-selection convenience. `AutoModeHITLMiddleware` first applies deterministic policy and sends the remaining tool-call batch to a structured-output classifier. The classifier defaults to the main agent model when no separate model is selected. A distinct `provider:model` comes from `--auto-classifier-model`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, or `[models].auto_classifier`; when none is configured, startup may select a lightweight default for the main provider. An explicitly blank CLI flag is preserved as an inherit sentinel, overriding configured/default classifiers and returning review to the main model.
@@ -205,7 +218,7 @@ Talon discovers tool-capable models advertised by installed provider packages an
 
 ## Compatibility and change checklist
 
-`deepagents-code` 0.2.10 requires Python `>=3.14,<3.15` and pins `deepagents==0.7.39`. Deep Agents 0.7.39 supports Python `>=3.11,<4.0` and requires LangChain `>=1.5.0,<2.0.0`, LangChain Core `>=1.8.1,<2.0.0`, `langchain-anthropic >=1.7.10,<2.0.0`, and `langchain-google-genai >=4.4.3,<5.0.0`. dcode includes Anthropic, Google GenAI, and OpenAI integration floors, with further provider integrations as extras. `deepagents-talon` 0.1.0 requires Python `>=3.14,<3.15` and depends on `deepagents>=0.7.39` and `deepagents-code>=0.2.9,<1.0.0`.
+`deepagents-code` 0.2.11 requires Python `>=3.14,<3.15` and pins `deepagents==0.7.40`. Deep Agents 0.7.40 supports Python `>=3.11,<4.0` and requires LangChain `>=1.5.2,<2.0.0`, LangChain Core `>=1.8.3,<2.0.0`, `langchain-anthropic >=1.7.11,<2.0.0`, and `langchain-google-genai >=4.4.3,<5.0.0`. dcode includes Anthropic, Google GenAI, and OpenAI integration floors, with further provider integrations as extras. `deepagents-talon` 0.1.0 requires Python `>=3.14,<3.15` and depends on `deepagents>=0.7.40` and `deepagents-code>=0.2.11,<1.0.0`.
 
 Focused changes should preserve these invariants: admission precedes construction side effects; only the host determines remote readiness; catalog payloads remain presentation-safe; model defaults are validated before persistence; dcode has one retry owner; an unavailable Auto classifier never grants approval; and Talon's catalog/environment does not become a back door into dcode policy.
 
@@ -213,6 +226,7 @@ Focused changes should preserve these invariants: admission precedes constructio
 
 - [Code agent architecture](/openwiki/architecture/code-agent.md)
 - [Configuration layering](/openwiki/concepts/config-layering.md)
-- [ACP integration](/openwiki/integrations/acp.md)
-- [Development](/openwiki/operations/development.md)
-- [Run a dcode session](/openwiki/workflows/run-dcode-session.md)
+- [MCP integration](/openwiki/integrations/mcp.md)
+- [Quickstart](/openwiki/quickstart.md)
+- [Permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md)
+- [Testing guide](/openwiki/testing/testing-guide.md)

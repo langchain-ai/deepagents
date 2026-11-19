@@ -42,19 +42,23 @@ jobs:
             const fullBody = (body || '').replace(/\r\n/g, '\n');
             const STICKY_MARKER = '<!-- pr-trailer-lint -->';
 
-            // Mirrors the org ruleset regex on `main`. Keep in lock-step:
-            // the live source of truth is the ruleset's `commit_message_pattern.pattern`
-            // field at GitHub org settings → Rulesets → `block-anthropic-coauthor`
-            // (or whichever ruleset blocks this trailer on `main`).
-            // The pattern below is informational; verify against the live ruleset
-            // when updating either side, or this check silently passes pushes
-            // that the ruleset will then reject (defeating the entire purpose).
+            // Mirrors the `No Claude on main` repository ruleset (Settings → Rules →
+            // Rulesets), whose `commit_message_pattern` rule rejects any pushed commit
+            // on `main` whose message matches. Keep this regex identical to that
+            // rule's pattern: if they drift, this check either passes PRs the ruleset
+            // will reject at merge time (defeating its purpose) or flags PRs the
+            // ruleset would accept. A ruleset holds one rule per type, so both
+            // banned forms share one alternation there and here:
+            //   - the `Co-authored-by: ... <noreply@anthropic.com>` commit trailer
+            //   - the `🤖 Generated with [Claude Code](...)` PR-description footer
+            //     (the squash-merge message is the PR description, so it lands on
+            //     `main` unless removed)
             //
             // Case-folding is intentionally narrow (`[Aa]`/`[Bb]`) because the
             // ruleset's pattern is narrow. Do NOT add the `i` flag — that would
             // catch cases the ruleset does not, surfacing false positives the
             // ruleset would let through.
-            const BANNED_REGEX = /Co-[Aa]uthored-[Bb]y:.*<noreply@anthropic\.com>/;
+            const BANNED_REGEX = /Co-[Aa]uthored-[Bb]y:.*<noreply@anthropic\.com>|Generated with \[Claude Code\]/;
 
             const squashMessage = `${title} (#${number})\n\n${fullBody}`;
             // GitHub's `pulls.listCommits` returns at most 250 commits for a PR
@@ -258,27 +262,27 @@ jobs:
             //      error) — fail closed; we cannot certify the PR is clean.
             let titleLine, intro, foundBlock, failureReason;
             if (hasSquashMessageOffense) {
-              titleLine = '⚠️ **Banned trailer in PR — would block merging to `main`.**';
-              intro = 'The squash-merge message (PR title + description) matches `Co-authored-by: ... <noreply@anthropic.com>`. An organization ruleset on `main` rejects any pushed commit whose message matches that pattern, so the PR cannot be merged until the trailer is removed.';
+              titleLine = '⚠️ **Banned Claude Code attribution in PR — would block merging to `main`.**';
+              intro = 'The squash-merge message (PR title + description) contains a banned Claude Code attribution line (the `Co-authored-by: ... <noreply@anthropic.com>` trailer or the `🤖 Generated with [Claude Code]` footer). A repository ruleset on `main` rejects any pushed commit whose message matches that pattern, so the PR cannot be merged until the line is removed.';
               foundBlock = offenseExcerpt;
               failureReason = `PR contains banned trailer matching ${BANNED_REGEX}`;
             } else if (hasCommitMessageOffense) {
-              titleLine = '⚠️ **Banned trailer in a PR commit message.**';
-              intro = 'An individual commit message matches `Co-authored-by: ... <noreply@anthropic.com>`. A squash merge drops individual commit messages, but a rebase or merge-commit pushes them to `main`, where an organization ruleset rejects any commit whose message matches that pattern. Remove the trailer so the PR can be merged by any method.';
+              titleLine = '⚠️ **Banned Claude Code attribution in a PR commit message.**';
+              intro = 'An individual commit message contains a banned Claude Code attribution line (the `Co-authored-by: ... <noreply@anthropic.com>` trailer or the `🤖 Generated with [Claude Code]` footer). A squash merge drops individual commit messages, but a merge commit pushes them to `main`, where a repository ruleset rejects any commit whose message matches that pattern. Remove the line so the PR can be merged by any method.';
               foundBlock = offenseExcerpt;
               failureReason = `PR contains banned trailer matching ${BANNED_REGEX}`;
             } else {
-              titleLine = '⚠️ **Banned trailer check could not inspect every PR commit.**';
+              titleLine = '⚠️ **Banned-attribution check could not inspect every PR commit.**';
               if (incomplete === 'error') {
-                intro = `The GitHub API call to list this PR's commits failed, so the workflow could not scan every commit message for the banned Claude Code co-author trailer: ${listError}`;
+                intro = `The GitHub API call to list this PR's commits failed, so the workflow could not scan every commit message for banned Claude Code attribution lines: ${listError}`;
                 foundBlock = 'The commit list could not be retrieved; no commit messages were scanned.';
                 failureReason = `Could not list PR commits to scan for banned trailer: ${listError}`;
               } else if (incomplete === 'changed') {
-                intro = `The PR branch changed while the workflow was scanning it: GitHub reported ${expectedCount} commits but the commit list returned ${commits.length}, even after ${MAX_SCAN_ATTEMPTS} attempts. The workflow could not confirm that every commit message is free of the banned Claude Code co-author trailer.`;
+                intro = `The PR branch changed while the workflow was scanning it: GitHub reported ${expectedCount} commits but the commit list returned ${commits.length}, even after ${MAX_SCAN_ATTEMPTS} attempts. The workflow could not confirm that every commit message is free of banned Claude Code attribution lines.`;
                 foundBlock = `No matching trailer found in the ${commits.length} commits that were listed, but the PR reports ${expectedCount}.`;
                 failureReason = `Could not inspect every PR commit for banned trailer (listed ${commits.length} of ${expectedCount}; branch changed during scan)`;
               } else {
-                intro = `This PR has more than ${MAX_COMMITS_TO_SCAN} commits, so the workflow stopped before it could inspect every commit message for the banned Claude Code co-author trailer.`;
+                intro = `This PR has more than ${MAX_COMMITS_TO_SCAN} commits, so the workflow stopped before it could inspect every commit message for banned Claude Code attribution lines.`;
                 foundBlock = `No matching trailer found in the first ${commits.length} commits, but the PR has more commits than this workflow scans.`;
                 failureReason = `Could not inspect every PR commit for banned trailer (scanned first ${commits.length} of ${expectedCount})`;
               }
@@ -286,10 +290,10 @@ jobs:
 
             const fixLines = [];
             if (hasSquashMessageOffense) {
-              fixLines.push('If the trailer appears in the squash merge message, edit the PR description and remove the offending line(s).');
+              fixLines.push('If the line appears in the squash merge message, edit the PR description and remove the offending line(s).');
             }
             if (hasCommitMessageOffense) {
-              fixLines.push('If the trailer appears in an individual commit, rewrite that commit message to remove the offending line.');
+              fixLines.push('If the line appears in an individual commit, rewrite that commit message to remove it.');
             }
             if (incomplete === 'changed') {
               fixLines.push('This is usually a race with a push that landed while the check ran; a later push re-runs the check automatically, or re-run it manually. If it persists, a maintainer should verify the commit messages manually before merging.');

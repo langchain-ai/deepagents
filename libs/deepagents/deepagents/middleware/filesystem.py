@@ -36,7 +36,6 @@ from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage, add_notification_metadata
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.channels.delta import DeltaChannel
 from langgraph.channels.untracked_value import UntrackedValue
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
@@ -1357,32 +1356,11 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     return result
 
 
-def _file_data_delta_reducer(
-    left: dict[str, FileData] | None,
-    values: list[dict[str, FileData | None]],
-) -> dict[str, FileData]:
-    """Batch reducer for use with DeltaChannel.
-
-    `DeltaChannel` calls `reducer(base, list(values))` where values is a list of
-    all writes in the current step.
-
-    Single dict copy + one pass over all writes.
-    """
-    result: dict[str, FileData] = dict(left) if left else {}
-    for writes in values:
-        for key, value in writes.items():
-            if value is None:
-                result.pop(key, None)
-            else:
-                result[key] = value
-    return result
-
-
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
 
-    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_delta_reducer, snapshot_frequency=50)]  # ty: ignore[invalid-argument-type]
-    """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
+    files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
+    """Files in the filesystem."""
 
 
 class _BlobPayloadState(AgentState):
@@ -3727,7 +3705,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         contains only the tagged `HumanMessage`. Because `ensure_message_ids`
         stamps a stable UUID onto the original write before it is checkpointed,
         the tagged copy (which reuses that ID) is deduped in-place by the
-        `DeltaChannel` reducer — no `REMOVE_ALL_MESSAGES` sentinel is needed.
+        messages reducer — no `REMOVE_ALL_MESSAGES` sentinel is needed.
         Using a sentinel would also clobber the `AIMessage` that the model node
         writes in the same super-step.
 

@@ -88,7 +88,7 @@ This split matters when debugging access issues. If a tool is missing, look at m
 
 ## State and persistence
 
-State lives in LangGraph. Deep Agents extends LangChain's `AgentState` with [`DeepAgentState`](https://reference.langchain.com/python/deepagents/graph/DeepAgentState), whose `messages` field uses a `DeltaChannel` reducer so checkpoint growth stays linear across long threads.
+State lives in LangGraph. By default the agent graph uses LangChain's `AgentState`, and every checkpoint stores the full `messages` list and the full `files` mapping. [`DeepAgentState`](https://reference.langchain.com/python/deepagents/graph/DeepAgentState) stores `messages` in a `DeltaChannel` instead, so checkpoint growth stays linear across long threads. Pass it as `state_schema` only with a checkpointer that keeps a thread's whole checkpoint history: a thread stored as deltas is rebuilt from earlier checkpoints.
 
 Middleware can contribute additional typed state fields through `state_schema`. Private middleware fields are tracked so internal state does not leak into subagents unexpectedly. If you are adding state for an application feature, prefer middleware-owned state when the state is only meaningful to that middleware; use a custom `state_schema` when callers need a graph-level field that tools or multiple middleware can share.
 

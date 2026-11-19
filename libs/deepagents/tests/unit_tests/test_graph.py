@@ -1267,19 +1267,6 @@ class TestStateSchema:
     `test_state_schema.py`. These tests only assert deepagents' own wiring.
     """
 
-    def test_default_state_schema_uses_deep_agent_state(self) -> None:
-        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-        fake_agent = MagicMock()
-        fake_agent.with_config.return_value = "compiled-agent"
-
-        with (
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
-            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
-        ):
-            create_deep_agent(model="testprov:some-model")
-
-        assert mock_create.call_args.kwargs["state_schema"] is DeepAgentState
-
     def test_custom_state_schema_passed_through(self) -> None:
         class MyState(DeepAgentState):
             page_url: str

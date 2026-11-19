@@ -75,7 +75,18 @@ logger = logging.getLogger(__name__)
 
 
 class DeepAgentState(AgentState):
-    """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
+    """`AgentState` that stores `messages` in a LangGraph `DeltaChannel`.
+
+    Pass it, or a subclass, as `state_schema` to
+    [`create_deep_agent`][deepagents.graph.create_deep_agent] to store each
+    step's new messages instead of the full list, so checkpoint growth is O(N)
+    rather than O(N²).
+
+    A thread is then rebuilt from earlier checkpoints, so use it only with a
+    checkpointer that keeps a thread's whole checkpoint history. A saver that
+    expires, prunes or overwrites old checkpoints returns a shorter
+    conversation, without an error.
+    """
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
@@ -306,7 +317,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
-    state_schema: type[DeepAgentState] | None = None,
+    state_schema: type[AgentState[Any]] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
@@ -560,8 +571,20 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         response_format: A structured output response format to use for the agent.
         state_schema: Custom state schema for the agent graph. Must be a
             `TypedDict` subclass of
-            [`DeepAgentState`][deepagents.graph.DeepAgentState] so the
-            built-in `DeltaChannel` reducer on `messages` is preserved.
+            [`AgentState`][langchain.agents.AgentState].
+
+            Every checkpoint stores the full `messages` list and the full
+            `files` mapping unless this schema says otherwise:
+
+            - A subclass of
+                [`DeepAgentState`][deepagents.graph.DeepAgentState] stores
+                `messages` as deltas.
+            - A schema that declares `files` with a LangGraph `DeltaChannel`
+                stores `files` as deltas.
+
+            Choose deltas only with a checkpointer that keeps a thread's
+            whole checkpoint history; see
+            [`DeepAgentState`][deepagents.graph.DeepAgentState].
 
             Generally, prefer defining state extensions with middleware so
             the extra fields stay scoped to the hooks and tools that use
@@ -587,15 +610,46 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             specs likewise use the schema configured on the remote graph.
 
             ```python
-            from deepagents.graph import DeepAgentState
+            from langchain.agents import AgentState
 
 
-            class MyState(DeepAgentState):
+            class MyState(AgentState):
                 page_url: str
                 file_urls: list[str]
 
 
             agent = create_deep_agent(model=..., state_schema=MyState)
+            ```
+
+            To store both `messages` and `files` as deltas:
+
+            ```python
+            from typing import Annotated, NotRequired
+
+            from deepagents.backends.protocol import FileData
+            from deepagents.graph import DeepAgentState
+            from langgraph.channels.delta import DeltaChannel
+
+
+            def merge_files(files, writes):
+                merged = dict(files or {})
+                for write in writes:
+                    for path, data in write.items():
+                        if data is None:
+                            merged.pop(path, None)
+                        else:
+                            merged[path] = data
+                return merged
+
+
+            class DeltaState(DeepAgentState):
+                files: Annotated[
+                    NotRequired[dict[str, FileData]],
+                    DeltaChannel(merge_files, snapshot_frequency=50),
+                ]
+
+
+            agent = create_deep_agent(model=..., state_schema=DeltaState)
             ```
         context_schema: Schema class that defines immutable run-scoped context.
 
@@ -634,10 +688,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             distinct middleware classes, or matches no entry in the assembled
             stack.
     """
-    # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
-    # subclass constraint on `state_schema` is enforced by typing alone and not
-    # validated at runtime.
-
     _model_spec: str | None = model if isinstance(model, str) else None
 
     if model is None:
@@ -1033,7 +1083,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
-        state_schema=state_schema if state_schema is not None else DeepAgentState,
+        state_schema=state_schema,
     ).with_config(
         {
             "recursion_limit": 9_999,

@@ -6,7 +6,7 @@ import json
 import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, NotRequired, cast
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -34,11 +34,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
-from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, FileData, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
-from deepagents.graph import create_deep_agent
+from deepagents.graph import DeepAgentState, create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent, create_sub_agent
@@ -4284,8 +4284,88 @@ class TestAsyncSubagentEndToEnd:
         assert async_tasks["thread_err"]["status"] == "error"
 
 
+def _write_file_then_reply(path: str) -> list[AIMessage]:
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[{"id": f"call_{path}", "name": "write_file", "args": {"file_path": path, "content": "hello"}}],
+        ),
+        AIMessage(content="Done."),
+    ]
+
+
+def _merge_file_writes(files: dict[str, FileData] | None, writes: Sequence[dict[str, FileData | None]]) -> dict[str, FileData]:
+    merged = dict(files or {})
+    for write in writes:
+        for path, data in write.items():
+            if data is None:
+                merged.pop(path, None)
+            else:
+                merged[path] = data
+    return merged
+
+
+class _DeltaState(DeepAgentState):
+    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_merge_file_writes, snapshot_frequency=50)]
+
+
+class TestFullCopyCheckpointsByDefault:
+    """A default agent's thread can be loaded from any one checkpoint alone."""
+
+    def test_every_checkpoint_holds_the_full_messages_and_files(self) -> None:
+        fake_model = FakeChatModelWithHistory(messages=iter([*_write_file_then_reply("/a.txt"), AIMessage(content="Hello again.")]))
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "full-copies"}}
+        agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)
+        agent.invoke({"messages": [HumanMessage(content="Hi")]}, config)
+
+        final = agent.get_state(config).values
+        assert len(final["messages"]) == 6
+        assert list(final["files"]) == ["/a.txt"]
+
+        saved = list(checkpointer.list(config))
+        assert saved
+        for checkpoint_tuple in saved:
+            stored = checkpoint_tuple.checkpoint["channel_values"]
+            expected = agent.get_state(checkpoint_tuple.config).values
+            assert stored.get("messages", []) == expected.get("messages", [])
+            assert stored.get("files", {}) == expected.get("files", {})
+
+    def test_thread_saved_with_deltas_loads_and_continues_with_full_copies(self) -> None:
+        checkpointer = InMemorySaver()
+        config: dict = {"configurable": {"thread_id": "delta-then-full"}}
+        delta_agent = create_deep_agent(
+            model=FakeChatModelWithHistory(messages=iter(_write_file_then_reply("/a.txt"))),
+            state_schema=_DeltaState,
+            checkpointer=checkpointer,
+        )
+        delta_agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)
+        saved_with_deltas = delta_agent.get_state(config).values
+
+        agent = create_deep_agent(
+            model=FakeChatModelWithHistory(messages=iter(_write_file_then_reply("/b.txt"))),
+            checkpointer=checkpointer,
+        )
+        loaded = agent.get_state(config).values
+        assert loaded["messages"] == saved_with_deltas["messages"]
+        assert loaded["files"] == saved_with_deltas["files"]
+
+        agent.invoke({"messages": [HumanMessage(content="Write another file")]}, config)
+
+        continued = agent.get_state(config).values
+        assert continued["messages"][: len(loaded["messages"])] == loaded["messages"]
+        assert len(continued["messages"]) == 8
+        assert sorted(continued["files"]) == ["/a.txt", "/b.txt"]
+        head = checkpointer.get(config)
+        assert head is not None
+        assert head["channel_values"]["messages"] == continued["messages"]
+        assert head["channel_values"]["files"] == continued["files"]
+
+
 class TestDeltaChannels:
-    """Verify that messages and files use DeltaChannel.
+    """Verify that messages and files can use DeltaChannel through `state_schema`.
 
     DeltaChannel stores individual writes in the `writes` table rather than
     snapshotting the full accumulated value into `channel_values` on every
@@ -4295,9 +4375,9 @@ class TestDeltaChannels:
     """
 
     def test_messages_uses_delta_channel(self) -> None:
-        """Messages channel must be a DeltaChannel in the compiled graph."""
+        """A `DeepAgentState` schema puts messages in a DeltaChannel in the compiled graph."""
         fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Hello!")]))
-        agent = create_deep_agent(model=fake_model)
+        agent = create_deep_agent(model=fake_model, state_schema=DeepAgentState)
 
         assert isinstance(agent.channels.get("messages"), DeltaChannel), "messages must use DeltaChannel so checkpoint growth is O(N) not O(N²)"
 
@@ -4305,7 +4385,7 @@ class TestDeltaChannels:
         """get_state() must reconstruct messages correctly despite DeltaChannel."""
         fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Hello!")]))
         checkpointer = InMemorySaver()
-        agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
+        agent = create_deep_agent(model=fake_model, state_schema=DeepAgentState, checkpointer=checkpointer)
 
         config: dict = {"configurable": {"thread_id": "delta-messages-reconstruct"}}
         agent.invoke({"messages": [HumanMessage(content="Hi")]}, config)
@@ -4337,7 +4417,7 @@ class TestDeltaChannels:
         )
         backend = StateBackend()
         checkpointer = InMemorySaver()
-        agent = create_deep_agent(model=fake_model, backend=backend, checkpointer=checkpointer)
+        agent = create_deep_agent(model=fake_model, backend=backend, state_schema=_DeltaState, checkpointer=checkpointer)
 
         config: dict = {"configurable": {"thread_id": "delta-files"}}
         agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)
@@ -4370,7 +4450,7 @@ class TestDeltaChannels:
         )
         backend = StateBackend()
         checkpointer = InMemorySaver()
-        agent = create_deep_agent(model=fake_model, backend=backend, checkpointer=checkpointer)
+        agent = create_deep_agent(model=fake_model, backend=backend, state_schema=_DeltaState, checkpointer=checkpointer)
 
         config: dict = {"configurable": {"thread_id": "delta-files-reconstruct"}}
         agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)

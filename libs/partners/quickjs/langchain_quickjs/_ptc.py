@@ -42,7 +42,7 @@ from langchain_quickjs import _prompt
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Set as AbstractSet
 
     from deepagents.backends.protocol import BackendProtocol
     from langgraph.prebuilt import ToolRuntime
@@ -160,12 +160,17 @@ def _raise_on_invalid_ptc_tools(tools: Sequence[BaseTool]) -> None:
         raise ValueError(msg)
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
+def render_ptc_prompt(
+    tools: Sequence[BaseTool],
+    *,
+    tool_name: str = "eval",
+    deferred: AbstractSet[str] = frozenset(),
+) -> str:
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
     _raise_on_invalid_ptc_tools(tools)
-    return _prompt.render_ptc_prompt(tools, tool_name=tool_name)
+    return _prompt.render_ptc_prompt(tools, tool_name=tool_name, deferred=deferred)
 
 
 class PTCCallBudgetExceededError(RuntimeError):

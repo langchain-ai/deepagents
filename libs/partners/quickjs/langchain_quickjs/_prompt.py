@@ -14,7 +14,7 @@ from langchain_core.utils.json_schema import dereference_refs
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Set as AbstractSet
 
     from langchain_core.tools import BaseTool
 
@@ -443,11 +443,27 @@ def is_valid_ptc_tool_name(name: str) -> bool:
     return is_valid_js_identifier(to_camel_case(name))
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
-    """Build the `tools` namespace section of the system prompt."""
-    if not tools:
-        return ""
-    body = "\n\n".join(_render_tool_block(tool) for tool in tools)
+def render_ptc_prompt(
+    tools: Sequence[BaseTool],
+    *,
+    tool_name: str = "eval",
+    deferred: AbstractSet[str] = frozenset(),
+) -> str:
+    """Build the `tools` namespace section of the system prompt.
+
+    Tools named in `deferred` stay callable but are left out of the reference;
+    one line tells the model it can call them once tool search finds them.
+    """
+    listed = [tool for tool in tools if tool.name not in deferred]
+    search_line = (
+        "\n\nTools found through tool search can also be called from code as "
+        "`await tools.<camelCaseName>({ ... })`."
+        if len(listed) < len(tools)
+        else ""
+    )
+    if not listed:
+        return search_line
+    body = "\n\n".join(_render_tool_block(tool) for tool in listed)
     return (
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
@@ -489,6 +505,7 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "```typescript\n"
         f"{body}\n"
         "```"
+        f"{search_line}"
     )
 
 

@@ -658,6 +658,80 @@ def test_middleware_ptc_prompt_follows_each_slots_own_tools() -> None:
     assert "Search acme pull requests." in swapped
 
 
+def _deferred(tool: BaseTool) -> BaseTool:
+    """Copy `tool` the way `ProviderToolSearchMiddleware` defers it."""
+    return tool.model_copy(update={"extras": {"defer_loading": True}})
+
+
+def test_middleware_ptc_omits_deferred_tools_from_prompt() -> None:
+    from types import SimpleNamespace
+
+    mw = CodeInterpreterMiddleware(ptc=["greet", "echo"])
+    tools = [_deferred(_greet_tool()), _echo_tool()]
+    state = {"_quickjs_slot_id": "ptc-deferred"}
+    prompt = mw._prepare_for_call(SimpleNamespace(tools=tools, state=state))
+    assert "tools.echo(" in prompt
+    assert "tools.greet(" not in prompt
+    assert "found through tool search" in prompt
+    assert [t.name for t in mw._ptc_tools_by_slot["ptc-deferred"]] == [
+        "greet",
+        "echo",
+    ]
+
+
+def test_middleware_ptc_prompt_has_no_search_line_without_deferred_tools() -> None:
+    from types import SimpleNamespace
+
+    mw = CodeInterpreterMiddleware(ptc=["greet"])
+    state = {"_quickjs_slot_id": "ptc-not-deferred"}
+    prompt = mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()], state=state))
+    assert "tools.greet(" in prompt
+    assert "tool search" not in prompt
+
+
+def test_middleware_ptc_reads_deferral_from_request_tools() -> None:
+    """An explicit `ptc` tool is deferred when the request carries it deferred.
+
+    The request also holds the provider's tool search spec, a plain dict.
+    """
+    from types import SimpleNamespace
+
+    greet = _greet_tool()
+    mw = CodeInterpreterMiddleware(ptc=[greet])
+    tools = [_deferred(greet), {"type": "tool_search"}]
+    state = {"_quickjs_slot_id": "ptc-deferred-request"}
+    prompt = mw._prepare_for_call(SimpleNamespace(tools=tools, state=state))
+    assert "### API Reference" not in prompt
+    assert "found through tool search" in prompt
+
+
+async def test_deferred_tool_is_callable_from_eval() -> None:
+    from types import SimpleNamespace
+
+    calls: list[dict] = []
+    mw = CodeInterpreterMiddleware(ptc=["greet"])
+    state = {"_quickjs_slot_id": "ptc-deferred-eval"}
+    tools = [_deferred(_greet_tool(calls))]
+    mw._prepare_for_call(SimpleNamespace(tools=tools, state=state))
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="deferred-ptc",
+        store=None,
+    )
+    try:
+        result = await mw.tools[0].ainvoke(
+            {"runtime": runtime, "code": 'await tools.greet({ name: "Ada" })'}
+        )
+        assert result.content == "<result>hi Ada x1</result>"
+        assert calls == [{"name": "Ada", "times": 1}]
+    finally:
+        drop_slots(mw)
+
+
 def test_middleware_ptc_requires_private_slot_state() -> None:
     from types import SimpleNamespace
 

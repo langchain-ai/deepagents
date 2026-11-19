@@ -4686,11 +4686,11 @@ def is_yolo_switcher_enabled() -> bool:
 
 
 def is_openai_prompt_cache_key_enabled() -> bool:
-    """Return whether OpenAI model calls should carry a per-thread cache key.
+    """Return whether OpenAI model calls should carry a per-install cache key.
 
     Resolves the `models.openai_prompt_cache_key` option from env/`config.toml`,
     defaulting to enabled. When disabled, `ConfigurableModelMiddleware` stops
-    injecting the thread ID as an OpenAI `prompt_cache_key` (a user-supplied key
+    injecting its per-install OpenAI `prompt_cache_key` (a user-supplied key
     is still forwarded). This is the opt-out for OpenAI-compatible endpoints that
     reject unknown request fields.
     """

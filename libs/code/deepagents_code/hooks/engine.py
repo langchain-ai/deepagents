@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import get_event_spec
@@ -79,10 +79,31 @@ class HookEngine:
                 severity="warning",
                 message=f"Could not project hook invocation: {exc}",
             )
+            # No handler ran, so attach the failure to the first deny-on-error
+            # handler. Its result carries the diagnostic, which is then left
+            # out of `diagnostics=` so the reducer does not record it twice.
+            fail_closed = next(
+                (handler for handler in match.handlers if handler.on_error == "deny"),
+                None,
+            )
             return self.adapter.to_domain_decision(
                 invocation,
-                (),
-                diagnostics=(*match.diagnostics, diagnostic),
+                (
+                    (
+                        HandlerResult(
+                            handler_id=fail_closed.id,
+                            diagnostics=(diagnostic,),
+                            deny_on_error=True,
+                        ),
+                    )
+                    if fail_closed is not None
+                    else ()
+                ),
+                diagnostics=(
+                    match.diagnostics
+                    if fail_closed is not None
+                    else (*match.diagnostics, diagnostic)
+                ),
             )
 
         event = invocation.event.event
@@ -137,7 +158,7 @@ async def _run_handler(
         ),
     )
     try:
-        return await run_command_handler(
+        result = await run_command_handler(
             handler,
             payload,
             cwd=cwd,
@@ -145,6 +166,7 @@ async def _run_handler(
             max_output_bytes=max_output_bytes,
             env=env,
         )
+        return replace(result, deny_on_error=handler.on_error == "deny")
     finally:
         _report_progress(
             on_progress,

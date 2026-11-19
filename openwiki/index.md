@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart](quickstart.md) - Route Deep Agents monorepo work to the package that owns the contract, then use its local uv and Make workflow. Follow the published-metadata, local-source, and lockfile boundaries when changing dependencies.
+- [Repository Quickstart](quickstart.md) - Route a Deep Agents monorepo change to the package that owns its public contract, runtime boundary, tests, and release metadata. Use package-local uv and Make workflows, and handle manifest and lockfile changes as a consumer-closure operation.
 
 # Directories
 

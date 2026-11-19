@@ -6,19 +6,15 @@ change.
 Re-exports:
 - `deprecated`: decorator for callables, classes, and properties.
 - `warn_deprecated`: helper for parameter/value-level deprecations where the
-    callable itself isn't being deprecated. Wraps the upstream helper to
-    accept a `stacklevel` argument (the upstream version hardcodes
-    `stacklevel=4`, which mis-attributes warnings emitted directly from a
-    deprecated method body).
+    callable itself isn't being deprecated. Forwards to the upstream helper
+    with caller-controlled stack attribution.
 - `suppress_langchain_deprecation_warning`: context manager that silences
-    emissions from this module's helpers (use sparingly — it is type-wide).
+    emissions from this module's helpers (use sparingly).
 - `LangChainDeprecationWarning`: warning class emitted by the helpers above
     (subclass of `DeprecationWarning`).
 """
 
 from __future__ import annotations
-
-import warnings
 
 from langchain_core._api.deprecation import (
     LangChainDeprecationWarning,
@@ -52,14 +48,6 @@ def warn_deprecated(
 ) -> None:
     """Emit a deprecation warning with caller-controlled stack attribution.
 
-    `langchain_core.warn_deprecated` formats a standard message but hardcodes
-    `stacklevel=4` in its internal `warnings.warn` call. That value targets a
-    decorator-wrapped frame layout; when called directly from a deprecated
-    method's body the warning is attributed one frame too high (above the
-    user's call site). This wrapper captures the formatted upstream warning
-    and re-emits it with an explicit `stacklevel`, so the warning points at
-    the user's call site.
-
     Args:
         since: Release at which this API became deprecated.
         message: Override the default deprecation message. See upstream
@@ -77,24 +65,19 @@ def warn_deprecated(
             using the same convention as `warnings.warn` (`1` = this call,
             `2` = the caller of the method body that invoked us, etc.).
     """
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter("always")
-        _lc_warn_deprecated(
-            since,
-            message=message,
-            name=name,
-            alternative=alternative,
-            alternative_import=alternative_import,
-            pending=pending,
-            obj_type=obj_type,
-            addendum=addendum,
-            removal=removal,
-            package=package,
-        )
-    if not captured:
-        return
-    record = captured[0]
-    warnings.warn(record.message, category=record.category, stacklevel=stacklevel + 1)
+    _lc_warn_deprecated(
+        since,
+        message=message,
+        name=name,
+        alternative=alternative,
+        alternative_import=alternative_import,
+        pending=pending,
+        obj_type=obj_type,
+        addendum=addendum,
+        removal=removal,
+        package=package,
+        stacklevel=stacklevel + 2,
+    )
 
 
 def reset_deprecation_dedupe(*targets: object) -> None:

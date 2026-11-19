@@ -18,6 +18,7 @@ instead of executed.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -102,7 +103,7 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
         restore_slot_id = _assert_slot_update(before_update)
         restored = warm_slot(mw, restore_slot_id)
         restored.restore_snapshot(materialized)
-        assert restored.eval_sync("answer").result == "42"
+        assert (await restored.eval_async("answer")).result == "42"
     finally:
         drop_slots(mw)
 
@@ -129,8 +130,9 @@ async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
                 {"runtime": runtime, "code": "globalThis.executed = true"}
             )
         else:
-            result = mw.tools[0].invoke(
-                {"runtime": runtime, "code": "globalThis.executed = true"}
+            result = await asyncio.to_thread(
+                mw.tools[0].invoke,
+                {"runtime": runtime, "code": "globalThis.executed = true"},
             )
         from langgraph.types import Command
 
@@ -140,7 +142,7 @@ async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
         assert "_SnapshotRestoreError" in result.update["messages"][0].content
         assert "requested code was not executed" in result.update["messages"][0].content
         repl = warm_slot(mw, state["_quickjs_slot_id"])
-        assert repl.eval_sync("typeof executed").result == "undefined"
+        assert (await repl.eval_async("typeof executed")).result == "undefined"
         update = mw.after_agent(state, MagicMock())
         restored = replay_snapshot_chain(
             state["_quickjs_snapshot_payload"], [update["_quickjs_snapshot_payload"]]
@@ -883,7 +885,7 @@ async def test_asigned_snapshot_roundtrip_restores() -> None:
         assert before_update is None
         restored = warm_slot(mw, _signing_thread_id(mw))
         restored.restore_snapshot(materialized)
-        assert restored.eval_sync("answer").result == "42"
+        assert (await restored.eval_async("answer")).result == "42"
     finally:
         drop_slots(mw)
 
@@ -1018,6 +1020,6 @@ async def test_restore_error_reaches_tool_boundary_before_code_runs(
         ) as caught:
             await evaluate()
         assert isinstance(caught.value, RuntimeError)
-        assert repl.eval_sync("typeof executed").result == "undefined"
+        assert (await repl.eval_async("typeof executed")).result == "undefined"
     finally:
         drop_slots(middleware)

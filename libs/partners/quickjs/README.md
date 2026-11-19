@@ -273,7 +273,7 @@ for call in run.tool_calls:
 
 This visibility does not route PTC calls through `ToolNode` or add per-call human-in-the-loop approval; the configured PTC allowlist remains the security boundary. The inner calls are not added as synthetic graph messages.
 
-- Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place. A `Command`'s dict `update` is applied to agent state, except `messages`, and later `tools.*` calls in the same eval read it. An update the graph cannot apply fails the eval; see `InvalidUpdate` and `UnsupportedCommand` below.
+- Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place. A `Command`'s dict `update` is applied to agent state, except `messages`, and later `tools.*` calls in the same eval read it. A `Command` that eval cannot apply fails it; see `UnsupportedCommand` below.
 
 ## Configuration reference
 
@@ -300,7 +300,6 @@ CodeInterpreterMiddleware(
 | `Timeout` | Call exceeded `timeout=` (only when a deadline is set). |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
-| `InvalidUpdate` | A `tools.*` call wrote a state key that already holds its one value for this step, or a key that is not in agent state. The earlier write stays. |
 | `UnsupportedCommand` | A `tools.*` call returned a `Command` that sets `goto`, `graph`, or `resume`, or whose update is not a dict. Nothing from that result is written. |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |

@@ -24,7 +24,6 @@ from langchain.tools import (
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.config import write_state
 from langgraph.types import Command, interrupt
 
 from langchain_quickjs import CodeInterpreterMiddleware
@@ -313,19 +312,6 @@ def mixed_claim() -> list[Command]:
     return [Command(update={"claims": {"mixed": "x"}}), Command(goto="elsewhere")]
 
 
-@tool("reroute_claim")
-def reroute_claim() -> Command:
-    """Store a claim and write the channel that triggers the model node."""
-    return Command(update={"claims": {"rerouted": "x"}, "branch:to:model": None})
-
-
-@tool("replace_claims")
-def replace_claims(claim_id: str) -> str:
-    """Replace every claim from inside the tool, without returning a `Command`."""
-    write_state({"claims": {claim_id: "direct"}})
-    return "replaced"
-
-
 @tool("ask_human")
 def ask_human() -> str:
     """Pause the run for a human answer."""
@@ -339,8 +325,6 @@ _CLAIM_TOOLS = [
     resume_claim,
     list_claim,
     mixed_claim,
-    reroute_claim,
-    replace_claims,
     ask_human,
 ]
 
@@ -360,7 +344,6 @@ def _claim_agent(code: str, **kwargs: Any) -> Any:
 
 _GO = {"messages": [HumanMessage(content="go")]}
 _WRITE_C1 = "await tools.writeClaim({claim_id: 'c1', value: 'v1'});\n"
-_WRITE_C2 = "await tools.writeClaim({claim_id: 'c2', value: 'v2'});\n"
 
 
 async def test_ptc_state_updates_apply_and_are_readable_in_same_eval() -> None:
@@ -387,75 +370,6 @@ def test_ptc_state_updates_apply_under_sync_invoke() -> None:
     result = _claim_agent(_WRITE_C1 + "'ok'").invoke(_GO)
 
     assert result["claims"] == {"c1": "v1"}
-
-
-async def test_ptc_second_write_to_one_value_key_fails_eval_and_keeps_first() -> None:
-    """A key that takes one value per step rejects the second write when made."""
-    result = await _claim_agent(_WRITE_C1 + _WRITE_C2 + "'unreached'").ainvoke(_GO)
-
-    content = _eval_tool_message(result).content
-    assert '<error type="InvalidUpdate">' in content, content
-    assert "tools.writeClaim could not update state" in content
-    assert result["claims"] == {"c1": "v1"}
-    assert result["messages"][-1].content == "done"
-
-
-async def test_ptc_update_cannot_write_a_key_that_is_not_state() -> None:
-    """A `Command` update cannot route the graph through a trigger channel."""
-    result = await _claim_agent("await tools.rerouteClaim({}); 'unreached'").ainvoke(
-        _GO
-    )
-
-    content = _eval_tool_message(result).content
-    assert '<error type="InvalidUpdate">' in content, content
-    assert "claims" not in result
-    assert [m.content for m in result["messages"] if isinstance(m, AIMessage)][
-        -1
-    ] == "done"
-
-
-async def test_ptc_second_write_inside_a_tool_fails_eval_and_keeps_first() -> None:
-    """A tool that writes state itself is rejected the same way as a `Command`."""
-    code = (
-        "await tools.replaceClaims({claim_id: 'c1'});\n"
-        "await tools.replaceClaims({claim_id: 'c2'});\n"
-        "'unreached'"
-    )
-    result = await _claim_agent(code).ainvoke(_GO)
-
-    content = _eval_tool_message(result).content
-    assert '<error type="InvalidUpdate">' in content, content
-    assert "tools.replaceClaims could not update state" in content
-    assert result["claims"] == {"c1": "direct"}
-    assert result["messages"][-1].content == "done"
-
-
-async def test_ptc_script_can_catch_a_rejected_write_and_continue() -> None:
-    code = (
-        _WRITE_C1
-        + "try { "
-        + _WRITE_C2.strip()
-        + " } catch (e) {}\n"
-        + "await tools.readClaim({claim_id: 'c2'})"
-    )
-    result = await _claim_agent(code).ainvoke(_GO)
-
-    _assert_result_contains(_eval_tool_message(result).content, "missing")
-    assert result["claims"] == {"c1": "v1"}
-
-
-async def test_ptc_concurrent_writes_to_one_value_key_have_one_winner() -> None:
-    code = (
-        "const settled = await Promise.allSettled([\n"
-        "  tools.writeClaim({claim_id: 'c1', value: 'v1'}),\n"
-        "  tools.writeClaim({claim_id: 'c2', value: 'v2'}),\n"
-        "]);\n"
-        "settled.map((s) => s.status).sort().join(',')"
-    )
-    result = await _claim_agent(code).ainvoke(_GO)
-
-    _assert_result_contains(_eval_tool_message(result).content, "fulfilled,rejected")
-    assert result["claims"] in ({"c1": "v1"}, {"c2": "v2"})
 
 
 @pytest.mark.parametrize(

@@ -975,7 +975,7 @@ jobs:
 
           uv run harbor run \
             --yes \
-            --agent deepagents_harbor.agent:DeepAgentsLangGraph \
+            --agent langgraph \
             --agent-kwarg python_version=3.14 \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \

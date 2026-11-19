@@ -172,7 +172,7 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
 
 
 def _skills(configurable: dict[str, object]) -> list[str] | None:
-    """Return the task's skills source, forwarded by `DeepAgentsLangGraph`.
+    """Return the task's skills source, forwarded by Harbor's `langgraph` agent.
 
     Raises:
         ValueError: If `skills_dir` is not an absolute path without `..`.

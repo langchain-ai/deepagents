@@ -15,7 +15,7 @@ def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
     deps = pyproject["project"]["dependencies"]
-    assert "harbor[langsmith]>=0.20.0,<0.21.0" in deps
+    assert "harbor[langsmith]>=0.25.0,<0.26.0" in deps
     # harbor-langsmith 0.3.0+ honors experiment_name (no job-id suffix); pin its
     # floor explicitly since harbor's extra leaves it unconstrained (would resolve
     # an older, still-suffixing release otherwise).
@@ -31,7 +31,7 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
 
     assert "HARBOR_AGENT_IMPL ?= dcode" in makefile
     assert "HARBOR_AGENT_GRAPH = $(HARBOR_AGENT_IMPL)" in makefile
-    assert "HARBOR_AGENT_ARGS = --agent deepagents_harbor.agent:DeepAgentsLangGraph" in makefile
+    assert "HARBOR_AGENT_ARGS = --agent langgraph" in makefile
     assert "HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project" in makefile
     assert "--agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT)" in makefile
     assert "--agent-kwarg python_version=3.14" in makefile
@@ -96,7 +96,7 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     run_step = run_step.split("      - name:", maxsplit=1)[0]
 
     # Agent is the langgraph deep agent wired to the selected graph.
-    assert "--agent deepagents_harbor.agent:DeepAgentsLangGraph" in run_step
+    assert "--agent langgraph" in run_step
     assert "--agent-kwarg python_version=3.14" in run_step
     assert '--agent-kwarg graph="$HARBOR_AGENT_GRAPH"' in run_step
     # Dataset and per-task attempts come from the dispatch inputs.

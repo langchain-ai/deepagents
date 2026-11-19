@@ -1052,3 +1052,19 @@ def test_render_ptc_prompt_keys_dict_schemas_by_content() -> None:
 
     assert _tool_block_key(_mcp_tool("query")) == _tool_block_key(_mcp_tool("query"))
     assert _tool_block_key(_mcp_tool("query")) != _tool_block_key(_mcp_tool("path"))
+
+
+def test_dict_schema_boolean_subschemas_render_unknown() -> None:
+    """Boolean subschemas (`true` = any value) render as `unknown`."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "value": True,
+            "either": {"anyOf": [True, {"type": "string"}]},
+            "nested": {"type": "object", "properties": {"a": True}},
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("mcp", schema)])
+    assert "  value?: unknown;" in body
+    assert "  either?: unknown | string;" in body
+    assert "  nested?: { a?: unknown };" in body

@@ -728,6 +728,39 @@ class TestPromptCachingWiring:
             _HARNESS_PROFILES.update(original)
 
 
+class TestThinkingBindingWiring:
+    """Tests that every stack gets the Anthropic thinking-binding middleware."""
+
+    def test_every_stack_gets_the_middleware(self) -> None:
+        with (
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=MagicMock()) as mock_create,
+        ):
+            create_deep_agent(
+                model=GenericFakeChatModel(messages=iter([])),
+                subagents=[{"name": "worker", "description": "Works.", "system_prompt": "Work."}],
+            )
+
+        assert "AnthropicThinkingBindingMiddleware" in [m.name for m in mock_create.call_args.kwargs["middleware"]]
+        for spec in mock_subagents.call_args.kwargs["subagents"]:
+            assert "AnthropicThinkingBindingMiddleware" in [m.name for m in spec["middleware"]], spec["name"]
+
+    def test_profile_can_exclude_it(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("nobindingprov", HarnessProfile(excluded_middleware=frozenset({"AnthropicThinkingBindingMiddleware"})))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))),
+                patch("deepagents.graph.create_agent", return_value=MagicMock()) as mock_create,
+            ):
+                create_deep_agent(model="nobindingprov:some-model")
+
+            assert "AnthropicThinkingBindingMiddleware" not in [m.name for m in mock_create.call_args.kwargs["middleware"]]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
 class TestSystemPromptAssembly:
     """Tests for system prompt assembly: profile base_system_prompt, suffix, and user prompt interaction."""
 

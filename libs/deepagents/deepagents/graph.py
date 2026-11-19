@@ -45,6 +45,7 @@ from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permiss
 from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
+from deepagents.middleware._thinking_binding import _AnthropicThinkingBindingMiddleware
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -417,6 +418,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 when `langchain-aws` is installed (no-ops for non-Bedrock models)
             - [`FireworksPromptCachingMiddleware`](https://reference.langchain.com/python/integrations/langchain_fireworks/middleware/prompt_caching/FireworksPromptCachingMiddleware)
                 when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
+            - `AnthropicThinkingBindingMiddleware` (sets
+                `thinking.block_binding.prefix_mismatch_behavior="drop_block"` on
+                Claude 5+ requests to the Claude API, so thinking blocks made
+                stale by summarization or a system prompt change are dropped
+                instead of failing the request; no-ops for other models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
             - [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
@@ -766,6 +772,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
 
             append_prompt_caching_middleware(subagent_middleware)
+            subagent_middleware.append(_AnthropicThinkingBindingMiddleware())
             if is_forked and memory is not None:
                 subagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
             subagent_middleware.append(ModelRefusalMiddleware())
@@ -868,6 +875,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
         append_prompt_caching_middleware(gp_middleware)
+        gp_middleware.append(_AnthropicThinkingBindingMiddleware())
         gp_middleware.append(ModelRefusalMiddleware())
         _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
@@ -966,6 +974,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # middleware still lands ahead of it.
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     append_prompt_caching_middleware(deepagent_middleware)
+    deepagent_middleware.append(_AnthropicThinkingBindingMiddleware())
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
         # request model is Anthropic, making it safe to enable unconditionally.

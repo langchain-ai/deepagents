@@ -21,8 +21,8 @@ from langchain_core.tools.base import (
     _is_injected_arg_type,
     get_all_basemodel_annotations,
 )
-from langgraph._internal._constants import CONF, CONFIG_KEY_READ, CONFIG_KEY_SEND
-from langgraph.errors import GraphInterrupt
+from langgraph.config import read_state, write_state
+from langgraph.errors import GraphInterrupt, InvalidUpdateError, NotInTaskError
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from langgraph.types import Command
 from quickjs_rs import (
@@ -119,6 +119,18 @@ class _PTCCallBudgetExceededError(RuntimeError):
             f"(limit={self.limit}, attempted={self.attempted}, "
             f"function={self.function_name})"
         )
+
+
+class _PTCResultError(RuntimeError):
+    """A `tools.*` result whose state update eval cannot apply.
+
+    Uncaught by the script, it becomes the eval's error with `error_type`.
+    """
+
+    def __init__(self, message: str, *, error_type: str) -> None:
+        self.error_type = error_type
+        self.error_message = message
+        super().__init__(message)
 
 
 class _TaskBridgeError(RuntimeError):
@@ -311,36 +323,79 @@ def _inject_tool_args_for_ptc(
 
 
 def _fresh_state(outer_runtime: Any) -> Any:
-    """Read the eval step's state with earlier PTC writes applied.
-
-    Same channel read `ToolNode` uses to hydrate tool state, so a tool sees
-    what earlier `tools.*` calls in this eval wrote.
-    """
-    read = outer_runtime.config.get(CONF, {}).get(CONFIG_KEY_READ)
-    if read is None:
+    """Read the eval step's state with earlier `tools.*` writes applied."""
+    try:
+        return read_state()
+    except NotInTaskError:
+        # not running in a graph, so the runtime's snapshot is all there is
         return outer_runtime.state
-    return read(list(read.args[1]), fresh=True)
 
 
-def _send_state_updates(outer_runtime: Any, result: object) -> None:
-    """Write `Command` updates from a PTC call as channel writes on the eval's step.
+def _unsupported_command(command: Command) -> str | None:
+    """Describe what eval cannot apply in `command`, or `None` when it can."""
+    fields = {
+        "goto": bool(command.goto),
+        "graph": command.graph is not None,
+        "resume": command.resume is not None,
+    }
+    routing = [name for name, is_set in fields.items() if is_set]
+    if routing:
+        return f"Command({', '.join(f'{name}=...' for name in routing)})"
+    if not isinstance(command.update, dict | None):
+        return f"Command(update=...) as {type(command.update).__name__}"
+    return None
+
+
+def _command_updates(function_name: str, result: object) -> list[dict[str, Any]]:
+    """Collect the state update of every `Command` in a `tools.*` result.
 
     `messages` are left out: they belong to the synthetic PTC tool call,
     which has no matching tool call in history. JS sees their content.
+
+    Raises:
+        _PTCResultError: A `Command` sets `goto`, `graph`, or `resume`, or
+            its update is not a dict.
     """
-    send = (
-        outer_runtime.config.get(CONF, {}).get(CONFIG_KEY_SEND)
-        if outer_runtime is not None
-        else None
-    )
-    if send is None:
-        return
     entries = result if isinstance(result, list) else [result]
-    for entry in entries:
-        if isinstance(entry, Command) and isinstance(entry.update, dict):
-            writes = [(k, v) for k, v in entry.update.items() if k != "messages"]
-            if writes:
-                send(writes)
+    commands = [entry for entry in entries if isinstance(entry, Command)]
+    for command in commands:
+        if returned := _unsupported_command(command):
+            msg = (
+                f"{function_name} returned {returned}; "
+                "only Command(update={...}) with a dict is supported inside eval."
+            )
+            raise _PTCResultError(msg, error_type="UnsupportedCommand")
+    updates = [
+        {
+            key: value
+            for key, value in (command.update or {}).items()
+            if key != "messages"
+        }
+        for command in commands
+    ]
+    return [update for update in updates if update]
+
+
+def _send_state_updates(outer_runtime: Any, function_name: str, result: object) -> None:
+    """Queue the `Command` updates of a `tools.*` result as state updates.
+
+    Every `Command` is checked for `goto`, `graph`, and `resume` before any
+    update is queued.
+
+    Raises:
+        _PTCResultError: A `Command` in `result` cannot be applied inside eval.
+        InvalidUpdateError: An update writes a key that is not a state key, or
+            one that already holds its one value for this step.
+    """
+    updates = _command_updates(function_name, result)
+    if outer_runtime is None:
+        return
+    try:
+        for update in updates:
+            write_state(update)
+    except NotInTaskError:
+        # not running in a graph, so there is no state to update
+        return
 
 
 def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
@@ -741,13 +796,20 @@ class _ThreadREPL:
             args = _inject_tool_args_for_ptc(
                 tool, payload, state.outer_runtime, call_id
             )
-            result = await self._ainvoke_tool_on_outer_loop(
-                tool,
-                {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
-                outer_runtime=state.outer_runtime,
-                outer_loop=state.outer_loop,
-            )
-            _send_state_updates(state.outer_runtime, result)
+            call = {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"}
+            try:
+                result = await self._ainvoke_tool_on_outer_loop(
+                    tool,
+                    call,
+                    outer_runtime=state.outer_runtime,
+                    outer_loop=state.outer_loop,
+                )
+                _send_state_updates(state.outer_runtime, f"tools.{camel}", result)
+            except InvalidUpdateError as e:
+                # A rejected write queues nothing, so the step's earlier
+                # writes are intact and the run can continue.
+                msg = f"tools.{camel} could not update state: {e}"
+                raise _PTCResultError(msg, error_type="InvalidUpdate") from e
             return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -910,6 +972,10 @@ class _ThreadREPL:
             # agent can shorten its script rather than crash.
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
+            _clear_exception_references(e)
+        except _PTCResultError as e:
+            outcome.error_type = e.error_type
+            outcome.error_message = e.error_message
             _clear_exception_references(e)
         except QJSTimeoutError as e:
             outcome.error_type = "Timeout"

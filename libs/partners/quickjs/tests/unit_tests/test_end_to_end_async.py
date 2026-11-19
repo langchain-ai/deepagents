@@ -23,7 +23,9 @@ from langchain.tools import (
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from langgraph.types import Command
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.config import write_state
+from langgraph.types import Command, interrupt
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
@@ -287,27 +289,90 @@ def read_claim(claim_id: str, runtime: ToolRuntime) -> str:
     return (runtime.state.get("claims") or {}).get(claim_id, "missing")
 
 
-async def test_ptc_state_updates_apply_and_are_readable_in_same_eval() -> None:
-    """`tools.*` state updates land in the graph and later calls see them."""
-    code = (
-        "await tools.writeTodos({todos: [{content: 'a', status: 'pending'}]});\n"
-        "await tools.writeClaim({claim_id: 'c1', value: 'v1'});\n"
-        "await tools.writeFile({file_path: '/one.txt', content: '1'});\n"
-        "await tools.writeFile({file_path: '/two.txt', content: '2'});\n"
-        "await tools.readClaim({claim_id: 'c1'})"
-    )
-    agent = create_agent(
+@tool("route_claim")
+def route_claim() -> Command:
+    """Store a claim and route to another node."""
+    return Command(goto="elsewhere", update={"claims": {"routed": "x"}})
+
+
+@tool("resume_claim")
+def resume_claim() -> Command:
+    """Store a claim on the parent graph and resume it."""
+    return Command(graph=Command.PARENT, resume="r", update={"claims": {"r": "x"}})
+
+
+@tool("list_claim")
+def list_claim() -> Command:
+    """Store a claim as a list of key-value pairs."""
+    return Command(update=[("claims", {"listed": "x"})])
+
+
+@tool("mixed_claim")
+def mixed_claim() -> list[Command]:
+    """Store a claim, then route to another node."""
+    return [Command(update={"claims": {"mixed": "x"}}), Command(goto="elsewhere")]
+
+
+@tool("reroute_claim")
+def reroute_claim() -> Command:
+    """Store a claim and write the channel that triggers the model node."""
+    return Command(update={"claims": {"rerouted": "x"}, "branch:to:model": None})
+
+
+@tool("replace_claims")
+def replace_claims(claim_id: str) -> str:
+    """Replace every claim from inside the tool, without returning a `Command`."""
+    write_state({"claims": {claim_id: "direct"}})
+    return "replaced"
+
+
+@tool("ask_human")
+def ask_human() -> str:
+    """Pause the run for a human answer."""
+    return str(interrupt("ok?"))
+
+
+_CLAIM_TOOLS = [
+    write_claim,
+    read_claim,
+    route_claim,
+    resume_claim,
+    list_claim,
+    mixed_claim,
+    reroute_claim,
+    replace_claims,
+    ask_human,
+]
+
+
+def _claim_agent(code: str, **kwargs: Any) -> Any:
+    return create_agent(
         model=FakeChatModel(messages=_script(code)),
         middleware=[
             TodoListMiddleware(),
             FilesystemMiddleware(),
             _ClaimMiddleware(),
-            CodeInterpreterMiddleware(
-                ptc=["write_todos", "write_file", write_claim, read_claim]
-            ),
+            CodeInterpreterMiddleware(ptc=["write_todos", "write_file", *_CLAIM_TOOLS]),
         ],
+        **kwargs,
     )
-    result = await agent.ainvoke({"messages": [HumanMessage(content="Plan")]})
+
+
+_GO = {"messages": [HumanMessage(content="go")]}
+_WRITE_C1 = "await tools.writeClaim({claim_id: 'c1', value: 'v1'});\n"
+_WRITE_C2 = "await tools.writeClaim({claim_id: 'c2', value: 'v2'});\n"
+
+
+async def test_ptc_state_updates_apply_and_are_readable_in_same_eval() -> None:
+    """`tools.*` state updates land in the graph and later calls see them."""
+    code = (
+        "await tools.writeTodos({todos: [{content: 'a', status: 'pending'}]});\n"
+        + _WRITE_C1
+        + "await tools.writeFile({file_path: '/one.txt', content: '1'});\n"
+        "await tools.writeFile({file_path: '/two.txt', content: '2'});\n"
+        "await tools.readClaim({claim_id: 'c1'})"
+    )
+    result = await _claim_agent(code).ainvoke(_GO)
 
     _assert_result_contains(_eval_tool_message(result).content, "v1")
     assert result["todos"] == [{"content": "a", "status": "pending"}]
@@ -316,3 +381,114 @@ async def test_ptc_state_updates_apply_and_are_readable_in_same_eval() -> None:
     assert [m.name for m in result["messages"] if isinstance(m, ToolMessage)] == [
         "eval"
     ]
+
+
+def test_ptc_state_updates_apply_under_sync_invoke() -> None:
+    result = _claim_agent(_WRITE_C1 + "'ok'").invoke(_GO)
+
+    assert result["claims"] == {"c1": "v1"}
+
+
+async def test_ptc_second_write_to_one_value_key_fails_eval_and_keeps_first() -> None:
+    """A key that takes one value per step rejects the second write when made."""
+    result = await _claim_agent(_WRITE_C1 + _WRITE_C2 + "'unreached'").ainvoke(_GO)
+
+    content = _eval_tool_message(result).content
+    assert '<error type="InvalidUpdate">' in content, content
+    assert "tools.writeClaim could not update state" in content
+    assert result["claims"] == {"c1": "v1"}
+    assert result["messages"][-1].content == "done"
+
+
+async def test_ptc_update_cannot_write_a_key_that_is_not_state() -> None:
+    """A `Command` update cannot route the graph through a trigger channel."""
+    result = await _claim_agent("await tools.rerouteClaim({}); 'unreached'").ainvoke(
+        _GO
+    )
+
+    content = _eval_tool_message(result).content
+    assert '<error type="InvalidUpdate">' in content, content
+    assert "claims" not in result
+    assert [m.content for m in result["messages"] if isinstance(m, AIMessage)][
+        -1
+    ] == "done"
+
+
+async def test_ptc_second_write_inside_a_tool_fails_eval_and_keeps_first() -> None:
+    """A tool that writes state itself is rejected the same way as a `Command`."""
+    code = (
+        "await tools.replaceClaims({claim_id: 'c1'});\n"
+        "await tools.replaceClaims({claim_id: 'c2'});\n"
+        "'unreached'"
+    )
+    result = await _claim_agent(code).ainvoke(_GO)
+
+    content = _eval_tool_message(result).content
+    assert '<error type="InvalidUpdate">' in content, content
+    assert "tools.replaceClaims could not update state" in content
+    assert result["claims"] == {"c1": "direct"}
+    assert result["messages"][-1].content == "done"
+
+
+async def test_ptc_script_can_catch_a_rejected_write_and_continue() -> None:
+    code = (
+        _WRITE_C1
+        + "try { "
+        + _WRITE_C2.strip()
+        + " } catch (e) {}\n"
+        + "await tools.readClaim({claim_id: 'c2'})"
+    )
+    result = await _claim_agent(code).ainvoke(_GO)
+
+    _assert_result_contains(_eval_tool_message(result).content, "missing")
+    assert result["claims"] == {"c1": "v1"}
+
+
+async def test_ptc_concurrent_writes_to_one_value_key_have_one_winner() -> None:
+    code = (
+        "const settled = await Promise.allSettled([\n"
+        "  tools.writeClaim({claim_id: 'c1', value: 'v1'}),\n"
+        "  tools.writeClaim({claim_id: 'c2', value: 'v2'}),\n"
+        "]);\n"
+        "settled.map((s) => s.status).sort().join(',')"
+    )
+    result = await _claim_agent(code).ainvoke(_GO)
+
+    _assert_result_contains(_eval_tool_message(result).content, "fulfilled,rejected")
+    assert result["claims"] in ({"c1": "v1"}, {"c2": "v2"})
+
+
+@pytest.mark.parametrize(
+    ("call", "returned"),
+    [
+        ("routeClaim", "Command(goto=...)"),
+        ("resumeClaim", "Command(graph=..., resume=...)"),
+        ("listClaim", "Command(update=...) as list"),
+        ("mixedClaim", "Command(goto=...)"),
+    ],
+    ids=["goto", "graph-resume", "list-update", "mixed-list"],
+)
+async def test_ptc_unsupported_command_fails_eval_and_writes_nothing(
+    call: str, returned: str
+) -> None:
+    """A `Command` eval cannot apply fails the eval; none of its result is written."""
+    result = await _claim_agent(f"await tools.{call}({{}})").ainvoke(_GO)
+
+    content = _eval_tool_message(result).content
+    assert '<error type="UnsupportedCommand">' in content, content
+    assert f"tools.{call} returned {returned}" in content
+    assert "claims" not in result
+    assert result["messages"][-1].content == "done"
+
+
+async def test_ptc_state_updates_apply_once_after_interrupt_and_resume() -> None:
+    code = _WRITE_C1 + "await tools.askHuman({})"
+    agent = _claim_agent(code, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t"}}
+
+    await agent.ainvoke(_GO, config=config)
+    assert "claims" not in (await agent.aget_state(config)).values
+    result = await agent.ainvoke(Command(resume="yes"), config=config)
+
+    _assert_result_contains(_eval_tool_message(result).content, "yes")
+    assert result["claims"] == {"c1": "v1"}

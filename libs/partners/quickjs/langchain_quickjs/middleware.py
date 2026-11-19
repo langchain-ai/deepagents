@@ -64,6 +64,7 @@ from langchain_quickjs._snapshot import (
     verify_snapshot,
 )
 from langchain_quickjs._subagent import find_subagent_task_tool
+from langchain_quickjs._worker import ExecutionMode
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,26 @@ def _resolve_mode(
         case _:
             msg = "`mode` must be one of 'thread', 'turn', or 'call'."
             raise ValueError(msg)
+
+
+def _resolve_execution(*, execution: str) -> ExecutionMode:
+    """Validate where a slot's REPL work runs."""
+    match execution:
+        case "worker":
+            return "worker"
+        case "inline":
+            return "inline"
+        case _:
+            msg = "`execution` must be one of 'worker' or 'inline'."
+            raise ValueError(msg)
+
+
+def _is_sync_only(tool: BaseTool) -> bool:
+    """Whether `tool` has no async implementation and runs on an executor thread."""
+    if hasattr(tool, "coroutine"):
+        return tool.coroutine is None
+    # BaseTool has no public async marker; an inherited `_arun` means executor.
+    return type(tool)._arun is BaseTool._arun  # noqa: SLF001
 
 
 def _new_slot_id() -> str:
@@ -262,6 +283,22 @@ class CodeInterpreterMiddleware(
                 where the checkpointer is not fully trusted. Use the same key across
                 all processes that share a thread, and rotate it by starting fresh
                 threads.
+        execution: Where a slot's QuickJS work runs. `"worker"` (default): a
+            dedicated OS thread with its own event loop per slot, so a long
+            `eval` never stalls the caller. `"inline"`: the calling thread, and
+            a plain `await` on the caller's loop on the async path, for hosts
+            whose event loop cannot be woken from another thread (the default
+            hand-off through `asyncio.wrap_future` never completes there). A
+            long `eval` then blocks the caller, one slot must not be driven
+            concurrently from several threads, and PTC tools should be async.
+
+            !!! warning
+
+                Use `"inline"` only when the event loop belongs to a single
+                conversation, such as one durable-execution workflow run. On a
+                loop shared by several users or conversations, one runaway
+                `eval` blocks all of them. Combined with `timeout=None`, only
+                an external limit can stop it.
 
     Example:
         ```python
@@ -295,6 +332,7 @@ class CodeInterpreterMiddleware(
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
+        execution: ExecutionMode = "worker",
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -322,6 +360,13 @@ class CodeInterpreterMiddleware(
         self._fs_from_agent = fs is True
         self._fs = None if isinstance(fs, bool) else fs
         self._mode = _resolve_mode(mode=mode)
+        execution = _resolve_execution(execution=execution)
+        if execution == "inline" and timeout is None:
+            logger.warning(
+                'CodeInterpreterMiddleware(execution="inline", timeout=None): a '
+                "runaway eval blocks the caller's event loop indefinitely; only "
+                "an external limit such as a process kill can stop it."
+            )
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
         )
@@ -338,11 +383,13 @@ class CodeInterpreterMiddleware(
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
+            execution=execution,
         )
         self._registry = _REGISTRY
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
+        self._warned_sync_ptc: set[str] = set()
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
@@ -682,9 +729,24 @@ class CodeInterpreterMiddleware(
         slot_id = self._slot_id(getattr(request, "state", {}))
         exposed_tools = tuple(exposed)
         self._ptc_tools_by_slot[slot_id] = exposed_tools
+        if self._slot_config.execution == "inline":
+            self._warn_sync_ptc_tools(exposed_tools)
         return self._with_fs(
             prompt + render_ptc_prompt(exposed_tools, tool_name=self._tool_name)
         )
+
+    def _warn_sync_ptc_tools(self, tools: tuple[BaseTool, ...]) -> None:
+        """Warn once per sync PTC tool: inline, it can hang on some hosts."""
+        for tool in tools:
+            if tool.name in self._warned_sync_ptc or not _is_sync_only(tool):
+                continue
+            self._warned_sync_ptc.add(tool.name)
+            logger.warning(
+                'PTC tool %r is sync under execution="inline"; it runs on an '
+                "executor thread and hangs on event loops that cannot be woken "
+                "from another thread. Give it an async implementation.",
+                tool.name,
+            )
 
     def _with_fs(self, prompt: str) -> str:
         if not self._fs_enabled:

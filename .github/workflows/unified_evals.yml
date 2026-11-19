@@ -34,7 +34,7 @@ on:
         type: string
         default: "3"
       n_retries:
-        description: "Maximum additional attempts per trial after a setup failure (e.g. sandbox creation or compose errors, or an agent-install timeout). Agent exits (including a failed install script), agent timeouts and missing rewards are never retried."
+        description: "Maximum additional attempts per errored trial. Uses Harbor's default retry policy: setup, provider and network errors are retried; agent timeouts and budget overruns, refusals, config errors and verifier failures are not."
         type: string
         default: "0"
       agent_timeout_multiplier:

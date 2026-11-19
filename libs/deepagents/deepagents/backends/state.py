@@ -3,9 +3,8 @@
 import base64
 from typing import Any
 
-from langchain_core.runnables import RunnableConfig
-from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
-from langgraph.config import get_config
+from langgraph.config import read_state, write_state
+from langgraph.errors import NotInTaskError
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -34,6 +33,13 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 
+_OUTSIDE_GRAPH = (
+    "StateBackend must be used inside a LangGraph graph execution "
+    "(e.g. via create_deep_agent). It cannot read or write state "
+    "outside of a graph node or tool. To pre-populate files, pass them "
+    'on invoke: agent.invoke({"messages": [...], "files": {...}})'
+)
+
 
 class StateBackend(BackendProtocol):
     """Backend that stores files in agent state (ephemeral).
@@ -42,81 +48,35 @@ class StateBackend(BackendProtocol):
     a conversation thread but not across threads. State is automatically
     checkpointed after each agent step.
 
-    Reads and writes go through LangGraph's `CONFIG_KEY_READ` /
-    `CONFIG_KEY_SEND` so that state updates are applied as channel writes
-    to the `files` state key.
+    Reads and writes go through `langgraph.config.read_state` and
+    `write_state`, so a write is a state update to the `files` key and a read
+    sees the writes made earlier in the same step.
     """
 
     def __init__(self) -> None:
         """Initialize StateBackend."""
 
-    # ------------------------------------------------------------------
-    # Internal helpers for reading / writing state via config keys
-    # ------------------------------------------------------------------
-
-    def _get_config(self) -> RunnableConfig:
-        """Return the current LangGraph config, with a clear error if missing."""
-        try:
-            config = get_config()
-        except RuntimeError:
-            msg = (
-                "StateBackend must be used inside a LangGraph graph execution "
-                "(e.g. via create_deep_agent). It cannot read or write state "
-                "outside of a graph context. To pre-populate files, pass them "
-                'on invoke: agent.invoke({"messages": [...], "files": {...}})'
-            )
-            raise RuntimeError(msg) from None
-        configurable = config.get("configurable", {})
-        if CONFIG_KEY_READ not in configurable:
-            msg = (
-                "StateBackend requires CONFIG_KEY_READ / CONFIG_KEY_SEND in "
-                "the LangGraph config. Make sure the backend is used inside "
-                "a graph node or tool, not called directly. To pre-populate "
-                "files, pass them on invoke: "
-                'agent.invoke({"messages": [...], "files": {...}})'
-            )
-            raise RuntimeError(msg)
-        return config
-
     def _read_files(self) -> dict[str, Any]:
-        """Read the current `files` channel via Pregel internals.
+        """Read `files` from state, with this step's earlier writes applied.
 
-        Uses `CONFIG_KEY_READ` to read state directly — this lets us
-        initialize StateBackend once and fetch state on demand from any
-        graph context (tools, middleware nodes, etc.).
-
-        `fresh=True` applies any pending task writes through the channel's
-        reducer before returning, giving read-your-writes semantics within
-        a single superstep — e.g. a tool that writes a file and then reads
-        it back, or a code interpreter that issues multiple sub-tool calls
-        inside one eval.
+        A tool that writes a file and reads it back, or a code interpreter that
+        makes several file calls in one eval, sees its own writes.
         """
-        config = self._get_config()
-        read = config["configurable"][CONFIG_KEY_READ]
-        fresh = True
-        return read("files", fresh) or {}
+        try:
+            return read_state("files").get("files") or {}
+        except NotInTaskError as e:
+            raise RuntimeError(_OUTSIDE_GRAPH) from e
 
     def _send_files_update(self, update: dict[str, Any]) -> None:
-        """Queue a write to the `files` channel via Pregel internals.
+        """Queue a `files` state update holding only the changed files.
 
-        The whole point of this helper is that callers of `backend.write`
-        / `backend.edit` don't need to know about or manage state updates
-        themselves — the backend handles it internally.
-
-        Uses `CONFIG_KEY_SEND` to enqueue a partial `files` update
-        directly — same rationale as `_read_files` for initializing
-        StateBackend once and writing from any graph context. `send`
-        takes a list of `(channel, value)` tuples; the `files` channel
-        uses a dict-merge reducer, so we only need to include changed
-        files — unchanged ones are preserved by the reducer.
-
-        Sends are visible to subsequent `_read_files` calls within the
-        same superstep via `fresh=True`; they are committed to state at
-        the node boundary.
+        The `files` reducer merges it, so unchanged files are kept. The update
+        is committed to state when the step ends.
         """
-        config = self._get_config()
-        send = config["configurable"][CONFIG_KEY_SEND]
-        send([("files", update)])
+        try:
+            write_state({"files": update})
+        except NotInTaskError as e:
+            raise RuntimeError(_OUTSIDE_GRAPH) from e
 
     def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to the format used for state storage."""
@@ -210,7 +170,7 @@ class StateBackend(BackendProtocol):
     ) -> WriteResult:
         """Write content to a file, creating it or overwriting it if it already exists.
 
-        The update is queued directly via `CONFIG_KEY_SEND`.
+        The update is queued with `write_state`.
         """
         files = self._read_files()
 
@@ -229,7 +189,7 @@ class StateBackend(BackendProtocol):
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
-        The update is queued directly via `CONFIG_KEY_SEND`.
+        The update is queued with `write_state`.
         """
         files = self._read_files()
         file_data = files.get(file_path)
@@ -256,7 +216,7 @@ class StateBackend(BackendProtocol):
 
         Deleting a path removes the exact file at `file_path` plus every nested
         key under it (the prefix `file_path` + "/"), so a directory is removed
-        recursively. Each removal is queued via `CONFIG_KEY_SEND` as a ``None``
+        recursively. Each removal is queued with `write_state` as a ``None``
         value, which the `files` channel reducer interprets as a deletion marker.
 
         Args:

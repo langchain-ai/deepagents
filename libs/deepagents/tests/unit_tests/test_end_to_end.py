@@ -2845,7 +2845,7 @@ class TestCompactConversationTool:
 
 
 class TestStateBackendConfigKeys:
-    """Test that StateBackend reads/writes via CONFIG_KEY_READ/CONFIG_KEY_SEND."""
+    """Test that StateBackend reads/writes through `read_state` and `write_state`."""
 
     def test_write_then_read(self) -> None:
         """Write a file via tool call, then read it back in the same turn."""

@@ -20,9 +20,9 @@ from deepagents.middleware import AnthropicCacheKeepaliveMiddleware, CachePricin
 INTERVAL = 0.05
 
 
-def _request(*, anthropic: bool = True) -> ModelRequest:
+def _request(*, anthropic: bool = True, thinking: dict[str, Any] | None = None) -> ModelRequest:
     model: Any = (
-        ChatAnthropic(model_name="claude-opus-5-5", anthropic_api_key="fake")  # type: ignore[call-arg]
+        ChatAnthropic(model_name="claude-opus-5-5", anthropic_api_key="fake", thinking=thinking)  # type: ignore[call-arg]
         if anthropic
         else GenericFakeChatModel(messages=iter([]))
     )
@@ -61,7 +61,14 @@ class _Recorder:
         return self.calls[1:]
 
 
-async def _arun(mw: AnthropicCacheKeepaliveMiddleware, recorder: _Recorder, *, tool_seconds: float, anthropic: bool = True) -> ToolMessage:
+async def _arun(
+    mw: AnthropicCacheKeepaliveMiddleware,
+    recorder: _Recorder,
+    *,
+    tool_seconds: float,
+    anthropic: bool = True,
+    thinking: dict[str, Any] | None = None,
+) -> ToolMessage:
     async def model_handler(request: ModelRequest) -> ModelResponse:
         return recorder.respond(request, ("t1",))
 
@@ -69,7 +76,7 @@ async def _arun(mw: AnthropicCacheKeepaliveMiddleware, recorder: _Recorder, *, t
         await asyncio.sleep(tool_seconds)
         return ToolMessage("done", tool_call_id=request.tool_call["id"])
 
-    await mw.awrap_model_call(_request(anthropic=anthropic), model_handler)
+    await mw.awrap_model_call(_request(anthropic=anthropic, thinking=thinking), model_handler)
     result = await mw.awrap_tool_call(_tool_request("t1"), tool_handler)
     assert isinstance(result, ToolMessage)
     return result
@@ -85,13 +92,13 @@ async def test_pings_while_tool_runs_and_stops_after() -> None:
     assert len(recorder.pings) == pings
 
 
-async def test_ping_resends_same_request_with_no_output() -> None:
+async def test_ping_resends_same_request_with_one_output_token() -> None:
     mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL)
     recorder = _Recorder()
     await _arun(mw, recorder, tool_seconds=INTERVAL * 1.5)
     original, ping = recorder.calls[0], recorder.pings[0]
     assert ping.messages == original.messages
-    assert ping.model_settings == {**original.model_settings, "max_tokens": 0, "stream": False}
+    assert ping.model_settings == {**original.model_settings, "max_tokens": 1, "stream": False}
 
 
 async def test_short_tool_sends_no_ping() -> None:
@@ -149,6 +156,23 @@ async def test_min_expected_savings_sets_the_threshold() -> None:
     mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL, pricing=OPUS_PRICING, min_expected_savings=0.01)
     recorder = _Recorder(prompt_tokens=5_000)
     await _arun(mw, recorder, tool_seconds=INTERVAL * 1.5)
+    assert len(recorder.pings) == 1
+
+
+async def test_budget_thinking_is_not_pinged_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL)
+    recorder = _Recorder()
+    thinking = {"type": "enabled", "budget_tokens": 2048}
+    await _arun(mw, recorder, tool_seconds=INTERVAL * 3, thinking=thinking)
+    await _arun(mw, recorder, tool_seconds=INTERVAL * 3, thinking=thinking)
+    assert len(recorder.calls) == 2
+    assert sum("budgeted extended thinking" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_adaptive_thinking_is_pinged() -> None:
+    mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL)
+    recorder = _Recorder()
+    await _arun(mw, recorder, tool_seconds=INTERVAL * 1.5, thinking={"type": "adaptive"})
     assert len(recorder.pings) == 1
 
 

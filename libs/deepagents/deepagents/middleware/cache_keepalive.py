@@ -4,9 +4,9 @@ Anthropic's default prompt-cache entry lives five minutes from the start of the
 last request that wrote or read it. When a tool runs longer than that (a build,
 a test suite, a subagent), the next model call misses the cache and re-writes
 the whole conversation at the cache-write price. This middleware re-sends the
-previous model request with `max_tokens=0` before the entry expires: the API
-reads the cached prefix, refreshes its timer, and returns no output, so the
-ping costs one cache read.
+previous model request with `max_tokens=1` before the entry expires: the API
+reads the cached prefix, refreshes its timer, and returns one token, so the
+ping costs one cache read and one output token.
 """
 
 from __future__ import annotations
@@ -76,7 +76,8 @@ class CachePricing:
     def expected_savings(self, prompt_tokens: int) -> float:
         """Dollars a ping is expected to save for a prompt of `prompt_tokens` tokens.
 
-        A ping reads the cached prompt and outputs nothing; skipping it means
+        A ping reads the cached prompt and outputs one token (not counted here,
+        since it costs a fraction of a cent); skipping it means
         the next request writes the prompt again instead of reading it. While a
         tool call runs, that next request is certain, so the saving is the
         miss's extra cost minus the ping's cost.
@@ -138,13 +139,25 @@ def _ping_config() -> Iterator[None]:
 
 
 def _ping_request(request: ModelRequest) -> ModelRequest:
-    """Return `request` asking for no output and no streaming.
+    """Return `request` asking for one output token and no streaming.
 
-    The Anthropic API rejects `max_tokens=0` on a streaming request, and the
-    prefix it reads must match the original request byte for byte, so only
+    The Anthropic API rejects `max_tokens=0` with streaming, extended thinking,
+    structured output or a forced tool choice; one token avoids those limits.
+    The prefix it reads must match the original request byte for byte, so only
     these two settings change.
     """
-    return request.override(model_settings={**request.model_settings, "max_tokens": 0, "stream": False})
+    return request.override(model_settings={**request.model_settings, "max_tokens": 1, "stream": False})
+
+
+def _uses_budget_thinking(request: ModelRequest) -> bool:
+    """Whether the request uses extended thinking with a token budget.
+
+    The budget is tied to `max_tokens`, so a one-token ping would change it,
+    and Anthropic keys the message cache on it. Adaptive thinking has no
+    budget and pings normally.
+    """
+    thinking = request.model_settings.get("thinking") or getattr(request.model, "thinking", None)
+    return isinstance(thinking, dict) and thinking.get("type") == "enabled"
 
 
 class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
@@ -155,8 +168,9 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
     `max_pings` pings or the first ping error, so a hung tool costs at most
     `max_pings` cache reads. With `pricing`, pings are skipped when the prompt
     is too small for a cache miss to cost `min_expected_savings` more than a
-    ping. Pings appear in traces as model calls with no
-    output tokens, tagged `cache_keepalive` and `nostream` so they never reach a
+    ping. Requests that use extended thinking with a token budget are never
+    pinged, since a ping would change the budget and miss the cache. Pings
+    appear in traces as model calls with one output token, tagged `cache_keepalive` and `nostream` so they never reach a
     `messages` stream. Requests to other providers pass through untouched.
 
     !!! warning "Experimental"
@@ -202,6 +216,21 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
         self.min_expected_savings = min_expected_savings
         self._pending: OrderedDict[str, _PendingCall] = OrderedDict()
         self._lock = threading.Lock()
+        self._warned_thinking = False
+
+    def _pingable(self, request: ModelRequest) -> bool:
+        """Whether `request` is an Anthropic request whose cache a ping can refresh."""
+        if not is_anthropic_chat_model(request.model):
+            return False
+        if _uses_budget_thinking(request):
+            if not self._warned_thinking:
+                self._warned_thinking = True
+                logger.warning(
+                    "Prompt-cache keep-alive is off for requests with budgeted extended thinking: "
+                    "a ping would change the thinking budget and miss the cache."
+                )
+            return False
+        return True
 
     def _pays(self, call: _PendingCall) -> bool:
         """Whether pinging `call` is expected to save at least `min_expected_savings`."""
@@ -260,7 +289,7 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
         """Remember an Anthropic request so its tool calls can keep its cache warm."""
         started_at = time.monotonic()
         response = handler(request)
-        if is_anthropic_chat_model(request.model):
+        if self._pingable(request):
             self._register(response, _PendingCall(request=request, started_at=started_at, handler=handler))
         return response
 
@@ -272,7 +301,7 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
         """Remember an Anthropic request so its tool calls can keep its cache warm (async version)."""
         started_at = time.monotonic()
         response = await handler(request)
-        if is_anthropic_chat_model(request.model):
+        if self._pingable(request):
             self._register(response, _PendingCall(request=request, started_at=started_at, ahandler=handler))
         return response
 

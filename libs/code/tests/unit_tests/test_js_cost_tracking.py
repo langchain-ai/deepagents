@@ -72,13 +72,6 @@ def _message(message_id: str) -> AIMessage:
     return AIMessage(content="done", id=message_id, usage_metadata=_usage())
 
 
-def _close_slots(interpreter: CostAwareCodeInterpreterMiddleware) -> None:
-    """Close the interpreter's slots in the process-wide registry."""
-    slots = interpreter._registry._slots
-    for key in [key for key in slots if key[1] == interpreter._slot_config]:
-        slots.pop(key).close()
-
-
 def _fake_model(*messages: AIMessage) -> _ToolBindingFakeModel:
     return _ToolBindingFakeModel(messages=iter(messages), disable_streaming=True)
 
@@ -91,7 +84,7 @@ def controlled_cost(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
     cost_tracking._RECORDER_VAR.reset(token)
     for interpreter in _INTERPRETERS:
-        _close_slots(interpreter)
+        interpreter._registry.close()
     _INTERPRETERS.clear()
 
 
@@ -212,7 +205,7 @@ async def _assert_accounting(
 
 def _fresh_runtime() -> None:
     for interpreter in _INTERPRETERS:
-        _close_slots(interpreter)
+        interpreter._registry.close()
     _INTERPRETERS.clear()
     cost_tracking._RECORDER_VAR.set(cost_tracking._SessionCostRecorder())
 

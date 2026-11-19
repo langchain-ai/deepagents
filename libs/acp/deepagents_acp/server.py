@@ -15,17 +15,8 @@ from acp import (
     PromptResponse,
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
-    audio_block,
-    image_block,
     run_agent as run_acp_agent,
     schema as _acp_schema,
-    start_edit_tool_call,
-    start_tool_call,
-    text_block,
-    tool_content,
-    tool_diff_content,
-    update_agent_message,
-    update_tool_call,
 )
 from acp.exceptions import RequestError
 from acp.schema import (
@@ -35,7 +26,9 @@ from acp.schema import (
     AgentThoughtChunk,
     AudioContentBlock,
     ClientCapabilities,
+    ContentToolCallContent,
     EmbeddedResourceContentBlock,
+    FileEditToolCallContent,
     HttpMcpServer,
     ImageContentBlock,
     Implementation,
@@ -50,6 +43,8 @@ from acp.schema import (
     SessionModeState,
     SseMcpServer,
     TextContentBlock,
+    ToolCallLocation,
+    ToolCallProgress,
     ToolCallStart,
     ToolCallUpdate,
     ToolKind,
@@ -141,15 +136,15 @@ def _content_block(
     block_type = block.get("type")
     if block_type == "text":
         text = block.get("text")
-        return text_block(text) if isinstance(text, str) and text else None
+        return TextContentBlock(type="text", text=text) if isinstance(text, str) and text else None
     data = block.get("base64")
     mime_type = block.get("mime_type")
     if not (isinstance(data, str) and isinstance(mime_type, str)):
         return None
     if block_type == "image":
-        return image_block(data, mime_type, uri=block.get("url"))
+        return ImageContentBlock(type="image", data=data, mime_type=mime_type, uri=block.get("url"))
     if block_type == "audio":
-        return audio_block(data, mime_type)
+        return AudioContentBlock(type="audio", data=data, mime_type=mime_type)
     return None
 
 
@@ -196,7 +191,7 @@ def _content_updates(
             updates.append(
                 AgentThoughtChunk(
                     session_update="agent_thought_chunk",
-                    content=text_block(reasoning),
+                    content=TextContentBlock(type="text", text=reasoning),
                     message_id=message_id,
                 )
             )
@@ -511,7 +506,9 @@ class AgentServerACP(ACPAgent):
 
     async def _log_text(self, session_id: str, text: str) -> None:
         """Send a text message update to the client."""
-        update = update_agent_message(text_block(text))
+        update = AgentMessageChunk(
+            session_update="agent_message_chunk", content=TextContentBlock(type="text", text=text)
+        )
         await self._conn.session_update(session_id=session_id, update=update, source="DeepAgent")
 
     def _all_tasks_completed(self, plan: list[dict[str, Any]]) -> bool:
@@ -686,7 +683,8 @@ class AgentServerACP(ACPAgent):
         if tool_name == "read_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
             title = f"Read `{path}`" if path else tool_name
-            return start_tool_call(
+            return ToolCallStart(
+                session_update="tool_call",
                 tool_call_id=tool_id,
                 title=title,
                 kind=tool_kind,
@@ -701,21 +699,25 @@ class AgentServerACP(ACPAgent):
 
             # Only create diff if we have both old and new strings
             if path and old_string and new_string:
-                diff_content = tool_diff_content(
+                diff_content = FileEditToolCallContent(
+                    type="diff",
                     path=path,
                     new_text=new_string,
                     old_text=old_string,
                 )
-                return start_edit_tool_call(
+                return ToolCallStart(
+                    session_update="tool_call",
                     tool_call_id=tool_id,
                     title=title,
-                    path=path,
-                    content=diff_content,
-                    # This is silly but for some reason content isn't passed through
-                    extra_options=[diff_content],
+                    kind="edit",
+                    status="pending",
+                    content=[diff_content],
+                    locations=[ToolCallLocation(path=path)],
+                    raw_input={"path": path, "content": diff_content},
                 )
             # Fallback to generic tool call if data incomplete
-            return start_tool_call(
+            return ToolCallStart(
+                session_update="tool_call",
                 tool_call_id=tool_id,
                 title=title,
                 kind=tool_kind,
@@ -725,7 +727,8 @@ class AgentServerACP(ACPAgent):
         if tool_name == "write_file" and isinstance(tool_args, dict):
             path = tool_args.get("file_path")
             title = f"Write `{path}`" if path else tool_name
-            return start_tool_call(
+            return ToolCallStart(
+                session_update="tool_call",
                 tool_call_id=tool_id,
                 title=title,
                 kind=tool_kind,
@@ -734,7 +737,8 @@ class AgentServerACP(ACPAgent):
             )
         if tool_name == "execute" and isinstance(tool_args, dict):
             command = tool_args.get("command", "")
-            return start_tool_call(
+            return ToolCallStart(
+                session_update="tool_call",
                 tool_call_id=tool_id,
                 title=command or "Execute command",
                 kind=tool_kind,
@@ -742,7 +746,8 @@ class AgentServerACP(ACPAgent):
                 raw_input=tool_args,
             )
         title = tool_name
-        return start_tool_call(
+        return ToolCallStart(
+            session_update="tool_call",
             tool_call_id=tool_id,
             title=title,
             kind=tool_kind,
@@ -912,10 +917,15 @@ class AgentServerACP(ACPAgent):
             )
         await self._conn.session_update(
             session_id=session_id,
-            update=update_tool_call(
+            update=ToolCallProgress(
+                session_update="tool_call_update",
                 tool_call_id=message.tool_call_id,
                 status="failed" if message.status == "error" else "completed",
-                content=[tool_content(text_block(content))],
+                content=[
+                    ContentToolCallContent(
+                        type="content", content=TextContentBlock(type="text", text=content)
+                    )
+                ],
             ),
             source="DeepAgent",
         )
@@ -1095,10 +1105,16 @@ class AgentServerACP(ACPAgent):
                             )
                         else:
                             formatted_content = str(content)
-                        update = update_tool_call(
+                        update = ToolCallProgress(
+                            session_update="tool_call_update",
                             tool_call_id=tool_call_id,
                             status="completed",
-                            content=[tool_content(text_block(formatted_content))],
+                            content=[
+                                ContentToolCallContent(
+                                    type="content",
+                                    content=TextContentBlock(type="text", text=formatted_content),
+                                )
+                            ],
                         )
                         await self._conn.session_update(
                             session_id=session_id, update=update, source="DeepAgent"

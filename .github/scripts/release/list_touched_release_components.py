@@ -1,7 +1,8 @@
-"""List release-please components touched by a PR's changed files.
+"""List release-please components a PR's changed files would release.
 
 Used by advisory workflows (e.g. release fan-out bypass warnings) that need
-the component list without running the full fan-out gate.
+the component list without running the full fan-out gate. Files under a
+package's `exclude-paths` (`tests/`, `uv.lock`) don't count.
 
 Stdout JSON:
 

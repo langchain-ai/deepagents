@@ -50,6 +50,25 @@ def test_sdk_scope_with_code_files_blocks() -> None:
     ]
 
 
+def test_relocked_dependent_lockfiles_pass() -> None:
+    """Dependents' relocked `uv.lock` files don't need the title to cover them."""
+    changed = [
+        "libs/deepagents/pyproject.toml",
+        "libs/deepagents/uv.lock",
+        "libs/code/uv.lock",
+        "libs/evals/uv.lock",
+    ]
+    assert find_offenders("feat(sdk)!: require x", changed, CONFIG) == []
+
+
+def test_dependent_pyproject_change_still_blocks() -> None:
+    """A dependent's `pyproject.toml` is a real change to that package."""
+    changed = ["libs/deepagents/pyproject.toml", "libs/code/uv.lock", "libs/code/pyproject.toml"]
+    assert find_offenders("feat(sdk)!: require x", changed, CONFIG) == [
+        {"package": "dcode", "dirs": ["libs/code/"]}
+    ]
+
+
 def test_multi_scope_title_covers_multiple_package_dirs() -> None:
     """Comma-separated scopes cover every matching package label."""
     changed = [

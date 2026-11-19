@@ -1,9 +1,14 @@
 """Tests for the `_api/deprecation` adapter."""
 
+import sys
 import warnings
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from typing import Literal
 
 import pytest
+from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
 
 from deepagents._api.deprecation import (
     LangChainDeprecationWarning,
@@ -29,17 +34,20 @@ class TestWarnDeprecatedStacklevel:
                 package="deepagents",
             )
 
-        def caller() -> None:
+        def caller() -> int:
+            line = sys._getframe().f_lineno + 1
             deprecated_fn()
+            return line
 
         with warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
-            caller()
+            line = caller()
 
         assert len(captured) == 1
         # `stacklevel=2` (default) attributes to the caller of `deprecated_fn`,
         # which is `caller` — defined in this test file.
         assert captured[0].filename == __file__
+        assert captured[0].lineno == line
 
     def test_explicit_stacklevel_lifts_through_extra_frames(self) -> None:
         def helper() -> None:
@@ -54,15 +62,18 @@ class TestWarnDeprecatedStacklevel:
         def deprecated_init() -> None:
             helper()
 
-        def user_code() -> None:
+        def user_code() -> int:
+            line = sys._getframe().f_lineno + 1
             deprecated_init()
+            return line
 
         with warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
-            user_code()
+            line = user_code()
 
         assert len(captured) == 1
         assert captured[0].filename == __file__
+        assert captured[0].lineno == line
 
     def test_warning_category_is_langchain_deprecation_warning(self) -> None:
         def deprecated_fn() -> None:
@@ -79,6 +90,103 @@ class TestWarnDeprecatedStacklevel:
 
         assert len(captured) == 1
         assert captured[0].category is LangChainDeprecationWarning
+
+
+@pytest.mark.parametrize("action", ["always", "error"])
+def test_concurrent_warning_keeps_its_original_handler_and_filter(action: Literal["always", "error"]) -> None:
+    entered = Event()
+    release = Event()
+
+    class BlockingMessage(str):
+        __slots__ = ()
+
+        def __bool__(self) -> bool:
+            entered.set()
+            if not release.wait(10):
+                msg = "warning formatter was not released"
+                raise TimeoutError(msg)
+            return True
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("ignore", LangChainDeprecationWarning)
+        warnings.simplefilter(action, RuntimeWarning)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(warn_deprecated, "0.5.0", message=BlockingMessage("adapter warning"), removal="1.0.0")
+            try:
+                assert entered.wait(10)
+                if action == "error":
+                    with pytest.raises(RuntimeWarning, match="unrelated warning"):
+                        warnings.warn("unrelated warning", RuntimeWarning, stacklevel=1)
+                else:
+                    line = sys._getframe().f_lineno + 1
+                    warnings.warn("unrelated warning", RuntimeWarning, stacklevel=1)
+                    assert len(captured) == 1
+                    assert captured[0].filename == __file__
+                    assert captured[0].lineno == line
+            finally:
+                release.set()
+            future.result(timeout=10)
+
+    assert len(captured) == (1 if action == "always" else 0)
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_warning_as_error_preserves_category_and_message(*, pending: bool) -> None:
+    category = LangChainPendingDeprecationWarning if pending else LangChainDeprecationWarning
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category)
+        with pytest.raises(category, match="custom warning"):
+            warn_deprecated("0.5.0", message="custom warning", pending=pending)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"name": "old", "package": "deepagents"}, "`old` was deprecated in LangChain 0.5.0"),
+        ({"name": "deep_agents.old"}, "`deep_agents.old` was deprecated in deep-agents 0.5.0"),
+        (
+            {
+                "name": "old.method",
+                "obj_type": "method",
+                "package": "deepagents",
+                "removal": "1.0.0",
+                "alternative": "new",
+                "addendum": "Migrate now.",
+            },
+            "The method `old.method` was deprecated in deepagents 0.5.0 and will be removed in 1.0.0. Use new instead. Migrate now.",
+        ),
+        (
+            {"name": "deepagents.old", "alternative_import": "deepagents.new"},
+            "`deepagents.old` was deprecated in deepagents 0.5.0. Use deepagents.new instead.",
+        ),
+        (
+            {"name": "deepagents.old", "obj_type": "function", "alternative_import": "new_package.api.new", "alternative": "ignored"},
+            "The function `deepagents.old` was deprecated in deepagents 0.5.0. An updated version of the function exists in the "
+            "new-package package and should be used instead. To use it run `pip install -U new-package` and import as "
+            "`from new_package.api import new`.",
+        ),
+        ({"name": "old", "pending": True}, "`old` will be deprecated in a future version"),
+        ({"name": "old", "pending": True, "removal": "1.0.0"}, "`old` will be deprecated in a future version"),
+        (
+            {"message": "custom %(name)s", "name": "ignored", "addendum": "ignored", "alternative_import": "invalid"},
+            "custom %(name)s",
+        ),
+    ],
+)
+def test_message_format_and_category(kwargs, expected: str) -> None:
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        warn_deprecated("0.5.0", **kwargs)
+
+    assert len(captured) == 1
+    assert str(captured[0].message) == expected
+    category = LangChainPendingDeprecationWarning if kwargs.get("pending") else LangChainDeprecationWarning
+    assert captured[0].category is category
+
+
+def test_invalid_alternative_import_keeps_formatting_error() -> None:
+    with pytest.raises(ValueError, match="not enough values to unpack"):
+        warn_deprecated("0.5.0", name="old", alternative_import="invalid")
 
 
 # -- reset_deprecation_dedupe ------------------------------------------------
@@ -187,20 +295,19 @@ class TestResetDeprecationDedupe:
 # -- suppress_langchain_deprecation_warning ---------------------------------
 
 
-def test_suppress_silences_warn_deprecated() -> None:
+@pytest.mark.parametrize("pending", [False, True])
+def test_suppress_silences_warn_deprecated(*, pending: bool) -> None:
     """The re-exported context manager must suppress emissions from `warn_deprecated`."""
-    with warnings.catch_warnings(record=True) as captured:
+    with warnings.catch_warnings(record=True) as captured, suppress_langchain_deprecation_warning():
         warnings.simplefilter("always")
-        with suppress_langchain_deprecation_warning():
-            warn_deprecated(
-                since="0.5.0",
-                removal="1.0.0",
-                message="suppressed",
-                package="deepagents",
-            )
+        warn_deprecated(
+            since="0.5.0",
+            message="suppressed",
+            pending=pending,
+            package="deepagents",
+        )
 
-    deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-    assert deprecations == []
+    assert captured == []
 
 
 # -- conftest drift detection -----------------------------------------------

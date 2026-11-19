@@ -36,6 +36,7 @@ class CommandHandlerSpec(_ConfigModel):
     argv: list[str] | None = None
     timeout: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     status_message: str | None = Field(default=None, alias="statusMessage")
+    on_error: Literal["continue", "deny"] = Field(default="continue", alias="onError")
     async_: bool | None = Field(default=None, alias="async")
 
     @field_validator("argv", mode="after")

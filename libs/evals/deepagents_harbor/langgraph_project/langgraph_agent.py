@@ -38,6 +38,14 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
 
+# Streaming makes the read timeout an idle timeout rather than a cap on the
+# whole generation; seconds are (connect, read).
+_FIREWORKS_DEFAULTS: dict[str, Any] = {
+    "streaming": True,
+    "timeout": (10, 300),
+    "max_retries": 6,
+}
+
 # Bounds on the gated `web_search` tool (see `_web_search_tool`).
 _WEB_SEARCH_MAX_RESULTS = 10
 _WEB_SEARCH_MAX_CHARS = 20_000
@@ -150,6 +158,16 @@ def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, An
     nested["reasoning_effort"] = "high"
 
 
+def _apply_fireworks_defaults(model_spec: str, model_kwargs: dict[str, Any]) -> None:
+    """Bound Fireworks requests so a stalled response retries instead of hanging."""
+    if not model_spec.startswith("fireworks:"):
+        return
+    for key, value in _FIREWORKS_DEFAULTS.items():
+        model_kwargs.setdefault(key, value)
+    if "request_timeout" in model_kwargs:
+        model_kwargs.pop("timeout")
+
+
 def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     """Build the chat model, applying provider-specific eval defaults.
 
@@ -160,19 +178,21 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     explicitly for `openai:` models.
 
     The GLM-5.2 eval profiles additionally default `reasoning_effort` to
-    `"high"` via `_apply_glm_5_2_reasoning_default`. A caller-supplied
-    `model_kwargs` value still wins in both cases.
+    `"high"` via `_apply_glm_5_2_reasoning_default`, and `fireworks:` models
+    get streaming, timeouts, and retries via `_apply_fireworks_defaults`. A
+    caller-supplied `model_kwargs` value still wins in each case.
     """
     name = _model_name(configurable)
     kwargs = _model_kwargs(configurable)
     if name.startswith("openai:") and "use_responses_api" not in kwargs:
         kwargs["use_responses_api"] = True
     _apply_glm_5_2_reasoning_default(name, kwargs)
+    _apply_fireworks_defaults(name, kwargs)
     return init_chat_model(name, **kwargs)
 
 
 def _skills(configurable: dict[str, object]) -> list[str] | None:
-    """Return the task's skills source, forwarded by `DeepAgentsLangGraph`.
+    """Return the task's skills source, forwarded by Harbor's `langgraph` agent.
 
     Raises:
         ValueError: If `skills_dir` is not an absolute path without `..`.
@@ -428,7 +448,7 @@ def _web_search_tool() -> BaseTool | None:
     return web_search
 
 
-def make_bare_graph(config: dict[str, object] | None = None) -> object:
+async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """Create a Deep Agents SDK graph Harbor should run directly.
 
     This path avoids the Deep Agents Code CLI harness while still attaching a
@@ -438,15 +458,16 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
             `configurable.model` and optional provider kwargs in
-            `configurable.model_kwargs`, plus the task's `skills_dir` when
-            run through `DeepAgentsLangGraph`.
+            `configurable.model_kwargs`, plus the task's `skills_dir` and
+            `mcp_servers`.
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
 
     Raises:
         TypeError: If configurable values have unexpected types.
-        ValueError: If no model name is provided or `skills_dir` is invalid.
+        ValueError: If no model name is provided, `skills_dir` is invalid, or an
+            MCP server is invalid.
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
@@ -455,16 +476,22 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
     # so the bare agent uses paths as-is rather than resolving against a virtual root.
     backend = LocalShellBackend(
-        root_dir=_workdir(configurable), inherit_env=False, virtual_mode=False
+        root_dir=_workdir(configurable),
+        inherit_env=False,
+        env={name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ},
+        virtual_mode=False,
     )
     # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
     # prompt-free default. The sandbox workdir is already enforced by the shell
     # backend's `root_dir`.
+    tools = await _mcp_tools(configurable)
     search_tool = _web_search_tool()
+    if search_tool is not None:
+        tools.append(search_tool)
     return create_deep_agent(
         model=model,
         backend=backend,
-        tools=[search_tool] if search_tool is not None else None,
+        tools=tools or None,
         skills=_skills(configurable),
     )
 
@@ -489,24 +516,17 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
         configurable: The graph's `configurable` mapping.
 
     Returns:
-        A mapping of server name to a FastMCP connection dict.
+        A mapping of server name to a FastMCP connection dict, empty when no
+        servers were forwarded.
 
     Raises:
-        ValueError: If no MCP servers were forwarded, a server uses an
-            unsupported (e.g. `stdio`) transport, or a server lacks a URL.
+        ValueError: If a server uses an unsupported (e.g. `stdio`) transport or
+            lacks a URL.
         TypeError: If `mcp_servers` is not a list of mappings.
     """
     servers = configurable.get("mcp_servers")
     if not servers:
-        msg = (
-            "tau3 graph requires MCP servers forwarded via "
-            "`configurable['mcp_servers']`. Harbor's LangGraph agent must forward "
-            "the task environment's MCP servers into the graph configurable; the "
-            "pinned Harbor release does not yet do this, so run tau3 with a "
-            "`harbor_package_override` that includes MCP-server forwarding until it "
-            "ships in a release."
-        )
-        raise ValueError(msg)
+        return {}
     if not isinstance(servers, list):
         msg = "`configurable.mcp_servers` must be a list"
         raise TypeError(msg)
@@ -523,8 +543,8 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
             transport = "http"
         if transport not in ("http", "sse"):
             msg = (
-                f"MCP server {name!r} uses unsupported transport {transport!r}; the "
-                "tau3 graph only allows remote transports (streamable-http, sse). "
+                f"MCP server {name!r} uses unsupported transport {transport!r}; "
+                "only remote transports (streamable-http, sse) are allowed. "
                 "stdio servers are rejected to avoid executing dataset-provided "
                 "commands in the agent sandbox."
             )
@@ -535,6 +555,22 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
             raise ValueError(msg)
         connections[name] = {"transport": transport, "url": url}
     return connections
+
+
+async def _mcp_tools(configurable: dict[str, object]) -> list[BaseTool]:
+    """Load tools from each MCP server Harbor forwarded for the task.
+
+    Args:
+        configurable: The graph's `configurable` mapping.
+
+    Returns:
+        The servers' tools, empty when no servers were forwarded.
+    """
+    tools: list[BaseTool] = []
+    for name, connection in _mcp_connections(configurable).items():
+        adapter = MCPAdapter({"mcpServers": {name: connection}})
+        tools.extend(await adapter.list_tools())
+    return tools
 
 
 async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
@@ -560,10 +596,17 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
-    tools = []
-    for name, connection in _mcp_connections(configurable).items():
-        adapter = MCPAdapter({"mcpServers": {name: connection}})
-        tools.extend(await adapter.list_tools())
+    tools = await _mcp_tools(configurable)
+    if not tools:
+        msg = (
+            "tau3 graph requires MCP servers forwarded via "
+            "`configurable['mcp_servers']`. Harbor's LangGraph agent must forward "
+            "the task environment's MCP servers into the graph configurable; the "
+            "pinned Harbor release does not yet do this, so run tau3 with a "
+            "`harbor_package_override` that includes MCP-server forwarding until it "
+            "ships in a release."
+        )
+        raise ValueError(msg)
     # No `system_prompt`: the tau3-runtime conversation protocol comes from the
     # MCP tools' server-advertised descriptions, without adding an authored base
     # prompt.

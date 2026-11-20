@@ -4452,22 +4452,25 @@ class TestGetModelProfiles:
         clear_caches()
 
     @pytest.mark.parametrize(
-        ("provider", "model", "efforts"),
+        ("provider", "model", "efforts", "default"),
         [
             (
                 "anthropic",
                 "claude-haiku-5-5",
                 ("low", "medium", "high", "xhigh", "max"),
+                "medium",
             ),
             (
                 "openai",
                 "gpt-6.1-terra",
                 ("none", "low", "medium", "high", "xhigh", "max"),
+                "medium",
             ),
+            ("google_genai", "gemini-4-neon", ("low", "medium", "high"), "high"),
         ],
     )
     def test_discovery_and_effort_with_provider_profiles(
-        self, provider: str, model: str, efforts: tuple[str, ...]
+        self, provider: str, model: str, efforts: tuple[str, ...], default: str
     ) -> None:
         from deepagents_code.reasoning_effort import (
             default_effort_for_model,
@@ -4478,7 +4481,7 @@ class TestGetModelProfiles:
         assert model in get_available_models()[provider]
         model_spec = f"{provider}:{model}"
         assert model_spec in get_model_profiles()
-        assert default_effort_for_model(model_spec) == "medium"
+        assert default_effort_for_model(model_spec) == default
         assert supported_efforts_for_model(model_spec) == efforts
         clear_caches()
 

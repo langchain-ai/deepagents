@@ -3,6 +3,7 @@
 from deepagents._version import __version__
 from deepagents.graph import (
     DeepAgentState,
+    FullCopyDeepAgentState,
     create_deep_agent,
 )
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -33,6 +34,7 @@ __all__ = [
     "FilesystemMiddleware",
     "FilesystemPermission",
     "FsToolName",
+    "FullCopyDeepAgentState",
     "GeneralPurposeSubagentProfile",
     "HarnessProfile",
     "HarnessProfileConfig",

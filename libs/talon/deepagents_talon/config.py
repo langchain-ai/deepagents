@@ -128,6 +128,7 @@ class TalonConfig:
             self.manifest_dir,
             self.agents_dir,
             self.cron_dir,
+            self.goal_dir,
             self.channel_dir,
             self.inbound_media_dir,
         ):
@@ -163,6 +164,11 @@ class TalonConfig:
     def cron_dir(self) -> Path:
         """Directory reserved for scheduler state."""
         return self.home / "cron"
+
+    @property
+    def goal_dir(self) -> Path:
+        """Directory reserved for the private goal ledger."""
+        return self.home / "goals"
 
     @property
     def channel_dir(self) -> Path:

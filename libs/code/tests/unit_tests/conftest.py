@@ -1190,3 +1190,32 @@ def install_profile_snapshot(
         return snapshot
 
     return _install
+
+
+@pytest.fixture
+def hook_interrupt_payload(tmp_path: Path) -> dict[str, Any]:
+    """Return a serialized PostToolUse interrupt for client resume tests."""
+    from deepagents_code.hooks.interrupt import HOOK_INVOCATION_INTERRUPT_TYPE
+
+    return {
+        "type": HOOK_INVOCATION_INTERRUPT_TYPE,
+        "request": {
+            "protocol_version": 1,
+            "invocation_id": "00000000-0000-4000-8000-000000000001",
+            "snapshot_id": "snapshot-1",
+            "run_id": "run-1",
+            "deadline": "2026-11-20T00:00:00Z",
+            "invocation": {
+                "context": {
+                    "thread_id": "thread-1",
+                    "cwd": str(tmp_path),
+                    "approval_mode": "manual",
+                },
+                "event": {
+                    "event": "PostToolUse",
+                    "call": {"id": "call-1", "name": "execute", "args": {}},
+                    "result": "done",
+                },
+            },
+        },
+    }

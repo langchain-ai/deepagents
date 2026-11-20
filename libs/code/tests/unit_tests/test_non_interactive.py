@@ -1856,7 +1856,10 @@ class TestMaxTurns:
         console = Console(quiet=True)
         file_op_tracker = MagicMock()
         file_op_tracker.complete_with_message.return_value = None
-        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+        config: RunnableConfig = {
+            "configurable": {"thread_id": "t1"},
+            "metadata": {"thread_id": "t1", "turn_id": "turn-1", "turn_number": 1},
+        }
 
         with (
             patch(
@@ -1890,7 +1893,11 @@ class TestMaxTurns:
         configs = [call.kwargs["config"] for call in agent.astream.call_args_list]
         assert len(configs) == 3
         assert RESUME_TRACE_TAG not in configs[0].get("tags", [])
-        for resume_config in configs[1:]:
+        for segment, resume_config in enumerate(configs[1:], 1):
+            assert resume_config["metadata"]["dcode_resume_reason"] == "hitl"
+            assert resume_config["metadata"]["turn_segment"] == segment
+            for key in ("thread_id", "turn_id", "turn_number"):
+                assert resume_config["metadata"][key] == config["metadata"][key]
             assert RESUME_TRACE_TAG in resume_config["tags"]
             assert resume_config["configurable"] == config["configurable"]
         assert "tags" not in config
@@ -4634,3 +4641,60 @@ class TestHeadlessResume:
         assert code == 0
         assert "could not restore this thread's model gone:model" in stderr
         assert "model" not in agent.astream.call_args.kwargs["context"]
+
+
+async def test_hook_resumes_keep_turn_identity_and_advance_segments(
+    hook_interrupt_payload: dict[str, Any],
+) -> None:
+    """Hook round trips identify their roots without changing resume decisions."""
+    chunk = (
+        (),
+        "updates",
+        {"__interrupt__": [SimpleNamespace(id="hook-1", value=hook_interrupt_payload)]},
+    )
+    agent = _headless_agent()
+    agent.astream.side_effect = [
+        _async_iter([chunk]),
+        _async_iter([chunk]),
+        _async_iter([]),
+    ]
+    response = {
+        "hook-1": {
+            "protocol_version": 1,
+            "invocation_id": "00000000-0000-4000-8000-000000000001",
+            "snapshot_id": "snapshot-1",
+            "decision": {
+                "event": "PostToolUse",
+                "continue_processing": False,
+                "stop_reason": "stopped",
+            },
+        }
+    }
+    config: RunnableConfig = {
+        "configurable": {"thread_id": "t1"},
+        "metadata": {"thread_id": "t1", "turn_id": "turn-1", "turn_number": 1},
+    }
+    with (
+        patch.object(
+            HooksManager, "fulfill_pending_interrupts", AsyncMock(return_value=response)
+        ),
+        patch("deepagents_code.client.non_interactive.dispatch_hook", AsyncMock()),
+        patch("deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"),
+    ):
+        await _run_agent_loop(
+            agent, "task", config, Console(quiet=True), MagicMock(), quiet=True
+        )
+
+    calls = agent.astream.call_args_list
+    assert len(calls) == 3
+    assert "dcode_resume_reason" not in calls[0].kwargs["config"]["metadata"]
+    for segment, invocation in enumerate(calls[1:], 1):
+        metadata = invocation.kwargs["config"]["metadata"]
+        assert metadata == {
+            **config["metadata"],
+            "turn_segment": segment,
+            "dcode_resume_reason": "hook_invocation",
+            "dcode_hook_events": ["PostToolUse"],
+        }
+        assert invocation.kwargs["config"]["configurable"] == config["configurable"]
+        assert invocation.args[0].resume == response

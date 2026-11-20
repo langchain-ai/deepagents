@@ -132,7 +132,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
-from deepagents_code._tracing import stream_trace_config
+from deepagents_code._tracing import resume_trace_config, stream_trace_config
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
@@ -2184,6 +2184,7 @@ async def execute_task_textual(
             pending_interrupts: dict[str, tuple[tuple[Any, ...], HITLRequest]] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
             pending_hook_resumes: dict[str, dict[str, Any]] = {}
+            pending_hook_interrupts: list[object] = []
             pending_skill_trust: dict[str, SkillTrustRequest | None] = {}
 
             if context is None:
@@ -2689,6 +2690,7 @@ async def execute_task_textual(
                             for interrupt_obj in interrupts:
                                 iv = interrupt_obj.value
                                 if is_hook_interrupt_payload(iv):
+                                    pending_hook_interrupts.append(iv)
                                     resume_value = await hooks.fulfill_interrupt(iv)
                                     pending_hook_resumes[interrupt_obj.id] = (
                                         resume_value
@@ -4238,6 +4240,11 @@ async def execute_task_textual(
                     )
                     return turn_stats
 
+                config = resume_trace_config(
+                    config,
+                    hook_interrupts=pending_hook_interrupts,
+                    ask_user=bool(pending_ask_user),
+                )
                 stream_input = Command(resume=resume_payload)
             else:
                 # Clean stream end. Any tool still in `_current_tool_messages`

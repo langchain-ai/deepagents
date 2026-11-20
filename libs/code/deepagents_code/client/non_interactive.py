@@ -67,7 +67,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
-from deepagents_code._tracing import stream_trace_config
+from deepagents_code._tracing import resume_trace_config, stream_trace_config
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -2366,6 +2366,7 @@ async def _run_agent_loop(
             state.interrupt_occurred = False
             state.hitl_response.clear()
             state.hook_response.clear()
+            hook_interrupts = tuple(state.pending_hook_interrupts.values())
             await _fulfill_pending_hook_interrupts(state)
             await _process_hitl_interrupts(state, console)
             resume_payload = {
@@ -2374,6 +2375,7 @@ async def _run_agent_loop(
                 **state.skill_trust_response,
             }
             state.skill_trust_response.clear()
+            config = resume_trace_config(config, hook_interrupts=hook_interrupts)
             stream_input = Command(resume=resume_payload)
             await _stream_agent(
                 agent, stream_input, config, state, console, file_op_tracker, context

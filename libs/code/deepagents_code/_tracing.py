@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from langchain_core.runnables import RunnableConfig
 
 # Consumed by LangSmith, not by this repository: saved views and cost reports
@@ -56,3 +58,30 @@ def stream_trace_config(config: RunnableConfig, stream_input: Any) -> RunnableCo
     updated = config.copy()
     updated["tags"] = tags
     return updated
+
+
+def resume_trace_config(
+    config: RunnableConfig,
+    *,
+    hook_interrupts: Iterable[object] = (),
+    ask_user: bool = False,
+) -> RunnableConfig:
+    """Return a config with the next segment and the same turn identity."""
+    from deepagents_code.hooks.interrupt import parse_hook_interrupt_payload
+
+    events = sorted(
+        {
+            request.invocation.event.event.value
+            for value in hook_interrupts
+            if (request := parse_hook_interrupt_payload(value)) is not None
+        }
+    )
+    metadata = dict(config.get("metadata") or {})
+    metadata["turn_segment"] = metadata.get("turn_segment", 0) + 1
+    metadata["dcode_resume_reason"] = (
+        "hook_invocation" if events else "ask_user" if ask_user else "hitl"
+    )
+    metadata.pop("dcode_hook_events", None)
+    if events:
+        metadata["dcode_hook_events"] = events
+    return {**config, "metadata": metadata}

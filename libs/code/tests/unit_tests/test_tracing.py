@@ -70,3 +70,29 @@ def test_resume_tags_a_config_that_has_no_tags_key() -> None:
 
     assert resumed["tags"] == [RESUME_TRACE_TAG]
     assert "tags" not in config
+
+
+def test_resume_metadata_clears_previous_hook_events(
+    hook_interrupt_payload: dict,
+) -> None:
+    """Later human pauses must not inherit a previous hook's event labels."""
+    from deepagents_code._tracing import resume_trace_config
+
+    initial = _turn_config()
+    hooked = resume_trace_config(initial, hook_interrupts=[hook_interrupt_payload])
+    answered = resume_trace_config(hooked, ask_user=True)
+    approved = resume_trace_config(answered)
+
+    assert hooked["metadata"]["dcode_hook_events"] == ["PostToolUse"]
+    assert answered["metadata"]["dcode_resume_reason"] == "ask_user"
+    assert approved["metadata"]["dcode_resume_reason"] == "hitl"
+    assert [c["metadata"]["turn_segment"] for c in (hooked, answered, approved)] == [
+        1,
+        2,
+        3,
+    ]
+    for config in (answered, approved):
+        assert "dcode_hook_events" not in config["metadata"]
+        for key in ("thread_id", "turn_id", "turn_number"):
+            assert config["metadata"][key] == initial["metadata"][key]
+    assert "turn_segment" not in initial["metadata"]

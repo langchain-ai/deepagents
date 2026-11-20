@@ -2123,6 +2123,8 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert initial_metadata["thread_id"] == "thread-1"
         assert initial_metadata["turn_id"]
         assert initial_metadata["turn_number"] == 1
+        assert resume_metadata["dcode_resume_reason"] == "hitl"
+        assert resume_metadata["turn_segment"] == 1
         assert resume_metadata["thread_id"] == initial_metadata["thread_id"]
         assert resume_metadata["turn_id"] == initial_metadata["turn_id"]
         assert resume_metadata["turn_number"] == initial_metadata["turn_number"]
@@ -5239,6 +5241,12 @@ class TestExecuteTaskTextualAskUser:
             adapter=adapter,
         )
 
+        initial, resumed = [config["metadata"] for config in agent.configs]
+        assert resumed == {
+            **initial,
+            "dcode_resume_reason": "ask_user",
+            "turn_segment": 1,
+        }
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
@@ -9144,3 +9152,51 @@ class TestServerSkillPinning:
         await self._run(agent, on_skill_pinned=lambda *parts: seen.append(parts))
 
         assert seen == [("review", "Review code", "Do it.")]
+
+
+async def test_hook_resumes_keep_turn_identity_and_advance_segments(
+    hook_interrupt_payload: dict[str, Any],
+) -> None:
+    """Hook roots retain one turn identity and the fulfilled hook decisions."""
+    chunk = _hitl_interrupt_chunk(hook_interrupt_payload)
+    agent = _SequencedAgent([[chunk], [chunk], []])
+    response = {
+        "protocol_version": 1,
+        "invocation_id": "00000000-0000-4000-8000-000000000001",
+        "snapshot_id": "snapshot-1",
+        "decision": {
+            "event": "PostToolUse",
+            "continue_processing": False,
+            "stop_reason": "stopped",
+        },
+    }
+    adapter = TextualUIAdapter(
+        mount_message=_mock_mount,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+    with patch.object(
+        HooksManager, "fulfill_interrupt", AsyncMock(return_value=response)
+    ):
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(),
+            adapter=adapter,
+        )
+
+    initial = agent.configs[0]["metadata"]
+    assert "dcode_resume_reason" not in initial
+    assert len(agent.configs) == 3
+    for segment, config in enumerate(agent.configs[1:], 1):
+        assert config["metadata"] == {
+            **initial,
+            "turn_segment": segment,
+            "dcode_resume_reason": "hook_invocation",
+            "dcode_hook_events": ["PostToolUse"],
+        }
+        assert config["configurable"] == agent.configs[0]["configurable"]
+        resume = agent.stream_inputs[segment]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"interrupt-1": response}

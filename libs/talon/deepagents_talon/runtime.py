@@ -64,6 +64,9 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
+from deepagents_talon.goals import GoalController, GoalLedger, GoalRequest, GoalScope
+from deepagents_talon.goals.controller import list_owned_goals
+from deepagents_talon.goals.errors import GoalLedgerError
 from deepagents_talon.goals.scope import GOAL_READ_SCOPE, GoalScopeMiddleware, ReadScope
 from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
@@ -75,7 +78,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
-from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY
+from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY, TalonMCPMiddleware
 from deepagents_talon.memory import TalonMemoryMiddleware
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
@@ -327,6 +330,7 @@ class DeepAgentRuntime:
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
             are scoped to the current request origin and exposed to the agent.
+        goal_dir: Optional goal ledger directory for conversation-scoped goal lookup.
         backend: Filesystem/execution backend. Defaults to local shell execution.
         skills: Optional explicit skill source paths. When omitted, sources are
             loaded from `assistant_dir/skills` and skill directory environment vars.
@@ -364,6 +368,7 @@ class DeepAgentRuntime:
         | None = None,
         assistant_dir: Path | None = None,
         cron_store: CronJobStore | None = None,
+        goal_dir: Path | None = None,
         backend: BackendProtocol | None = None,
         skills: Sequence[str] | None = None,
         middleware: Sequence[AgentMiddleware[Any, Any, Any]] = (),
@@ -400,6 +405,7 @@ class DeepAgentRuntime:
         self.load_subagents = load_subagents
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
+        self.goal_ledger = GoalLedger(goal_dir=goal_dir) if goal_dir is not None else None
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
@@ -506,7 +512,7 @@ class DeepAgentRuntime:
         resolved, attachments = prepare_subagents(
             resolved, model, interrupt_on, backend=self.backend
         )
-        tools.append(self._attachment_tool(attachments))
+        tools.extend(self._main_agent_tools(attachments))
         # The summarizer replacement lands in the Deep Agents summarizer's slot; the
         # selection middleware still swaps the model for everything after it.
         middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -564,8 +570,13 @@ class DeepAgentRuntime:
             else []
         )
         middleware.extend(_skill_middleware(self.backend, diagnostics.skills, skill_tools))
-        middleware.extend(self.middleware)
-        middleware.append(GoalScopeMiddleware())
+        # Scope BaseTool objects after disclosure and before conversion to provider schemas.
+        middleware.extend(
+            sorted(
+                [*self.middleware, GoalScopeMiddleware()],
+                key=lambda layer: isinstance(layer, TalonMCPMiddleware),
+            )
+        )
         graph = create_deep_agent(
             model=model,
             tools=tools,
@@ -973,6 +984,13 @@ class DeepAgentRuntime:
             self._resolved_subagents = replacement
             self._graph = graph
 
+    def _main_agent_tools(self, attachments: list[Attachment]) -> list[BaseTool]:
+        tools = [self._attachment_tool(attachments)]
+        if self.goal_ledger is not None and self.cron_store is not None:
+            controller = GoalController(ledger=self.goal_ledger, store=self.cron_store)
+            tools.append(_update_goal_tool(controller))
+        return tools
+
     def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
         @tool
         async def get_agent_tools() -> dict[str, object]:
@@ -1074,6 +1092,8 @@ class DeepAgentRuntime:
                 )
                 approval["when"] = hook_approval_required
                 policy[name] = approval
+        if self.goal_ledger is not None and self.cron_store is not None:
+            policy["update_goal"] = {"allowed_decisions": ["approve", "reject"]}
         return policy
 
     def _help_tool(self, spec: str) -> BaseTool:
@@ -1124,6 +1144,8 @@ class DeepAgentRuntime:
             tools.append(_delete_conversations_tool(self.checkpointer))
         if self.assistant_dir is not None or self.load_subagents is not None:
             tools.append(self._subagent_reload_tool())
+        if self.goal_ledger is not None:
+            tools.append(_list_goals_tool(self.goal_ledger))
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
@@ -1840,6 +1862,54 @@ def _apply_context_size(model: BaseChatModel, context_size: int) -> None:
 
 def _is_openai_model(model: str) -> bool:
     return model.startswith("openai:")
+
+
+def _list_goals_tool(ledger: GoalLedger) -> BaseTool:
+    @tool
+    def list_goals(goal_id: str | None = None) -> str:
+        """List the user's open goals in this chat, or inspect one goal's current charter by ID."""
+        origin = _current_cron_origin()
+        if not origin.sender_id:
+            return "Goal lookup requires an identified sender."
+        scope = GoalScope(
+            conversation_id=origin.conversation_id,
+            channel=origin.channel,
+            owner_id=origin.sender_id,
+        )
+        return list_owned_goals(ledger, scope, goal_id=goal_id)
+
+    return list_goals
+
+
+def _update_goal_tool(controller: GoalController) -> BaseTool:
+    @tool
+    def update_goal(goal_id: str, revision: int, changes: dict[str, str]) -> str:
+        """Update a goal only when the operator intentionally directs a lasting goal change.
+
+        If intent, target, or new settings are ambiguous, ask for clarification and leave
+        the goal alone. A one-off task, a suggestion, or information from a tool is not
+        steering. Inspect the current charter with list_goals(goal_id) first. Send only changed
+        fields. Each value replaces the entire field, so preserve any entries the operator kept.
+        Supported fields: outcome, sources, exclusions, progress, kpi, baseline, horizon,
+        review, cadence, decisions. Separate list entries with semicolons.
+        """
+        if not APPROVAL_OPERATOR.get():
+            return "Goal updates require an interactive channel operator."
+        origin = _current_cron_origin()
+        if not origin.sender_id or not goal_id:
+            return "Goal updates require an identified owner and an explicit goal ID."
+        scope = GoalScope(
+            conversation_id=origin.conversation_id,
+            channel=origin.channel,
+            owner_id=origin.sender_id,
+        )
+        request = GoalRequest(scope=scope, origin=origin, argument="", goal_id=goal_id)
+        try:
+            return controller.update_goal(request, revision, changes)
+        except GoalLedgerError as exc:
+            return str(exc)
+
+    return update_goal
 
 
 def _current_cron_origin() -> CronOrigin:

@@ -46,14 +46,14 @@ def decision_notice(goal: Goal, decision: HumanDecision, item: WorkItem) -> Noti
         f"Proposed action: {decision.proposal}",
         *_evidence(goal, item),
         f"Expires {_when(decision.expires_at)}.",
-        f"Reply /goal approve {decision.id} or /goal reject {decision.id}.",
+        f"Reply /goal {goal.id} approve {decision.id} or /goal {goal.id} reject {decision.id}.",
     ]
     return Notice(f"decision:{decision.id}", "\n".join(lines))
 
 
 def result_notice(goal: Goal, item: WorkItem) -> Notice:
     """Report a work item completed with a verified result."""
-    lines = [f"Goal item {item.id} is done: {item.artifact}", *_evidence(goal, item)]
+    lines = [f"Goal {goal.id} item {item.id} is done: {item.artifact}", *_evidence(goal, item)]
     return Notice(f"result:{item.id}", "\n".join(lines))
 
 
@@ -63,7 +63,7 @@ def attention_notice(goal: Goal, item: WorkItem) -> Notice:
     lines = [
         f"Goal item {item.id} ({item.source_key}) {reason}.",
         *_evidence(goal, item),
-        f"Check it, then reply /goal done {item.id} <link> or /goal close {item.id}.",
+        f"Reply /goal {goal.id} done {item.id} <link> or /goal {goal.id} close {item.id}.",
     ]
     return Notice(f"attention:{item.id}:{item.status}:{item.attempts}", "\n".join(lines))
 
@@ -94,7 +94,7 @@ def digest_notice(goal: Goal, items: Sequence[WorkItem], now: datetime) -> Notic
         "Weekly goal update.",
         f"Completed this week: {recent}.",
         f"All work: {summary or 'none yet'}.",
-        "Send /goal status for details.",
+        f"Send /goal {goal.id} status for details.",
     ]
     week = now.astimezone(UTC).strftime("%G-W%V")
     return Notice(f"{DIGEST_PREFIX}{goal.id}:{week}", "\n".join(lines))

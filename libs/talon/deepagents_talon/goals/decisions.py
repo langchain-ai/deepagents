@@ -22,7 +22,9 @@ if TYPE_CHECKING:
     from deepagents_talon.goals.ledger import GoalLedger
     from deepagents_talon.goals.models import Goal, HumanDecision, WorkItem
 
-_CHECK_RESULT = "Check the result, then reply /goal done {item} <link> or /goal close {item}."
+_CHECK_RESULT = (
+    "Check the result, then reply /goal {goal} done {item} <link> or /goal {goal} close {item}."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +124,7 @@ def interactive_finished(
     if item is None or item.status != "running_interactive":
         return
     prefix = "The approved action was stopped before it finished. " if cancelled else ""
-    step = prefix + _CHECK_RESULT.format(item=item.id)
+    step = prefix + _CHECK_RESULT.format(goal=item.goal_id, item=item.id)
     ledger.update_item(item.id, ItemChange(status="needs_attention", next_step=step), now=now)
 
 
@@ -158,13 +160,13 @@ def _pending(ledger: GoalLedger, goal: Goal, decision_id: str) -> HumanDecision:
     for decision in ledger.list_decisions(goal.id):
         if decision.id == wanted:
             return decision
-    msg = f"This goal has no decision {wanted or '<id>'}. Send /goal status to see pending ones."
+    msg = f"This goal has no decision {wanted or '<id>'}. Send /goal {goal.id} status."
     raise GoalLedgerError(msg)
 
 
 def _goal_item(ledger: GoalLedger, goal: Goal, item_id: str) -> WorkItem:
     item = ledger.get_item(item_id)
     if item is None or item.goal_id != goal.id:
-        msg = f"This goal has no item {item_id or '<id>'}. Send /goal status to see its items."
+        msg = f"This goal has no item {item_id or '<id>'}. Send /goal {goal.id} status."
         raise GoalLedgerError(msg)
     return item

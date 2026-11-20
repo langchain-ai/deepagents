@@ -11,8 +11,9 @@ confirm it. Goal cron fires are handled here too, without a model turn.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -56,6 +57,8 @@ logger = logging.getLogger(__name__)
 GOAL_USAGE = (
     "Goals keep working on an outcome for this chat.\n"
     "/goal <outcome> — start a draft goal.\n"
+    "/goal list — show goal IDs, outcomes and states. Use /goal <id> <command> to select one.\n"
+    "You can also describe a goal change in chat and review the proposed update.\n"
     "/goal edit <field>: <value> — one field per line. Fields: "
     "outcome, sources, exclusions, progress, kpi, baseline, horizon, review, cadence, "
     "decisions. Separate list entries with `;`; send `none` to clear a field. "
@@ -102,11 +105,13 @@ class GoalRequest:
         scope: Conversation and sender the host derived from the message.
         origin: Cron origin for jobs the goal owns.
         argument: Text after `/goal`.
+        goal_id: Goal selected by its chat command.
     """
 
     scope: GoalScope
     origin: CronOrigin
     argument: str
+    goal_id: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,13 +179,22 @@ class GoalController:
 
     def _dispatch(self, request: GoalRequest) -> GoalReply:
         argument = request.argument.strip()
+        parts = argument.split(maxsplit=1)
+        if parts and re.fullmatch(r"[0-9a-f]{12}", parts[0]):
+            request = replace(request, goal_id=parts[0])
+            self._owned_goal(request)
+            argument = parts[1] if len(parts) > 1 else "status"
         command = argument.lower()
-        if command in {"", "status"}:
-            return GoalReply(self._status(request))
+        simple = {
+            "list": self._choices,
+            "": self._status,
+            "status": self._status,
+            "remove": self._remove,
+        }
+        if command in simple:
+            return GoalReply(simple[command](request))
         if command == "help":
             return GoalReply(GOAL_USAGE)
-        if command == "remove":
-            return GoalReply(self._remove(request))
         verb, *args = argument.split(maxsplit=1)
         rest = args[0] if args else ""
         if verb.lower() == "approve":
@@ -194,6 +208,8 @@ class GoalController:
         }.get(verb.lower())
         if handler is not None:
             return GoalReply(handler(request, rest))
+        if request.goal_id:
+            return GoalReply(GOAL_USAGE)
         return GoalReply(self._start(request, argument))
 
     def interactive_finished(self, action: ApprovedAction, *, cancelled: bool) -> None:
@@ -264,18 +280,24 @@ class GoalController:
         return turn
 
     def finish_turn(
-        self, turn: GoalTurn, *, text: str | None, failure: RunResult | None = None
+        self,
+        turn: GoalTurn,
+        *,
+        text: str | None,
+        failure: RunResult | None = None,
+        detail: str = "the turn did not finish",
     ) -> None:
         """Validate a goal turn's reply and record it against its lease.
 
         Args:
             turn: Turn returned by `prepare_fire`.
             text: Final model text, or `None` when the turn failed.
-            failure: `timeout` or `error` when the turn did not finish.
+            failure: Outcome when the turn did not finish.
+            detail: Reason recorded for an unsuccessful turn.
         """
         try:
             if failure is not None or text is None:
-                self._fail(turn, failure or "error", "the turn did not finish")
+                self._fail(turn, failure or "error", detail)
             elif turn.item_id is None:
                 self._finish_discovery(turn, text)
             else:
@@ -393,8 +415,6 @@ class GoalController:
             self.ledger.enqueue(goal.id, event_id=notice.event_id, payload=notice.payload, now=now)
 
     def _start(self, request: GoalRequest, outcome: str) -> str:
-        if self.ledger.goal_for_conversation(request.scope) is not None:
-            return "This chat already has a goal. Send /goal status, /goal edit, or /goal remove."
         charter = _validated(GoalCharter, {"outcome": outcome})
         goal = self.ledger.create_draft(scope=request.scope, charter=charter, now=self.now())
         return _review(goal)
@@ -402,6 +422,30 @@ class GoalController:
     def _edit(self, request: GoalRequest, text: str) -> str:
         goal = self._owned_goal(request)
         charter = _apply_edits(goal.charter, text)
+        return _review(self._save_edits(request, goal, charter))
+
+    def update_goal(self, request: GoalRequest, revision: int, changes: dict[str, str]) -> str:
+        """Apply an operator-approved patch to one specific goal revision."""
+        goal = self._owned_goal(request)
+        if not request.goal_id or goal.revision != revision:
+            msg = "The selected revision is stale. Review the goal again before updating it."
+            raise GoalLedgerError(msg)
+        if not changes or any(name not in _FIELDS for name in changes):
+            msg = f"Specify changes using these fields: {', '.join(_FIELDS)}."
+            raise GoalLedgerError(msg)
+        updates = {
+            _FIELDS[name]: _field_value(_FIELDS[name], value.strip())
+            for name, value in changes.items()
+        }
+        charter = _validated(GoalCharter, {**goal.charter.model_dump(), **updates})
+        if charter == goal.charter:
+            return "The goal already has those settings."
+        updated = self._save_edits(request, goal, charter)
+        if goal.confirmed_revision == revision and not charter.unresolved():
+            return self._confirm(request, str(updated.revision))
+        return _review(updated)
+
+    def _save_edits(self, request: GoalRequest, goal: Goal, charter: GoalCharter) -> Goal:
         owner = request.scope.owner_id
         goal = self.ledger.revise_charter(
             goal.id,
@@ -414,7 +458,7 @@ class GoalController:
             goal = self.ledger.submit_for_confirmation(
                 goal.id, owner_id=owner, expected_revision=goal.revision, now=self.now()
             )
-        return _review(goal)
+        return goal
 
     def _confirm(self, request: GoalRequest, text: str) -> str:
         try:
@@ -457,15 +501,27 @@ class GoalController:
             )
         return "Removed the goal and its scheduled jobs. Its record is kept for status history."
 
+    def _choices(self, request: GoalRequest) -> str:
+        return list_owned_goals(self.ledger, request.scope)
+
     def _owned_goal(self, request: GoalRequest) -> Goal:
-        goal = self.ledger.goal_for_conversation(request.scope)
-        if goal is None:
-            msg = "This chat has no goal. Start one with /goal <outcome>."
+        goals = self.ledger.goals_for_conversation(request.scope)
+        if request.goal_id:
+            goals = [goal for goal in goals if goal.id == request.goal_id]
+        if not goals:
+            msg = (
+                "No matching goal in this chat."
+                if request.goal_id
+                else "This chat has no goal. Start one with /goal <outcome>."
+            )
             raise GoalLedgerError(msg)
-        if goal.scope.owner_id != request.scope.owner_id:
+        owned = [goal for goal in goals if goal.scope.owner_id == request.scope.owner_id]
+        if not owned:
             msg = "Only the person who started this chat's goal can view or change it."
             raise GoalLedgerError(msg)
-        return goal
+        if len(owned) > 1:
+            raise GoalLedgerError(_goal_list(owned))
+        return owned[0]
 
     def _ensure_job(self, goal: Goal, origin: CronOrigin) -> CronJob:
         """Return the goal's recurring job, creating it at most once."""
@@ -551,6 +607,33 @@ class GoalController:
         ]
 
 
+def list_owned_goals(ledger: GoalLedger, scope: GoalScope, *, goal_id: str | None = None) -> str:
+    """List open goals visible to the requesting owner in this conversation."""
+    owned = [
+        goal
+        for goal in ledger.goals_for_conversation(scope)
+        if goal.scope.owner_id == scope.owner_id
+    ]
+    if goal_id is None:
+        return _goal_list(owned)
+    goal = next((goal for goal in owned if goal.id == goal_id), None)
+    return _review(goal) if goal is not None else "No matching goal in this chat."
+
+
+def _goal_list(goals: list[Goal]) -> str:
+    if not goals:
+        return "No goals. Start one with /goal <outcome>."
+    return "\n".join(
+        [
+            "Use /goal <id> <command>:",
+            *(
+                f"{goal.id} ({goal.state}) {goal.charter.outcome} [revision {goal.revision}]"
+                for goal in goals
+            ),
+        ]
+    )
+
+
 def _due(item: WorkItem, now: datetime) -> bool:
     return item.status == "planned" and (item.retry_at is None or item.retry_at <= now)
 
@@ -611,15 +694,17 @@ def _validated(model: type[GoalCharter], data: dict[str, object]) -> GoalCharter
 
 
 def _review(goal: Goal) -> str:
-    parts = [_headline(goal), _charter_text(goal.charter)]
+    parts = [_headline(goal), f"ID: {goal.id}", _charter_text(goal.charter)]
     missing = goal.charter.unresolved()
     if missing:
         names = ", ".join("progress" if name == "progress_test" else name for name in missing)
-        parts.append(f"Still needed: {names}. Set them with /goal edit, for example:")
-        parts.append("/goal edit sources: tool:linear_list_issues; path:/srv/security/reports")
+        parts.append(f"Still needed: {names}. Describe them in chat, or use:")
+        parts.append(
+            f"/goal {goal.id} edit sources: tool:linear_list_issues; path:/srv/security/reports"
+        )
     elif goal.revision != goal.confirmed_revision:
         parts.append(_SCOPE_NOTICE)
-        parts.append(f"Send /goal confirm {goal.revision} to use this revision.")
+        parts.append(f"Send /goal {goal.id} confirm {goal.revision} to use this revision.")
     return "\n".join(parts)
 
 

@@ -64,6 +64,8 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
+from deepagents_talon.goals import GoalLedger, GoalScope
+from deepagents_talon.goals.controller import list_owned_goals
 from deepagents_talon.goals.scope import GOAL_READ_SCOPE, GoalScopeMiddleware, ReadScope
 from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
@@ -327,6 +329,7 @@ class DeepAgentRuntime:
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
             are scoped to the current request origin and exposed to the agent.
+        goal_dir: Optional goal ledger directory for conversation-scoped goal lookup.
         backend: Filesystem/execution backend. Defaults to local shell execution.
         skills: Optional explicit skill source paths. When omitted, sources are
             loaded from `assistant_dir/skills` and skill directory environment vars.
@@ -364,6 +367,7 @@ class DeepAgentRuntime:
         | None = None,
         assistant_dir: Path | None = None,
         cron_store: CronJobStore | None = None,
+        goal_dir: Path | None = None,
         backend: BackendProtocol | None = None,
         skills: Sequence[str] | None = None,
         middleware: Sequence[AgentMiddleware[Any, Any, Any]] = (),
@@ -400,6 +404,7 @@ class DeepAgentRuntime:
         self.load_subagents = load_subagents
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
+        self.goal_ledger = GoalLedger(goal_dir=goal_dir) if goal_dir is not None else None
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
@@ -1124,6 +1129,8 @@ class DeepAgentRuntime:
             tools.append(_delete_conversations_tool(self.checkpointer))
         if self.assistant_dir is not None or self.load_subagents is not None:
             tools.append(self._subagent_reload_tool())
+        if self.goal_ledger is not None:
+            tools.append(_list_goals_tool(self.goal_ledger))
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
@@ -1840,6 +1847,23 @@ def _apply_context_size(model: BaseChatModel, context_size: int) -> None:
 
 def _is_openai_model(model: str) -> bool:
     return model.startswith("openai:")
+
+
+def _list_goals_tool(ledger: GoalLedger) -> BaseTool:
+    @tool
+    def list_goals() -> str:
+        """List the current user's open goals in this chat, including IDs, outcomes, and status."""
+        origin = _current_cron_origin()
+        if not origin.sender_id:
+            return "Goal lookup requires an identified sender."
+        scope = GoalScope(
+            conversation_id=origin.conversation_id,
+            channel=origin.channel,
+            owner_id=origin.sender_id,
+        )
+        return list_owned_goals(ledger, scope)
+
+    return list_goals
 
 
 def _current_cron_origin() -> CronOrigin:

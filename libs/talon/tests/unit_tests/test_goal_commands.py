@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,7 @@ from deepagents_talon.goals import (
 )
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import ChannelMessage
+from deepagents_talon.runtime import _CRON_ORIGIN, _list_goals_tool
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config
 
@@ -108,6 +110,30 @@ def test_remove_with_text_preserves_active_goal(
     assert "Removed" in _send(controller, f"{second.id} remove")
     assert _send(controller, "status").startswith("Goal (active)")
     assert _goal_jobs(store) == jobs
+
+
+def test_agent_lists_only_current_owners_chat_goals(controller: GoalController) -> None:
+    _send(controller, "ship the release")
+    _send(controller, "review feedback")
+    lookup = _list_goals_tool(controller.ledger)
+    for origin in (
+        ORIGIN,
+        replace(ORIGIN, conversation_id="C2"),
+        replace(ORIGIN, channel="discord"),
+        replace(ORIGIN, sender_id="another-owner"),
+        replace(ORIGIN, sender_id=None),
+    ):
+        token = _CRON_ORIGIN.set(origin)
+        try:
+            result = lookup.invoke({})
+        finally:
+            _CRON_ORIGIN.reset(token)
+        for goal in controller.ledger.list_goals():
+            if origin == ORIGIN:
+                assert f"{goal.id} ({goal.state}) {goal.charter.outcome}" in result
+            else:
+                assert goal.id not in result
+                assert goal.charter.outcome not in result
 
 
 def test_multiline_edit_preserves_field_values(controller: GoalController) -> None:

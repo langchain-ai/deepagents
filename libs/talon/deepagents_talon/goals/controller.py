@@ -471,8 +471,7 @@ class GoalController:
         return "Removed the goal and its scheduled jobs. Its record is kept for status history."
 
     def _choices(self, request: GoalRequest) -> str:
-        goals = self.ledger.goals_for_conversation(request.scope)
-        return _goal_list([goal for goal in goals if goal.scope.owner_id == request.scope.owner_id])
+        return list_owned_goals(self.ledger, request.scope)
 
     def _owned_goal(self, request: GoalRequest) -> Goal:
         goals = self.ledger.goals_for_conversation(request.scope)
@@ -575,6 +574,12 @@ class GoalController:
             + f" as of {_when(obs.measured_at)}."
             for definition, obs in latest.items()
         ]
+
+
+def list_owned_goals(ledger: GoalLedger, scope: GoalScope) -> str:
+    """List open goals visible to the requesting owner in this conversation."""
+    goals = ledger.goals_for_conversation(scope)
+    return _goal_list([goal for goal in goals if goal.scope.owner_id == scope.owner_id])
 
 
 def _goal_list(goals: list[Goal]) -> str:

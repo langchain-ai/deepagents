@@ -611,40 +611,40 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 cusolver = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' or platform_machine == 'x86_64') and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu' or platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-16-deepagents-talon-media-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 
 [[package]]
@@ -761,7 +761,7 @@ test = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.2.12"
+version = "0.2.13"
 source = { editable = "../code" }
 dependencies = [
     { name = "aiosqlite" },
@@ -960,10 +960,10 @@ media-cpu = [
     { name = "librosa" },
     { name = "numpy" },
     { name = "phonemizer" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "torchaudio", version = "2.11.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "torchaudio", version = "2.11.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "torchaudio", version = "2.11.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "torchaudio", version = "2.11.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
     { name = "transformers" },
 ]
 mongodb = [
@@ -3795,7 +3795,7 @@ dependencies = [
     { name = "scipy" },
     { name = "tokenizers" },
     { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' or extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
     { name = "tqdm" },
     { name = "transformers" },
     { name = "typing-extensions" },
@@ -4177,13 +4177,13 @@ resolution-markers = [
     "sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "filelock", marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "fsspec", marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "jinja2", marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "networkx", marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "setuptools", marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "sympy", marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "typing-extensions", marker = "(sys_platform == 'linux' or extra == 'extra-16-deepagents-talon-media') and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "filelock", marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "fsspec", marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "jinja2", marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "networkx", marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "setuptools", marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "sympy", marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
+    { name = "typing-extensions", marker = "(sys_platform == 'linux' and extra == 'extra-16-deepagents-talon-media-cpu') or (extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu')" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp314-cp314-linux_s390x.whl", hash = "sha256:ef810702df4dd70fe1b8ebee9e7394c6491f779841571a71433829e44927eaa5", upload-time = "2026-10-28T13:19:19Z" },

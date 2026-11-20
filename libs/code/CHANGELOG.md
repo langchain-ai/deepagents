@@ -2,6 +2,13 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.13](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.12...deepagents-code==0.2.13) (2026-11-20)
+
+### Bug Fixes
+
+- Correctly report unapproved MCP servers disabled via F2 as disabled, and report project MCP servers skipped due to missing approval ([#7908](https://github.com/langchain-ai/deepagents/pull/7908), [#7904](https://github.com/langchain-ai/deepagents/pull/7904)).
+- Show the source file in the project MCP trust prompt ([#7903](https://github.com/langchain-ai/deepagents/pull/7903)).
+
 ## [0.2.12](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.11...deepagents-code==0.2.12) (2026-11-20)
 
 ### Features

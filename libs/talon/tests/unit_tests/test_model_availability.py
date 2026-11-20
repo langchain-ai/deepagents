@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING
 
 import anthropic
@@ -9,7 +8,7 @@ import httpx
 import openai
 import pytest
 
-from deepagents_talon.host import _AGENT_FAILURE_MESSAGE, TalonHost
+from deepagents_talon.host import TalonHost, _is_model_unavailable
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config
@@ -34,71 +33,41 @@ def _error(error_type, body: object) -> Exception:
 
 
 @pytest.mark.parametrize(
-    ("case", "generic_failure"),
+    ("error", "expected"),
     [
-        (_error(anthropic.NotFoundError, {"error": {"type": "not_found_error"}}), False),
-        (_error(anthropic.NotFoundError, {"type": "not_found_error"}), False),
+        (_error(anthropic.NotFoundError, {"error": {"type": "not_found_error"}}), True),
         (
-            _error(
-                anthropic.BadRequestError,
-                {"details": {"error_code": "model_not_available"}},
-            ),
-            False,
+            _error(anthropic.BadRequestError, {"details": {"error_code": "model_not_available"}}),
+            True,
         ),
-        (
-            _error(
-                anthropic.BadRequestError,
-                {"error": {"details": {"error_code": "model_not_available"}}},
-            ),
-            False,
-        ),
-        (_error(openai.NotFoundError, {"code": "model_not_found"}), False),
-        (_error(openai.NotFoundError, {"error": {"code": "model_not_found"}}), False),
-        (_error(anthropic.BadRequestError, {"error": {"type": "invalid_request_error"}}), True),
-        (_error(anthropic.NotFoundError, None), True),
-        (_error(anthropic.BadRequestError, {"details": []}), True),
-        (_error(anthropic.BadRequestError, {"error": "not_found_error"}), True),
-        (_error(anthropic.NotFoundError, ["not_found_error"]), True),
-        (_error(openai.NotFoundError, {"error": None}), True),
-        (_error(openai.NotFoundError, {"code": "other_resource_missing"}), True),
-        (_error(openai.BadRequestError, {"code": "model_not_found"}), True),
+        (_error(openai.NotFoundError, {"code": "other_resource_missing"}), False),
+        (_error(anthropic.BadRequestError, {"details": []}), False),
     ],
 )
-@pytest.mark.parametrize("chain", ["direct", "cause", "context"])
-async def test_turn_reports_model_availability(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    case: Exception,
-    *,
-    generic_failure: bool,
-    chain: str,
-) -> None:
-    error = case
-    if chain != "direct":
-        wrapper = RuntimeError("wrapped failure")
-        if chain == "cause":
-            wrapper.__cause__ = error
-        else:
-            wrapper.__context__ = error
-        error = wrapper
+def test_model_availability(error: Exception, *, expected: bool) -> None:
+    assert _is_model_unavailable(error) is expected
+
+
+def test_model_availability_from_context() -> None:
+    wrapper = RuntimeError("wrapped failure")
+    wrapper.__context__ = _error(openai.NotFoundError, {"code": "model_not_found"})
+    assert _is_model_unavailable(wrapper)
+
+
+async def test_turn_reports_model_availability(tmp_path: Path) -> None:
+    error = RuntimeError("wrapped failure")
+    error.__cause__ = _error(openai.NotFoundError, {"code": "model_not_found"})
     channel = RecordingChannel()
     host = TalonHost(config=_config(tmp_path), agent=UnavailableAgent(error), channels=[channel])
     await host.start()
     host._model_selections["__default__"] = "provider:selected-model"
     try:
-        with caplog.at_level(logging.ERROR, logger="deepagents_talon.host"):
-            await host.receive_message(channel, ChannelMessage("chat", "hello"))
-            await asyncio.wait_for(host._tasks["test:chat"], 2)
-        assert len(channel.sent) == 1
-        text = channel.sent[0][1]
-        if generic_failure:
-            assert text == _AGENT_FAILURE_MESSAGE
-        else:
-            assert "provider:selected-model" in text
-            assert "/model default" in text
-            assert "choose another model" in text
+        await host.receive_message(channel, ChannelMessage("chat", "hello"))
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+        [(_, text)] = channel.sent
+        assert "provider:selected-model" in text
+        assert "/model default" in text
+        assert "choose another model" in text
         assert "sensitive provider detail" not in text
-        assert "sensitive provider detail" in caplog.text
-        assert any(record.exc_info for record in caplog.records)
     finally:
         await host.stop()

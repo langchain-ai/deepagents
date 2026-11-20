@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "deepagents",
-    "agent-client-protocol>=0.10.1",
+    "agent-client-protocol>=1.0.0,<2.0.0",
     "python-dotenv>=1.2.2",
 ]
 

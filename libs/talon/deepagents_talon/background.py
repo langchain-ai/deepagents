@@ -44,7 +44,8 @@ _CONSUMED_RESULTS: contextvars.ContextVar[tuple[str, dict[str, str]] | None] = (
 @dataclass
 class _ListingState:
     owner: str
-    snapshot: tuple[tuple[str, str], ...] | None = None
+    snapshot: tuple[tuple[str, str, bool], ...] | None = None
+    inspected: dict[str, dict[str, object]] = field(default_factory=dict)
     returned: set[str] = field(default_factory=set)
 
 
@@ -92,16 +93,24 @@ _UNDELIVERED_RESULT = (
     f"The conversation failed to process this result {_MAX_DELIVERIES} times, "
     "so it was dropped and never reached the user."
 )
+_UNCHANGED = (
+    "No new subagent information. Results arrive automatically. "
+    "Do not poll either status tool, alternate between them, or wait with sleeps or clock calls. "
+    "Do only genuinely independent work; otherwise end your turn now and let automatic "
+    "result delivery resume the conversation. Do not repeat delegated searches to fill the wait."
+)
 _INSTRUCTIONS = (
     "The task and start_async_task tools launch background subagents and return a task ID. "
     "Delegate distinct work; do not repeat delegated searches or reads unless a specific "
-    "gap or contradiction requires verification. Continue with independent work while they run. "
-    "Use list_subagents to inspect progress and "
+    "gap or contradiction requires verification. Do only genuinely independent work; "
+    "when none remains, end your turn and let automatic result delivery resume the conversation. "
+    "Use list_subagents for status and results, and "
     "inspect_subagent for recent activity and message receipts, message_subagent to queue "
     "local-worker guidance for its next model step, and cancel_subagent to stop work. "
     "Queued messages do not interrupt running model or tool calls. Activity is metadata only, "
     "not reasoning or tool output. Completed results will arrive as subagent data for you to "
-    "process; do not repeatedly poll or wait for them. Report only material new findings; "
+    "process. Do not repeatedly check either status tool, alternate between them, or wait using "
+    "sleeps or clock calls. Report only material new findings; "
     "do not repeat an earlier answer just to say a subagent validated it."
 )
 # Every clause of _INSTRUCTIONS is false on a scheduled run, and believing it loses work: a
@@ -174,19 +183,16 @@ class BackgroundSubagents(AgentMiddleware):
         async def list_subagents(
             runtime: ToolRuntime,
         ) -> list[dict[str, str | list[str] | None]] | str:
-            """Inspect this thread's subagents, including changed status and final results."""
+            """Read status and results; do not poll or alternate with inspection, end idle turns."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
             jobs = [(key, job, job.status) for key, job in self._jobs.items() if job.owner == owner]
             state = _LISTING_STATE.get() if jobs and not _IN_SUBAGENT.get() else None
             if state is not None and state.owner != owner:
                 state = None
-            snapshot = tuple((key, status) for key, _, status in jobs)
+            snapshot = tuple((key, status, job.result is not None) for key, job, status in jobs)
             if state is not None:
                 if state.snapshot == snapshot:
-                    return (
-                        "No subagent status changed. Results arrive automatically. "
-                        "Continue independent work or end your turn."
-                    )
+                    return _UNCHANGED
                 state.snapshot = snapshot
             consumed = _CONSUMED_RESULTS.get()
             if consumed is not None and consumed[0] == owner and not _IN_SUBAGENT.get():
@@ -223,15 +229,15 @@ class BackgroundSubagents(AgentMiddleware):
         @tool
         async def inspect_subagent(
             task_id: str, runtime: ToolRuntime, limit: int = 10
-        ) -> dict[str, object]:
-            """Inspect final results, recent metadata-only activity, and message receipts."""
+        ) -> dict[str, object] | str:
+            """Read results and activity; do not poll or alternate status tools, end idle turns."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
             job = self._jobs.get(task_id)
             if not owner or job is None or job.owner != owner:
                 return {"error": "Unknown subagent for this conversation."}
             if not 1 <= limit <= _MAX_EVENTS:
                 return {"error": "Limit must be between 1 and 50."}
-            return {
+            detail: dict[str, object] = {
                 "task_id": task_id,
                 "status": job.status,
                 "result": job.result,
@@ -239,12 +245,18 @@ class BackgroundSubagents(AgentMiddleware):
                 "activity": "local model/tool metadata"
                 if job.control.supported
                 else "lifecycle only",
-                "events": list(job.control.events)[-limit:],
+                "events": [dict(event) for event in list(job.control.events)[-limit:]],
                 "messages": [
                     {key: receipt[key] for key in ("message_id", "status")}
                     for receipt in job.control.messages
                 ],
             }
+            state = _LISTING_STATE.get() if not _IN_SUBAGENT.get() else None
+            if state is not None and state.owner == owner:
+                if job.result is None and state.inspected.get(task_id) == detail:
+                    return _UNCHANGED
+                state.inspected[task_id] = detail
+            return detail
 
         @tool
         async def message_subagent(

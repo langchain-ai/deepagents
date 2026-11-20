@@ -1272,9 +1272,8 @@ async def test_listing_suppresses_unchanged_polls_and_repeated_results():
             assert running[0]["status"] == "running"
             unchanged = await listing.ainvoke({"runtime": runtime})
             assert isinstance(unchanged, str)
-            assert len(unchanged) < 160
             assert "automatically" in unchanged
-            assert "independent work or end your turn" in unchanged
+            assert "otherwise end your turn now" in unchanged
             release.set()
             await asyncio.gather(*(job.worker for job in background._jobs.values()))
             finished = await listing.ainvoke({"runtime": runtime})
@@ -1324,4 +1323,91 @@ async def test_listing_state_is_isolated_between_concurrent_turns():
         await asyncio.gather(poll("one"), poll("two"))
     finally:
         release.set()
+        await background.cancel()
+
+
+async def test_inspection_suppresses_unchanged_but_exposes_new_information():
+    @tool
+    async def task() -> str:
+        """Wait for research."""
+        await asyncio.Event().wait()
+        return "done"
+
+    background = BackgroundSubagents()
+    request = _request("chat", task)
+    listing, _, inspect, *_ = background.tools
+    try:
+        await background.awrap_tool_call(request, _unused_handler)
+        await asyncio.sleep(0)
+        task_id, job = next(iter(background._jobs.items()))
+        inputs = {"task_id": task_id, "runtime": request.runtime}
+        with _track_consumed_results("chat", {}):
+            assert (await inspect.ainvoke(inputs))["status"] == "running"
+            unchanged = await inspect.ainvoke(inputs)
+            assert isinstance(unchanged, str)
+            await listing.ainvoke({"runtime": request.runtime})
+            assert await inspect.ainvoke(inputs) == unchanged
+            for _ in range(50):
+                job.control.record("model_started")
+            before = await inspect.ainvoke(inputs)
+            job.control.record("model_finished")
+            assert (await inspect.ainvoke(inputs))["events"] != before["events"]
+            assert await inspect.ainvoke(inputs) == unchanged
+            expanded = await inspect.ainvoke({**inputs, "limit": 50})
+            assert len(expanded["events"]) == 50
+            receipt = job.control.enqueue("summarize")
+            assert (await inspect.ainvoke(inputs))["messages"] == [receipt]
+            job.control.messages[0]["status"] = "consumed"
+            assert (await inspect.ainvoke(inputs))["messages"][0]["status"] == "consumed"
+            assert await inspect.ainvoke(inputs) == unchanged
+            await background.cancel()
+            assert (await inspect.ainvoke(inputs))["status"] == "cancelled"
+            assert await inspect.ainvoke(inputs) == unchanged
+            assert (await listing.ainvoke({"runtime": request.runtime}))[0]["result"] is None
+            job.result = "completed result"
+            assert (await listing.ainvoke({"runtime": request.runtime}))[0]["result"] == (
+                "completed result"
+            )
+            assert (await inspect.ainvoke(inputs))["result"] == "completed result"
+            assert (await inspect.ainvoke(inputs))["result"] == "completed result"
+    finally:
+        await background.cancel()
+
+
+async def test_inspection_state_is_isolated_between_tasks_turns_and_threads():
+    @tool
+    async def task() -> str:
+        """Wait for research."""
+        await asyncio.Event().wait()
+        return "done"
+
+    background = BackgroundSubagents()
+    inspect = background.tools[2]
+    ready = asyncio.Barrier(2)
+
+    async def poll(owner):
+        request = _request(owner, task)
+        await background.awrap_tool_call(request, _unused_handler)
+        await background.awrap_tool_call(request, _unused_handler)
+        inputs = [
+            {"task_id": key, "runtime": request.runtime}
+            for key, job in background._jobs.items()
+            if job.owner == owner
+        ]
+        with _track_consumed_results(owner, {}):
+            for item in inputs:
+                assert (await inspect.ainvoke(item))["status"] == "running"
+            await ready.wait()
+            for item in inputs:
+                assert isinstance(await inspect.ainvoke(item), str)
+            with _track_consumed_results("other", {}):
+                assert (await inspect.ainvoke(inputs[0]))["status"] == "running"
+            assert isinstance(await inspect.ainvoke(inputs[0]), str)
+        with _track_consumed_results(owner, {}):
+            assert (await inspect.ainvoke(inputs[0]))["status"] == "running"
+        assert (await inspect.ainvoke(inputs[0]))["status"] == "running"
+
+    try:
+        await asyncio.gather(poll("one"), poll("two"))
+    finally:
         await background.cancel()

@@ -12,7 +12,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from deepagents_code.client.session_cost import SessionCostTracker
 
@@ -187,6 +187,52 @@ def workspace_conflict_diagnostics(
     return WorkspaceDiagnostics.from_dict(
         cast("dict[str, Any]", body).get("diagnostics")
     )
+
+
+def _parse_mcp_server_info(raw: object) -> list[MCPServerInfo] | None:
+    """Parse MCP server metadata from a workspace response.
+
+    A status this client does not know (sent by a newer server) is shown as
+    `error` with the server's message, rather than reaching code that matches
+    statuses exhaustively.
+
+    Returns:
+        The parsed entries, or `None` when the field is absent.
+
+    Raises:
+        TypeError: If the payload is malformed.
+    """
+    if raw is None:
+        return None
+    msg = "Workspace server returned invalid MCP metadata."
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise TypeError(msg)
+
+    from deepagents_code.mcp_tools import MCPServerInfo, MCPServerStatus, MCPToolInfo
+
+    known = set(get_args(MCPServerStatus))
+    try:
+        infos: list[MCPServerInfo] = []
+        for item in cast("list[dict[str, Any]]", raw):
+            status = item.get("status", "ok")
+            error = item.get("error")
+            if status not in known:
+                error = error or f"Unrecognized server status {status!r}."
+                status = "error"
+            infos.append(
+                MCPServerInfo(
+                    name=item["name"],
+                    transport=item["transport"],
+                    tools=tuple(MCPToolInfo(**tool) for tool in item.get("tools", [])),
+                    status=status,
+                    error=error,
+                    pending_reconnect=item.get("pending_reconnect", False),
+                    uses_oauth=item.get("uses_oauth", False),
+                )
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TypeError(msg) from exc
+    return infos
 
 
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:
@@ -1213,35 +1259,12 @@ class RemoteAgent:
         ):
             msg = "Workspace server returned an invalid binding response."
             raise TypeError(msg)
-        raw_mcp = response.get("mcp_server_info")
-        if raw_mcp is None:
-            mcp_server_info = None
-        elif isinstance(raw_mcp, list) and all(
-            isinstance(item, dict) for item in raw_mcp
-        ):
-            from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-
-            try:
-                mcp_server_info = [
-                    MCPServerInfo(
-                        name=item["name"],
-                        transport=item["transport"],
-                        tools=tuple(
-                            MCPToolInfo(**tool) for tool in item.get("tools", [])
-                        ),
-                        status=item.get("status", "ok"),
-                        error=item.get("error"),
-                        pending_reconnect=item.get("pending_reconnect", False),
-                        uses_oauth=item.get("uses_oauth", False),
-                    )
-                    for item in raw_mcp
-                ]
-            except (KeyError, TypeError, ValueError) as exc:
-                msg = "Workspace server returned invalid MCP metadata."
-                raise TypeError(msg) from exc
-        else:
-            msg = "Workspace server returned invalid MCP metadata."
-            raise TypeError(msg)
+        mcp_server_info = _parse_mcp_server_info(response.get("mcp_server_info"))
+        # Statuses newer than some clients are sent under their own key (see
+        # `offload_api._WIRE_LATE_MCP_STATUSES`); merge them back in.
+        late = _parse_mcp_server_info(response.get("mcp_untrusted_servers"))
+        if mcp_server_info is not None and late:
+            mcp_server_info = [*mcp_server_info, *late]
         return cast("dict[str, Any]", response["workspace"]), mcp_server_info
 
     async def abind_workspace(

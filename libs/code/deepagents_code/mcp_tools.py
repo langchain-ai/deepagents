@@ -140,8 +140,8 @@ class MCPServerInfo:
     status: MCPServerStatus = "ok"
     """Load status.
 
-    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`, or
-    `disabled`.
+    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`,
+    `disabled`, or `untrusted`.
     """
 
     error: str | None = None
@@ -2870,6 +2870,20 @@ async def resolve_and_load_mcp_tools(
         configs.append(explicit_config)
         session_cwd_servers.update(explicit_config["mcpServers"])
 
+    from deepagents_code.configuration.service import ManagedConfigError
+    from deepagents_code.mcp_disabled import get_disabled_servers
+
+    # Read the F2/managed deny list once, up front: unapproved project servers
+    # need it too, so a server the user switched off reads as disabled (and
+    # stays re-enableable) rather than as awaiting approval.
+    disabled_names: set[str] = set()
+    disabled_policy_unreadable = False
+    if configs or untrusted:
+        try:
+            disabled_names = get_disabled_servers()
+        except ManagedConfigError:
+            disabled_policy_unreadable = True
+
     def _untrusted_infos() -> list[MCPServerInfo]:
         # Name servers awaiting approval so `/reload` and `/mcp` can show them;
         # a log line alone reads as the server vanishing. A name another config
@@ -2883,6 +2897,13 @@ async def resolve_and_load_mcp_tools(
         }
         return [
             MCPServerInfo(
+                name=summary.name,
+                transport=summary.kind,
+                status="disabled",
+                error="Disabled by user (F2 to re-enable).",
+            )
+            if summary.name in disabled_names
+            else MCPServerInfo(
                 name=summary.name,
                 transport=summary.kind,
                 status="untrusted",
@@ -2910,18 +2931,11 @@ async def resolve_and_load_mcp_tools(
     if not merged.get("mcpServers"):
         return [], None, _untrusted_infos() + _bad_config_infos()
 
-    from deepagents_code.configuration.service import ManagedConfigError
-    from deepagents_code.mcp_disabled import get_disabled_servers
-
-    try:
-        disabled_names = get_disabled_servers()
-    except ManagedConfigError:
+    if disabled_policy_unreadable:
         # The managed deny list is unreadable, so no server can be shown to be
         # permitted. Deny every one rather than start the servers an
         # administrator may have blocked.
-        logger.error(  # noqa: TRY400
-            "Managed MCP policy is unreadable; disabling all MCP servers."
-        )
+        logger.error("Managed MCP policy is unreadable; disabling all MCP servers.")
         disabled_names = set(merged["mcpServers"])
     disabled_infos: list[MCPServerInfo] = []
     if disabled_names:

@@ -2135,6 +2135,56 @@ class TestResolveAndLoadMcpTools:
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
+    async def test_f2_disabled_unapproved_server_reported_as_disabled(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Switching a server off with F2 wins over its pending approval."""
+        project_cfg = tmp_path / ".mcp.json"
+        project_cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "off": {"transport": "http", "url": "https://a.test"},
+                        "pending": {"transport": "http", "url": "https://b.test"},
+                    }
+                }
+            )
+        )
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        monkeypatch.delenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            raising=False,
+        )
+        monkeypatch.delenv(
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", raising=False
+        )
+
+        with patch(
+            "deepagents_code.mcp_disabled.get_disabled_servers",
+            return_value={"off"},
+        ):
+            _tools, _manager, infos = await resolve_and_load_mcp_tools(
+                trust_project_mcp=None,
+            )
+
+        assert mock_load.call_count == 0
+        assert [(i.name, i.status) for i in infos] == [
+            ("off", "disabled"),
+            ("pending", "untrusted"),
+        ]
+
+    @patch("deepagents_code.mcp_tools._load_tools_from_config")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
     async def test_untrusted_project_remote_dropped_without_trust_flag(
         self,
         mock_discover: MagicMock,

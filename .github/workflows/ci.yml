@@ -4,8 +4,8 @@
 # - Linting for changed packages
 # - Unit Tests for changed packages
 #
-# Only packages with changes are tested. SDK changes also trigger CLI and ACP tests.
-# Pushes to main and workflow changes run full CI.
+# PR feedback selects changed packages; SDK changes also trigger CLI and ACP tests.
+# Merge-queue runs, pushes to main, and workflow changes run full CI.
 
 name: "🔧 CI"
 
@@ -101,10 +101,6 @@ jobs:
       deepagents: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.deepagents == 'true' }}
       code: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.code == 'true' }}
       talon: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.talon == 'true' }}
-      # `talon-src` tracks only libs/talon/** so the `ci_success` waiver and
-      # the advisory job can tell "PR touches talon sources" apart from
-      # "talon CI runs" (the broad `talon` filter above also matches
-      # libs/code and libs/deepagents because talon editable-installs them).
       talon-src: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.talon-src == 'true' }}
       evals: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.evals == 'true' }}
       acp: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.acp == 'true' }}
@@ -227,11 +223,6 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
-            # The broad `talon` filter above decides whether talon CI RUNS;
-            # this narrow one decides whether the PR TOUCHES talon sources.
-            # `ci_success` and the talon-failure-advisory job key off this
-            # output, so libs/code PRs (which match the broad filter via
-            # 'libs/code/**') get the talon failure waiver.
             talon-src:
               - 'libs/talon/**'
             evals:
@@ -298,7 +289,7 @@ jobs:
   lint-deepagents:
     name: "🧹 Lint deepagents"
     needs: changes
-    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/deepagents"
@@ -307,7 +298,7 @@ jobs:
   lint-code:
     name: "🧹 Lint code"
     needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/code"
@@ -316,7 +307,7 @@ jobs:
   lint-talon:
     name: "🧹 Lint talon"
     needs: changes
-    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.talon == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/talon"
@@ -325,7 +316,7 @@ jobs:
   lint-evals:
     name: "🧹 Lint evals"
     needs: changes
-    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.evals == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/evals"
@@ -334,7 +325,7 @@ jobs:
   lint-acp:
     name: "🧹 Lint acp"
     needs: changes
-    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.acp == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/acp"
@@ -343,7 +334,7 @@ jobs:
   lint-daytona:
     name: "🧹 Lint daytona"
     needs: changes
-    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.daytona == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
@@ -352,7 +343,7 @@ jobs:
   lint-modal:
     name: "🧹 Lint modal"
     needs: changes
-    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.modal == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/modal"
@@ -361,7 +352,7 @@ jobs:
   lint-runloop:
     name: "🧹 Lint runloop"
     needs: changes
-    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.runloop == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
@@ -370,7 +361,7 @@ jobs:
   lint-vercel:
     name: "🧹 Lint vercel"
     needs: changes
-    if: needs.changes.outputs.vercel == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.vercel == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/vercel"
@@ -379,7 +370,7 @@ jobs:
   lint-quickjs:
     name: "🧹 Lint quickjs"
     needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/quickjs"
@@ -389,7 +380,7 @@ jobs:
   test-deepagents:
     name: "🧪 Test deepagents"
     needs: changes
-    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/deepagents"
@@ -399,7 +390,7 @@ jobs:
   test-code:
     name: "🧪 Test deepagents-code"
     needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/code"
@@ -411,7 +402,7 @@ jobs:
   test-talon:
     name: "🧪 Test deepagents-talon"
     needs: changes
-    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.talon == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/talon"
@@ -420,7 +411,7 @@ jobs:
   test-evals:
     name: "🧪 Test evals"
     needs: changes
-    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.evals == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
@@ -429,7 +420,7 @@ jobs:
   test-acp:
     name: "🧪 Test acp"
     needs: changes
-    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.acp == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/acp"
@@ -438,7 +429,7 @@ jobs:
   test-daytona:
     name: "🧪 Test daytona"
     needs: changes
-    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.daytona == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
@@ -447,7 +438,7 @@ jobs:
   test-modal:
     name: "🧪 Test modal"
     needs: changes
-    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.modal == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
@@ -456,7 +447,7 @@ jobs:
   test-runloop:
     name: "🧪 Test runloop"
     needs: changes
-    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.runloop == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/runloop"
@@ -465,7 +456,7 @@ jobs:
   test-vercel:
     name: "🧪 Test vercel"
     needs: changes
-    if: needs.changes.outputs.vercel == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.vercel == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/vercel"
@@ -474,7 +465,7 @@ jobs:
   test-quickjs:
     name: "🧪 Test quickjs"
     needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name != 'pull_request'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/quickjs"
@@ -498,7 +489,7 @@ jobs:
     name: "🧪 Test quickjs SDK smoke"
     needs: changes
     if: >-
-      github.event_name != 'push' &&
+      github.event_name == 'pull_request' &&
       needs.changes.outputs.deepagents == 'true' &&
       needs.changes.outputs.quickjs != 'true'
     runs-on: ubuntu-latest
@@ -562,7 +553,7 @@ jobs:
   drbench-dataset:
     name: "🗂️ Build DRBench dataset"
     needs: changes
-    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.evals == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -635,27 +626,19 @@ jobs:
       - name: "🔍 Check workflow helper scripts"
         run: python -m pytest .github/scripts/tests -v
 
-  # Advisory-only job: never fails the workflow and is deliberately NOT in
-  # `ci_success.needs`, so its own result cannot gate anything. It runs on
-  # PRs where the `talon-src` filter output is not 'true' — i.e. the PR does
-  # not touch libs/talon, so the `ci_success` talon waiver may fire (see the
-  # comment block there). It posts or updates a sticky PR comment recording
-  # the waived failures; once the talon jobs pass again it deletes the
-  # comment. Mirrors the sticky-comment pattern in
-  # release_fanout_bypass_warn.yml.
   talon-failure-advisory:
     name: "⚠️ talon failure advisory"
     needs: [changes, lint-talon, test-talon]
     if: >-
       always() &&
       github.event_name == 'pull_request' &&
+      needs.changes.result == 'success' &&
       needs.changes.outputs.curated-apply-only != 'true' &&
-      needs.changes.outputs.talon-src != 'true'
+      needs.changes.outputs.talon-src == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
       pull-requests: write
-    # Serialize per-PR so rapid pushes cannot create duplicate stickies.
     concurrency:
       group: talon-ci-advisory-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -700,7 +683,6 @@ jobs:
               }
             }
 
-            // Waiver condition no longer holds: talon passed or was skipped.
             if (failed.length === 0) {
               await removeSticky();
               return;
@@ -713,9 +695,9 @@ jobs:
               '',
               `Failed job(s): ${failed.map(j => `\`${j}\``).join(', ')} ([workflow run](${runUrl}))`,
               '',
-              "**Why:** this PR doesn't touch `libs/talon`, so talon breakage does not block merge per repo policy. talon editable-installs `deepagents-code`, so its CI runs on every libs/code PR and can be broken by libs/code changes.",
+              "**Why:** this PR doesn't touch `libs/talon`, so talon failures are advisory during PR feedback to keep each fix scoped to one package. talon editable-installs `deepagents-code`, so its CI runs on every libs/code PR and can be broken by libs/code changes.",
               '',
-              '**Required follow-up:** the breakage must be fixed in a separate `fix(talon): ...` PR — talon is red at HEAD until it lands. Please file or self-assign that fix, or confirm a maintainer is tracking it.',
+              '**Required follow-up:** fix the breakage in a separate `fix(talon): ...` PR. Talon remains red at HEAD; merge-queue and main checks are strict, so the scoped fixes must be coordinated before the queue can pass.',
             ].join('\n');
 
             try {
@@ -777,57 +759,6 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # talon editable-installs deepagents-code (`libs/talon/pyproject.toml`,
-      # [tool.uv.sources]), so the `talon` path filter above watches
-      # libs/code/** and every libs/code PR runs lint-talon/test-talon. A
-      # libs/code change can therefore break talon CI. The maintainers accept
-      # merging such PRs with talon red at HEAD: the talon fix lands as its
-      # own `fix(talon): ...` PR instead of forcing a combined PR (which would
-      # also fan release-please out across both packages' changelogs). The
-      # waiver keys off the narrow `talon-src` filter output (libs/talon/**
-      # only), NOT the broad `talon` one that also matches libs/code and
-      # libs/deepagents — keying off `talon` would make every libs/code PR
-      # ineligible for its own waiver. On pull_request runs where the
-      # `talon-src` filter output is not 'true', `failure` results from
-      # lint-talon/test-talon are waived; `cancelled` results and every other
-      # job still block, and push / merge_group runs stay fully strict so a
-      # broken talon stays visible on main, where every job runs
-      # unconditionally. The waiver logic lives in
-      # .github/scripts/checks/ci_gate.py (unit-tested under
-      # .github/scripts/tests/); talon CI still RUNS on these PRs — only its
-      # blocking effect changes, and the talon-failure-advisory job posts a
-      # sticky comment when the waiver fires.
-      #
-      # The gate script is executed from the PR's BASE ref, not the PR
-      # checkout: on pull_request runs `actions/checkout` defaults to the
-      # (untrusted) PR merge commit, so a PR that edited ci_gate.py could
-      # make the required check pass regardless of real job results. Pinning
-      # to `github.base_ref` keeps the decision logic maintainer-controlled.
-      # `github.base_ref` is empty on push/merge_group, so `||` falls back to
-      # the commit that triggered the run.
-      - name: "📋 Checkout gate script from trusted base ref"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.base_ref || github.sha }}
-          path: .ci-gate-base
-          sparse-checkout: |
-            .github/scripts/checks/ci_gate.py
-          persist-credentials: false
-
-      # Bootstrap window: ci_gate.py does not exist on main until this change
-      # lands, so the base-ref checkout above is empty on the PR that
-      # introduces it. Only for that window, check out the PR's own copy as a
-      # fallback. Once the script is on the base branch, the base-ref copy is
-      # always used and this second checkout never changes what runs.
-      - name: "📋 Checkout PR gate script (bootstrap fallback)"
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: .ci-gate-pr
-          sparse-checkout: |
-            .github/scripts/checks/ci_gate.py
-          persist-credentials: false
-
       - name: Report inherited CI failure
         if: >-
           needs.changes.outputs.curated-apply-only == 'true' &&
@@ -897,18 +828,19 @@ jobs:
       - name: "🎉 All Checks Passed"
         env:
           EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
           LOCKFILES_RESULT: ${{ needs.check-lockfiles.result }}
           HYGIENE_RESULT: ${{ needs.text-hygiene.result }}
           CURATED_APPLY_ONLY: ${{ needs.changes.outputs.curated-apply-only }}
           CURATED_APPLY_PARENT_CONCLUSION: ${{ needs.changes.outputs.curated-apply-parent-conclusion }}
-          # Full needs context: the wildcard `toJSON(needs.*.result)` form
-          # loses job names (it yields a bare array of result strings), so
-          # the name -> result map is rebuilt from each entry below. Skipped
-          # jobs are filtered out so the gate only judges jobs that ran.
           NEEDS: ${{ toJSON(needs) }}
-          TALON_CHANGED: ${{ needs.changes.outputs.talon-src }}
+          SELECTION: ${{ toJSON(needs.changes.outputs) }}
         run: |
           set -euo pipefail
+          if [ "$CHANGES_RESULT" != success ]; then
+            echo "Change detection did not pass: $CHANGES_RESULT"
+            exit 1
+          fi
           if [ "$LOCKFILES_RESULT" != success ]; then
             echo "Lockfile validation did not pass: $LOCKFILES_RESULT"
             exit 1
@@ -918,69 +850,59 @@ jobs:
             echo "Text hygiene validation did not pass: $HYGIENE_RESULT"
             exit 1
           fi
-          if [ "$CURATED_APPLY_ONLY" = true ]; then
-            if [ "$CURATED_APPLY_PARENT_CONCLUSION" = success ]; then
-              echo "The release-bot commit only updates the managed changelog; prior-head CI passed."
-              exit 0
-            fi
-            echo "Prior-head CI failed; refusing to pass the changelog-only apply commit."
-            exit 1
-          fi
-          # Get all job results (excluding 'changes' which always succeeds)
-          results="$(printf '%s' "$NEEDS" | python3 -c '
-          import json
-          import sys
-
-          needs = json.loads(sys.argv[1])
-          results = {
-              job: entry["result"]
-              for job, entry in needs.items()
-              if job != "changes" and entry["result"] != "skipped"
-          }
-          json.dump(results, sys.stdout)
-          ' "$NEEDS")"
-          echo "Job results: $results"
-
-          gate_script=".ci-gate-base/.github/scripts/checks/ci_gate.py"
-          if [ ! -f "$gate_script" ]; then
-            # Bootstrap only: the script is not on the base branch yet.
-            gate_script=".ci-gate-pr/.github/scripts/checks/ci_gate.py"
-            echo "::warning::ci_gate.py not found on base ref; running the PR's copy (bootstrap window)."
-          fi
-
-          gate="$(python3 "$gate_script" \
-            --event "$EVENT_NAME" \
-            --talon "$TALON_CHANGED" \
-            --results "$results")"
-          echo "Gate decision: $gate"
-
-          waived="$(printf '%s' "$gate" | python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["waived"]))' "$gate")"
-          if [ -n "$waived" ]; then
-            while IFS= read -r job; do
-              echo "::warning::⚠️ Waiving failing talon check: $job=failure (PR does not touch libs/talon; talon breakage is advisory here). Follow-up: fix talon in a separate fix(talon): ... PR."
-            done <<< "$waived"
-          fi
-
-          failed="$(printf '%s' "$gate" | python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["failed"]))' "$gate")"
-          if [ -n "$failed" ]; then
-            echo "Some jobs failed:"
-            echo "$failed"
-            exit 1
-          fi
-
-          # On main pushes, concurrency preemption routinely cancels
-          # in-flight jobs when a newer commit arrives — the next run will
-          # validate the latest state, so don't flag those as failures.
-          # On PRs and merge_group runs, a cancellation is almost always a
-          # human action or a real problem, so keep the gate strict.
-          if [ "$EVENT_NAME" != "push" ]; then
-            cancelled="$(printf '%s' "$gate" | python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["cancelled"]))' "$gate")"
-            if [ -n "$cancelled" ]; then
-              echo "Some jobs were cancelled (not allowed on $EVENT_NAME runs):"
-              echo "$cancelled"
+          if [ "$CURATED_APPLY_ONLY" = true ] && [ "$EVENT_NAME" = pull_request ]; then
+            if [ "$CURATED_APPLY_PARENT_CONCLUSION" != success ]; then
+              echo "Prior-head CI failed; refusing to pass the changelog-only apply commit."
               exit 1
             fi
+            echo "The release-bot changelog-only commit inherits successful prior-head CI."
           fi
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import sys
 
-          echo "All required checks passed (skipped jobs are OK)"
-          exit 0
+          needs = json.loads(os.environ["NEEDS"])
+          event = os.environ["EVENT_NAME"]
+          selection = json.loads(os.environ["SELECTION"])
+          packages = "deepagents code talon evals acp daytona modal runloop vercel quickjs".split()
+          talon_changed = selection.get("talon-src")
+          if talon_changed not in {"true", "false"}:
+              sys.exit(f"Invalid selection: talon-src={talon_changed!r}")
+          waive_talon = event == "pull_request" and talon_changed == "false"
+          expected = {"changes", "check-lockfiles", "check-release-options"}
+          inherited = event == "pull_request" and os.environ["CURATED_APPLY_ONLY"] == "true"
+          allowed_skips = set()
+          if inherited:
+              allowed_skips.add("check-release-options")
+          for package in packages:
+              selected = selection.get(package)
+              if selected not in {"true", "false"}:
+                  sys.exit(f"Invalid selection: {package}={selected!r}")
+              jobs = {f"lint-{package}", f"test-{package}"}
+              expected.update(jobs)
+              if event == "pull_request" and selected == "false":
+                  allowed_skips.update(jobs)
+          expected.update({"text-hygiene", "drbench-dataset", "test-quickjs-sdk-smoke"})
+          if event == "pull_request" and selection["evals"] == "false":
+              allowed_skips.add("drbench-dataset")
+          if event == "push":
+              allowed_skips.add("text-hygiene")
+          if event != "pull_request" or selection["deepagents"] != "true" or selection["quickjs"] == "true":
+              allowed_skips.add("test-quickjs-sdk-smoke")
+          missing = expected - needs.keys()
+          if missing:
+              sys.exit(f"Missing job results: {sorted(missing)}")
+          for job, entry in needs.items():
+              result = entry["result"]
+              if result not in {"success", "failure", "cancelled", "skipped"}:
+                  sys.exit(f"Unknown job result: {job}={result!r}")
+              if result == "skipped" and job not in allowed_skips:
+                  sys.exit(f"Required job did not run: {job}")
+              if result == "failure" and waive_talon and job in {"lint-talon", "test-talon"}:
+                  print(f"::warning::Waiving {job}=failure under the single-package PR policy. Fix Talon in a separate fix(talon): ... PR; merge-queue and main checks remain strict.")
+                  continue
+              if result not in {"success", "skipped"}:
+                  sys.exit(f"Job did not pass: {job}={result}")
+          print("All required checks passed or were explicitly waived under the single-package PR policy; only explicitly unselected checks may be skipped.")
+          PYTHON

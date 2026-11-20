@@ -113,6 +113,7 @@ jobs:
       runloop: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.runloop == 'true' }}
       vercel: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.vercel == 'true' }}
       quickjs: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.quickjs == 'true' }}
+      release-scripts: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.release-scripts == 'true' }}
       curated-apply-only: ${{ steps.curated-apply.outputs.only || 'false' }}
       curated-apply-parent-conclusion: ${{ steps.curated-apply.outputs.prior-conclusion }}
       curated-apply-parent-sha: ${{ steps.curated-apply.outputs.parent-sha }}
@@ -294,6 +295,18 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            # Inputs to the `.github/scripts/tests` suite: the scripts and the
+            # workflows/templates they assert on, the release-please config,
+            # every package's pyproject/README (project-readme and release
+            # package-map checks), and the evals assets the eval-prep tests
+            # read. Push and merge_group runs ignore this and always run it.
+            release-scripts:
+              - '.github/**'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
+              - 'libs/**/pyproject.toml'
+              - 'libs/**/README.md'
+              - 'libs/evals/**'
   # Run linting on changed packages
   lint-deepagents:
     name: "🧹 Lint deepagents"
@@ -616,7 +629,12 @@ jobs:
   check-release-options:
     name: "Validate Release Options"
     needs: changes
-    if: needs.changes.outputs.curated-apply-only != 'true'
+    # PRs run it only when an input to the suite changed; it otherwise sets
+    # the finish time for most small PRs. Push and merge_group always run it,
+    # so a missed input path still fails before landing.
+    if: >-
+      needs.changes.outputs.curated-apply-only != 'true' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.release-scripts == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

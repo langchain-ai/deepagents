@@ -1206,7 +1206,6 @@ jobs:
                     wire_api: "responses", capabilities: {remote_compaction: "unsupported"}
                   }}
                 } + (if $window then {model_context_window: $window} else {} end)')
-                agent_args+=(--agent-kwarg "config=$codex_config")
               fi
               ;;
             claude-code:fireworks)
@@ -1227,6 +1226,24 @@ jobs:
                 fireworks:accounts/fireworks/models/kimi-k3p1-pro)
                   agent_env_args+=(--agent-env CLAUDE_CODE_MAX_CONTEXT_TOKENS=1048576) ;;
               esac
+              ;;
+          esac
+          # Headless CLIs can start their first turn before task MCP servers
+          # connect, leaving the turn without the task's tools (APEX `world`).
+          case "$HARBOR_AGENT_IMPL" in
+            claude-code)
+              agent_env_args+=(
+                --agent-env CLAUDE_CODE_MCP_STARTUP_WAIT_MS=120000
+                --agent-env MCP_CONNECTION_NONBLOCKING=0
+                --agent-env MCP_CONNECT_TIMEOUT_MS=120000
+                --agent-env MCP_TIMEOUT=120000
+              )
+              ;;
+            codex)
+              # 0 waits each server's full `startup_timeout_sec` instead of 1s.
+              [ -n "${codex_config:-}" ] || codex_config='{}'
+              codex_config=$(jq -c '. + {mcp_optional_startup_grace_ms: 0}' <<<"$codex_config")
+              agent_args+=(--agent-kwarg "config=$codex_config")
               ;;
           esac
           uv run harbor run \

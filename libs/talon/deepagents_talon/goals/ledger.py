@@ -649,6 +649,7 @@ class GoalLedger:
                 item_id=item.id,
                 owner_id=goal.scope.owner_id,
                 proposal_hash=proposal_hash,
+                proposal=proposal,
                 goal_revision=goal.confirmed_revision or goal.revision,
                 state="pending",
                 expires_at=_utc(expires_at),

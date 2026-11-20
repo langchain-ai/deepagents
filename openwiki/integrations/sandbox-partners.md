@@ -1,133 +1,42 @@
 ---
 type: integration architecture
 title: Sandbox and Partner Integrations
-description: How dcode selects and owns optional remote sandbox providers, including Modal's backend and normalized file-operation behavior. Covers the separately packaged QuickJS middleware, its persistence and bridge boundaries, and partner package compatibility.
-tags: [dcode, sandbox, integrations, providers, modal, quickjs, filesystem]
+description: How langchain-quickjs 0.4 embeds a persistent JavaScript interpreter in an agent, persists authenticated thread snapshots, and deliberately grants host capabilities through bridges. Covers interpreter and slot lifecycle, PTC and subagent attribution, failure handling, and containment limits.
+tags: [quickjs, javascript, middleware, sandbox, persistence, security, integrations]
 sources:
-  - id: openwiki-source-5e59f90a38f5bdf9ed76984b
-    resource: repo://.release-please-manifest.json
-  - id: openwiki-source-bcf1f68e7989964d2fcec7aa
-    resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
-  - id: openwiki-source-03e3942e51522a3aa485168d
-    resource: repo://libs/code/deepagents_code/integrations/sandbox_provider.py
-  - id: openwiki-source-7ba50bd13eb62341a2061ef9
-    resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-d4463137befa776cd47750d4
-    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-da577cbe81ec29338f1388b2
-    resource: repo://libs/partners/daytona/pyproject.toml
-  - id: openwiki-source-5e387cb8bab7ca8537e7d97c
-    resource: repo://libs/partners/modal/langchain_modal/sandbox.py
-  - id: openwiki-source-936554ac5f0a201f8696be25
-    resource: repo://libs/partners/modal/pyproject.toml
-  - id: openwiki-source-47e7cf704d54342cf95c8125
-    resource: repo://libs/partners/modal/tests/integration_tests/test_integration.py
-  - id: openwiki-source-ac47f3f14a26a8141beddfc3
-    resource: repo://libs/partners/modal/tests/unit_tests/test_sandbox.py
+  - id: openwiki-source-7aacd0cb896e1f405740f0f4
+    resource: repo://libs/partners/quickjs/langchain_quickjs/_ptc.py
+  - id: openwiki-source-f774b021a408b0156ed93a4b
+    resource: repo://libs/partners/quickjs/langchain_quickjs/_repl.py
+  - id: openwiki-source-817f587aa5157a14a76483d6
+    resource: repo://libs/partners/quickjs/langchain_quickjs/_snapshot.py
   - id: openwiki-source-a0668a30e4f0ac9f77cd0048
     resource: repo://libs/partners/quickjs/langchain_quickjs/_subagent.py
   - id: openwiki-source-e93ea9e1f8eb3113683abb76
     resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
-  - id: openwiki-source-c5c26c24c13b3e91dde43d11
-    resource: repo://libs/partners/quickjs/tests/unit_tests/test_end_to_end.py
-  - id: openwiki-source-d862ab24102a8ba167eaa561
-    resource: repo://libs/partners/quickjs/tests/unit_tests/test_subagent_events.py
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-cf029b27d1ea908d55e21938
+    resource: repo://libs/partners/quickjs/tests/unit_tests/test_slot_cleanup.py
   - id: openwiki-source-7f225a40788309863f345e08
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_subagent_replay.py
-  - id: openwiki-source-8d2c8381956c1c023bcdb565
-    resource: repo://libs/partners/runloop/pyproject.toml
-  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
-    resource: repo://libs/partners/vercel/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-17T08:03:47.818Z
+    at: 2026-11-20T08:04:05.944Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
 ---
 
 # Sandbox and Partner Integrations
 
-A dcode sandbox provider supplies a `SandboxBackendProtocol`: an execution and filesystem backend identified by `id`. dcode owns discovery, selection, factory context, and the lifetime of resources it creates; a provider package owns its SDK, credentials, remote-resource behavior, and backend implementation. Selecting a sandbox changes the execution/filesystem backend. It is not by itself a project-trust, authorization, or general isolation policy.
+`langchain-quickjs` 0.4.0 is an optional Deep Agents middleware, not a remote sandbox provider. `CodeInterpreterMiddleware` adds a configurable `eval` tool and a prompt addendum; it runs QuickJS through `quickjs-rs` in the **agent process**. It is useful when the model needs to retain JavaScript values and orchestrate work in one evaluation, including concurrent `Promise` work, rather than return to the model for every individual tool call.
 
-QuickJS is deliberately different. `langchain-quickjs` embeds an interpreter in the **agent process** as middleware; it is not registered in dcode's remote sandbox-provider registry. The interpreter advertises no ambient filesystem, network, or real-clock access, but explicitly bridged tools and subagents confer authority. A remote sandbox instead executes in a provider-managed environment with its own identity, mounts, egress, credentials, quotas, and lifecycle. Treat these as separate boundaries. See [Permissions and Human Approval](/openwiki/concepts/permissions-hitl.md), [State, Threads, and Persistence](/openwiki/concepts/state-persistence.md), and [Tools and Filesystem](/openwiki/concepts/tools-filesystem.md).
+QuickJS starts with no ambient filesystem, network, process, `require`, or real-clock capability. That is a useful containment property for pure guest JavaScript, but it is **not** a complete authorization boundary. `tools.*`, `task()`, and `fs` are explicit host bridges: once enabled, guest code can exercise the authority granted through each bridge. A remote execution environment likewise needs its own identity, filesystem, egress, secret, and quota policy.
 
-[Talon](/openwiki/integrations/talon.md) is a concrete remote-provider consumer: host shell and file tools are the default, while `DEEPAGENTS_TALON_SANDBOX` selects a dcode provider for them. Its sandboxing is opt-in and does not cover MCP or web tools, channel media handling, or host-held skills and memory. It is therefore neither a whole-agent nor a multi-tenant security boundary. Talon deletes a sandbox it creates, but never one selected by `DEEPAGENTS_TALON_SANDBOX_ID`.
-
-## Remote provider contract and resolution
-
-A `SandboxProvider` implements synchronous `get_or_create(sandbox_id=..., **kwargs)` and `delete(sandbox_id=..., **kwargs)`; async helpers run those blocking operations in worker threads. `SandboxProviderMetadata` describes a default working directory, installation hint, attach and named-snapshot capabilities, and an optional dependency-probe module.
-
-`SandboxRegistry` merges configured providers, installed `deepagents_code.sandbox_providers` entry points, and curated built-ins. A name collision resolves as **configuration, then entry point, then built-in**. Entry-point enumeration is best-effort. A configured `class_path` is trusted operator configuration: resolving it imports arbitrary Python. A configured default only records the backend selected by a bare `--sandbox`; it does not turn sandbox mode on.
-
-Provider *availability* is intentionally a discovery result, not a runtime security decision or proof that a provider can start. `is_available()` means the name occurs in configuration, entry points, or curated metadata. Constructing an entry-point provider can still fail, and remote credentials or optional packages can still be missing. CLI validation rejects unknown names and unsupported attach/snapshot flags before launch; a malformed user configuration is surfaced as a configuration note while discovery falls back to usable sources.
-
-`[sandboxes].default` is a selector, not a containment policy. With no `--sandbox`, dcode runs on the host even if managed configuration names a default, and emits a note explaining that choice. When a managed default is applied to a sandboxed launch, dcode rejects an unavailable name rather than passing it to the factory. Operators who require remote execution must enforce the invocation/policy path that supplies `--sandbox`; setting a default alone cannot require isolation.
-
-`create_sandbox()` looks up metadata before acquisition. It rejects an unsupported `snapshot_name`, or a snapshot combined with `sandbox_id`; overlays explicit `params` over configured parameters; then runs an optional setup script in the acquired backend after expanding variables from the bound workspace environment. The factory deletes only a resource it created, never an attached resource. A cleanup failure is reported but does not mask the initiating failure.
-
-```mermaid
-flowchart TD
-    Select["Caller selects provider"] --> Registry["Load config entry points and built-ins"]
-    Registry --> Known{"Provider name known"}
-    Known -->|No| Reject["Reject unknown provider"]
-    Known -->|Yes| Metadata["Read metadata and validate flags"]
-    Metadata --> Acquire["Create or attach backend"]
-    Acquire --> Setup{"Setup script supplied"}
-    Setup -->|Yes| Run["Expand workspace environment and run script"]
-    Setup -->|No| Yield["Yield backend"]
-    Run --> Yield
-    Yield --> Owned{"Factory created resource"}
-    Owned -->|Yes| Delete["Delete on context exit"]
-    Owned -->|No| Keep["Leave attached resource intact"]
-```
-
-*Provider discovery and metadata validation occur before acquisition; ownership, rather than mere access, determines cleanup.*
-
-### Curated capability surface
-
-This table records dcode's built-in metadata. `sandbox_id` means dcode permits attaching an existing resource; `snapshot_name` means the factory accepts a named source for a fresh resource. Provider implementations may still reject or further constrain an operation, and configuration or entry-point providers can replace this metadata.
-
-| Provider | dcode delivery | Default working directory | `sandbox_id` | `snapshot_name` |
-| --- | --- | --- | --- | --- |
-| `agentcore` | `agentcore` extra | `/tmp` | No | No |
-| `daytona` | `daytona` extra | `/home/daytona` | Yes | Yes |
-| `langsmith` | bundled `langsmith[sandbox]` dependency | `/root` | Yes | Yes |
-| `modal` | `modal` extra | `/workspace` | Yes | No |
-| `openshell` | `openshell` extra | `/sandbox` | Yes | No |
-| `runloop` | `runloop` extra | `/home/user` | Yes | Yes |
-| `vercel` | `vercel` extra | `/vercel/sandbox` | Yes | No |
-
-## Package, release, and lock ownership
-
-Partner packages are independently versioned distributions. Each owns its environment, `pyproject.toml`, `Makefile`, tests, and package-local `uv.lock`; they are not owned by dcode's curated provider registry. A lock is generated resolution for that package's development/CI environment, not a second dependency manifest. Do not hand-edit it.
-
-The current release manifest lists Deep Agents `0.7.39`, `deepagents-code` `0.2.9`, `langchain-daytona` `0.0.9`, `langchain-modal` `0.0.8`, `langchain-runloop` `0.0.7`, `langchain-vercel-sandbox` `0.0.2`, and `langchain-quickjs` `0.3.12`. Daytona, Modal, Runloop, and Vercel each require Python `>=3.11,<4.0` and Deep Agents `>=0.7.38,<0.8.0`; their provider-SDK floors are Daytona `>=0.197.0`, Modal `>=1.5.3`, and Vercel `>=0.5.9`, while Runloop declares `runloop-api-client` without a version floor. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.39`, bundles LangSmith sandbox support, and exposes the other curated remote providers through optional extras, including `langchain-modal>=0.0.8`.
-
-A manifest or local-path-source change can invalidate reverse consumers' locks as well as its own. Refresh the affected closure rather than changing a lock by hand, and keep dependency/lockfile churn separate from a bump-worthy feature or fix when release scope matters. The repository's targeted refresher and checker select the appropriate interpreter and report the required closure:
+## Install and attach the middleware
 
 ```bash
-python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
-python .github/scripts/checks/check_lockfiles_pre_commit.py libs/code/pyproject.toml
+uv add langchain-quickjs
 ```
-
-## Modal provider and backend
-
-`deepagents-code[modal]` supplies the package and the dcode provider owns Modal resource acquisition. The provider resolves `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` through the workspace environment, including `DEEPAGENTS_CODE_`-prefixed equivalents. If both are present, it creates a Modal client with them; if only one is present, it fails instead of falling back to the server's default Modal identity. With neither set, Modal's normal default authentication is used. It looks up or creates the `deepagents-sandbox` app under that selected identity.
-
-For a new resource, the provider creates a sandbox with workdir `/workspace` and polls it for readiness by executing `echo ready`; a terminated sandbox or failure to become ready within the configurable startup timeout causes failure, and the latter is terminated. When `sandbox_id` is supplied, it attaches with `Sandbox.from_id` instead. The factory's ownership rule still applies: dcode deletes a created sandbox at context exit, but leaves an attached one intact. The provider returns `ModalSandbox`, the partner package's `SandboxBackendProtocol` implementation.
-
-`ModalSandbox` is deliberately a thin adapter around an existing `modal.Sandbox`. Its `id` is Modal's `object_id`. `execute()` runs `bash -c <command>`, waits for completion, combines stdout and stderr (placing stderr after a newline when both exist), reports Modal's return code, and always reports `truncated=False`; its default command timeout is 30 minutes, while an explicit `0` retains Modal's meaning of waiting indefinitely. The inherited `BaseSandbox` helpers implement higher-level listing, search, read, write, and edit operations on top of the adapter's execution and raw file-transfer primitives. They do not reduce the authority of shell execution.
-
-### Modal file transfers and normalized failures
-
-`download_files()` and `upload_files()` preserve one response per requested item, in order. Both reject a non-absolute path locally as `invalid_path`; they otherwise call Modal's byte filesystem API. A read maps Modal `SandboxFilesystemNotFoundError` and `SandboxFilesystemNotADirectoryError` to `file_not_found`, `SandboxFilesystemPermissionError` to `permission_denied`, and `SandboxFilesystemIsADirectoryError` to `is_directory`. A write maps the latter three applicable conditions—non-directory to `file_not_found`, permission to `permission_denied`, and directory to `is_directory`. Successful reads return the original bytes and successful writes return no error.
-
-These are the backend protocol's recoverable `FileOperationError` values, so callers can correlate a partial batch result by path and decide whether an LLM can repair the request. The adapter does **not** translate every Modal exception: for example, a `SandboxFilesystemFileTooLargeError` escapes. This makes an unknown or non-recoverable provider failure visible rather than falsely reporting a normalized condition, while a mapped error on one item does not prevent later batch items from being attempted. The focused unit tests cover every mapping, continuation after a mapped read/write failure, binary content preservation, call ordering, and propagation of the unmapped too-large error. The integration suite runs the shared sandbox conformance tests against a real Modal sandbox and requires both Modal credentials.
-
-## QuickJS middleware entrypoint and capability boundary
-
-Install and attach the middleware to an agent:
 
 ```python
 from deepagents import create_deep_agent
@@ -139,127 +48,107 @@ agent = create_deep_agent(
 )
 ```
 
-`CodeInterpreterMiddleware` contributes an `eval` tool (customizable with `tool_name`) and a system-prompt addendum on model calls. `REPLState` keeps an opaque private slot ID plus, in thread mode, an optional DeltaChannel snapshot and HMAC—not a public LangGraph `thread_id`. dcode requires `langchain-quickjs>=0.3.12,<0.4.0`; the partner release is `0.3.12`, which bounds Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4` in its own manifest. dcode's `quickjs` extra remains empty only for backwards-compatible install commands because QuickJS is already a normal dependency.
+The package requires Python `>=3.11,<4.0` and pins compatible Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4` ranges. The default middleware configuration is a 64 MiB QuickJS runtime memory limit, a five-second VM timeout, a `max_ptc_calls` limit of 256, captured console output, enabled subagent support when a recognized task tool is present, and `thread` persistence mode.
 
-The lack of ambient host APIs confines pure JavaScript computation but is not complete isolation. `console` is an optional host bridge; PTC and `task()` expose selected agent tools or subagents. Use a remote sandbox when the desired boundary is provider-managed execution isolation, and separately secure every host capability that QuickJS may invoke.
+`timeout` measures time executing inside the QuickJS VM, not Python wall-clock time spent awaiting a tool, task, or filesystem host call. Thus a slow bridge can outlive the timeout. `timeout=None` removes the VM deadline; use it only with an external process or workflow limit that can stop runaway JavaScript. Results and captured stdout are independently bounded by `max_result_chars` (default 4,000).
 
-### Direct bridges bypass the normal tool path
+## Interpreter, context, and slot lifecycle
 
-`fs` is disabled by default. Passing a backend, or `fs=True` when `create_deep_agent` binds the agent backend, adds an asynchronous Node-style `fs` global with UTF-8-text `readFile`, `writeFile`, `readdir`, `access`, and `rm` APIs plus `fs.promises`. It calls that backend directly rather than file tools: `FilesystemMiddleware` rules, `create_deep_agent` `permissions`, and `interrupt_on` do not govern individual filesystem operations. Thus `fs` has all authority of the supplied backend; on a non-virtual `FilesystemBackend` or local shell backend this can mean host files. Do not enable it for an agent whose file policy depends on those guards. A middleware with `fs=True` must be bound before its first model call and may serve only one non-interchangeable backend.
+The middleware keeps private state: a generated `qjs_...` slot identifier and, in thread mode, optional snapshot bytes and an HMAC. The identifier is implementation state, not the public LangGraph `thread_id`. A process-wide registry keys warm slots by that identifier and interpreter configuration. A slot owns one worker thread, QuickJS runtime, and context because QuickJS objects must remain on their owning thread.
 
-```mermaid
-flowchart TD
-    Model["Model invokes eval"] --> REPL["QuickJS REPL"]
-    REPL --> Pure["Pure JavaScript no ambient file network or clock"]
-    REPL --> PTC["tools bridge when enabled"]
-    REPL --> Task["task bridge when enabled"]
-    REPL --> FS["fs bridge when configured"]
-    PTC --> HostTools["Selected agent tools"]
-    Task --> Subagents["Configured subagent task tool"]
-    FS --> Backend["Bound backend directly"]
-    Backend --> Storage["Backend reachable files"]
-    PTC -.-> Bypass["Bypasses parent ToolNode HITL"]
-    Task -.-> Bypass
-    FS -.-> FileBypass["Bypasses file permissions and approval"]
-```
-
-*QuickJS starts without ambient host access; every arrow leaving the REPL is an explicitly configured authority boundary, and bridge calls do not take the normal parent tool or file-policy route.*
-
-The bridge budgets filesystem operations with PTC calls: each `fs.*` operation consumes `max_ptc_calls`, even when PTC tool exposure is otherwise not configured. File content is omitted from the fs runnable's trace output, and a response too large or deeply nested to marshal into QuickJS produces a per-eval `MarshalError` rather than crashing the run. The focused filesystem tests cover state, disk, and composite-backend routing; text-only API/error behavior; root-traversal containment; call-budget accounting; snapshot restoration; binding errors; and trace redaction.
-
-## Slot lifecycle, persistence, and cleanup
-
-`before_agent` allocates a private `qjs_...` slot ID if needed and authenticates persisted state, but **does not create a VM**. The first `eval` calls `_Registry.get(slot_id)`, which creates one dedicated `ThreadWorker`, one `Runtime`, and one `_ThreadREPL` context for that slot. QuickJS values remain on the owning worker because they cannot safely cross threads. Runtime creation uses `SourceTransform.TOP_LEVEL_CONST_TO_VAR` so top-level `const` declarations can remain persistent globals. Overlapping evaluation surfaces `ConcurrentEval`; it is not queued.
-
-| `mode` | State lifetime | Reset and final release |
-| --- | --- | --- |
-| `"thread"` (default) | Across eval calls and resumed agent runs that retain private state | On ordinary `after_agent`, snapshot an allocated REPL then evict its slot. |
-| `"turn"` | Across eval calls within one agent run | `after_agent` evicts without persisting. |
-| `"call"` | One `eval` call | The eval `finally` replaces only the REPL context; `after_agent` evicts the retained worker and runtime. |
+No worker, runtime, or context is constructed merely because the middleware is attached or a model takes a no-`eval` turn. The first `eval` acquires a slot and lazily creates its worker, runtime, and context. The runtime transforms top-level `const` declarations to persistent globals, allowing top-level bindings to survive subsequent evaluations in the same context. Evaluations on one context are deliberately not queued: an overlapping request returns `ConcurrentEval` rather than silently serializing execution.
 
 ```mermaid
 sequenceDiagram
     participant Agent as Agent run
     participant Middleware as QuickJS middleware
-    participant Store as LangGraph state
     participant Registry as Slot registry
-    participant Runtime as Worker runtime
+    participant Slot as Worker runtime and context
+    participant Store as Checkpointer
     Agent->>Middleware: before agent
-    Middleware->>Store: assign slot and authenticate snapshot
-    Note over Middleware,Registry: No VM allocation yet
+    Middleware->>Registry: close stale context when needed
+    Note over Middleware,Registry: no VM allocation
     Agent->>Middleware: eval JavaScript
-    Middleware->>Registry: get slot
-    Registry->>Runtime: lazily create worker runtime context
-    Middleware->>Runtime: restore once and evaluate
-    Runtime-->>Middleware: result or error
-    alt ordinary completion
-        Agent->>Middleware: after agent
-        Middleware->>Runtime: snapshot in thread mode
-        Middleware->>Store: write delta update and HMAC
-        Middleware->>Registry: evict slot
-    else interrupted or tool error
-        Note over Middleware,Runtime: cleanup waits for GC or process exit
-    end
+    Middleware->>Registry: acquire a leased slot
+    Registry->>Slot: lazily create worker runtime context
+    Middleware->>Slot: restore snapshot once then evaluate
+    Agent->>Middleware: after agent
+    Middleware->>Slot: create snapshot in thread mode
+    Middleware->>Store: write delta record and HMAC
 ```
 
-*The slot ID keys live process-local resources. Thread persistence stores bytes rather than a live VM.*
+*The checkpoint stores reconstructible interpreter state; a warm slot is only a process-local optimization.*
 
-Only thread mode reads or writes persisted JavaScript state. When signing is configured, `before_agent` verifies HMAC authenticity; parsing and restoration remain lazy until the first eval. Missing, altered, wrong-key, or cross-slot signatures are cleared before restoration. A restore failure clears saved fields and does not execute the requested JavaScript. On normal thread-mode completion, snapshot creation enforces `max_snapshot_bytes` (defaulting to `memory_limit`); oversized payloads and creation failures clear payload and HMAC.
+The persistence modes define the JavaScript state lifetime:
 
-Snapshots are a `DeltaChannel` patch chain rather than an in-memory cache. A first or non-beneficial update writes an anchor, while a smaller `bsdiff4` representation writes a patch. Replay deterministically applies anchors, patches, and clears, so forks, time travel, and checkpoint reconstruction do not rely on the process-local registry.
+| `mode` | Context state lifetime | End-of-run behavior |
+| --- | --- | --- |
+| `"thread"` (default) | Across eval calls and later completed runs for the same checkpointed state | Snapshot state after the agent run; the matching context may remain warm. |
+| `"turn"` | Across eval calls in one agent run | Close the context after the run; do not persist a snapshot. |
+| `"call"` | One eval call | Dispose the context in the eval cleanup path, even on an eval error. |
 
-Normal `after_agent` completion releases a used interpreter. An interruption or unrelated tool exception can skip that hook; destruction of the middleware then best-effort closes remaining slots. During interpreter finalization, cleanup deliberately does not wait for workers to avoid an interpreter-exit deadlock. Shutdown tests cover normal completion, interruption, tool error, and garbage collection.
+At the next non-resume `before_agent`, a live context that is not known to match the checkpoint snapshot is closed. This prevents uncheckpointed mutations left by a failed or cancelled run from leaking into the next run; the worker and runtime can remain warm. A graph resume does not rerun `before_agent`, so an interrupted run can continue with its live context. The registry holds at most 32 warm slots per process. When the cap is exceeded, it evicts least-recently-used slots only when they have no lease and no running eval; slot closing is done outside the registry lock.
 
-## Request-scoped bridges, callback nesting, and approvals
+## Persistent snapshots and restore failure
 
-On every model call, `wrap_model_call` or `awrap_model_call` prepares bindings from the current `ModelRequest` after upstream tool filtering. With PTC enabled, it applies the allowlist, excludes its own eval tool, reserves `task` rather than exposing `tools.task`, and caches selected tool instances and rendered prompt text by private slot and tool identity. The active `globalThis.tools` namespace is rebuilt from those bindings, so inactive names disappear.
+Thread mode serializes the whole QuickJS heap after a successful agent run. The state channel holds compact records rather than a full heap at every checkpoint: `snap` anchors set a full base, `patch` applies a `bsdiff4` delta to the base, and `clear` resets it. Replay folds those records deterministically, so the full bytes can be reconstructed for a new process, checkpoint fork, or time-travel replay. A patch is used only when it is smaller than a fresh anchor.
 
-If `subagents=True` and the current request has a recognized Deep Agents task tool, middleware adds `task()` guidance and installs a top-level task bridge. It runs configured subagent work through the active outer runtime and has a per-REPL semaphore of 32 simultaneous dispatches by default. This is neither a process-wide admission limit nor a total-dispatch limit.
+`max_snapshot_bytes` defaults to `memory_limit`. An oversized snapshot or a snapshot-creation failure clears both the saved payload and its signature rather than leaving stale state. Restoration is lazy: a model-only turn neither creates an interpreter nor restores one.
 
-### Eval is the callback parent
+Set `snapshot_signing_key` for deployments whose checkpointer is not fully trusted. The middleware HMAC-SHA256-signs the **materialized** snapshot bytes with domain separation and binds the tag to the private slot identifier. The signature is created before delta encoding and verified after replay, which detects altered, missing, wrong-key, and cross-slot snapshots. Without a key, legacy snapshots are not integrity checked.
 
-The `eval` tool receives the callback manager for its own tool invocation. Both `sync_eval` and `async_eval` patch the enclosing `ToolRuntime` configuration with those callbacks before passing that runtime into the REPL. Consequently, a PTC `tools.*` call and a `task()` dispatch create child callback runs of **that `eval` invocation**, not children of the agent's enclosing tools step. The bridge still executes work on the outer LangGraph loop when available, preserving the outer runtime's state, store, configuration, stream writer, and loop affinity.
+If a signature fails verification during preparation, the saved payload and tag are cleared and never restored. If QuickJS rejects an otherwise accepted snapshot at the first `eval`, the tool returns a restore error, clears both saved fields, and does **not** execute the requested JavaScript. This makes a restore failure recoverable without running code against an unknown partial state.
+
+## Granted bridges and approval limitations
 
 ```mermaid
-sequenceDiagram
-    participant Agent as Agent tools step
-    participant Eval as eval invocation
-    participant Repl as QuickJS REPL
-    participant Tool as PTC tool
-    participant TaskTool as task tool
-    Agent->>Eval: invoke eval with callbacks
-    Eval->>Repl: patched runtime and callbacks
-    Repl->>Tool: tools call child callback run
-    Repl->>TaskTool: task call child callback run
+flowchart TD
+    Eval["eval JavaScript"] --> Pure["QuickJS guest code"]
+    Eval --> PTC["tools bridge"]
+    Eval --> Task["task bridge"]
+    Eval --> FS["fs bridge"]
+    PTC --> AgentTools["Allowlisted agent tools"]
+    Task --> Subagents["Deep Agents task tool"]
+    FS --> Backend["Configured backend"]
+    PTC -.-> Bypass["No parent per-action HITL"]
+    Task -.-> Bypass
+    FS -.-> FileBypass["No file permission or approval check"]
 ```
 
-*PTC and subagent dispatches are trace children of the particular eval run that initiated them.*
+*Guest isolation constrains only pure QuickJS; every bridge arrow is an authority grant to the host capability it reaches.*
 
-Callback nesting is attribution, not authorization. PTC and `task()` still bypass the parent `ToolNode` path, so its per-action `interrupt_on`/HITL workflow does **not** run for each bridged action. The `eval` invocation remains the parent approval boundary. Gate `eval`, put approval middleware inside subagent specifications, use normal parent tool calls for per-action review, or disable subagents. See [Trace Attribution](/openwiki/concepts/trace-attribution.md) and [Permissions and Human Approval](/openwiki/concepts/permissions-hitl.md).
+### Programmatic tool calling
 
-`timeout` defaults to five seconds and limits QuickJS VM execution per eval; `timeout=None` disables that deadline. It does not limit wall-clock time spent in Python-hosted `tools.*` or `task()` calls. PTC is opt-in and has a 256-call per-eval bridge budget by default; `max_ptc_calls=None` removes that budget and is unsafe for untrusted prompts.
+PTC is disabled unless `ptc` is a list of tool names and/or explicit `BaseTool` instances. The middleware filters against the live upstream tool list for each model call, excludes its own eval tool, deduplicates names, validates that their camel-case forms are valid JavaScript identifiers, and rebuilds `globalThis.tools` from the current bindings. The Deep Agents `task` tool is reserved: it cannot be placed under `tools.*`, because subagent dispatch has its own top-level `task()` interface.
 
-A `task()` invocation derives a per-dispatch tool-call ID from the parent eval ID, dispatch ordinal, and request payload when an eval tool-call ID exists. It emits `start`, then `complete` or `error`, custom-stream events carrying that dispatch ID; `eval_id` groups them under the parent eval. Replaying the same eval and dispatch order reproduces the ID, so consumers should upsert a repeated `start` instead of treating it as a new row. Observability-writer failures are deliberately swallowed and do not stop dispatch; `GraphInterrupt` is propagated for the graph to resume.
+PTC calls invoke the selected tool through the REPL bridge rather than the normal `ToolNode` route. The bridge injects the enclosing runtime, state, store, context, and a synthetic tool-call ID where supported; it applies supported `Command(update={...})` state updates except `messages`. Routing or resume commands cannot be applied inside `eval` and surface as `UnsupportedCommand`.
+
+The per-eval call budget is shared by `tools.*` and `fs` bridge calls. Set `max_ptc_calls=None` only in trusted deployments: it permits unbounded host-call loops. The bridge preserves ordinary tool lifecycle callbacks, but callback visibility does not add a per-call authorization check.
+
+### Filesystem bridge
+
+`fs` is disabled by default. Supply a backend explicitly, or use `fs=True` with `create_deep_agent` so it binds the agent backend. It exposes asynchronous UTF-8 text `readFile`, `writeFile`, `readdir`, `access`, and `rm`, including `fs.promises`. A middleware instance configured with `fs=True` cannot be reused for unrelated non-state backends.
+
+The filesystem bridge calls its backend directly, not agent file tools. Therefore `FilesystemMiddleware` rules, `create_deep_agent` permissions, and parent `interrupt_on` approval do not protect individual filesystem operations. It grants all reach of the chosen backend, potentially host files for a local or non-virtual backend. Do not enable it where file-level approval is the authorization boundary; choose a backend whose own sandbox and credentials limit the intended files. A result that cannot fit or marshal into JavaScript becomes `MarshalError`.
+
+### Subagents, callbacks, and observability
+
+When `subagents=True` and the live tool set has a recognized Deep Agents task tool, top-level `task()` validates `description`, `subagentType`, optional `label`, and optional response schema. A per-REPL semaphore permits 32 simultaneous dispatches by default; it is neither a process-wide admission control nor a total-dispatch limit. `GraphInterrupt` propagates so graph resumption remains possible.
+
+Both sync and async eval handlers replace the enclosing runtime callback configuration with the eval invocation callbacks. Consequently PTC tool calls and subagent task dispatches are callback children of `eval`, rather than children of the agent tools step. This is trace attribution only: it does not restore parent `ToolNode` per-action `interrupt_on` or human-in-the-loop enforcement. Gate the `eval` tool if that is the desired approval boundary, use normal tool calls when each action needs review, and place approval middleware inside subagent specifications when appropriate.
+
+Subagent dispatch emits custom-stream events with `type: "subagent"` in `start`, then `complete` or `error` phases. With a parent eval tool-call ID, the dispatch ID is a deterministic hash of that ID, the task tool name, host-invocation ordinal, and request payload; replay in the same invocation order reproduces it. A UI should treat repeated `start` events as upserts. Without a parent eval ID, an ID is random. Writer failures are swallowed so telemetry does not break dispatch.
 
 ## Focused verification
 
-For dcode provider discovery, precedence, factory ownership, and invalid-option behavior, run the registry and factory tests. The QuickJS Makefile runs pytest through its locked test group with sockets disabled for unit tests; use the narrow seams affected by a change:
+The most relevant tests are the package test files, run through its Makefile:
 
 ```bash
-make -C libs/code test TEST_FILE=tests/unit_tests/test_sandbox_registry.py
-make -C libs/code test TEST_FILE=tests/unit_tests/test_sandbox_factory.py
-make -C libs/partners/modal test TEST_FILE=tests/unit_tests/test_sandbox.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_end_to_end.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_repl_middleware.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_subagent_events.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_subagent_replay.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_fs.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_snapshot_persistence.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_snapshot.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_shutdown.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_slot_cleanup.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_subagent_replay.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_end_to_end.py
 ```
 
-For callback attribution, the end-to-end recorder is the decisive seam: it invokes the same script on both sync and async paths and asserts that the PTC tool and `task` tool have the `eval` run ID as `parent_run_id`. Do not substitute a direct REPL unit test for that assertion, because callback injection occurs in the eval tool handlers.
-
-Subagent-focused tests retain different responsibilities: `test_repl_middleware.py` covers forwarding the active runtime/configuration and synthesized tool-call IDs, plus interruption propagation and concurrency behavior; `test_subagent_events.py` covers start/complete/error shape, `eval_id`, truncation, replay-stable derivation, and telemetry failure isolation; `test_subagent_replay.py` exercises checkpoint interruption and resume with stable IDs across fan-out. The end-to-end tests also retain the sync regression gate for asynchronous host bridges, native tool-stream visibility, exception behavior, and runtime configuration forwarding.
-
-The remaining focused tests cover QuickJS lazy allocation, independent workers and runtimes, context-only call-mode reset, filesystem backend routing and failure isolation, snapshot reconstruction and signing failures, and shutdown paths. Treat changes to provider capability metadata, policy selection, bridge authority, callback parentage, filesystem reach, or persistence reset scope as behavior changes requiring their corresponding tests.
+Snapshot tests cover cross-turn bindings, model-only lazy allocation, signing, delta-chain reconstruction, and the guarantee that failed restoration clears state before requested code runs. Slot-cleanup tests cover failed, cancelled, and interrupted runs, stale-context cleanup, and warm-context reuse. The replay test verifies stable subagent identities across checkpoint resumes. The end-to-end callback test establishes eval-parented trace attribution for both sync and async paths.

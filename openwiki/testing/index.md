@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for dcode model catalogs, SDK local-shell lifecycle and pipe handling, Talon hooks and research subagents, optional-dependency metadata, and release-note automation.
+- [Testing Guide](testing-guide.md) - Network-free, focused validation routes for dcode configuration and JavaScript cost accounting, Talon runtime and background-work boundaries, QuickJS persistence, and the Harbor LangGraph adapter.

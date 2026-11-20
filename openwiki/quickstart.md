@@ -1,12 +1,11 @@
 ---
 type: maintainer routing guide
 title: Repository Quickstart
-description: Route Deep Agents monorepo work to the package that owns the contract, then use its local uv and Make workflow. Follow the published-metadata, local-source, and lockfile boundaries when changing dependencies.
+description: Route a Deep Agents monorepo change to the package that owns its public contract, runtime boundary, tests, and release metadata. Use package-local uv and Make workflows, and treat manifest changes as published-contract and consumer-lockfile work.
 tags: [deepagents, dcode, talon, maintenance, dependencies, lockfiles, testing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-17T08:03:47.818Z
 sources:
+  - id: openwiki-source-9a1c436646ef8c4f6dde787a
+    resource: repo://.github/RELEASING.md
   - id: openwiki-source-9d81aa681a56a98960013750
     resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
   - id: openwiki-source-3cf9b023d0ac578794148a01
@@ -19,8 +18,6 @@ sources:
     resource: repo://AGENTS.md
   - id: openwiki-source-18f01ea5159b63661c1c8b1c
     resource: repo://libs/acp/Makefile
-  - id: openwiki-source-bb78950c8b36b7b9f6746e96
-    resource: repo://libs/acp/pyproject.toml
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
@@ -39,14 +36,17 @@ sources:
     resource: repo://libs/talon/Makefile
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-20T08:04:05.944Z
 ---
 
 # Repository Quickstart
 
-Start in the package that owns the public contract, persistent state, or process lifecycle—not merely where a symptom appears. This is a monorepo of independently versioned packages under `libs/`; each owns its `pyproject.toml`, `Makefile`, README, source, tests, and lockfile. The release manifest maintains separate release baselines for the SDK, ACP, dcode, Talon, and partner distributions.
+This is a monorepo of independently versioned distributions under `libs/`. Start at the package that owns the public contract, persistent state, or process lifecycle—not merely where a symptom appears. Each package owns its `pyproject.toml`, `Makefile`, README, source, tests, and generated lockfile; its local instructions and nearest behavioral regression test are the authority for a focused change.
 
-Use `uv` for the interpreter, environment, and dependencies, and the package-local `Makefile` for normal commands. `uv` provisions the interpreter required by that package; do not add a repository-wide Python pin or shared virtual environment.
+Use `uv` for interpreters, environments, and dependencies, and use the package-local `Makefile` for normal commands. `uv` provisions the required Python interpreter, so there is no repository-wide environment or global Python version to pin.
 
 ```bash
 cd libs/deepagents
@@ -55,63 +55,72 @@ make test
 make lint
 ```
 
-Run `make help` before assuming a target exists. Install dependencies explicitly with `uv sync`; reserve `uv run ...` for direct, one-off commands. The package's local guidance, Makefile, and nearest regression test override conventions inferred from another package.
+Run `make help` before assuming a target exists. Install dependencies explicitly with `uv sync`; reserve `uv run ...` for direct one-off commands.
 
 ## Route the change
 
-| If the change concerns… | Own it here first | Read next | Begin validation with |
+| If the change concerns… | Start in | Read next | Focused validation |
 | --- | --- | --- | --- |
-| SDK graph assembly, middleware, backends, profiles, filesystem tools, permissions, or SDK subagents | `libs/deepagents/` | [Architecture overview](./architecture/overview.md), [backends](./concepts/backends.md), or [source map](./architecture/source-map.md) | Nearest SDK unit test, then `make lint` |
-| Context compaction, checkpoints, subagents, profiles, or filesystem semantics | `libs/deepagents/` | [Profiles and models](./concepts/profiles-models.md) and [Testing guide](./testing/testing-guide.md) | Focused behavior test named by the local source/test layout |
-| dcode CLI/TUI, local server, headless run, workspace policy, model catalog, approvals, or output | `libs/code/` | [Deep Agents Code Architecture](./architecture/code-agent.md) and [Profiles and models](./concepts/profiles-models.md) | `make test TEST_FILE=tests/unit_tests/<nearest test>.py`, then `make lint` |
-| ACP graph-to-protocol adaptation or dcode ACP mode | `libs/acp/`; inspect dcode when it launches or configures ACP | [Agent Client Protocol integration](./integrations/acp.md) | Nearest ACP test through `make test` |
-| Talon channel host, runtime graph/MCP reload, schedules, detached work, archives, or history storage | `libs/talon/` | [Talon runtime integration](./integrations/talon.md) and [Talon scheduling](./concepts/talon-scheduling.md) | `make test TEST_FILE=tests/<nearest test>.py`, then `make lint` |
-| Evaluation definitions, datasets, Harbor execution, or reports | `libs/evals/` | [Development and release operations](./operations/development.md) and [Testing guide](./testing/testing-guide.md) | `make help`, then the closest owning target |
-| Daytona, Modal, QuickJS, Runloop, or Vercel sandbox behavior | `libs/partners/<provider>/` | [Sandbox and partner integrations](./integrations/sandbox-partners.md) | `make help`, then the owning target |
-| Dependency floors/pins, Python ranges, extras, local source mappings, locks, or release baselines | Changed package manifest, then its local-source consumers | [Architecture overview](./architecture/overview.md) and [Development and release operations](./operations/development.md) | Refresh the lock closure, verify every refreshed package, and test a direct consumer |
+| SDK graph construction, middleware, backends, profiles, filesystem tools, permissions, or subagents | `libs/deepagents/` | [Architecture overview](./architecture/overview.md) and [source map](./architecture/source-map.md) | Nearest SDK unit test, then `make lint` |
+| dcode CLI/TUI, server, approvals, workspace policy, model configuration, MCP, sessions, or JavaScript costs | `libs/code/` | [Profiles and Models](./concepts/profiles-models.md), [GitHub Action integration](./integrations/github-action.md), and [Cost and sessions](./operations/cost-and-sessions.md) | `make test TEST_FILE=tests/unit_tests/<nearest test>.py`, then `make lint` |
+| ACP graph-to-protocol translation or dcode ACP mode | `libs/acp/`; also inspect dcode if it launches or configures ACP | [Agent Client Protocol integration](./integrations/acp.md) | Nearest ACP test via `make test` |
+| Talon channels, graph/runtime lifecycle, approvals, schedules, detached work, archives, or history | `libs/talon/` | [Talon runtime integration](./integrations/talon.md), [Talon scheduling](./concepts/talon-scheduling.md), and [Subagents and skills](./concepts/subagents-skills.md) | `make test TEST_FILE=tests/<nearest test>.py`, then `make lint` |
+| QuickJS or Daytona, Modal, Runloop, and Vercel sandbox behavior | `libs/partners/<provider>/`; inspect dcode when it loads the integration | [Sandbox and Partner Integrations](./integrations/sandbox-partners.md) | `make help`, then the owning package's focused target |
+| Evaluation definitions, behavioral evals, Harbor graphs/tasks, or reports | `libs/evals/` | [Run Evals](./workflows/run-evals.md) and the [Testing Guide](./testing/testing-guide.md) | `make help`, then the closest owning target |
+| Dependency floors, Python ranges, extras, editable sibling mappings, locks, or release automation | Changed package manifest, then its local-source consumers | [Development and Release Operations](./operations/development.md) | Refresh the lock closure, check locks, and test a direct consumer |
 
-The [Testing guide](./testing/testing-guide.md) provides behavior-specific suites. As the repository convention, deterministic network-free tests belong in `tests/unit_tests/` and networked contracts in `tests/integration_tests/`; warnings not explicitly accepted fail pytest. Follow the package's actual layout where it differs.
+Repository convention places deterministic, network-free tests in `tests/unit_tests/` and networked contracts in `tests/integration_tests/`; unaccepted pytest warnings fail the suite. Follow the owning package's actual test layout when it differs. The [Testing Guide](./testing/testing-guide.md) provides the current hermetic routes for dcode, Talon, QuickJS, and Harbor.
 
-## Package boundaries and compatibility contracts
+## Package and compatibility map
 
-`deepagents` is the reusable SDK; ACP adapts an agent graph to the Agent Client Protocol; `deepagents-code` is the terminal coding agent launched by `dcode`; Talon is an experimental host for long-running channels and schedules; evals is the evaluation and Harbor boundary; and partner packages carry provider or sandbox integrations. Use the linked architecture, concepts, and integration pages for their runtime semantics rather than treating this routing map as a runtime reference.
+`deepagents` is the reusable SDK; ACP adapts a Deep Agents graph to the Agent Client Protocol; `deepagents-code` is the terminal coding-agent product launched by `dcode`; Talon is the experimental local host for long-running channels and schedules; `deepagents-evals` owns evaluation and Harbor integration; and partner packages provide provider or sandbox integrations. The linked domain pages define their runtime semantics.
 
-The current release baselines are `deepagents` 0.7.39, `deepagents-acp` 0.0.13, `deepagents-code` 0.2.9, `deepagents-talon` 0.1.0, and, respectively, Daytona 0.0.9, Modal 0.0.8, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.12. A package's `pyproject.toml`, rather than that baseline list, is the installer-visible compatibility contract.
+| Distribution / owner | Current package version | Published compatibility that matters for routing |
+| --- | --- | --- |
+| SDK: `libs/deepagents/` | `deepagents` 0.7.41 | Python `>=3.11,<4.0` |
+| dcode: `libs/code/` | `deepagents-code` 0.2.12 | Python `>=3.14,<3.15`; exact `deepagents==0.7.41` |
+| ACP: `libs/acp/` | `deepagents-acp` 0.0.13 | Python `>=3.11,<4.0`; consumes `deepagents` |
+| Talon: `libs/talon/` | `deepagents-talon` 0.1.1 | Python `>=3.14,<3.15`; `deepagents>=0.7.41`, `deepagents-code>=0.2.11,<1.0.0` |
+| Evals: `libs/evals/` | `deepagents-evals` 0.0.1 | Python `>=3.14,<3.15`; SDK, dcode, QuickJS, and Harbor evaluation boundary |
+| QuickJS: `libs/partners/quickjs/` | `langchain-quickjs` 0.4.0 | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` |
 
-The SDK supports Python `>=3.11,<4.0`; ACP has the same range. dcode, Talon, and evals require Python `>=3.14,<3.15`. dcode publishes an exact `deepagents==0.7.39` dependency and uses editable local mappings for the SDK, ACP, and partner packages during checkout development. QuickJS supports Python `>=3.11,<4.0`, publishes `deepagents>=0.7.38,<0.8.0`, and maps the SDK locally. A green editable checkout therefore does not prove a released installation resolves the intended published versions.
+Dcode's exact SDK requirement is a release dependency: raise it in the feature PR when dcode starts using new SDK functionality, rather than at release time. Talon's checkout maps SDK and dcode siblings as editable sources, and QuickJS maps the SDK likewise. These mappings make sibling changes immediately visible locally, but they do not alter wheel metadata; a green editable environment does not prove a released installation will resolve.
 
-Talon publishes `deepagents>=0.7.39` and `deepagents-code>=0.2.8,<1.0.0`, while its local mappings point to the SDK and dcode checkouts. History embedding adapters, MongoDB/PostgreSQL storage, media, and the OpenShell backend are opt-in extras; `media` and `media-cpu` are mutually exclusive. Treat an SDK or dcode compatibility change that Talon consumes as a manifest, lockfile, and consumer-validation change—not just a source edit.
+Talon's history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies. Its `media` and `media-cpu` extras conflict; on Linux, `media-cpu` resolves PyTorch from the explicit CPU index. See [Talon runtime integration](./integrations/talon.md) for runtime composition and [Sandbox and Partner Integrations](./integrations/sandbox-partners.md) for QuickJS lifecycle and persistence behavior.
 
-For focused local validation, ACP and Talon `make test` disable network sockets while allowing Unix sockets. Talon first runs the WhatsApp bridge Node tests, then runs Python tests with a 10-second timeout and coverage. dcode's unit target is also socket-disabled, whereas its `integration_test` target is the network-permitted route.
+## Manifest and lockfile changes
 
-## Safe manifest and lockfile path
+Keep three layers distinct:
 
-Keep these layers separate:
+1. **Published metadata** — `[project]` requirements, extras, and `requires-python` define downstream installation compatibility.
+2. **Checkout wiring** — `[tool.uv.sources]` substitutes sibling paths during repository development; it does not change wheel metadata.
+3. **Generated resolution** — a package-local `uv.lock` records concrete development/CI resolution. Regenerate it with `uv`; never hand-edit it.
 
-1. **Published metadata** — `[project]` dependencies, optional extras, and `requires-python` define downstream installation compatibility.
-2. **Checkout wiring** — `[tool.uv.sources]` substitutes sibling paths for repository development; it does not alter what is published.
-3. **Generated resolution** — package-local `uv.lock` records the concrete development/CI resolution. Regenerate it through `uv`; do not edit it manually.
-
-When a manifest changes, give `refresh_lockfiles.py` the changed manifest path. It determines the owning package plus the transitive reverse consumers that refer to local paths, and locks each with its selected interpreter:
+After changing a manifest, refresh the changed package and its transitive reverse consumers from the repository root:
 
 ```bash
 python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
 ```
 
-The helper prints each refreshed `uv.lock` path. Pass **all** of those package directories to the targeted checker, or run the no-argument CI-equivalent check:
+The refresher follows local `uv` path sources, locks each affected package with its selected interpreter, and prints every `uv.lock` to commit. Check either the directly touched package paths or all locks afterward:
 
 ```bash
 python .github/scripts/checks/check_lockfiles_pre_commit.py
 ```
 
-With supplied paths, the checker deliberately validates only packages whose directories those paths touch—it does not recalculate the reverse-consumer closure. With no paths, it discovers every package and checks every lockfile. A stale lock failure includes an executable non-check `uv lock --directory <package> --python <version>` repair command. The reusable CI workflow takes the no-path route.
+With supplied paths, the checker deliberately validates only packages touched by those paths; it does not calculate the reverse-consumer closure. With no arguments it discovers and validates every package lockfile, which is also the reusable CI route. An out-of-date lock error prints an executable non-check `uv lock` repair command. The targeted scripts use Python 3.14 for ACP, dcode, evals, and Talon and Python 3.12 for other packages. The `libs/` fan-out `lock-check` uses Python 3.14 only for dcode, evals, and Talon, so prefer the checker when CI-equivalent ACP lock validation matters. For the full lock and wheel-release process, use [Development and Release Operations](./operations/development.md).
 
-The lock scripts select Python 3.14 for ACP, dcode, evals, and Talon, and 3.12 for other discovered packages. Do not use `make -C libs lock-check` as CI parity for dcode, evals, or Talon: the `libs` fan-out Makefile maps only ACP to 3.14 and maps every other package to 3.12.
+For local focused validation, ACP and Talon `make test` disable network sockets while allowing Unix sockets; Talon first runs WhatsApp-bridge Node tests. Dcode's unit-test target is also socket-disabled, while `make integration_test` runs network-capable integration tests. Do not substitute an invented repository-wide test command for a package-owned target.
 
-## Finish a focused change
+## Release handoff
 
-1. Use the routing table, then inspect the owner package's instructions, manifest, Makefile, source, and nearest regression test.
-2. Run `uv sync --all-groups` inside that package and make the change at the public-contract, state, or lifecycle owner.
-3. Run the narrowest behavioral test and `make lint`; add deterministic coverage only when it protects observable behavior.
-4. If a manifest changed, review the published requirement separately from local `uv` source wiring, refresh the reverse-consumer lock closure, verify every refreshed lock, and test the immediate compatibility consumer.
-5. For releases and automation continue to [Development and release operations](./operations/development.md); for runtime behavior use the linked architecture, concept, integration, or testing guide rather than broadening the change by guesswork.
+The manifest records separate release baselines: `deepagents` 0.7.41, `deepagents-acp` 0.0.13, `deepagents-code` 0.2.12, `deepagents-talon` 0.1.1, Daytona 0.0.9, Modal 0.0.8, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.4.0. These are last-released baselines; each package's `pyproject.toml` remains the installer-visible contract.
+
+Release Please creates or updates a separate draft release PR per managed package from conventional commits on `main`. Merging that release PR triggers the publish and GitHub-release workflow. Use [Development and Release Operations](./operations/development.md) and `.github/RELEASING.md` for the release gate, source-free wheel validation, fan-out rules, and curated notes; do not hand-edit release-automation artifacts.
+
+Before submitting a focused change:
+
+1. Inspect the owner package's instructions, manifest, Makefile, source, and nearest regression test.
+2. Run `uv sync --all-groups`, make the narrowest ownership-boundary change, and run the relevant package target plus `make lint`.
+3. For a manifest change, review wheel requirements separately from `uv` source wiring; refresh the complete reverse-consumer lock closure; then test an immediate compatibility consumer.
+4. For runtime, evaluation, test, or release work, follow the linked domain page instead of broadening the patch by guesswork.

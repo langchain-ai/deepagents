@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import shlex
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NotRequired
@@ -385,6 +388,192 @@ def test_pretool_deny_blocks_tool_through_real_graph(
     assert len(denied) == 1
     assert denied[0].status == "error"
     assert "blocked by policy" in str(denied[0].content)
+
+
+@pytest.mark.filterwarnings(
+    "ignore:`langchain.mcp` is in beta:langchain_core._api.LangChainBetaWarning"
+)
+@pytest.mark.parametrize("original_name", ["slack_send_message", "send_" + "x" * 100])
+@pytest.mark.parametrize("hook_decision", ["allow", "deny", "none"])
+async def test_headless_mcp_hooks_match_original_names_and_gate_calls(
+    tmp_path: Path, original_name: str, hook_decision: str
+) -> None:
+    from mcp.types import Tool
+
+    from deepagents_code.auto_mode import HeadlessMCPGuardMiddleware
+    from deepagents_code.mcp_tools import _build_mcp_tool
+
+    server = "slack"
+    calls: list[str] = []
+    payloads = tmp_path / "payloads.jsonl"
+    wire_decision = "defer" if hook_decision == "none" else hook_decision
+    output = json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": wire_decision,
+            }
+        }
+    )
+    code = (
+        "import json,sys; from pathlib import Path; "
+        "data=json.load(sys.stdin); "
+        f"p=Path({str(payloads)!r}); "
+        "f=p.open('a'); f.write(json.dumps(data)+'\\n'); f.close(); "
+        f"print({output!r})"
+    )
+    hook_command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": f"mcp__{server}__{original_name}",
+                            "hooks": [{"type": "command", "command": hook_command}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    hooks = HooksRuntime.create(
+        cwd=tmp_path, config_dir=config_dir, transcript_root=tmp_path / "transcripts"
+    )
+    mcp_tool = await _build_mcp_tool(
+        mcp_tool=Tool(name=original_name, input_schema={"type": "object"}),
+        server_name=server,
+        client=MagicMock(),
+    )
+
+    async def execute() -> tuple[str, None]:  # noqa: RUF029
+        calls.append("executed")
+        return "sent", None
+
+    mcp_tool.coroutine = execute
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": mcp_tool.name, "args": {}, "id": "call-1"}],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_agent(  # ty: ignore[no-matching-overload]
+        model=model,
+        tools=[mcp_tool],
+        middleware=[
+            HeadlessMCPGuardMiddleware({mcp_tool.name}),
+            ServerHooksMiddleware(cwd=tmp_path, mcp_tools=[mcp_tool]),
+        ],
+        context_schema=CLIContextSchema,
+        checkpointer=InMemorySaver(),
+    )
+    context = CLIContextSchema(
+        hooks_snapshot_id=hooks.snapshot_id,
+        hooks_server_events=[HookEvent.PRE_TOOL_USE.value],
+        thread_id="headless",
+        approval_mode=ApprovalMode.MANUAL.value,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid4())}}
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="send")]}, config=config, context=context
+    )
+    request = parse_hook_interrupt_payload(result["__interrupt__"][0].value)
+    assert request is not None
+    resume = await fulfill_hook_invocation(hooks, request)
+    result = await agent.ainvoke(Command(resume=resume), config=config, context=context)
+    assert not result.get("__interrupt__")
+    assert [
+        json.loads(line)["tool_name"] for line in payloads.read_text().splitlines()
+    ] == [f"mcp__{server}__{original_name}"]
+    assert calls == (["executed"] if hook_decision == "allow" else [])
+    messages = [
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert len(messages) == 1
+    assert messages[0].status == ("success" if hook_decision == "allow" else "error")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+async def test_post_tool_hook_receives_original_mcp_identity(
+    tmp_path: Path, failure: bool
+) -> None:
+    from langchain_core.tools import ToolException
+
+    from deepagents_code.hooks.projection import project_hook_input
+
+    original_name = "send_" + "x" * 100
+
+    @tool
+    def routed_tool() -> str:
+        """Return or fail with a tool result."""
+        if failure:
+            message = "failed"
+            raise ToolException(message)
+        return "sent"
+
+    routed_tool.name = "slack_send_abbreviated"
+    routed_tool.handle_tool_error = True
+    routed_tool.metadata = {
+        "_deepagents_code_mcp_server": "slack",
+        "_deepagents_code_mcp_tool": original_name,
+    }
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": routed_tool.name, "args": {}, "id": "call-1"}],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_agent(
+        model=model,
+        tools=[routed_tool],
+        middleware=[ServerHooksMiddleware(cwd=tmp_path, mcp_tools=[routed_tool])],
+        context_schema=CLIContextSchema,
+        checkpointer=InMemorySaver(),
+    )
+    event_kind = HookEvent.POST_TOOL_USE_FAILURE if failure else HookEvent.POST_TOOL_USE
+    context = CLIContextSchema(
+        hooks_snapshot_id="snap", hooks_server_events=[event_kind.value]
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid4())}}
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="send")]}, config=config, context=context
+    )
+    request = parse_hook_interrupt_payload(result["__interrupt__"][0].value)
+    assert request is not None
+    assert request.invocation.event.event is event_kind
+    projected = project_hook_input(
+        request.invocation, transcript_path=tmp_path / "transcript"
+    )
+    assert projected.model_dump()["tool_name"] == f"mcp__slack__{original_name}"
+    decision = (
+        PostToolUseFailureDecision(event=HookEvent.POST_TOOL_USE_FAILURE)
+        if failure
+        else PostToolUseDecision(event=HookEvent.POST_TOOL_USE)
+    )
+    response = HookInvocationResponse(
+        protocol_version=1,
+        invocation_id=request.invocation_id,
+        snapshot_id="snap",
+        decision=decision,
+    )
+    result = await agent.ainvoke(
+        Command(resume=build_hook_resume_value(response)),
+        config=config,
+        context=context,
+    )
+    assert not result.get("__interrupt__")
 
 
 async def test_post_tool_resumes_do_not_reexecute_parallel_tools(

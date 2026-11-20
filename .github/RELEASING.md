@@ -222,7 +222,7 @@ PRs containing breaking changes should:
 
 ### `release-please-config.json`
 
-Defines release-please behavior for each package.
+Defines release-please behavior for each package. Each package's `exclude-paths` lists its `tests` directory and its `uv.lock`: a commit whose files under the package are all excluded does not release that package. Single-file entries like `uv.lock` rely on a patch in [`.github/release-please/`](./release-please/README.md). Keep both entries when adding a package.
 
 ### `.release-please-manifest.json`
 
@@ -330,10 +330,10 @@ These workflows guard releases. Each one explains a failed check you may see on 
 - **PR title lint** (`pr_lint.yml`) — enforces Conventional Commits with a mandatory scope on PR titles; its allowed types and scopes are the canonical list.
 - **Release-please parse check** (`release_please_parse_check.yml`) — runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)` + body) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. The parser is exact-pinned and must stay in lock-step with the version release-please itself depends on, declared in its own `package.json` upstream in `googleapis/release-please`.
 - **Fan-out guards** — one workflow per row; see [Multi-component fan-out](#multi-component-fan-out).
-  - `release_please_scope_check.yml` — blocks a bump-worthy PR that touches real files in more than one managed component, or only lockfiles inside a managed package. Bypass label: `ci:allow-lockfile-release`.
+  - `release_please_scope_check.yml` — blocks a bump-worthy PR that changes release-relevant files (anything not under `exclude-paths`) in more than one managed component. Bypass label: `ci:allow-lockfile-release`.
   - `pr_scope_file_check.yml` — checks the PR scope against the files touched. Bypass label: `ci:allow-scope-mismatch`.
   - `release_fanout_bypass_warn.yml` — posts a loud sticky when either bypass label is applied.
-  - `release_please_fanout_watch.yml` — post-merge safety net; comments on open release PRs whose package delta is lockfile-only.
+  - `release_please_fanout_watch.yml` — post-merge safety net; comments on open release PRs whose package has no release-relevant changes since its last release.
 - **Auto-labeling** — `pr_labeler.yml` (unified PR labeler: size, file, title, external/internal, contributor tier) and `pr_labeler_backfill.yml` (manual backfill on open PRs). These apply labels for triage only; they do not gate releases (the guard workflows above honor their own bypass labels). Issue labeling is not release-gated; see [`LAYOUT.md`](./LAYOUT.md).
 
 ## Manual Release
@@ -595,7 +595,7 @@ The config-file form below (`"release-as"` in `release-please-config.json`) does
 ```
 
 > [!IMPORTANT]
-> This is a temporary override, not permanent configuration. Let release-please open the release PR, then remove the `release-as` line in a follow-up `hotfix(code): remove release-as override` PR (so the next release-please run does not keep forcing `0.0.35`).
+> This is a temporary override, not permanent configuration. Keep it until `0.0.35` is published, then remove the `release-as` line in a follow-up `hotfix(code): remove release-as override` PR. release-please recomputes the version from config on every run, so removing it while the release PR is open drops the PR back to the computed version, and leaving it after the release keeps forcing `0.0.35`.
 
 ### Multiple pre-release iterations
 
@@ -678,7 +678,7 @@ When the new line is ready to become `main`:
        git commit -m "feat(sdk): release X.Y.Z" -m "Release-As: X.Y.Z"
        ```
 
-     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same version override, but it lives in config rather than a commit message. Unlike the footer, it adds no changelog entry, so it only works when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit; on its own it will not open a release PR. It's a standing override, so **delete the key once the release PR is open!** — otherwise every later run keeps pinning that same version.
+     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same version override, but it lives in config rather than a commit message. Unlike the footer, it adds no changelog entry, so it only works when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit; on its own it will not open a release PR. It's a standing override, so **delete the key once that release is published!** Removing it while the release PR is open drops the PR back to the computed version; leaving it afterward keeps every later run pinned to the same version.
 
    > [!CAUTION]
    > Don't put the `Release-As` footer on an `--allow-empty` commit on `main` — an empty commit touches no package paths and triggers the [empty-commit fan-out](#empty-commit-fan-out) guard, opening a release PR for *every* package. That's why the footer goes on a commit that actually edits the package's files; the `release-as` config key avoids the fan-out since editing the config file is itself a non-empty change (but see the visible-commit caveat above).
@@ -719,29 +719,39 @@ There is one narrow exception for history repair: an empty merge commit titled `
 
 ### Lockfile churn fan-out
 
-A subtler sibling of the empty-commit case. release-please scopes a commit to a package by the file *paths* it touches and has no notion of "this file is just a lockfile." When a bump-worthy commit (a `feat:`/`fix:` in one package) also regenerates the `uv.lock` of every package that depends on it, release-please attributes the bump-worthy commit to those dependents too and opens a release PR for each — even though their only change is a regenerated lockfile.
+Lockfile changes never release a package. Packages resolve siblings through local `[tool.uv.sources]` paths, so changing one package's dependencies means relocking every dependent's `uv.lock` in the same PR (`🔒 Check Lockfiles` requires it). Each package lists its own `uv.lock` in `exclude-paths`, so release-please ignores those relocks. A `feat`/`fix` that relocks dependents releases only the package whose published files changed.
 
-> [!NOTE]
-> Closing such a stray release PR does **not** make it stay closed. release-please decides what to release by comparing each component's last-released SHA in `.release-please-manifest.json` against `main`; the unreleased lockfile commit is still there, so the PR is regenerated on the next run. The only ways to stop it are to release the package (merge the PR) or to remove the unreleased bump from `main` — see [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
+A commit that changes a package's `pyproject.toml` or source still releases it, lockfile or not.
 
-**Avoid it** by landing lockfile regeneration in a separate `chore(deps):` commit/PR — `chore` is hidden and triggers no release, so only the package with real source changes is released.
-
-The `release_please_scope_check.yml` workflow ([`.github/scripts/release/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/release/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `ci:allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. Applying the label posts a loud bypass warning that lists every touched component — bypassing does **not** stop release-please from opening those release PRs. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
-
-After merge, `release_please_fanout_watch.yml` is a safety net: if an open `release(<component>):` PR's package path only changed lockfiles on `main` since the last released SHA, it sticky-comments that release PR and fails an advisory check so the fan-out is noticed within minutes. Recovery still follows [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
+`release_please_fanout_watch.yml` is a post-merge safety net: if an open `release(<component>):` PR's package has no release-relevant changes on `main` since its last release tag, it sticky-comments that release PR and fails an advisory check. That should only happen after a revert, or if release-please stops honoring the exclusion. Recovery follows [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
 
 ### Multi-component fan-out
 
-Lockfile-only is a special case of a more general rule: **one bump-worthy PR should touch real files in at most one release-please component.**
+A package releases when what it publishes changes: source, or `pyproject.toml` metadata including dependency ranges. Files under `exclude-paths` (`tests/`, `uv.lock`) don't count. The rule: **a release-worthy PR changes published files in at most one package.**
 
-When a `feat`/`fix` (etc.) also edits non-lockfile files under other managed packages — commonly cross-package `pyproject.toml` lower-bound bumps that accompany a single-package feature — release-please opens a **separate release PR for every touched component**. That is usually not what the author intended.
+release-please assigns a commit to every package whose files it changes, regardless of the title scope. A `feat`/`fix` that also edits another package's `pyproject.toml` or source opens a **separate release PR for each package**, all with the same changelog entry (and, with `!`, the same breaking bump).
 
-**Canonical split:**
+When a change needs edits in two packages, land the other package's change first, in its own PR. It is a real change to that package and releases it. Then land the feature/fix. See [Dependency bump in a package with path dependents](#dependency-bump-in-a-package-with-path-dependents) for an example.
 
-1. One feature/fix PR scoped to the single package that owns the user-facing change (`feat(code): ...`).
-2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does not open release PRs).
+`release_please_scope_check.yml` ([`check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/release/check_lockfile_release_scope.py)) enforces this at PR time. It reads package paths and `exclude-paths` from `release-please-config.json`, so it counts the same files release-please does. When a bump-worthy PR changes release-relevant files in more than one package, it posts a sticky comment naming them and **fails the check**. For a deliberate multi-package release, apply the `ci:allow-lockfile-release` label. The check then passes, and `release_fanout_bypass_warn.yml` posts a sticky listing every package that will release; the label does **not** stop those release PRs. `pr_scope_file_check.yml` separately checks the title scope against the package directories touched.
 
-`release_please_scope_check.yml` blocks bump-worthy multi-component real-file PRs the same way it blocks lockfile-only fan-out (same sticky / `ci:allow-lockfile-release` bypass). `pr_scope_file_check.yml` sticky copy also states this release-please consequence when title scope and package dirs disagree. See also [Lockfile churn fan-out](#lockfile-churn-fan-out).
+### Dependency bump in a package with path dependents
+
+Some packages are resolved from a local path by others: `libs/code` and `libs/evals` use `libs/partners/quickjs` through `[tool.uv.sources]`, and `libs/talon` gets it through `libs/code`. Changing that package's dependencies makes the dependents' `uv.lock` files stale, so they must be relocked in the same PR.
+
+Example: upgrading `langchain-quickjs` to quickjs-rs 0.3.0 ([#7777](https://github.com/langchain-ai/deepagents/pull/7777)), a breaking change that releases `langchain-quickjs` 0.4.0.
+
+1. **If a dependent's own `pyproject.toml` must change, land that first, in its own PR.** For example, raising `deepagents-code`'s cap to `langchain-quickjs<0.5.0`. That is a real change to `deepagents-code` and releases it.
+2. **Then open one PR for the bump**, titled `feat(quickjs)!: ...` (or `fix`). It contains the package's new pin and `uv.lock`, plus every dependent's relocked `uv.lock`. Squash-merge it. Only `langchain-quickjs` releases, and release-please writes the breaking-change note from the commit.
+
+<details>
+<summary><b>Why not relax 🔒 Check Lockfiles instead?</b></summary>
+
+- CI installs from lockfiles with `UV_FROZEN=true`. A stale dependent lockfile would test the new code against the old dependencies, a combination nobody ships.
+- Locally, `uv sync` rewrites the stale lockfiles, so everyone gets unrelated `uv.lock` diffs until someone relocks.
+- It still needs a follow-up relock PR, leaving `main` inconsistent in between.
+
+</details>
 
 ### Releasing a new line ahead of its dependents
 

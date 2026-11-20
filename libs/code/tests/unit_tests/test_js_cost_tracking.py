@@ -28,6 +28,7 @@ from deepagents.middleware import SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool, tool
+from langchain_quickjs._repl import _REGISTRY
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphInterrupt, NodeCancelledError, ParentCommand
@@ -39,7 +40,6 @@ from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware, _cost_task
 from deepagents_code.cost_tracking import CostTrackingMiddleware
 
-_INTERPRETERS: list[CostAwareCodeInterpreterMiddleware] = []
 _CONFIG: RunnableConfig = {"configurable": {"thread_id": "js-cost"}}
 
 
@@ -83,9 +83,6 @@ def controlled_cost(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     token = cost_tracking._RECORDER_VAR.set(cost_tracking._SessionCostRecorder())
     yield
     cost_tracking._RECORDER_VAR.reset(token)
-    for interpreter in _INTERPRETERS:
-        interpreter._registry.close()
-    _INTERPRETERS.clear()
 
 
 def _call(code: str, *, message_id: str = "parent-call") -> AIMessage:
@@ -128,7 +125,6 @@ def _parent(
     mode: Literal["thread", "turn", "call"] = "thread",
 ) -> CompiledStateGraph:
     interpreter = CostAwareCodeInterpreterMiddleware(tool_name="js_eval", mode=mode)
-    _INTERPRETERS.append(interpreter)
     middleware: list[AgentMiddleware[Any, Any, Any]] = [
         CostTrackingMiddleware(nested=nested),
         SubAgentMiddleware(
@@ -204,10 +200,17 @@ async def _assert_accounting(
 
 
 def _fresh_runtime() -> None:
-    for interpreter in _INTERPRETERS:
-        interpreter._registry.close()
-    _INTERPRETERS.clear()
     cost_tracking._RECORDER_VAR.set(cost_tracking._SessionCostRecorder())
+
+
+async def _settle_cancelled_eval(agent: CompiledStateGraph) -> None:
+    """Wait for a cancelled eval to finish unwinding on its QuickJS worker."""
+    slot_id = (await agent.aget_state(_CONFIG)).values["_quickjs_slot_id"]
+    slots = [slot for (key, _), slot in _REGISTRY._slots.items() if key == slot_id]
+    assert slots
+    async with asyncio.timeout(5):
+        while any(slot.eval_running for slot in slots):  # noqa: ASYNC110  # cleared on the worker thread
+            await asyncio.sleep(0.01)
 
 
 @pytest.mark.filterwarnings("ignore:The class `CodeInterpreterMiddleware` is in beta")
@@ -447,6 +450,7 @@ async def test_cancel_after_child_checkpoint_then_resume() -> None:
         await invocation
     assert await _total(agent) == pytest.approx(1.0)
     await _assert_accounting(agent, 1)
+    await _settle_cancelled_eval(agent)
     _fresh_runtime()
     release.set()
     resumed = _parent(
@@ -653,7 +657,6 @@ async def test_structured_result_and_unrelated_state_are_isolated() -> None:
             return {"unrelated": "child-only"}
 
     interpreter = CostAwareCodeInterpreterMiddleware(tool_name="js_eval", mode="call")
-    _INTERPRETERS.append(interpreter)
     child_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         CostTrackingMiddleware(nested=True),
         ChildState(),

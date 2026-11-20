@@ -182,6 +182,40 @@ _EMOJI_SKIN_TONES = frozenset(
 )
 
 
+def _is_model_unavailable(error: BaseException) -> bool:
+    """Recognize provider model-access failures through chained exceptions."""
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        if _provider_model_unavailable(error):
+            return True
+        cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        if cause is None:
+            return False
+        error = cause
+    return False
+
+
+def _provider_model_unavailable(error: BaseException) -> bool:
+    """Inspect SDK error bodies without importing optional provider packages."""
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("error", body)
+    if not isinstance(detail, dict):
+        return False
+    for cls in type(error).__mro__:
+        provider = cls.__module__.split(".")[0]
+        if provider == "openai" and cls.__name__ == "NotFoundError":
+            return detail.get("code") == "model_not_found"
+        if provider == "anthropic" and cls.__name__ in {"NotFoundError", "BadRequestError"}:
+            details = detail.get("details", body.get("details"))
+            return detail.get("type") == "not_found_error" or (
+                isinstance(details, dict) and details.get("error_code") == "model_not_available"
+            )
+    return False
+
+
 class ScheduledRunRevokedError(RuntimeError):
     """Raised when revoking a paired sender stops a scheduled run from their DM."""
 
@@ -342,6 +376,18 @@ class TalonHost:
         self._turn_senders: dict[str, set[tuple[str, str | None]]] = {}
         self._stopped = asyncio.Event()
         self._running = False
+
+    async def _agent_failure_message(self, conversation_id: str) -> str:
+        check = getattr(self.agent, "has_tool_activity", None)
+        try:
+            if callable(check) and await check(conversation_id):
+                return (
+                    "Something went wrong after tools ran. Actions may have partially completed. "
+                    "Check the results before retrying, and check Talon logs."
+                )
+        except Exception:  # noqa: BLE001  # State inspection must not hide the original failure.
+            logger.warning("Could not inspect failed turn state", exc_info=True)
+        return _AGENT_FAILURE_MESSAGE
 
     @asynccontextmanager
     async def _conversation_lock(self, conversation_root: str) -> AsyncGenerator[None]:
@@ -1167,8 +1213,14 @@ class TalonHost:
                 effort=turn.effort,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
-        except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
-            result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
+        except Exception as error:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
+            text = await self._agent_failure_message(agent_conversation_id)
+            if _is_model_unavailable(error):
+                text = (
+                    f"Model {turn.model or getattr(self.agent, 'default_model', 'default')} "
+                    "is unavailable. Send /model default or choose another model with /model."
+                )
+            result = AgentResult(text=text)
         finally:
             active = False
             self._clear_authorization(agent_conversation_id)
@@ -2545,6 +2597,8 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
         tool_name = name if isinstance(name, str) and name else "unknown"
         lines.append(f"{index}. `{tool_name}`")
         args = action.get("args")
+        if tool_name == "update_mcp_server":
+            args = _mcp_approval_args(args)
         if isinstance(args, dict) and args:
             lines.append(f"Args: `{_json_preview(args)}`")
         elif args not in (None, {}, []):
@@ -2556,6 +2610,19 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
     else:
         lines.append("Reply `👍` / `approve` to run or `👎` / `deny` to skip.")
     return "\n".join(lines)
+
+
+def _mcp_approval_args(value: object) -> object:
+    """Summarize stored MCP values, retaining field paths and mixed-list positions."""
+    if value == "<redacted>":
+        return "<kept>"
+    if isinstance(value, dict):
+        return {key: _mcp_approval_args(item) for key, item in value.items()}
+    if isinstance(value, list):
+        if value and all(item == "<redacted>" for item in value):
+            return f"({len(value)} stored values preserved)"
+        return [_mcp_approval_args(item) for item in value]
+    return value
 
 
 def _json_preview(value: object) -> str:

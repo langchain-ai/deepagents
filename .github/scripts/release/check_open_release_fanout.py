@@ -1,18 +1,23 @@
-"""Flag open release-please PRs whose unreleased package delta is lockfile-only.
+"""Flag packages whose unreleased delta has no release-relevant files.
 
-Post-merge safety net for the pre-merge gates in
-`release_please_scope_check.yml`. Even when a bump-worthy multi-package PR
-slips through, this report surfaces open `release(<component>):` PRs whose
-component path — relative to the last *released package version* in
-`.release-please-manifest.json` — only changed lockfiles on `main`.
+Post-merge safety net for the pre-merge gate in
+`release_please_scope_check.yml`. The workflow intersects this report with
+open `release(<component>):` PRs, so a flagged component is one release-please
+wants to release even though nothing it publishes changed.
 
-What counts as lockfile-only unreleased delta:
+What counts as an empty delta:
     For each managed package path, resolve the manifest version to the package
     release tag (e.g. `deepagents-acp==0.2.2`, matching `tag-separator` /
     `include-component-in-tag` in `release-please-config.json`), then take
-    `git diff --name-only <tag> HEAD` restricted to that path. If the component
-    has an open release-please PR and every changed path under the package is a
-    lockfile name (`uv.lock`), the component is reported.
+    `git diff --name-only <tag> HEAD` restricted to that path. Drop files
+    covered by the package's `exclude-paths` (`tests/`, `uv.lock`), using the
+    same rule as `check_lockfile_release_scope.py`. If nothing is left, the
+    component is reported, along with the excluded files that did change.
+
+    release-please already skips commits whose files are all excluded, so an
+    open release PR with an empty delta means something else went wrong: a
+    change that was later reverted, a release PR opened before an exclusion
+    existed, or a release-please upgrade that dropped `exclude-files.patch`.
 
     Files that only exist because the open release PR rewrote version metadata
     on its branch are *not* considered here: the diff is against `main` at the
@@ -29,11 +34,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+from check_lockfile_release_scope import release_relevant_files
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = REPO_ROOT / "release-please-config.json"
 DEFAULT_MANIFEST = REPO_ROOT / ".release-please-manifest.json"
 
-LOCKFILE_NAMES = frozenset({"uv.lock"})
 DEFAULT_TAG_SEPARATOR = "=="
 
 
@@ -86,7 +92,7 @@ def _ref_exists(ref: str, *, repo_root: Path) -> bool:
 
     Uses `rev-parse --verify` so a missing release tag is distinguishable from
     a `git diff` that failed for some other reason (see the caller in
-    `find_lockfile_only_components`).
+    `find_empty_release_components`).
 
     Args:
         ref: Git ref to resolve.
@@ -147,19 +153,14 @@ def package_unreleased_files(
     return sorted(line.strip() for line in out.splitlines() if line.strip())
 
 
-def is_lockfile_only(files: list[str]) -> bool:
-    """Return whether every path is a known lockfile name."""
-    return bool(files) and all(Path(f).name in LOCKFILE_NAMES for f in files)
-
-
-def find_lockfile_only_components(
+def find_empty_release_components(
     config: dict,
     manifest: dict[str, str],
     *,
     repo_root: Path,
     head: str = "HEAD",
 ) -> list[dict[str, object]]:
-    """Return components whose unreleased package delta is lockfile-only.
+    """Return components whose unreleased delta has no release-relevant files.
 
     Args:
         config: Parsed `release-please-config.json`.
@@ -169,7 +170,8 @@ def find_lockfile_only_components(
 
     Returns:
         Sorted list of dicts with `component`, `path`, `version`, `baseline`
-        (resolved release tag), and `files`. Components whose manifest version
+        (resolved release tag), and `files` (the excluded files that changed,
+        possibly none). Components whose manifest version
         has no published release tag yet are skipped (with a stderr warning)
         rather than treated as offenders.
 
@@ -208,7 +210,7 @@ def find_lockfile_only_components(
         files = package_unreleased_files(
             path, baseline, repo_root=repo_root, head=head
         )
-        if is_lockfile_only(files):
+        if not release_relevant_files(files, path, meta):
             offenders.append(
                 {
                     "component": component,
@@ -228,7 +230,7 @@ def main(
     repo_root: Path = REPO_ROOT,
     head: str = "HEAD",
 ) -> int:
-    """Print lockfile-only unreleased components as a JSON array.
+    """Print components with an empty unreleased delta as a JSON array.
 
     Returns:
         `0` on successful analysis.
@@ -255,7 +257,7 @@ def main(
         return 2
 
     try:
-        offenders = find_lockfile_only_components(
+        offenders = find_empty_release_components(
             config, manifest, repo_root=repo_root, head=head
         )
     except RuntimeError as e:
@@ -264,7 +266,7 @@ def main(
 
     if offenders:
         names = ", ".join(str(o["component"]) for o in offenders)
-        print(f"Lockfile-only open-release candidates: {names}", file=sys.stderr)
+        print(f"Components with no release-relevant changes: {names}", file=sys.stderr)
     print(json.dumps(offenders))
     return 0
 

@@ -3,9 +3,6 @@ type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents distinguishes synchronous local child graphs, context-sharing forks, and durable remote Agent Protocol tasks. Talon adapts delegation for conversational delivery, while skills progressively disclose instructions and selected tools without granting authority.
 tags: [deepagents, subagents, delegation, skills, talon, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-14T08:03:44.053Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -27,13 +24,20 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-444dd041f0001b6042aeee4c
+    resource: repo://libs/talon/deepagents_talon/subagent_control.py
   - id: openwiki-source-2d1f686d24d8182f60108ae7
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-14T08:03:44.053Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-20T08:04:05.944Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
 ---
 
 # Subagents and Skills
@@ -134,9 +138,11 @@ sequenceDiagram
 
 ### Conversational jobs
 
-For ordinary conversational turns, `BackgroundSubagents` intercepts both local `task` and remote `start_async_task`, creates an in-memory job tied to the calling thread ID, and returns a Talon task ID immediately. The worker has a different thread ID, blocks nested delegation, disables approval operation and authorization handlers, and has a one-hour timeout. By default the process retains at most 128 jobs and permits four running workers globally; the runtime can configure the running limit.
+For ordinary conversational turns, `BackgroundSubagents` intercepts both local `task` and remote `start_async_task`, creates an in-memory job tied to the calling thread ID, and returns a Talon task ID immediately. The worker has a different thread ID, blocks nested delegation, disables approval operation and authorization handlers, and has a one-hour timeout. By default the process retains at most 128 jobs and permits four running workers globally; `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS` configures the positive running-worker limit, while `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` configures the scheduled inline deadline.
 
-Only the owner can list, inspect, message, cancel, or receive its jobs. Results are plain answer text—reasoning and non-text blocks are excluded—and are capped at 64,000 characters. `message_subagent` queues guidance for the next local worker model step rather than interrupting a running model or tool call; it is unavailable for remote or opaque workers.
+Only the owner can list, inspect, message, cancel, or receive its jobs. `list_subagents` suppresses unchanged polls within a turn and avoids repeating a result already returned in that listing; `inspect_subagent` can retrieve the result plus bounded, metadata-only activity and message receipts. Results are plain answer text—reasoning and non-text blocks are excluded—and are capped at 64,000 characters.
+
+`message_subagent` queues guidance for the next local worker model step rather than interrupting a running model or tool call; it is unavailable for remote or opaque workers. The cooperative inbox accepts non-blank messages of at most 2,000 characters, retains at most 20 receipts, and rejects a new message rather than evicting an unconsumed queued one. The worker applies queued guidance as a `HumanMessage` before its next model request, explicitly retaining the original scope and access/approval restrictions. Activity holds at most 50 timestamped model/tool lifecycle records and intentionally excludes arguments, outputs, and reasoning.
 
 Completion is separate from delivery. The runtime offers unacknowledged completed results as data to a later main-agent turn and acknowledges them only after that turn completes. If a host discards the completed reply, it can requeue just the result IDs consumed by that reply. Failed delivery attempts are counted; after three failures, the result is marked dropped rather than injected indefinitely.
 

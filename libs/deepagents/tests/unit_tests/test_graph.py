@@ -2689,6 +2689,30 @@ class TestMiddlewareTyping:
         assert result.returncode == 0, f"ty reported diagnostics:\n{result.stdout}\n{result.stderr}"
 
 
+class TestStateSchemaTyping:
+    """Type-level coverage for `create_deep_agent`'s `state_schema` parameter."""
+
+    def test_full_copy_state_schema_type_checks(self) -> None:
+        """A schema that extends `AgentState` but not `DeepAgentState` must type-check.
+
+        Runs `ty` over a fixture that passes `FullCopyDeepAgentState` and a
+        subclass of it as `state_schema`.
+        """
+        if shutil.which("ty") is None:
+            pytest.skip("ty is not installed in this environment")
+
+        package_root = Path(__file__).parents[2]
+        fixture = Path(__file__).parent / "_typing_fixtures" / "full_copy_state_schema.py"
+        result = subprocess.run(  # noqa: S603  # fixed args, no user input
+            [sys.executable, "-m", "ty", "check", str(fixture)],
+            cwd=package_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"ty reported diagnostics:\n{result.stdout}\n{result.stderr}"
+
+
 def _named_mw(name: str) -> AgentMiddleware[Any, Any, Any]:
     """Return a minimal AgentMiddleware whose .name returns `name`."""
 

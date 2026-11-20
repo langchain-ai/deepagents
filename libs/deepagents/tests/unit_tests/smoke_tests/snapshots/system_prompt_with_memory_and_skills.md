@@ -5,8 +5,6 @@ You have access to a skills library that provides specialized capabilities and d
 **User Skills**: `/skills/user/`
 **Project Skills**: `/skills/project/` (higher priority)
 
-Sources labeled "Deepagents" are specific to this agent tool; sources labeled "Agents" are shared across all agent tools on this machine.
-
 **Available Skills:**
 
 - **web-research**: Structured approach to conducting thorough web research on any topic
@@ -22,7 +20,8 @@ Skills follow a **progressive disclosure** pattern - you see their name and desc
 2. **Read the skill's full instructions**: Use `read_file` on the path shown in the skill list above.
     Pass `limit=1000` since the default of 100 lines is too small for most skill files.
 3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
-4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
+4. **Access supporting files**: Resolve relative paths in a skill's instructions against the directory containing its SKILL.md.
+    Use the resolved paths to read helper scripts, configs, or reference docs
 
 **When to Use Skills:**
 
@@ -30,8 +29,8 @@ Skills follow a **progressive disclosure** pattern - you see their name and desc
 - You need specialized knowledge or structured workflows
 - A skill provides proven patterns for complex tasks
 
-**Executing Skill Scripts:**
-Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
+**Skill Scripts:**
+Skills may contain Python scripts or other executable files. Read scripts with `read_file`; this backend does not support execution.
 
 **Example Workflow:**
 
@@ -40,7 +39,7 @@ User: "Can you research the latest developments in quantum computing?"
 1. Check available skills -> See "web-research" skill with its path
 2. Read the full skill file: `read_file(file_path="...", limit=1000)`
 3. Follow the skill's research workflow (search -> organize -> synthesize)
-4. Use any helper scripts with absolute paths
+4. Resolve supporting file paths against the skill's directory before using them
 
 Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!
 

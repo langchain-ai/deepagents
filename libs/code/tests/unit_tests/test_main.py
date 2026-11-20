@@ -1,6 +1,7 @@
 """Unit tests for main entry point."""
 
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -3441,6 +3442,59 @@ class TestCheckMcpProjectTrustPrompt:
         assert '"fs" (stdio):  node server.js' in captured.err
         assert "Learn more:" not in captured.err
         assert "Remembered approvals apply" not in captured.err
+
+    @pytest.mark.parametrize(
+        ("in_repo", "is_user_config", "expect_note"),
+        [
+            pytest.param(True, False, False, id="repo-config"),
+            pytest.param(False, True, True, id="home-fallback-user-config"),
+            # A profile configured inside a real repo collides too, but there
+            # the project framing is accurate.
+            pytest.param(True, True, False, id="repo-profile-collision"),
+        ],
+    )
+    def test_prompt_names_source_file(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        in_repo: bool,  # parametrized flag
+        is_user_config: bool,  # parametrized flag
+        expect_note: bool,  # parametrized flag
+    ) -> None:
+        """Each server names its file; the user-config note shows only on fallback."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        cwd = tmp_path / "proj"
+        (cwd / ".deepagents").mkdir(parents=True)
+        project_cfg = cwd / ".deepagents" / ".mcp.json"
+        server = {"type": "http", "url": "https://example.test/mcp"}
+        project_cfg.write_text(json.dumps({"mcpServers": {"remote": server}}))
+
+        project_context = SimpleNamespace(
+            project_root=cwd if in_repo else None, user_cwd=cwd
+        )
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, cwd)],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.is_user_mcp_config_path",
+                return_value=is_user_config,
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        err = " ".join(capsys.readouterr().err.split())
+        assert '"remote" (http): https://example.test/mcp' in err
+        assert f"from {project_cfg}" in err
+        assert ("This is your user MCP config" in err) is expect_note
 
     def test_yes_allows_for_session_only(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path

@@ -26028,6 +26028,72 @@ class TestFormatMcpServerChanges:
             "currently loaded: github, notion."
         )
 
+    def test_names_project_server_awaiting_approval(self) -> None:
+        """A renamed project server skipped for trust is named, not dropped."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="open-swe",
+                transport="http",
+                status="disabled",
+                error="Disabled by user (F2 to re-enable).",
+            ),
+        ]
+        current = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Removed: open-swe\n"
+            "  - Needs approval: robin (restart to review project MCP servers, "
+            "or launch with --trust-project-mcp)"
+        )
+
+    def test_flags_server_that_lost_approval(self) -> None:
+        """An edited server whose approval no longer matches is not "no change"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="robin", transport="http")]
+        current = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Needs approval: robin (restart to review project MCP servers, "
+            "or launch with --trust-project-mcp)"
+        )
+
+    def test_still_untrusted_server_is_named_as_needing_attention(self) -> None:
+        """A server left unapproved across reloads is not reported as fine."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no metadata changes detected "
+            "(still needs attention: robin; use /mcp)."
+        )
+
     def test_flags_server_that_kept_its_name_but_started_failing(self) -> None:
         """A same-name `ok` -> `error` transition is not "no changes"."""
         from deepagents_code.mcp_tools import MCPServerInfo

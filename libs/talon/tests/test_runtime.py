@@ -1526,7 +1526,6 @@ async def test_retry_traces_group_attempts_by_final_outcome(monkeypatch, tracing
         assert final["outputs"]["messages"][-1].content == "done"
 
 
-
 async def test_retry_preserves_checkpointed_user_message_and_completed_tool() -> None:
     actions: list[str] = []
     failed = False

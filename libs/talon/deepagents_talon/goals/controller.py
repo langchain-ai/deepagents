@@ -11,8 +11,9 @@ confirm it. Goal cron fires are handled here too, without a model turn.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 GOAL_USAGE = (
     "Goals keep working on an outcome for this chat.\n"
     "/goal <outcome> — start a draft goal.\n"
+    "/goal list — show goal IDs, outcomes and states. Use /goal <id> <command> to select one.\n"
     "/goal edit <field>: <value> — one field per line. Fields: "
     "outcome, sources, exclusions, progress, kpi, baseline, horizon, review, cadence, "
     "decisions. Separate list entries with `;`; send `none` to clear a field. "
@@ -102,11 +104,13 @@ class GoalRequest:
         scope: Conversation and sender the host derived from the message.
         origin: Cron origin for jobs the goal owns.
         argument: Text after `/goal`.
+        goal_id: Goal selected by its chat command.
     """
 
     scope: GoalScope
     origin: CronOrigin
     argument: str
+    goal_id: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,13 +178,22 @@ class GoalController:
 
     def _dispatch(self, request: GoalRequest) -> GoalReply:
         argument = request.argument.strip()
+        parts = argument.split(maxsplit=1)
+        if parts and re.fullmatch(r"[0-9a-f]{12}", parts[0]):
+            request = replace(request, goal_id=parts[0])
+            self._owned_goal(request)
+            argument = parts[1] if len(parts) > 1 else "status"
         command = argument.lower()
-        if command in {"", "status"}:
-            return GoalReply(self._status(request))
+        simple = {
+            "list": self._choices,
+            "": self._status,
+            "status": self._status,
+            "remove": self._remove,
+        }
+        if command in simple:
+            return GoalReply(simple[command](request))
         if command == "help":
             return GoalReply(GOAL_USAGE)
-        if command == "remove":
-            return GoalReply(self._remove(request))
         verb, *args = argument.split(maxsplit=1)
         rest = args[0] if args else ""
         if verb.lower() == "approve":
@@ -194,6 +207,8 @@ class GoalController:
         }.get(verb.lower())
         if handler is not None:
             return GoalReply(handler(request, rest))
+        if request.goal_id:
+            return GoalReply(GOAL_USAGE)
         return GoalReply(self._start(request, argument))
 
     def interactive_finished(self, action: ApprovedAction, *, cancelled: bool) -> None:
@@ -393,8 +408,6 @@ class GoalController:
             self.ledger.enqueue(goal.id, event_id=notice.event_id, payload=notice.payload, now=now)
 
     def _start(self, request: GoalRequest, outcome: str) -> str:
-        if self.ledger.goal_for_conversation(request.scope) is not None:
-            return "This chat already has a goal. Send /goal status, /goal edit, or /goal remove."
         charter = _validated(GoalCharter, {"outcome": outcome})
         goal = self.ledger.create_draft(scope=request.scope, charter=charter, now=self.now())
         return _review(goal)
@@ -457,15 +470,28 @@ class GoalController:
             )
         return "Removed the goal and its scheduled jobs. Its record is kept for status history."
 
+    def _choices(self, request: GoalRequest) -> str:
+        goals = self.ledger.goals_for_conversation(request.scope)
+        return _goal_list([goal for goal in goals if goal.scope.owner_id == request.scope.owner_id])
+
     def _owned_goal(self, request: GoalRequest) -> Goal:
-        goal = self.ledger.goal_for_conversation(request.scope)
-        if goal is None:
-            msg = "This chat has no goal. Start one with /goal <outcome>."
+        goals = self.ledger.goals_for_conversation(request.scope)
+        if request.goal_id:
+            goals = [goal for goal in goals if goal.id == request.goal_id]
+        if not goals:
+            msg = (
+                "No matching goal in this chat."
+                if request.goal_id
+                else "This chat has no goal. Start one with /goal <outcome>."
+            )
             raise GoalLedgerError(msg)
-        if goal.scope.owner_id != request.scope.owner_id:
+        owned = [goal for goal in goals if goal.scope.owner_id == request.scope.owner_id]
+        if not owned:
             msg = "Only the person who started this chat's goal can view or change it."
             raise GoalLedgerError(msg)
-        return goal
+        if len(owned) > 1:
+            raise GoalLedgerError(_goal_list(owned))
+        return owned[0]
 
     def _ensure_job(self, goal: Goal, origin: CronOrigin) -> CronJob:
         """Return the goal's recurring job, creating it at most once."""
@@ -551,6 +577,17 @@ class GoalController:
         ]
 
 
+def _goal_list(goals: list[Goal]) -> str:
+    if not goals:
+        return "No goals. Start one with /goal <outcome>."
+    return "\n".join(
+        [
+            "Use /goal <id> <command>:",
+            *(f"{goal.id} ({goal.state}) {goal.charter.outcome}" for goal in goals),
+        ]
+    )
+
+
 def _due(item: WorkItem, now: datetime) -> bool:
     return item.status == "planned" and (item.retry_at is None or item.retry_at <= now)
 
@@ -611,15 +648,17 @@ def _validated(model: type[GoalCharter], data: dict[str, object]) -> GoalCharter
 
 
 def _review(goal: Goal) -> str:
-    parts = [_headline(goal), _charter_text(goal.charter)]
+    parts = [_headline(goal), f"ID: {goal.id}", _charter_text(goal.charter)]
     missing = goal.charter.unresolved()
     if missing:
         names = ", ".join("progress" if name == "progress_test" else name for name in missing)
-        parts.append(f"Still needed: {names}. Set them with /goal edit, for example:")
-        parts.append("/goal edit sources: tool:linear_list_issues; path:/srv/security/reports")
+        parts.append(f"Still needed: {names}. Set them with /goal {goal.id} edit, for example:")
+        parts.append(
+            f"/goal {goal.id} edit sources: tool:linear_list_issues; path:/srv/security/reports"
+        )
     elif goal.revision != goal.confirmed_revision:
         parts.append(_SCOPE_NOTICE)
-        parts.append(f"Send /goal confirm {goal.revision} to use this revision.")
+        parts.append(f"Send /goal {goal.id} confirm {goal.revision} to use this revision.")
     return "\n".join(parts)
 
 

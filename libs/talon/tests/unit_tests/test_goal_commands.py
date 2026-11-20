@@ -75,7 +75,7 @@ def test_goal_activates_only_after_settled_charter_is_confirmed(
 
     assert "Still needed: sources, progress" in draft
     assert "charter still needs" in early
-    assert "Send /goal confirm 2" in review
+    assert "confirm 2" in review
     assert "post status updates and decision requests in this chat" in review
     assert "not 1" in stale
     assert active.startswith("Goal active from revision 2.")
@@ -95,7 +95,17 @@ def test_remove_with_text_preserves_active_goal(
 ) -> None:
     _activate(controller)
     jobs = _goal_jobs(store)
-    assert "already has a goal" in _send(controller, "remove deprecated APIs")
+    assert "Outcome: remove deprecated APIs" in _send(controller, "remove deprecated APIs")
+    first, second = controller.ledger.list_goals()
+    choices = _send(controller, "list")
+    assert first.id in choices
+    assert second.id in choices
+    assert _send(controller, "remove") == choices
+    assert "remove deprecated APIs" not in _send(controller, "list", owner="other")
+    assert "confirm 2" in _send(controller, f"{second.id} {SETTLED_EDIT}")
+    assert "Goal active" in _send(controller, f"{second.id} confirm 2")
+    assert len(_goal_jobs(store)) == 2
+    assert "Removed" in _send(controller, f"{second.id} remove")
     assert _send(controller, "status").startswith("Goal (active)")
     assert _goal_jobs(store) == jobs
 
@@ -104,7 +114,7 @@ def test_multiline_edit_preserves_field_values(controller: GoalController) -> No
     _send(controller, "ship it")
     reply = _send(controller, "edit\nsources: issue tracker\nprogress: closed issues")
     assert "Sources: issue tracker" in reply
-    assert "Send /goal confirm 2" in reply
+    assert "confirm 2" in reply
     assert "revision number" in _send(controller, "confirm ²")
 
 

@@ -168,8 +168,15 @@ class GoalLedger:
         Returns:
             The open goal, or `None`.
         """
-        goals = self.list_goals(states=_OPEN_GOAL_STATES)
-        return next((goal for goal in goals if goal.scope.same_conversation(scope)), None)
+        return next(iter(self.goals_for_conversation(scope)), None)
+
+    def goals_for_conversation(self, scope: GoalScope) -> list[Goal]:
+        """Return all open goals in the conversation."""
+        return [
+            goal
+            for goal in self.list_goals(states=_OPEN_GOAL_STATES)
+            if goal.scope.same_conversation(scope)
+        ]
 
     def list_goals(self, *, states: Collection[GoalState] | None = None) -> list[Goal]:
         """List goals, optionally filtered by state."""
@@ -251,12 +258,15 @@ class GoalLedger:
             The draft goal at revision 1.
 
         Raises:
-            GoalLedgerError: If the conversation already has an open goal.
+            GoalLedgerError: If another owner has an open goal in the conversation.
         """
         current = _utc(now)
         with self._editing() as records:
             if any(
-                g.state != "removed" and g.scope.same_conversation(scope) for g in records.goals
+                g.state != "removed"
+                and g.scope.same_conversation(scope)
+                and g.scope.owner_id != scope.owner_id
+                for g in records.goals
             ):
                 msg = "this conversation already has a goal; edit or remove it first"
                 raise GoalLedgerError(msg)

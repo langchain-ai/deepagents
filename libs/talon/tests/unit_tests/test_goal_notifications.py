@@ -102,7 +102,7 @@ def test_decision_request_is_queued_and_redacted_outside_dms(
 
     assert event.event_id == f"decision:{decision.id}"
     assert PROPOSAL in event.payload
-    assert f"/goal approve {decision.id}" in event.payload
+    assert f"/goal {job.goal_id} approve {decision.id}" in event.payload
     assert (EVIDENCE in event.payload) is direct
 
 
@@ -223,7 +223,7 @@ async def test_host_delivers_decision_and_runs_approved_action(tmp_path: Path) -
         await host.run_scheduled_job(job)
         [decision] = ledger.list_decisions(job.goal_id, states={"pending"})
         approve = ChannelMessage(
-            conversation_id="C1", text=f"/goal approve {decision.id}", sender_id=OWNER
+            conversation_id="C1", text=f"/goal {job.goal_id} approve {decision.id}", sender_id=OWNER
         )
         await host.receive_message(channel, approve)
         for _ in range(50):
@@ -234,7 +234,7 @@ async def test_host_delivers_decision_and_runs_approved_action(tmp_path: Path) -
         await host.stop()
 
     sent = [text for _, text in channel.sent]
-    assert any(f"/goal approve {decision.id}" in text for text in sent)
+    assert any(f"/goal {job.goal_id} approve {decision.id}" in text for text in sent)
     assert any(text.startswith(f"Approved decision {decision.id}") for text in sent)
     assert PROPOSAL in agent.requests[-1].text
     assert "goal_read_scope" not in agent.requests[-1].metadata

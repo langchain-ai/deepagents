@@ -425,10 +425,17 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
             async with asyncio.timeout(_MCP_LOAD_TIMEOUT_SECONDS):
                 loaded = await adapter.list_tools()
             for tool in loaded:
+                # These first-party read APIs currently omit MCP tool annotations.
+                known_read = (
+                    transport == "streamable_http"
+                    and server.get("url") == "https://api.smith.langchain.com/mcp"
+                    and tool.name in {"fetch_runs", "get_thread_history", "list_projects"}
+                )
                 tool.name = f"{name}_{tool.name}"
                 tool.metadata = {
                     **(tool.metadata or {}),
                     "_deepagents_talon_mcp": True,
+                    "_deepagents_talon_known_read": known_read,
                     **({"_deepagents_talon_skill_only": True} if server.get("skillOnly") else {}),
                 }
             loaded = list(_filter_tools(name, server, loaded))

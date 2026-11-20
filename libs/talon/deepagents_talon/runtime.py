@@ -78,7 +78,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
-from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY
+from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY, TalonMCPMiddleware
 from deepagents_talon.memory import TalonMemoryMiddleware
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
@@ -570,8 +570,13 @@ class DeepAgentRuntime:
             else []
         )
         middleware.extend(_skill_middleware(self.backend, diagnostics.skills, skill_tools))
-        middleware.extend(self.middleware)
-        middleware.append(GoalScopeMiddleware())
+        # Scope BaseTool objects after disclosure and before conversion to provider schemas.
+        middleware.extend(
+            sorted(
+                [*self.middleware, GoalScopeMiddleware()],
+                key=lambda layer: isinstance(layer, TalonMCPMiddleware),
+            )
+        )
         graph = create_deep_agent(
             model=model,
             tools=tools,

@@ -45,7 +45,7 @@ WorkStatus = Literal[
     "failed",
     "abandoned",
 ]
-RunResult = Literal["running", "ok", "error", "timeout", "unknown"]
+RunResult = Literal["running", "ok", "error", "timeout", "unknown", "blocked"]
 DecisionState = Literal["pending", "approved", "rejected", "expired", "invalidated"]
 DeliveryState = Literal["pending", "sent", "unknown", "withheld"]
 Outcome = Literal["verified", "unverified"]

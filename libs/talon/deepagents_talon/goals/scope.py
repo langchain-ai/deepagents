@@ -42,7 +42,7 @@ class ReadScope:
     """Tools and paths an unattended goal turn may read.
 
     Args:
-        tools: Tool names the owner named; each must also be annotated read-only.
+        tools: Tool names the owner named; each must also have a known read-only contract.
         paths: Absolute directories the filesystem read tools may address.
     """
 
@@ -134,23 +134,29 @@ GOAL_READ_SCOPE: contextvars.ContextVar[ReadScope | None] = contextvars.ContextV
 
 
 def is_read_only(tool: BaseTool) -> bool:
-    """Whether a tool's MCP annotations declare it read-only and non-destructive.
+    """Whether the MCP tool has a read-only contract.
 
     Args:
         tool: Tool to inspect.
 
     Returns:
-        `True` only for a literal read-only hint without a destructive hint.
+        `True` for a read-only annotation or a recognized unannotated service read.
     """
     mcp = (tool.metadata or {}).get("mcp")
     descriptor = mcp.get("tool") if isinstance(mcp, Mapping) else None
     annotations = descriptor.get("annotations") if isinstance(descriptor, Mapping) else None
+    if annotations is None:
+        return (tool.metadata or {}).get("_deepagents_talon_known_read") is True
     if not isinstance(annotations, Mapping):
         return False
     return (
         annotations.get("read_only_hint") is True
         and annotations.get("destructive_hint") is not True
     )
+
+
+class GoalToolsUnavailableError(RuntimeError):
+    """A scheduled check cannot access its confirmed tool sources."""
 
 
 class GoalScopeMiddleware(AgentMiddleware):
@@ -195,7 +201,14 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
     scope = GOAL_READ_SCOPE.get()
     if scope is None:
         return request
-    return request.override(tools=[tool for tool in request.tools if scope.allows_tool(tool)])
+    allowed = [
+        tool for tool in request.tools if isinstance(tool, BaseTool) and scope.allows_tool(tool)
+    ]
+    missing = scope.tools.difference(tool.name for tool in allowed)
+    if missing:
+        msg = f"Goal check blocked by unavailable read tools: {', '.join(sorted(missing))}"
+        raise GoalToolsUnavailableError(msg)
+    return request.override(tools=allowed)
 
 
 def _refusal(request: ToolCallRequest) -> ToolMessage | None:

@@ -280,18 +280,24 @@ class GoalController:
         return turn
 
     def finish_turn(
-        self, turn: GoalTurn, *, text: str | None, failure: RunResult | None = None
+        self,
+        turn: GoalTurn,
+        *,
+        text: str | None,
+        failure: RunResult | None = None,
+        detail: str = "the turn did not finish",
     ) -> None:
         """Validate a goal turn's reply and record it against its lease.
 
         Args:
             turn: Turn returned by `prepare_fire`.
             text: Final model text, or `None` when the turn failed.
-            failure: `timeout` or `error` when the turn did not finish.
+            failure: Outcome when the turn did not finish.
+            detail: Reason recorded for an unsuccessful turn.
         """
         try:
             if failure is not None or text is None:
-                self._fail(turn, failure or "error", "the turn did not finish")
+                self._fail(turn, failure or "error", detail)
             elif turn.item_id is None:
                 self._finish_discovery(turn, text)
             else:

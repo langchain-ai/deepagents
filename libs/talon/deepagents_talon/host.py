@@ -54,6 +54,7 @@ from deepagents_talon.goals import (
     GoalRequest,
     GoalScope,
 )
+from deepagents_talon.goals.scope import GoalToolsUnavailableError
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -1608,6 +1609,11 @@ class TalonHost:
                 text = await self._bounded_scheduled_run(
                     job, conversation_id, prompt=turn.prompt, metadata=metadata
                 )
+            except GoalToolsUnavailableError as exc:
+                await asyncio.to_thread(
+                    goals.finish_turn, turn, text=None, failure="blocked", detail=str(exc)
+                )
+                raise
             except TimeoutError:
                 failure = "timeout"
             except Exception:

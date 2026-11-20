@@ -2,20 +2,30 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from deepagents_talon.cron import CronJobStore, CronOrigin
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL
 from deepagents_talon.goals import GoalController, GoalLedger, GoalRequest, GoalScope
 from deepagents_talon.goals.controller import MAX_OPEN_ITEMS
-from deepagents_talon.goals.scope import GOAL_READ_SCOPE, GoalScopeMiddleware, ReadScope
+from deepagents_talon.goals.scope import (
+    GOAL_READ_SCOPE,
+    GoalScopeMiddleware,
+    GoalToolsUnavailableError,
+    ReadScope,
+)
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult
-from deepagents_talon.runtime import _goal_scope
+from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.runtime import DeepAgentRuntime, _goal_scope
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config
 
@@ -335,3 +345,70 @@ async def test_host_runs_scoped_goal_turn_and_stays_silent(tmp_path: Path) -> No
     assert "untrusted data" in request.text
     assert [item.status for item in ledger.list_items(job.goal_id)] == ["planned"]
     assert channel.sent == []
+
+
+@pytest.mark.parametrize("available", [True, False])
+async def test_scheduled_goal_reads_or_records_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, available: bool
+) -> None:
+    reads: list[str] = []
+
+    @tool
+    def linear_list_issues(team: str) -> str:
+        """Read issues for a team."""
+        reads.append(team)
+        return "SEC-1"
+
+    linear_list_issues.metadata = {
+        "_deepagents_talon_mcp": True,
+        "mcp": {"tool": {"annotations": {"read_only_hint": True}}},
+    }
+    reply = FakeMessagesListChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "linear_list_issues", "args": {"team": "SEC"}, "id": "read"}],
+            ),
+            AIMessage(content=_discovery()),
+        ]
+    )
+
+    def bind(_model: ChatOpenAI, tools: list, **_kwargs: object) -> FakeMessagesListChatModel:
+        assert any(
+            isinstance(t, dict) and t["function"]["name"] == "linear_list_issues" for t in tools
+        )
+        return reply
+
+    monkeypatch.setattr(ChatOpenAI, "bind_tools", bind)
+    model = ChatOpenAI(model="test", api_key="test", use_responses_api=True)
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_kw: model
+    )
+    agent = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=tmp_path,
+        tools=[linear_list_issues] if available else [],
+        middleware=(talon_mcp_middleware(),),
+        include_web_tools=False,
+    )
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    host = TalonHost(config=_config(tmp_path), agent=agent)
+    host.scheduler = SimpleNamespace(store=store)
+    goals = host.goals
+    assert goals is not None
+    job = _activate(goals)
+    await agent.start()
+    try:
+        if available:
+            await host.run_scheduled_job(job)
+            assert reads == ["SEC"]
+            assert goals.ledger.list_items(job.goal_id)[0].source_key == "SEC-1"
+        else:
+            with pytest.raises(GoalToolsUnavailableError, match="linear_list_issues"):
+                await host.run_scheduled_job(job)
+            run = goals.ledger.list_runs(job.goal_id)[-1]
+            assert run.result == "blocked"
+            assert "linear_list_issues" in run.detail
+            assert not goals.ledger.list_items(job.goal_id)
+    finally:
+        await agent.stop()

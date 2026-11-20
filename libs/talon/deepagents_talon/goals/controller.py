@@ -20,9 +20,18 @@ from pydantic import ValidationError
 
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronSchedule
+from deepagents_talon.goals import decisions
 from deepagents_talon.goals.errors import GoalLedgerCorruptError, GoalLedgerError
 from deepagents_talon.goals.ledger import ItemChange
 from deepagents_talon.goals.models import SCHEDULED_WORK, GoalCharter, GoalScope
+from deepagents_talon.goals.notify import (
+    Notice,
+    attention_notice,
+    decision_notice,
+    digest_due,
+    digest_notice,
+    result_notice,
+)
 from deepagents_talon.goals.scope import ReadScope
 from deepagents_talon.goals.work import (
     DiscoveryResult,
@@ -38,6 +47,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents_talon.cron.jobs import CronJob, CronJobStore, CronOrigin
+    from deepagents_talon.goals.decisions import ApprovedAction
     from deepagents_talon.goals.ledger import GoalLedger
     from deepagents_talon.goals.models import Goal, RunResult, WorkItem
 
@@ -53,6 +63,8 @@ GOAL_USAGE = (
     "`path:/absolute/dir`; other sources are guidance.\n"
     "/goal confirm <revision> — activate or update the goal from that exact revision.\n"
     "/goal status — show the goal, its schedule, and its work.\n"
+    "/goal approve <decision> or /goal reject <decision> — answer a proposed action.\n"
+    "/goal done <item> [link] or /goal close <item> — settle an item that needs you.\n"
     "/goal remove — stop the goal and remove its scheduled jobs."
 )
 _SCOPE_NOTICE = (
@@ -97,6 +109,19 @@ class GoalRequest:
     argument: str
 
 
+@dataclass(frozen=True, slots=True)
+class GoalReply:
+    """Reply to a `/goal` command.
+
+    Args:
+        text: Reply for the starting chat.
+        action: Approved action the host should run in an interactive turn.
+    """
+
+    text: str
+    action: ApprovedAction | None = None
+
+
 class GoalController:
     """Applies owner commands to the ledger and keeps the goal job in step."""
 
@@ -127,28 +152,77 @@ class GoalController:
         Returns:
             Reply for the starting chat.
         """
+        return self.handle_command(request).text
+
+    def handle_command(self, request: GoalRequest) -> GoalReply:
+        """Run one `/goal` command, including any approved action to start.
+
+        Args:
+            request: Parsed command.
+
+        Returns:
+            Reply text and, after an approval, the action to run interactively.
+        """
         try:
             return self._dispatch(request)
         except GoalLedgerCorruptError:
             logger.exception("Goal ledger is unreadable")
-            return "The goal ledger could not be read, so nothing changed. Check Talon logs."
+            text = "The goal ledger could not be read, so nothing changed. Check Talon logs."
         except (GoalLedgerError, CronJobError) as exc:
-            return str(exc)
+            text = str(exc)
+        return GoalReply(text)
 
-    def _dispatch(self, request: GoalRequest) -> str:
+    def _dispatch(self, request: GoalRequest) -> GoalReply:
         argument = request.argument.strip()
         command = argument.lower()
         if command in {"", "status"}:
-            return self._status(request)
+            return GoalReply(self._status(request))
         if command == "help":
-            return GOAL_USAGE
+            return GoalReply(GOAL_USAGE)
         if command == "remove":
-            return self._remove(request)
+            return GoalReply(self._remove(request))
         verb, *args = argument.split(maxsplit=1)
-        handler = {"edit": self._edit, "confirm": self._confirm}.get(verb.lower())
+        rest = args[0] if args else ""
+        if verb.lower() == "approve":
+            return self._approve(request, rest)
+        handler = {
+            "edit": self._edit,
+            "confirm": self._confirm,
+            "reject": self._reject,
+            "done": self._done,
+            "close": self._close,
+        }.get(verb.lower())
         if handler is not None:
-            return handler(request, args[0] if args else "")
-        return self._start(request, argument)
+            return GoalReply(handler(request, rest))
+        return GoalReply(self._start(request, argument))
+
+    def interactive_finished(self, action: ApprovedAction, *, cancelled: bool) -> None:
+        """Park an approved action's item until the owner confirms its result.
+
+        Args:
+            action: Action whose interactive turn ended.
+            cancelled: Whether the turn was stopped before it finished.
+        """
+        decisions.interactive_finished(self.ledger, action, cancelled=cancelled, now=self.now())
+
+    def _approve(self, request: GoalRequest, text: str) -> GoalReply:
+        goal = self._owned_goal(request)
+        reply, action = decisions.approve(
+            self.ledger, goal, text, origin_message=request.origin.message_id, now=self.now()
+        )
+        return GoalReply(reply, action)
+
+    def _reject(self, request: GoalRequest, text: str) -> str:
+        goal = self._owned_goal(request)
+        return decisions.reject(
+            self.ledger, goal, text, origin_message=request.origin.message_id, now=self.now()
+        )
+
+    def _done(self, request: GoalRequest, text: str) -> str:
+        return decisions.mark_done(self.ledger, self._owned_goal(request), text, now=self.now())
+
+    def _close(self, request: GoalRequest, text: str) -> str:
+        return decisions.close(self.ledger, self._owned_goal(request), text, now=self.now())
 
     def reconcile(self) -> None:
         """Expire stale leases and reflect goal job state, once at host startup."""
@@ -178,6 +252,8 @@ class GoalController:
             return None
         self.ledger.reconcile_leases(now=self.now())
         goal = self._mirror_job(goal)
+        if goal.state == "active":
+            self._maybe_digest(goal)
         try:
             turn = self._lease_turn(goal, ttl) if goal.state == "active" else None
         except GoalLedgerError as exc:
@@ -282,10 +358,39 @@ class GoalController:
             self.ledger.request_decision(
                 item_id, proposal=result.proposal, expires_at=expires, now=self.now()
             )
+        self._notify_item(turn.goal_id, item_id)
 
     def _fail(self, turn: GoalTurn, result: RunResult, detail: str) -> None:
         self.ledger.finish_run(turn.run_id, result=result, detail=detail, now=self.now())
         log_event(logger, "goal.turn_failed", goal_id=turn.goal_id, result=result, detail=detail)
+        if turn.item_id is not None:
+            self._notify_item(turn.goal_id, turn.item_id)
+
+    def _notify_item(self, goal_id: str, item_id: str) -> None:
+        """Queue the prompt notification an item's new state calls for, if any."""
+        goal, item = self.ledger.get_goal(goal_id), self.ledger.get_item(item_id)
+        notice = None if goal is None or item is None else self._item_notice(goal, item)
+        if goal is not None and notice is not None:
+            self.ledger.enqueue(
+                goal.id, event_id=notice.event_id, payload=notice.payload, now=self.now()
+            )
+
+    def _item_notice(self, goal: Goal, item: WorkItem) -> Notice | None:
+        if item.status == "awaiting_decision":
+            pending = self.ledger.list_decisions(goal.id, states={"pending"})
+            decision = next((d for d in reversed(pending) if d.item_id == item.id), None)
+            return None if decision is None else decision_notice(goal, decision, item)
+        if item.status == "done" and item.outcome == "verified":
+            return result_notice(goal, item)
+        if item.status in {"needs_attention", "failed"}:
+            return attention_notice(goal, item)
+        return None
+
+    def _maybe_digest(self, goal: Goal) -> None:
+        now = self.now()
+        if digest_due(goal, self.ledger.list_outbox(goal_id=goal.id), now):
+            notice = digest_notice(goal, self.ledger.list_items(goal.id), now)
+            self.ledger.enqueue(goal.id, event_id=notice.event_id, payload=notice.payload, now=now)
 
     def _start(self, request: GoalRequest, outcome: str) -> str:
         if self.ledger.goal_for_conversation(request.scope) is not None:
@@ -423,11 +528,14 @@ class GoalController:
     def _work_lines(self, goal: Goal) -> list[str]:
         counts = Counter(item.status for item in self.ledger.list_items(goal.id))
         work = ", ".join(f"{count} {status}" for status, count in sorted(counts.items()))
-        decisions = len(self.ledger.list_decisions(goal.id, states={"pending"}))
+        pending = self.ledger.list_decisions(goal.id, states={"pending"})
+        attention = self.ledger.list_items(goal.id, statuses={"needs_attention"})
         unsent = len(self.ledger.list_outbox(goal_id=goal.id, states={"pending", "unknown"}))
         lines = [f"Work: {work or 'none yet'}."]
-        if decisions:
-            lines.append(f"Waiting on you: {decisions} decision(s).")
+        if pending:
+            lines.append(f"Waiting on you: {len(pending)} decision(s).")
+            lines.extend(f"- decision {d.id}: {d.proposal}" for d in pending)
+        lines.extend(f"- item {item.id} needs you: {item.next_step}" for item in attention)
         if unsent:
             lines.append(f"Updates not confirmed delivered: {unsent}.")
         lines.extend(self._kpi_lines(goal))

@@ -50,6 +50,7 @@ from deepagents_talon.goals import (
     GoalLedger,
     GoalLedgerCorruptError,
     GoalLedgerError,
+    GoalReply,
     GoalRequest,
     GoalScope,
 )
@@ -112,6 +113,7 @@ if TYPE_CHECKING:
     from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob
+    from deepagents_talon.goals import ApprovedAction, OutboxEvent
     from deepagents_talon.questions import Question, QuestionHandler
     from deepagents_talon.speech import VoiceTranscriber
 
@@ -697,11 +699,12 @@ class TalonHost:
             _MODEL_COMMAND: lambda: self._model_command(channel, message),
             _SMART_MODEL_COMMAND: lambda: self._smart_model_command(channel, message),
             _EFFORT_COMMAND: lambda: self._effort_command(channel, message),
-            _GOAL_COMMAND: lambda: self._goal_command(message, provider),
         }
         if (respond := replies.get(command)) is not None:
             reply = await respond()
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        elif command == _GOAL_COMMAND:
+            await self._goal_command(channel, message, provider, conversation_root)
         elif command == _RESET_ALL_HISTORY_COMMAND:
             await self._reset_all_history(
                 channel,
@@ -730,18 +733,43 @@ class TalonHost:
             return False
         return True
 
-    async def _goal_command(self, message: ChannelMessage, provider: str | None) -> str:
-        """Run `/goal`; the owner's text edits the goal and never reaches the model."""
+    async def _goal_command(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        provider: str | None,
+        conversation_root: str,
+    ) -> None:
+        """Run `/goal` and start any action the owner just approved."""
+        reply = await self._goal_reply(message, provider)
+        await send_with_retry(lambda: channel.send_message(message.conversation_id, reply.text))
+        if reply.action is not None:
+            await self._start_approved_action(
+                _BackgroundRoute(
+                    channel=channel,
+                    message=replace(message, text=reply.action.prompt),
+                    conversation_root=conversation_root,
+                    conversation_id=self._agent_conversation_id(conversation_root),
+                    provider=provider,
+                ),
+                reply.action,
+            )
+        if self.goals is not None:
+            await self._deliver_goal_outbox(self.goals)
+
+    async def _goal_reply(self, message: ChannelMessage, provider: str | None) -> GoalReply:
+        """Apply the owner's `/goal` text; it never reaches the model."""
         if self.goals is None:
-            return _GOAL_UNAVAILABLE_MESSAGE
+            return GoalReply(_GOAL_UNAVAILABLE_MESSAGE)
         if not message.sender_id:
-            return _GOAL_NO_SENDER_MESSAGE
+            return GoalReply(_GOAL_NO_SENDER_MESSAGE)
         history_chat = message.metadata.get("history_chat")
         request = GoalRequest(
             scope=GoalScope(
                 channel=provider,
                 conversation_id=message.conversation_id,
                 owner_id=message.sender_id,
+                direct=is_direct_message(message),
             ),
             origin=CronOrigin(
                 conversation_id=message.conversation_id,
@@ -756,7 +784,64 @@ class TalonHost:
             ),
             argument=_command_argument(message.text),
         )
-        return await asyncio.to_thread(self.goals.handle, request)
+        return await asyncio.to_thread(self.goals.handle_command, request)
+
+    async def _start_approved_action(self, route: _BackgroundRoute, action: ApprovedAction) -> None:
+        """Run an approved action as an ordinary turn, under every existing tool gate."""
+        goals = self.goals
+        if goals is None:
+            return
+        previous = self._tasks.get(route.conversation_id)
+        await self._replace_agent_turn(route, user_interrupted=True)
+        task = self._tasks.get(route.conversation_id)
+        if task is None or task is previous:
+            await asyncio.to_thread(goals.interactive_finished, action, cancelled=True)
+            return
+        task.add_done_callback(
+            lambda done: self._settle_approved_action(goals, action, cancelled=done.cancelled())
+        )
+
+    def _settle_approved_action(
+        self, goals: GoalController, action: ApprovedAction, *, cancelled: bool
+    ) -> None:
+        try:
+            goals.interactive_finished(action, cancelled=cancelled)
+        except GoalLedgerCorruptError, GoalLedgerError, OSError:
+            logger.exception("Could not record the end of approved goal action %s", action.item_id)
+
+    async def _deliver_goal_outbox(self, goals: GoalController) -> None:
+        """Send pending goal notifications, recording each send's result.
+
+        An event is marked `unknown` before it is sent, so a crash mid-send
+        cannot cause a duplicate post; only a confirmed send becomes `sent`.
+        """
+        try:
+            events = await asyncio.to_thread(goals.ledger.list_outbox, states={"pending"})
+        except GoalLedgerCorruptError, OSError:
+            logger.exception("Could not read the goal outbox")
+            return
+        for event in events:
+            try:
+                await self._deliver_goal_event(goals, event)
+            except GoalLedgerError, OSError:
+                logger.exception("Could not deliver goal event %s", event.event_id)
+
+    async def _deliver_goal_event(self, goals: GoalController, event: OutboxEvent) -> None:
+        record = goals.ledger.record_delivery
+        if not await asyncio.to_thread(goals.ledger.claim_delivery, event.event_id):
+            return
+        destination = event.destination
+        channel = await self.origin_channel(
+            CronOrigin(conversation_id=destination.conversation_id, channel=destination.channel)
+        )
+        if channel is None:
+            await asyncio.to_thread(record, event.event_id, state="withheld")
+            return
+        result = await send_with_retry(
+            lambda: channel.send_message(destination.conversation_id, event.payload)
+        )
+        if result.success:
+            await asyncio.to_thread(record, event.event_id, state="sent", receipt=result.message_id)
 
     async def _pair_command(
         self,
@@ -1494,10 +1579,17 @@ class TalonHost:
                 self._revoked_runs.discard(job.id)
 
     async def _run_goal_job(self, job: CronJob) -> None:
-        """Run a goal job fire: a cheap check, then at most one read-only model turn."""
+        """Run a goal job fire, then deliver any notifications it queued."""
         goals = self.goals
         if goals is None:
             return
+        try:
+            await self._goal_fire(goals, job)
+        finally:
+            await self._deliver_goal_outbox(goals)
+
+    async def _goal_fire(self, goals: GoalController, job: CronJob) -> None:
+        """A cheap check, then at most one read-only model turn."""
         ttl = timedelta(seconds=_SCHEDULED_RUN_TIMEOUT_SECONDS + _GOAL_LEASE_MARGIN_SECONDS)
         turn = await asyncio.to_thread(goals.prepare_fire, job, ttl=ttl)
         if turn is None:

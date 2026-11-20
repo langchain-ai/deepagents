@@ -107,6 +107,8 @@ class GoalScope(BaseModel):
     conversation_id: ShortText
     owner_id: ShortText
     channel: str | None = Field(default=None, max_length=MAX_SHORT_TEXT)
+    direct: bool = False
+    """Whether the chat is a direct message, so updates may quote source evidence."""
 
     def same_conversation(self, other: GoalScope) -> bool:
         """Whether both scopes address the same channel conversation.
@@ -243,6 +245,7 @@ class HumanDecision(BaseModel):
     item_id: str
     owner_id: str
     proposal_hash: str
+    proposal: str = Field(default="", max_length=MAX_TEXT)
     goal_revision: int
     state: DecisionState
     expires_at: AwareDatetime

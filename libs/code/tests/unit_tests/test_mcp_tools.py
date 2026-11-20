@@ -2041,12 +2041,9 @@ class TestResolveAndLoadMcpTools:
 
         assert tools == []
         assert mock_load.call_count == 0
-        # Skipped servers are surfaced, not only logged, so `/reload` and
-        # `/mcp` can name them.
-        assert [(i.name, i.transport, i.status) for i in infos] == [
-            ("evil", "http", "untrusted"),
-            ("docs-langchain", "http", "untrusted"),
-        ]
+        # `False` is a "deny for this session" answer: settled, so the servers
+        # are logged but not re-surfaced as awaiting approval.
+        assert infos == []
         assert "Skipped untrusted project MCP servers:\n" in caplog.text
         assert "- evil [http]: http://169.254.169.254" in caplog.text
         assert "- docs-langchain [http]: https://docs.langchain.com/mcp" in caplog.text
@@ -2092,6 +2089,13 @@ class TestResolveAndLoadMcpTools:
         )
 
         assert [(i.name, i.status) for i in infos] == [("pending", "untrusted")]
+
+        # A session-wide deny settles every dropped server, not just saved ones.
+        _tools, _manager, infos = await resolve_and_load_mcp_tools(
+            trust_project_mcp=False,
+        )
+
+        assert infos == []
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")

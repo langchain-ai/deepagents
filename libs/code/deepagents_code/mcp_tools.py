@@ -2808,9 +2808,16 @@ async def resolve_and_load_mcp_tools(
                 trust_project_mcp=trust_project_mcp,
                 config_trusted=config_trusted,
             )
-        # Explicitly rejected names are the user's settled decision, so only
-        # servers still awaiting approval are surfaced (see `_untrusted_infos`).
-        untrusted = [s for s in dropped if s.name not in trust_lists.disabled]
+        # Rejections are settled decisions, so only servers still awaiting
+        # approval are surfaced (see `_untrusted_infos`). That covers saved
+        # rejections and a "deny for this session" answer to the startup
+        # prompt (`trust_project_mcp is False`); re-reporting either would just
+        # send the user back to a prompt they already answered.
+        untrusted = (
+            []
+            if trust_project_mcp is False
+            else [s for s in dropped if s.name not in trust_lists.disabled]
+        )
 
     if explicit_config_path:
         config_path = (

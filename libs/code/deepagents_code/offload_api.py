@@ -263,33 +263,10 @@ def _runtime_unavailable_detail(consequence: str) -> str:
     )
 
 
-_WIRE_LATE_MCP_STATUSES: frozenset[str] = frozenset({"untrusted"})
-"""Statuses sent under `mcp_untrusted_servers` instead of `mcp_server_info`.
-
-Clients released before a status existed exhaustively match the statuses they
-know (`assert_never`), so an unknown one in `mcp_server_info` crashes their
-`/mcp` viewer. Clients ignore unknown response keys, so a separate key keeps
-older clients working while newer ones merge the entries back in.
-"""
-
-
 def _mcp_server_info_payload(
     server_info: list[MCPServerInfo] | None,
-) -> dict[str, list[dict[str, Any]] | None]:
-    if server_info is None:
-        return {"mcp_server_info": None}
-    return {
-        "mcp_server_info": [
-            asdict(server)
-            for server in server_info
-            if server.status not in _WIRE_LATE_MCP_STATUSES
-        ],
-        "mcp_untrusted_servers": [
-            asdict(server)
-            for server in server_info
-            if server.status in _WIRE_LATE_MCP_STATUSES
-        ],
-    }
+) -> list[dict[str, Any]] | None:
+    return None if server_info is None else [asdict(server) for server in server_info]
 
 
 def _workspace_conflict_response(exc: WorkspaceConflictError) -> JSONResponse:
@@ -443,7 +420,7 @@ async def workspace(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "workspace": binding.to_payload(),
-            **_mcp_server_info_payload(runtime.mcp_server_info),
+            "mcp_server_info": _mcp_server_info_payload(runtime.mcp_server_info),
         }
     )
 

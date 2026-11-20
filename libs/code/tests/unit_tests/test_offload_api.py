@@ -542,29 +542,6 @@ class TestWorkspaceRoute:
         assert response.status_code == 422
 
 
-class TestMcpServerInfoPayload:
-    def test_late_statuses_move_to_their_own_key(self) -> None:
-        """Older clients crash on unknown statuses but ignore unknown keys."""
-        from deepagents_code.mcp_tools import MCPServerInfo
-        from deepagents_code.offload_api import _mcp_server_info_payload
-
-        payload = _mcp_server_info_payload(
-            [
-                MCPServerInfo(name="docs", transport="http"),
-                MCPServerInfo(
-                    name="robin",
-                    transport="http",
-                    status="untrusted",
-                    error="Not approved for this project.",
-                ),
-            ]
-        )
-
-        assert [s["name"] for s in payload["mcp_server_info"] or []] == ["docs"]
-        assert [s["name"] for s in payload["mcp_untrusted_servers"] or []] == ["robin"]
-        assert _mcp_server_info_payload(None) == {"mcp_server_info": None}
-
-
 class TestOperationPayload:
     """Malformed client requests fail with a field-naming 422 at the boundary."""
 

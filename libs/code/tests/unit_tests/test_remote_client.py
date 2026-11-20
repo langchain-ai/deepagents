@@ -1420,49 +1420,6 @@ class TestRemoteAgentWorkspace:
         assert info[0].name == "docs"
         assert info[0].tools[0].name == "search"
 
-    async def test_switch_merges_late_statuses_and_tolerates_unknown(self) -> None:
-        """Late-status entries merge back in; unknown statuses become `error`.
-
-        An unknown status must not reach code that matches statuses
-        exhaustively.
-        """
-        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
-        agent.set_workspace("/workspace/old")
-        post = AsyncMock(
-            return_value={
-                "workspace": {"workspace_id": "new"},
-                "mcp_server_info": [
-                    {
-                        "name": "future",
-                        "transport": "http",
-                        "status": "from_the_future",
-                        "error": None,
-                    }
-                ],
-                "mcp_untrusted_servers": [
-                    {
-                        "name": "robin",
-                        "transport": "http",
-                        "status": "untrusted",
-                        "error": "Not approved for this project.",
-                    }
-                ],
-            }
-        )
-        graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
-
-        with patch.object(agent, "_get_graph", return_value=graph):
-            info = await agent.aswitch_workspace(
-                {"configurable": {"thread_id": "destination"}}, "/workspace/new"
-            )
-
-        assert info is not None
-        assert [(i.name, i.status) for i in info] == [
-            ("future", "error"),
-            ("robin", "untrusted"),
-        ]
-        assert info[0].error == "Unrecognized server status 'from_the_future'."
-
     async def test_switch_failure_preserves_workspace_state(self) -> None:
         agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         agent.set_workspace("/workspace/old")

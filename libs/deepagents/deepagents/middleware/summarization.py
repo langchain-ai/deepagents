@@ -72,7 +72,7 @@ import uuid
 import warnings
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Never, NotRequired, TypeGuard, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Never, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -81,6 +81,7 @@ from langchain.agents.middleware.summarization import (
     ContextSize,
     SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
+    _extract_configuration,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
 from langchain.tools import (
@@ -153,9 +154,6 @@ _BEDROCK_PROVIDERS = frozenset({"bedrock", "bedrock_converse"})
 
 _NATIVE_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
 """Reasoning block types in the Anthropic and Bedrock Converse native formats."""
-
-_CONFIGURATION_UPDATE_TYPE = "configuration_update"
-"""Content block type that changes model settings, such as reasoning effort, mid-conversation."""
 
 
 class SummarizationEvent(TypedDict):
@@ -619,69 +617,6 @@ def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     if len(content) == len(message.content):
         return message
     return message.model_copy(update={"content": content})
-
-
-def _is_configuration_update(block: object) -> TypeGuard[dict[str, Any]]:
-    """Return whether `block` is a `configuration_update` content block."""
-    return isinstance(block, dict) and block.get("type") == _CONFIGURATION_UPDATE_TYPE
-
-
-def _configuration_settings(messages: list[AnyMessage]) -> dict[str, Any]:
-    """Merge the settings of every `configuration_update` block in `messages`.
-
-    Each top-level setting, such as `reasoning` or `text`, is merged on its own,
-    so a later update to one setting leaves the others in effect.
-    """
-    settings: dict[str, Any] = {}
-    for message in messages:
-        if not isinstance(message.content, list):
-            continue
-        for block in message.content:
-            if _is_configuration_update(block):
-                settings.update({key: value for key, value in block.items() if key not in {"type", "id"}})
-    return settings
-
-
-def _without_configuration_updates(messages: list[AnyMessage]) -> list[AnyMessage]:
-    """Return `messages` without `configuration_update` blocks, dropping messages left empty."""
-    result: list[AnyMessage] = []
-    for message in messages:
-        if not isinstance(message.content, list) or not any(map(_is_configuration_update, message.content)):
-            result.append(message)
-            continue
-        content = [block for block in message.content if not _is_configuration_update(block)]
-        if content:
-            result.append(message.model_copy(update={"content": content}))
-    return result
-
-
-def _extract_configuration(
-    summarized: list[AnyMessage],
-    kept: list[AnyMessage],
-) -> tuple[list[AnyMessage], dict[str, Any] | None]:
-    """Split `configuration_update` blocks out of the messages a summary replaces.
-
-    A `configuration_update` block changes settings such as reasoning effort from
-    its message onward, so replacing that message with a summary would silently
-    revert them. The returned block restates the merged settings so the summary
-    message keeps them in effect. Every merged setting is restated, not just the
-    ones `kept` leaves unset, so the block stays complete; later updates in
-    `kept` still override it.
-
-    Args:
-        summarized: Messages about to be replaced by a summary.
-        kept: Messages kept verbatim after the summary.
-
-    Returns:
-        `summarized` without the blocks, which carry no conversation content for
-            the summary, and the block to restate, or `None` when there is
-            nothing to restate or `kept` already overrides every setting.
-    """
-    stripped = _without_configuration_updates(summarized)
-    settings = _configuration_settings(summarized)
-    if not settings or settings.keys() <= _configuration_settings(kept).keys():
-        return stripped, None
-    return stripped, {"type": _CONFIGURATION_UPDATE_TYPE, **settings}
 
 
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):

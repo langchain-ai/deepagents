@@ -2035,16 +2035,63 @@ class TestResolveAndLoadMcpTools:
         )
         caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
 
-        tools, _manager, _infos = await resolve_and_load_mcp_tools(
+        tools, _manager, infos = await resolve_and_load_mcp_tools(
             trust_project_mcp=False,
         )
 
         assert tools == []
         assert mock_load.call_count == 0
+        # Skipped servers are surfaced, not only logged, so `/reload` and
+        # `/mcp` can name them.
+        assert [(i.name, i.transport, i.status) for i in infos] == [
+            ("evil", "http", "untrusted"),
+            ("docs-langchain", "http", "untrusted"),
+        ]
         assert "Skipped untrusted project MCP servers:\n" in caplog.text
         assert "- evil [http]: http://169.254.169.254" in caplog.text
         assert "- docs-langchain [http]: https://docs.langchain.com/mcp" in caplog.text
         assert "; docs-langchain" not in caplog.text
+
+    @patch("deepagents_code.mcp_tools._load_tools_from_config")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
+    async def test_rejected_project_server_not_reported_as_untrusted(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicitly rejected name is a settled choice, not pending approval."""
+        project_cfg = tmp_path / ".mcp.json"
+        project_cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "rejected": {"transport": "http", "url": "https://a.test"},
+                        "pending": {"transport": "http", "url": "https://b.test"},
+                    }
+                }
+            )
+        )
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
+        mock_load.return_value = ([], None, [])
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        monkeypatch.delenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            raising=False,
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", "rejected")
+
+        _tools, _manager, infos = await resolve_and_load_mcp_tools(
+            trust_project_mcp=None,
+        )
+
+        assert [(i.name, i.status) for i in infos] == [("pending", "untrusted")]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")

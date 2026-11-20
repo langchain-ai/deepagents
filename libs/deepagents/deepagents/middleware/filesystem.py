@@ -96,6 +96,7 @@ from deepagents.middleware._blob_offload import (
     _offload_tool_result,
     _tool_blob_store,
 )
+from deepagents.middleware._image import downscale_image
 from deepagents.middleware._message_eviction import (
     _TOO_LARGE_TOOL_MSG,
     ContentPreview,
@@ -2328,6 +2329,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if encoding == "base64" or file_type != "text":
                 block_type = file_type if file_type != "text" else "file"
                 mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+                if block_type == "image":
+                    content = downscale_image(content)
                 return ToolMessage(
                     content_blocks=cast("list[ContentBlock]", [{"type": block_type, "base64": content, "mime_type": mime_type}]),
                     name="read_file",

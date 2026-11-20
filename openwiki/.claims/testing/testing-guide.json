@@ -1,160 +1,188 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bd363bacd2c90b8183f4e4d707c296cc8f5cb95f47344dacbe15e3f865d04adc",
+  "pageVersion": "sha256:9ab6ec33100f8addea98cbf530e6cfd8467f178ea29ab723e16f808946f98f5e",
   "claims": [
     {
-      "id": "claim_210a2a86865e43b4b1347271f7727945",
-      "statement": "The ACP stdio handshake test starts a local Python agent process through `spawn_agent_process`, initializes it at `PROTOCOL_VERSION`, verifies negotiated capabilities, and creates a session; its factory raises if invoked, proving handshake/session setup does not construct the agent.",
+      "id": "claim_1f75f0730abf42d289bfa667ec9ee297",
+      "statement": "The package Makefiles provide focused network-restricted unit-test routes: dcode runs pytest with xdist, disabled sockets except Unix sockets, disabled benchmarks, and coverage; Talon runs its Node bridge suite then pytest with the same socket restriction, a ten-second timeout, and coverage; QuickJS and evals disable sockets except Unix sockets, with QuickJS coverage.",
       "evidence": [
-        {
-          "resource": "repo://libs/acp/tests/test_stdio_handshake.py#L1-L52",
-          "version": "repo-lines-v1:sha256:ec5b79ac2ebad51e5763cf89d09e2c8b683ea34752705094d37f1d53b4086e09:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3YTZjZjUxYmE1NmJiYWFkNjNjYTkxMzQ0OWFlOTVkOWZjN2JlNDQzMGM4Njg4YzdiZWVkNjQxYWRlZTM4ODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5Yzk2Yjg3NDk0MDE1MTljMWU0YzQxMjU0ZDkwNThkODFhOGJjMTBiOGRjNWE0ZWQzM2EyZDQwOWU2NWFhN2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_f5e1d696444c4902a33121cf4e06a0bc",
-      "statement": "ACP server tests protect client-visible streaming and session behavior: visible reasoning and text preserve block order and whitespace, local-context messages are hidden, content precedes tool calls, and cancelling one concurrent session does not cancel another.",
-      "evidence": [
-        {
-          "resource": "repo://libs/acp/tests/test_agent.py#L147-L200",
-          "version": "repo-lines-v1:sha256:5dc7a6c62fd2daaea08e9ff2f317d393adf67ee349ec17d26aa7e57eb00f571e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhYjdjYWMzZDRmNDc5ZmZjMDEzMDcxNDA2ZjE3MWRkNjE2NzMzYjljYTg4YWQzYzgzY2E0YWZiMzg3ZjExYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkZDI0NDU4MmI2ZmIwM2QyM2I4NDE1YWJlY2QzNDZiMGM5ZjQ2NmI2Zjc1MmIwNjgxODljZTdlOWEyZGMzNTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEzMjBmZmZmM2IxZDBmZWUwMDk4NjRiMmM3NzMxMzM1ZWMzY2YxNjIyYzcwZjUyN2Y5MmM1MjY0MWQ3YTg5MDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1ZmIxM2E4MjBjNDlhN2Q5OTkwNzY3NGMyMWU1OGE5M2UwNjNhZGUwNzViNTU4MzdmNDE3ZWEwOTc5MDgwMDIifQ"
-        },
-        {
-          "resource": "repo://libs/acp/tests/test_agent.py#L231-L265",
-          "version": "repo-lines-v1:sha256:40804ccf1a15535df3a80b2f884d8e4c9293bfbc12024884245d0687915e3993:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5MWU2N2JkNjM3MTQzYTE2ZWI1ZmUzYzVmY2I2ZjI4MWI5ZjAwZTM0YjMyZTJhZjNiNWI4NjcwOTA5MjcwYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4ZWQyMDdhOGZhZGRiMzM3NmQ2NDZlYTdiN2I5NzcwNGE0MWQ0OWRhOGFmZDE0ODU2YzFiOWM3YjQyMzE4ZjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2MDg1NWQ1Yzg4MjJlMGFjZGIxZGUzMGZiODUzOTYzZThlN2E2NTk3NTQyNDlmOTQyMDdiNDM5NzkwMjU4YzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkifQ"
-        },
-        {
-          "resource": "repo://libs/acp/tests/test_agent.py#L296-L320",
-          "version": "repo-lines-v1:sha256:12158e67a53c1661e16bef3b7b2ecccc1679d29d75560201460775e41c7b5bd3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxM2Q1ZTI2M2ZjNmRkZGQ2Mzc1M2Y3MjZmNDg5ZmZiY2ZmMjYxNDZkMzlmOGQxZDA1MjM2NTFjNzNkMTQxNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4Njk3ZjkwOWVmYjI2ZGZjMjZjMGExZTUyMzBhNjRiNjhkMGQxM2ZmZmFiNjMwMzAwMDE2MmFiYmFlM2QwNjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxNjU2OGYzZDdmMDExOTM4ZmIxYjBlNzMwMGRiYTI5MGUyOWMzMzI1MjI1MjFkMzVmYmNjYmJjMzEyNzdiM2YifQ"
-        },
-        {
-          "resource": "repo://libs/acp/tests/test_agent.py#L344-L405",
-          "version": "repo-lines-v1:sha256:892349ee9580a5e88927203a802a95c3d4e67a07ba884a1c3984004ea1d54749:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2NGM5MGVhNjA0ZGQ0MjQ0M2I2ZDc5YTY0NzdlYzRkZmYwNjNiYzliMThkMjc0ODdiMzMyODE2OGJmYjY1MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlZjUyYzA5YzFhMjU5NTdkYmM1NmM1MjdkYjgwMTJlZjg5ZTY5NzkxODMyMWVkYjkxNTY5YWM1ZGVmNTlmNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0N2IxYzFjZDZiYmFjZGU1YzMzMDg5NmE2M2JiZWNiNDBjMDU4OTM1Nzc0ODFjMzVhOGE4YmFmNDZkNzA0OWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4YWRhM2ZlYzJiZGE1MTUyODI3YTI2NjdiMWRjMjA1NjMzOTNiN2RkYWY1ZjczNjdmOGJjNTQ0Y2QyZGUxYTQifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_7d7a15515ea247788bab9aafbb9cda23",
-      "statement": "dcode app tests exercise startup and configuration lifecycle invariants including idempotent session initialization, deferred initial submission until server readiness, and recovery of queued prompts after configuration-refresh failure.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L341-L375",
-          "version": "repo-lines-v1:sha256:0c76076a642ccf63482ecb56c42dde3c71a435b6fa4853b6f3e9c0cac2eb4070:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3OWNkZmI5MWRlNThhZTU3ZDRiN2JhMTVkNjliNjQyZTcwZTk2NWQ2OTFjNjlmMWY3YTJiMjNhMTcwN2ZlYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwYjEwNWIzOTdhYjQ3MzQzMTFlOWM4NTYxNDNiYzYyMTI1NzM4YjM1NDcyOTYyNTM5NTRkY2YzZmJjZWU1NmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE4MmViOTA5Y2M5ZTQ4OWU5N2MxMzVkMWM0NDBjNGY3ZTQyM2ZkOTlkMGYyZDRjZWRhMDMxMWM0YzMyYjI0MWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwN2UxNzc4OWQ2ZmExZGFkODhmZjY1NjVmODIwNThhMjlhNzYwYmQzMTc2NjNhNDA1MGU3MTAyMTE1N2RhYzUifQ"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L4033-L4078",
-          "version": "repo-lines-v1:sha256:60299689ae5f6bb65187c93b3eb5ed1bb383f19d4cf82716156eb10b4be2c19e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NGFkNjdmZjVlN2U3ZTFlNmQzYzRjOTY5MDRhMjExMWViMDA4NGIzZjkyZGMwOGQ4M2ExMzc5ZDFiOWQ5NDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmOTRhNjdhNDZjZjlmMGI3YTRhYzVhZDE4MGEwNjM2MzBiNTg5OWNkYTM1ZDA0YjdkNDYxYTIyYTgyMTc3MjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkMDE5YWNkOWZhZmY0NzUzOTE4OGIwYmM0MjI3ODY3YWEwODIxMDgzMWNmZjIyMDZlNzU1ZGU0ZTNmMDIxMGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA2N2IyZjJkZDU4ZjNkZWY0Yjc0MjFhMWIwZTJiOWQwYTZiMDIxYWUzN2I1MTI1M2Q5NmE3NDBmZjIyMDFhMjgifQ"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L421-L455",
-          "version": "repo-lines-v1:sha256:58a8f2bdec44a48dd7ae9bb0cc3fae26e6cd5a51900b524be4fc9dd6932d8469:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmMWQ0MTcxOTVlMzExNDExNjFjNTZiZTY1MjcxMDdkYzNkYTNlN2ZlMGRkY2U1MjQxMmE2OWFlNTI3N2VhMWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NWQxZGZiYmE3MGIzZDY3MWIyNmUwYWQ0Yzg2YWQ1ZjYyNDU3M2MwNjM2YTY0YTdlMTUwZjNjZDNmNTkxY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1NmM1NzA5NjVhNzI2MzY1ZjRmMzUzODg5ZGU5Mjk3ZDQzZjY3N2U4OWIyODI2NGRiZTNiODZjNDRlYmNiMjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFlOTE2N2YxZTUzYzQ3MjcxM2JmYWNmNzdmZWQ2ZTFmMGNjY2ZjYjRhZDk0YTY4NGIzYzBkMWNjMmRjMjI1NWYifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_3d58ca73ee854ada870fe145c8b48f5b",
-      "statement": "The configurable-model tests require checkpoint model/cache identity to be recorded only for successful known-model calls, capture request time before the model call, and preserve distinct request identities in both sync and async paths.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_configurable_model.py#L141-L208",
-          "version": "repo-lines-v1:sha256:f571cf27c9a2d1e9e06fba972e6422f8d052837aecf54ccf7c35dc5e0b3cb174:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNjk1NjE5MWYwYzU4MDQwZjc3ZjJkNzc4OTY1MGRjNTczNWMwMmM0NmZiZjE3NGUwZmQwMzJkMTI1NGI2MzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyOWRmMWJhY2NiOGUxMzU0NzMwYWM0YzhjNGY0Y2YzNWU5YmM2OTk1MzU4MTA4Mzk0MzBjMGY1MGQ5NjdiOWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyNTUxNGM3MWQ0NjA4ZGUxMWU2ZmI2MjVlMmNkM2E2NzhkN2YxZGE0NDVjM2NkYmI5MGJkZDFhY2ZlNGU0ZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxYjdlMzhhZWQyODU0N2VkNzg3NTJmYTNkNWYxNTllZjVjZDkwMmY2ZmE5NTliZjgyNTE5NWZjMGE2ODk2NDIifQ"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_configurable_model.py#L211-L269",
-          "version": "repo-lines-v1:sha256:0436b7b096dda90418bd2c67af4317c02408b5d2fef50f072df83466412a1d83:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxOTZkNGVkZDdjNzJkYTQxMTJiM2IzZjhiZGZjYzMxYzVhNTljMWUyODRlZTMzYWRmZjZlZmUwMGY1MWE3ODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxMGM5N2FhMWNlNjQwMmM2YzA5MTczZGQ2NjBkNDYzN2FmOTc5NGMwMDczYjkzMWYyN2M4NWJmOTdjZTUwM2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3NTZhMjAxMzEzMzMyMGIyNWY4MDhhNzEyY2FlNjk2YTEzNDE3NDI0MGUxZjQ1NjMxZTUwOWU5YThlN2UxYjMifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_15f6916e22cb4046990c4b15357e6211",
-      "statement": "Install-ID tests require a fresh writable state directory to persist a 32-character lowercase hexadecimal ID, reuse it after cache reset, replace malformed persisted values, and fall back to one process-stable value when persistence is impossible.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_install_id.py#L18-L65",
-          "version": "repo-lines-v1:sha256:70ce9323cc3a9e6488dc75b790ed7613ae3337f7f2fce584a6aa7c46326adcec:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMDg2NmY0MDExZTU4NWZmYzA5MDkyZWRmMDgzMmUxN2I1MmY0YzkwYzRjYTBiNDJkY2ZhMDUwZmEzNzViNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjNTMyZTllODc2NmVhNjcwYTNmMWQyNjgxNzdjZDA1YWY0NTVjZjA1ZjI3N2IzZjdiNDVmNzljNjQ2M2NhM2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlMDhlNDBmYjE3ZjRjM2RlYTU3Mjk2ZTIzNjA2YWI5MmU3ZmE1Yjk2MGQ2YjYwM2ZiNTVhMGJkN2I4NWQwNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_fff6bb83b2944681bfd55b6c68ea54a1",
-      "statement": "Provider-native tool-search tests use mock HTTP transports to require eligible requests to defer MCP tools and append native search, pause for approval before MCP execution, retain search output across checkpoint-based graph rebuild, and fall back to eager tools for unsupported requests or model switches.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_provider_tool_search.py#L167-L279",
-          "version": "repo-lines-v1:sha256:3190897327629c169a2bde5db3ea1628a2c8691dc312cebd33c5aff323d65525:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZjM0NTgzYTU5ODc2N2JmNTZhZWZlYjY1ZTIwMzNhMTY1MWNjNGM4ZDdlNmYwYWYzZTVjZmQzMjkzZjkzM2IzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhOTBkNDk2NzFkODA2OWNmMzQzM2M2M2E4OTEzMGQ0Y2NkM2M3NWZjMmQ1N2UwNDIyMjc0NDYzMjE0YmNjZWE1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZGNiZDMzZTBhZTI0MjBmYTAyZDg3N2NlNTQxM2JkMThmZjg2ZDc5N2NhOWJmNDk2ZGJhMDcwZTNlYzViMDVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NDNjOTdhYmZiOGExN2RjMDQxM2ZiOTA2NjFjMGQ1ZjczM2YxNDZlYzNiNGJiNGNlYzNiZGU4YmNlNzBmNjM0In0"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_provider_tool_search.py#L62-L164",
-          "version": "repo-lines-v1:sha256:f5437f2f602299d193f22d7ae65c457b0d39bb3957da824adfa3a4f2fb9955de:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0M2JhYjlkOGRlYmVjMTJhNjg2OGUyNDY2YmNiOTdiNDM3YmVjOGU0M2IyOTg3YTQ4YmU4YWRhYzQzNzBhZWRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5ZDZiNDM2ZmM0MjRjMGU3MmI0OGY5NTIzYTc5M2VmZGU0ZWFiYmZjOTcyODZiMDhlODJkYmViNjY5OWMyMTZhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5YTgyZWJlOWVkNDA3YzNhNmJhNGIwMDM0MjkyYmFhNTJjMTFjZTVhZTI4NjEwNzQwMmRlNDc5MmVlZWNhY2ZjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NjgwYjBmMjkyOGFjMGRiZjNkZDRhMzFkNWMxNmU5MTk4YTI5YTYwODZkMzljZmI1N2MyMGY2MGJlMzNhNjVkIn0"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_provider_tool_search_extra.py#L130-L204",
-          "version": "repo-lines-v1:sha256:13ce787cd918f79c1c0a1282af4f6068faaefd9f11cd80859963a7dc1de2cfad:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxY2UzOWQzZDIxYWRjZDgwMWMzZTQ3YmRiZjNmN2E0NWY2YWUxNDliY2YyNmI1MGM5NDQyNDFkNTJkODdkYTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE4ZWQ3NDcwOWU2NDk2NGFmNWI3ZDdlNmQxZDhiMGVkNjE1YWNjNGMyZWQ3OTA2OWY1NWE4MzdiNzY1ZTE5MTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_c686cdedb6694f79a83cf278fbcfa826",
-      "statement": "Talon host tests require authorization callbacks to match the originating channel, conversation, operator, and endpoint before reaching the agent, while preventing callback secrets from entering logs; they also verify component startup/shutdown ownership.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/tests/test_host.py#L350-L365",
-          "version": "repo-lines-v1:sha256:3679526c58d90d686c718e0d29238d6695e3b5b2cb41c5df3d68cc06caa4e408:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4NTE3YWE3ODM3ZjU3NzY3N2U0NmRmZDhlNjVmMmQwY2U2NTczMjIyODQ4NzVkNTQwMzk4NTE1ZmE4MTFkNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNmM1OGU3Zjg3NDEwNjM4ZDFhODk0NjMyOTE4OGZmZjAzOGQ4ZGI3ZmE1NGE4NjYwMThmNGQ2ODYzMmM3NmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZmU4ODdkYmRkZGNmODk5MzIyOTVhMmViZTZkYzRlYmZhOGE3ZjliZWUzNDZlYjgzNzQzYjU5NWFkMGU2ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlNDdlMzUzOGVlMDZkNzYzNzllMmVjZDIxZjE5OTM3YjQ3ZWZmYjBkN2MyMjIxODg2OWRjNjI1MzBkYmVlZGMifQ"
-        },
-        {
-          "resource": "repo://libs/talon/tests/test_host.py#L369-L416",
-          "version": "repo-lines-v1:sha256:f8b7dd1e9d0301fa9b138906cd0b79c6dccea3c0996431049917efe8c9907bb7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmMDUwNzczZGM5MTgwNmEzNTUzNzhlZjhiMjQyNWNhNzFiYjZjYTRkNjQ4OTg4YjU1Y2Q5Y2M0NmE0YzdmNDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkZDI0NDU4MmI2ZmIwM2QyM2I4NDE1YWJlY2QzNDZiMGM5ZjQ2NmI2Zjc1MmIwNjgxODljZTdlOWEyZGMzNTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlNDdlMzUzOGVlMDZkNzYzNzllMmVjZDIxZjE5OTM3YjQ3ZWZmYjBkN2MyMjIxODg2OWRjNjI1MzBkYmVlZGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
-        },
-        {
-          "resource": "repo://libs/talon/tests/test_host.py#L467-L495",
-          "version": "repo-lines-v1:sha256:cafa9c178eb00bbe293366ae9813b053df4f2b86731003900e296c3f089e0fa8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4MjhiYTc0OGJhMDAwMjBiZGViZTVjNDhhNmE1NmY1NzQ5M2IxN2NmZGRjOTNkNjdjZmE3MzJkYjQ2MjlmNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViMzZiOWEwMjA4OGEwMmE4OTVkMGZlYmNkMzc0ZjYyYjk0MzA1YzI0Y2RiZjQxZWY3NTQwNjhiZTJlZjQ0ODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5MzRkNDk0MTU1ZmQ2MzQyMzFlZjY2YmJhZWMwNWYyOWUwY2FkZmZhNTIzNDEwZjAwZjJlMTEyNjllNzU0YjcifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_7cc76f55486847bdb2d5475ae0deb778",
-      "statement": "The SDK deprecation adapter tests require correct user-callsite attribution and warning categories, isolation of unrelated warning handling during concurrent emission, resettable deduplication for decorated functions and properties, and suppression for normal and pending warnings.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/_api/test_deprecation.py#L223-L310",
-          "version": "repo-lines-v1:sha256:61df903aff191b691a988114962b8b222ce9d4c2112ca40d71cc0f18a7dcdb9e:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzNGZlZWI4MGFmOTc0OTEwZGEyNWFiNjhmNWU5ZDE1OTliNjc5MWEzN2Q3NDJhMGM1ZTg5OWNhOGNlY2ZhZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNWM3MzM3YzU3YTczMjM4NTc4NDAxZjAxYjY0MzVlOTMzNDA1ZjdjN2MxMmRkNTQ1NzdmODFmZGU2ZWJlZjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhiY2I5NjFiY2UyMDgzMTZmODE0N2EzNDdhMTNhMmM0ZjliNTRlOTY1MGRmZjBkYTUxMWFmMGVmZWQ1OGZmMmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxYjVlZGI1MzE1ZGQ5NzMzODFhZWU3ZjEyMTNkMGYzYWRlNjhjYmJkYWQ5MTI5YWVhMDE0Y2M4MjdiYWM2OTcifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/_api/test_deprecation.py#L25-L92",
-          "version": "repo-lines-v1:sha256:df2da8dcd6860fe0bb6da9baf5449c32501b0f6cbfb6e7dfac34c53a740133e5:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2MzQxMTE0ZDg1NDMwNDlmOWM1ZmJjOGU4YTBjNmFkNWY4YzA4ZjRmNjkzNjIxOWEyYTVjN2Q4OTUyYjc4NzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZmZkNzIxYTE2OTE4ODVlMmE2NTM2OTI1NWVmMTUzNWU5ODYyMzc5ZTAzYTI3MTA4MGI1M2Q2MDY2NGVlYzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyMzNmYTkyZTBjZjkxZDExZjZjNDk5OThjNTUwNmZjMGYyNGI3MGE3ODRmNmQwMzc3ZDk5NTEyOGZhZDAwMGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzZDQ2YTlkZjdjZjFmOThiZGI5MTIwNjBkMmQ3YzU4YTUzYzVlOTg2ZWZhMzg2MzllNmNmMDExYjVlN2I5ZDEifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/_api/test_deprecation.py#L95-L139",
-          "version": "repo-lines-v1:sha256:eb3e46bcf7c0c7296c8c215ac3b774dc4f9ab391abce9d14c3fcddb1b2dbbb04:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwMWU2ZjJjZGJlZTY2M2QyODYwNTBmYTgyZjYxNGMyMGMyZWM2MDc2OGQ2NTk0YjAyMWZmNzlhMmI4ZDMwNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxM2M5ZDljMzlhZjI5NmMyZDU3ZDcwYzdmOTMzZjJlNjJkMGM4YjBhOTcxYWM3MGY1NzM2ZTE4M2Y3M2JhNGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ5MDE1YmYxZTJmZWFkNDY1ODhlNWRlZDkxYjkyZGM4MjM1YmI0ZThkODM2NDEwODMxY2FiNjE1YTcwZDdlOTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_f1e8ff58dd9c46c2ae784ad3a72d4cf7",
-      "statement": "Package Makefiles define focused Python test commands: ACP and Talon disable sockets except Unix sockets and enforce a ten-second timeout, while dcode and deepagents run pytest with xdist, disabled sockets except Unix sockets, disabled benchmarks, and coverage.",
-      "evidence": [
-        {
-          "resource": "repo://libs/acp/Makefile#L9-L16",
-          "version": "repo-lines-v1:sha256:c66713dc90a774ef146774a80dfcf9c530fb0dcf48fbfe89f99f4297a091c441:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDlmM2E3MjQxYTY2Yjc2MDBiMzYzNWJmZDc3MTgwZTg0NjZhNmQzNjFkNGM4ZjVlODhmYTMxYWU1ODIxNmQ3ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzRlYmFjNTU5YjE4YjFlYThlOTFlZTMwYzdiYTRlYzEwZjhhNTk4ZDk0M2RhOGZkMjU0NGQzMmU0ZmVlZjAwMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDMxZmVlMDgyMjk5OThjZmJiM2RjY2EwMDZmM2U5MzM4YTk1YTFlY2ExYWMzNmRkYzM0ZGYzN2E4ZjYyNDEyNCJ9"
-        },
         {
           "resource": "repo://libs/code/Makefile#L14-L28",
           "version": "repo-lines-v1:sha256:037c95ac5b5ad1444a320c1204311380507059ee1b63cc83995602bcad2a3b29:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOGU3YzAyNGQ4MTg2NDQxN2NjY2I0NjU4MmVkOWJhNzM5YWM2OWZkZjA2YTgwMDE1NWNjM2ZlZjkzNDQyNjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4YjgwODdhODcyMDYwN2RhOTNhZDY4NWE4NDU3OTQ1M2JhOWQ2ZGU3M2I5ZTk0NTkxNGMyZjhmYzJhYjI0YWEifQ"
         },
         {
-          "resource": "repo://libs/deepagents/Makefile#L12-L23",
-          "version": "repo-lines-v1:sha256:1fb3d089402552eb0f462f707dd34f17374eecbfe36c609676850913de559ba9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOGU3YzAyNGQ4MTg2NDQxN2NjY2I0NjU4MmVkOWJhNzM5YWM2OWZkZjA2YTgwMDE1NWNjM2ZlZjkzNDQyNjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0M2E3OGIwMjQyZGQ5Njk2ODg1NmNlODU5ZjM0MTcwYWZkYTI3MjVlNWYyYjllYWJkNGE0MzE3ODI1YjEyYTAifQ"
+          "resource": "repo://libs/evals/Makefile#L9-L14",
+          "version": "repo-lines-v1:sha256:588555da2e2d58c00eca565fa544dcdf06cd04d88b5a09a0fcbadb38d185c97c:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDlmM2E3MjQxYTY2Yjc2MDBiMzYzNWJmZDc3MTgwZTg0NjZhNmQzNjFkNGM4ZjVlODhmYTMxYWU1ODIxNmQ3ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTQxYmI2NzBkMGQwMTM4YjMyMTgzZWFiZjQ0YzAyOWQyNWNkZGI3YjVhMmRlMzdiMTZiYjA4NDk2NTc4MjRmOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzRlYmFjNTU5YjE4YjFlYThlOTFlZTMwYzdiYTRlYzEwZjhhNTk4ZDk0M2RhOGZkMjU0NGQzMmU0ZmVlZjAwMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZmFmN2I4NzhlOGE5MjZhZDczMmMxMWE1MjZlY2NmNmQ0NGQyYzBhMTY4NTZlMDAxMDg5NTg2NzRmOGZkZWM3NCJ9"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/Makefile#L12-L21",
+          "version": "repo-lines-v1:sha256:8117588b2f386d0e7ad60faa94ca1d18213f9f1172428015a7c56edc3fb0bd01:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjUxMjg5NzRmZWQwNDg1MGJmOTM4MjBiMDQwZDI4ZDdkZDRiMGMwODJkZTMyYjk1YjYzYjkzN2I1ZTk5MjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOGU3YzAyNGQ4MTg2NDQxN2NjY2I0NjU4MmVkOWJhNzM5YWM2OWZkZjA2YTgwMDE1NWNjM2ZlZjkzNDQyNjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJiMGExMGJiYzAyMTY5M2VkNjhhOTljMmRmMjJiMzRlODdmMjI1YzNhMjk1ZGVhMzhkNjE2NTAxNzYwN2U5YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4YjgwODdhODcyMDYwN2RhOTNhZDY4NWE4NDU3OTQ1M2JhOWQ2ZGU3M2I5ZTk0NTkxNGMyZjhmYzJhYjI0YWEifQ"
         },
         {
           "resource": "repo://libs/talon/Makefile#L8-L18",
           "version": "repo-lines-v1:sha256:0952ce0f926e46b95cf4e1d3875222090398f364f47d7ba2ffac617907e1c0d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTA4NmJjNzE2ZTQ1ZjVjN2NkMjMwMTFkZTgyNjgyNWU2ZjM5NmI5NDBlOTMyNDdjMzYxZjJmOWQ5YWNjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNjI5YWM1NjQ1YjZiMmYwZDEyNjYwYzhiNTA0MjgxZGMzYjg2M2I5YjYyNTRiYTY2YjdmZmQ5MTg2MWRkNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0NjNkZTM4NmUwNzkxYWRkNTJlM2Y2ZTNhMDlmMmJmNjQ4ZmU0MzEzMThlMTkxNWI3ZTVkZTk5ZjdhNTg0NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_ab3d9d6fba934a3fbf3e6e320f6870b7",
+      "statement": "dcode configuration tests require workspace dotenv previews to resolve independently without mutating the process environment, preserve shell/project/global precedence, and prevent project dotenv values from interpolating into trusted global dotenv input.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_config.py#L535-L588",
+          "version": "repo-lines-v1:sha256:35d836a55cc66bd8f7a55328076c52a774a06788f30c4ff03863b37a44c8ad4e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0ODNlMTFkNTI4MWYzZDljMjFiN2IwODAzZDZlNjE1ODVjNWExNDc2ZjkxYzg3ZDIyODY4NzYzZjMyYTg5NDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwMjI1ZjJlNjUzZGNlMDRiNzVlNjY5MWY3ZGEzZjlhMTE3OGQ3OWU0YWI3NDBjMWVkOTQ1ODA3MjQ0MDUwMDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2NzRiMTE4YTE0YmQ3MjVhOWM4MWEzMzYwNjNmNjc3N2UyOTNhZWZhNDE1YTZjYWQ0NTBkOTcxMGRiMDg3N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA3OTk5NzQzMDgwYzQxYWMwNDVhNDlkOTQxYmZmOTE1ZDBlMzAwNzllMmY5OGQ4ZGMwM2NkYmExZDdhZjFhMzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_config.py#L743-L769",
+          "version": "repo-lines-v1:sha256:1ff066d8ba24f3de7dd932996bd9b2528f6ab3731e0d885b51445ffcde97afe3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjNzViNjFlODRlMWJjNzZmZDQ1MTlmNDgxMDRiOGVmZjVhMGU0ZTI4NDFmZDU5YTU0ZTE4ZDFlYTI3MzQ4NjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2ZWNmMjIyOWI2Zjg1OWVmYjIyNjJlMWJjODRkZThjOTI2ODkyZTdjNDI5MGNhNDFhNmQ4NTFhY2VkZDA4NjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVkZjcxNmNjOGQyZTMxMGNlZWM4ZTAxNTQxNTM2ZmRjY2IwOWI0OWE2NjU0NmI3MDRmNmI5OGY5OGQ2MGYzMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3ZDE2ZGY2MGE4NmI4NTRjY2M5ZWI1OWQ1ODIyMTk2MGZhNTU2ZWE5NmYzZDI5ODNjYzg5ODFiZjI3NGZkZGEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_config.py#L800-L843",
+          "version": "repo-lines-v1:sha256:48f9df2d4154e38a025675cbf689c45dc449bc1d3a350c52dc7198ba004dab3d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliNGU5YTdjZDVlMzY0ZDliMjllMjg3MzY5M2MwNTQzNjQwNTRmZjY5MDQxMmE3N2UwOWE4OTI5Nzc1NGQ5NDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMDFjZTM3YTU2Y2UyZjY5M2QwOGVhMzkyNzczNWVkODhhYjA0NDBmNmI0MGI5OTJmOGM5YTZiNmI2Njk1NWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3MWE3MmJhNWE4Yzg5ZGFlMzJhOGU0YzNkMjMwZDE2OTlmYjZjOWJkNzMxY2IxODBjMzQwN2VkYzU3MjcwOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0MGU2YzQyMzU2NzkyOTE0MmQ4MzEyZDY5Nzc3ZjlhMGNiNGNiNTFjNjVlNDc3NjYzZmVmMjg3ZWUwMWEzNGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_27f5d9c844c24b79836faeb56b78d5ae",
+      "statement": "dcode model configuration tests make allowlist policy fail closed for an explicit empty list, permit only canonical provider-wide wildcards, and require stored personal credentials without a base URL to clear inherited gateway endpoint state.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_config.py#L211-L306",
+          "version": "repo-lines-v1:sha256:349b293cf9719854102f0b299532766b3ac4808fb8df24759a6800538439bcd8:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyNTA1NTU4Zjk0MjgwNjAwOTEzZGNmZTkzMTRjZWYzZGFkZGUyNTk0Y2RkZjk4ZDNjMDUwYTIwMGVhZjI1NGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4ODc0YzhkZmVkNDNmNDE2N2Q0NmNiZjNmOGRlMDdjZGJkZDJkMDBhYWI4ODRjZjc5NmM0MWI2YWU2YzgxODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZjYxNjBkNDFkNTBkYWE5YjAyYjUwNTIwZjQzNjdiMTNiMjcwOWUyMGFhN2VkZWI0NWQ1MGY5MmRhM2VlYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkM2E2OTUwZTAyNDEyYmQ3MmIxOGI3YTJhODM5YmU5NmM4OWI4ZDY0NmJiNmEzYjU1Y2I5MzI2OWQyMTRlYzQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_config.py#L612-L635",
+          "version": "repo-lines-v1:sha256:422b7d3e726977f9fb4d51eab02efeadbd0a137a10fd627b5ca03570cc751267:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0ZWMwZDQ3N2JjNjU1Yzc1ZWJkODRjNzg5NDk5MmVhYjIyNjQ1ZWEzZWQ2ODNmMDBiMDE1OTdkYWQwOTQxZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1MDVlZDNmOWY5OThlZjYxYjdhZTYzMDMwZTgwMzI5NTRiMDY2Y2NhYzFlOWRhMjAyMTdhZGEyNDM2MWU2NzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwMjUxZWU1ZDY2ZDI2ODAzYTZlYjNiMjljOGJmYjIyYmY1ZDEzY2U3MTk4MTM5OThiNjgxNDdmM2Y1ZTI1OWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyZTA1Y2U2MTRhZTMyMzFlYmE2YmU1M2U5ZmFjZjIwMGQ2YTNlZTUxNmNiZmNkMzg5ODA4MTFhMTk1YjJlY2UifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_config.py#L637-L691",
+          "version": "repo-lines-v1:sha256:1e07a30485b945cb9b715ebea5391feda772913acbf3594a733f5126517c1234:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0NjYyZDk4YjdhYTVkNWU3YTBhM2RlY2U2MTIwNDZhN2QyMjRhZmFiZmFjNWQwYWMxNzZjNzI5Mjc5MDgwMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4Yzg2MDc2M2E1Zjg1ZWNkMTAyNTE3NGI1MWE2NDQ2NGJkYTVlMTRiNzliNWY3ZmYzODI2YjU3MjIyODljYjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyM2M0MzYyYzJlYjI3MDg4Nzk3YTkwNDBlZWQwOTI2MjdhYmIzZjg4NDg3OTRmMzFkYmJkOTVlOTI4NDNjODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0YmRiNjMzN2U2OWYwZmZmMTMyY2ZkZTg1YTI4ODgzN2M3M2IzZThhN2JkYzY3NTgyZDEyOTI2ZWMxM2Y0MTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_920f20d4993f498bb5ad65fc28dc009b",
+      "statement": "The synchronous JavaScript-cost test covers invoke and stream execution for thread, turn, and call modes, requiring both the JavaScript and an unrelated ordinary tool to return one successful ToolMessage with the original call ID and expected content.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_sync.py#L20-L58",
+          "version": "repo-lines-v1:sha256:9289713697618690e0e895058d6146f3ddcfd4a8d1cb9a8e4cacc6aa8bf0db9e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxY2IxODgzYjRhM2NiMjhiNjQ2ZmQ2ZjUwOGM0NjQ1ZThkZDRjNTRjZGVjY2U1ZTQyYjZkM2U0N2FjMzEwOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3ZDUyZTEwN2YyOGU0Mzg5YmJjZTI2YTQxZDQzOWU4NWI4NjA1ODczYzBmODg3NTZlMjMxODQ2MWM2MWQwNzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f558751e6feb4aa4828998a25f1c1cd8",
+      "statement": "Cost-aware JavaScript dispatch assigns child calls isolated checkpoint namespaces, persists owned receipt totals, and returns a parent cost-transfer state update only after active dispatches have settled.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L147-L213",
+          "version": "repo-lines-v1:sha256:7d3e3f10b472b50435635822a078b8e17e910c465cf63542c0250d232b91cb00:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NmQ3YjdmYWM4ZGJhYjQ5MTlhYTQ3Y2E5YTY4MjVmNWJmZDQ0YWYyN2YwODkwOGIzNjRmM2NkMDZlYzhjZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5MGUzODAzZmQ4ZmZhYTI1ZTkyYWYxODFmMDIzZDRiZmNhMWQ3YzZlMjBlMDFhNzZjMzAwOGIyNDU1YTkwNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2NGQ5NzZlMjNlYjMwZjFhOWJiZDY4ZjViY2FiOWQzMzZjZjg5MDc4NmYwYzNjYzQ2ZWRmYWM2MjRkYjIzZDUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L96-L144",
+          "version": "repo-lines-v1:sha256:f9bf30a1edae6b3cc1409fa5180c71a8acffa4ddaf767c1735c956933f97af17:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzMmNhYzcxY2Y0MWQ0MjIzYzBkZmYxMDU1YjNiYTUyZGFlNTdjOWIwNDJiNDkwMmU2NTAyMTMwMjVmNDVjYjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2OTk4MWY5YjJlNjc0OTQ1OTFkYTU0MDU1MTIyMGMyNDIwNzIwNTQ1MjM3NWZkMjdlNjRhMTUxZDU3NTUyYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYjgzZDUwNjg4MWU0Y2QwZTNlMWRjNzM5YmNkNjkxYzgyNjM4MTAyY2VmYzUxYjY2MTg5OGFhNDY4NzA2NGEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L216-L250",
+          "version": "repo-lines-v1:sha256:6088c602a628f258d714a3d1c5eca843a6567d9d6976a245d286e81dd6f85c8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxY2IxODgzYjRhM2NiMjhiNjQ2ZmQ2ZjUwOGM0NjQ1ZThkZDRjNTRjZGVjY2U1ZTQyYjZkM2U0N2FjMzEwOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4NDQ0MmU4ZjQ3YWI2MjViOTQwMjY4NzkzYWVhNTNiNTY5NGYxZThjYjQ5ZWJlYzU0ZDhhMzU0M2NlODY3MzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNiMDlkMzNlYWY0YWQ4MjhmZmMzOWUyODFhOTExOGE4YTZiNTQ0ZmI4ZWRmZDk3MzIyOWVhZjkyMTBlY2Y4YTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L884-L924",
+          "version": "repo-lines-v1:sha256:c9a38117accdb017b93b0cfd6c719fa1bb0d3f340c7362b96f6a51141d69bbe0:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5ZGNjOGRmOGFkNjJkZTI4NmM3NzM5YTlhMWNlYmVmZTBmMmEwMDk4MWM3MjE4ZWQyNmE3NDgyN2ZhZGU0YTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjYjYyNDNiMzZhODIyNWI5MGU0ODEwNzIwOWNhZTNiMzhkYjI5ZWYwNWVjN2I3ZGI0YTkzNmQ1YjU4OTExNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU2NzJlMmQwNmQ0ZDBjZWRhMDhmOTEzNGVhODk1MzA4ODRmNmFiYzY4MWQ1MGM1MWE3ZDE5MmJhYjAyZDdkODEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwYjk3YjRhNGIyMzRmMDZmNTFmNTRlODIxYzY4NDZmYjZhNTIyYTU3NGNkNzE5ZjIyNmI4Zjc0YzViOGU2ZWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1e40c213423f44dbae7b62fbe5ab6a1c",
+      "statement": "Talon runtime tests require tool reload to replace the active graph transactionally, bind an authorization handler only during the request, maintain the conversation thread ID across turns, and prevent credentials from entering the default shell backend.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/test_runtime.py#L155-L245",
+          "version": "repo-lines-v1:sha256:44372b2bc7359721fab3e95f1e70082ba528e9c4537887f7cf3f752a6652daef:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliZmRkNjgyMTU0NjEzZGMzNzNhMjY2MjkyNWEzNzU4NzFlMWFkODNjZGY0YzRhM2E2ZjdiMzk3ZGMxOGVlMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmZTRiOTBjZjM4MGNiN2MwMjgyMDkyZmY5ZGIyNTI1Mjk1YWYzYjdjNzE0NzI1YTVlZTdhYTUyZTg3OGRmNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwOGNhNzI2OGYwMjMxNWI3NGJmOWYxOTIzNjExYmQ2Y2QwODM1N2E2NGVkYTU1OTRkYTY3MmNjZTg2YmY2MWEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_runtime.py#L457-L498",
+          "version": "repo-lines-v1:sha256:b99593afe6e802c7a5a85a22b32bd9dbbcac4f4f9d23cfc609181466f17f721c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlZjNkYWNiM2IwYjdlMGUzOTgyNDQyYzA2YmVmOGRjODY3YmFkY2Y4NWZiYjYyM2E2MWQ2YzJmZTJjNTIyOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4NjJlOWY0ODljYzBhNDBlMzcyYWVjMDNjMjY0NjM0NGEwNTQ0OWI1OGQ5ZGRhM2E2ODRmNDdkNThlNzViNWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmNDkxNzI5MDgxMTNhYjg5YWIwZTczYmIwZjUyYTdhZDAwMGNmZDE0YjYxMDUzMzNlZTExMTg5MTk3MTU1NDIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_runtime.py#L835-L853",
+          "version": "repo-lines-v1:sha256:fa402db18f8fb44fe7c1aabc3807285326e3d050f73decea18cb3816e7152b5d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4MmUzOWI4MDY3NDE1YjEwZGNiZDljODY0YTBjODBjY2JmZTFiNTRjNGU2ZmUwMTMzMzExOWUwZWU3OTlmZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxM2MxNDI3ZmY3YWNiZTM3ZTBiMjA0ZjkxMjZhMzIyMDg0Y2ZhYzg0YzE4NjdjOGU5YTRhY2U4ZWJkMDlkZjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4Yzc5MzRkNWE0Yjk5Zjc1NTAzYTRkYWM4YzkyNGU4ZThiNTYxOTFjNDI4OThiMmI4MTBkZmZlYzBiODk4YjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_dfed284d493a418e8be298ef84c0075a",
+      "statement": "Talon background-worker tests require jobs and cancellation to remain scoped to their owner conversation, retain a result until a successful consuming turn acknowledges it, requeue acknowledged results when delivery is undone, and run scheduled delegation inline rather than creating a background job.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L194-L220",
+          "version": "repo-lines-v1:sha256:0dcd17cc1a316374bf21bedf9e97d3f3d7eb61e889342aefab3fd9b12ae9f263:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4OThjNjg5MzhiYTMxNzRjNjczYjQzMmMwNmZlOTliZjk4YmQxNjEwOWEyYzNhMmRiZWY0YmQ2Zjc1NTFhZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MGRhMDMyZmJmZGJkMWI0MjRlODE0YzIxMmFlNTg0ODRlNzZmNTdkYzU2ZGJmZDEzYmY4MDM3MzZkMzI0YjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNzQ3YzUxNTdmZGE4MTAyYzJiNGM0Mzg1NTVmNzFjYzQwNjkzYTE5NjgzM2M4NzBmZjQyZDc5NmUyZWQzMzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzYWNlZTYwYTA0NWQ2MDY3ZmE2NzA3NDQ1MGYwNjQzOThlZjYwZDk0YzBhYTdkYTc1ZGJmMWUwZmI2MTc1ZjEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L289-L327",
+          "version": "repo-lines-v1:sha256:3921ddc9c0e14b888d61cba85a1032f92c6d011ac4c8f3e8add01df3d69c4609:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyZWJjMjk1ODdkOGNlNTJmZmJhOTBmY2ZjNGE1NmRmZGNkNzQ5OTdiYmRhZDMzNjc5MTYxOThkNjE5YmRhNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyNWE2MjRlOTI3YzA4YTBkNzU3ZTcwYzQ0ZTIxNTY3ZDBlNGViNmNmNjA4MWJiNTU3ZTM4MThkNWViNDM4ZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMjdhMzVlOWEyMTNhZGNhZmRjZTZlOTkzMGY0N2EyOTIwYjE0NjQ0ZGFmODU2ODY0OWQxNjRiNTg3ZTU5YzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxOWFhMmQwZjlkM2FkMTAzZGM4ODBhNDVkYWQyNDZlYWM0MmVmYzk2ODU4NDRhMzczNGJkNTlkZGJhN2I2MDcifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L414-L470",
+          "version": "repo-lines-v1:sha256:db31610d91f52fc73337607b170c59a56e23215088b583e8c5099ea85d403de4:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwYjUwMjI5YjQwODdkYmY2NDAyN2FhYzk5YjkzZmUyNjBhYTdmMzYyMmE3NGVlMGViN2I2N2Q4YzU4N2EwMWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3NmVkYThmOWNkYmQ2N2ZmNGVlZDUxMmNmNzJkYmE1MDA2ODIxZGU2MGJhZGY1ZDZhMDU0M2I0ZmQ5MDdhYzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzYWNlZTYwYTA0NWQ2MDY3ZmE2NzA3NDQ1MGYwNjQzOThlZjYwZDk0YzBhYTdkYTc1ZGJmMWUwZmI2MTc1ZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhNWI2MzVkMzg0MGZjNjFhMmVkZTdhNzNhMmVjNDhmZjE4ZmQ4Y2ZiMmIxZWNhMDY2M2M4ZmMzODcxYmVmNjcifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py#L749-L782",
+          "version": "repo-lines-v1:sha256:3c64732a2e78420f0c70c336372bea1e5c87565ca74e809da58730e1cdf97460:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxODU4MTlkMDM1OTg4MThlMGUxZDc3NDNlYzdmMTUxMWViNjI2MmY1ZmYzYTcwZjA5OGZkM2RkMDk0ZmM4MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyMmQxMzhiZDc0MDY4YjlmZDVlYzg4MzYzM2Q5MTJiZGQzYTUwMzYzODU2OWUwNmUyMjAxMzIxOWQ4NDA0MDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1ZmU1M2IxNDA0ZmRhNTk4MmEyZDVhNzc2YzM3OGI3NjhkMzJhODE2YzRkYzM4OThkYjc1NjMxZDkxM2RiMzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJjZTIxMjIwNTc0ZmUwMWU2ZmU3MzU0NDBmOTIxMjc4NjQwOWY2YWRkOWRhMDU0Y2Q1ZWQ5MTgxNTZkZmVhYTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_093e7307e7b44b8da963a676aef16afa",
+      "statement": "QuickJS tests require thread-mode snapshots to preserve JavaScript state across turns, turn mode to reset it, model-only turns to avoid allocating a runtime or worker, and failed/cancelled runs to close stale contexts so the next turn restores the last snapshot rather than leaked state.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_slot_cleanup.py#L160-L215",
+          "version": "repo-lines-v1:sha256:c5b7ebf874a9a3f833576938d5ae65c652ab49c1f6da11cf517ceeb00ea4303b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1NTBhMTZhOTM3MmExMDA1MGJiMDlmZjZlNDQxYWFjM2I1MDNiZDdjMGVjNzFlODJjZGU1YWYxYTZkNjg5NzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0YWQyYzk5ZWYwOWRlYmNlY2Y5MTQzYjUyYzUwY2M5NDRkYWU3NmJjMWRhOWIyOTZmZDI0YmM0NWI5ZjhhOGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4ODNjYzg3YWVlNmJiOTk5Njc3YzJmZjU0YTY3ODgzMWFkZTkyYzQ5NmFjZmYyNDE1NmYyZTA2ZGYxYTI0NmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3N2ZmNDllYTI3MmEwMmNhMzgwZjYyNTY3NGM1MDQ5YzEzZTVhOTNiZjY2N2M5ZGE4ZTgzMzQzMDkxYjQxNzYifQ"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_slot_cleanup.py#L89-L158",
+          "version": "repo-lines-v1:sha256:9288d1beb9ec2802d5884ab9472c612a27528d0f130ffd7ef36179111b83abfd:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1NTBhMTZhOTM3MmExMDA1MGJiMDlmZjZlNDQxYWFjM2I1MDNiZDdjMGVjNzFlODJjZGU1YWYxYTZkNjg5NzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NzM1ZWYzN2VlODliMjAxN2UxYWMyZTcyYTNkODAyNTViODg2ZjZjMWEwNTA1NjliMjQwZWY3ZWMzYjdkYTIifQ"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_snapshot_persistence.py#L100-L169",
+          "version": "repo-lines-v1:sha256:c3f02cdf9b99bff95e48753ab3f6887922cc6a5c3ec69e11eb1688392b1f0cfb:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5NzcwZDM3NThlZTJhOGQwYTg3NmQ5NzkyYmIwZDRmZDdiNzUwYWM2MTAwNDU2NTY2NDc2MzMzY2MxMTY2ZDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmMTUzYTE1MjgyYWUwZmViYzFhYzM0NjdkYTFhNzczOGQ4MzI3MGZlZjg5YWZlYWM2OTU1YmZlN2VjMzMyNmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_snapshot_persistence.py#L346-L383",
+          "version": "repo-lines-v1:sha256:729f659f2baf6483377ad1e452dd99a2f75bf7fa6bd9f9436b4ca00c61a78fc2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhNWQ1MmQyMGUyMjhiZGZjYzg3NjE4OTRmZTRkM2UxODlhN2VhYmE2NTBhMmY4ZDAwNzMwNDM1ZWFhMjU5YWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MGNhNjRmNGM2NzFmZGZjYjQ3MzJjNGMyNmU5ZmJkZTNlOTVjYzgxZjU0MGQ2ZjM5N2JmZmYzMTc1MzI5YzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwZWU0ZTUwOGEwZDgwM2YyNmM5OTI2MDAyY2QxNTZhN2JmNGIzM2Y4ZTZmM2Y1ZWM1M2QwYjUwMmFkYWMxMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1MmExZGY5MjdhY2EwNmY5OGQ3MmU2NzZlYzk2MmI1MGFjNjdjYzE4MzU4OWMxMjI3NjUyM2NiODQ0ODcxNmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_518c385d10804ae4becc3669cf73172f",
+      "statement": "Harbor LangGraph adapter tests require headless local dcode graph construction with a sanitized bounded assistant ID and scrubbed shell credentials, local bare graphs with validated task skills and HTTP MCP tools, rejection of stdio MCP servers, and bounded optional web search behavior without tracing egress.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py#L177-L272",
+          "version": "repo-lines-v1:sha256:019e84e2ea258ffddbd552b7858febc4cfebe38760b37a72373da4b7745ad5cf:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxNmM2ZDZhY2I1YTMxYWY5YmE4ZTllZmIzMzZkZjNiODEzNWU1ZjAxMjVhMDM0Y2FiODcwNDhkNDM1ZjAyMDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyYzMyN2EzZDAyN2FkZTEzNTc4MjU2MjcxNDljOWVjMmQ4ZTAzNWRiODM2NjhhZmYwYTBkNzFiMmE2Yjc4MDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkYmMxMTMwZWU0NWU0ODZkODNmODYwMjAyMzBmNjJjZWI3NTIyNjQ3ODY0YzIyNmExNDkzZDczOTI1NGFiYWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyZWY0MmRmZGZhYTc2YjMzZmZlYjdjMjU2YTk5NjU4ODYzMmUxYTdlYmIwNjc5NDk5MzNlNzZmMzE3Y2I2OGMifQ"
+        },
+        {
+          "resource": "repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py#L275-L332",
+          "version": "repo-lines-v1:sha256:088bfba1046026ddc9e87582a5100adc03a369757d1aa4455626df805fbea0ac:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1Njg4ZjNjOWI5N2MzMmIyMTA3OTM2ZTJkZmRkYmNhM2I4OWZlMDJlZTQ0NTRiMWI1OTE1NjE1Mjk2YmYwNTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjMzQ3NmMyY2E2M2M3MmJiNjI0MWU0Nzk2MjMxOGUyMTRhNTkxOWU3MThiOTY4MDhmN2IyODdiZTdkOTUyZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzN2QzNDI3YjZkZGEzMjU5OWU0NDI3ZTQzNmMxNmNjYjgzOTdkZDllZmI0YmFlOTg4MDcyNzA1MWVlMGRlZDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkxMGMwNzA2NWE4N2IxNzgwNGI4ZTQxMTIzMzA0MGU4NDA3MjIwMDhhODZjZDdhYjQwZGUwZDk2OGM4OTZmNTMifQ"
+        },
+        {
+          "resource": "repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py#L71-L165",
+          "version": "repo-lines-v1:sha256:940205a9f8e9bdc3edb802869afc93121ae049db2d7e30b488051b1a6b0cea79:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzZjM2NmI5YmQ5YThkMGYzNDBhMmJjMGJlMWUyMmVlYTIwNTY4ZGQ3OGE0NTI4MWI3MjFiMzBmMjJkMDg3ZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwM2ZjOTE5YjAxOThhYzAzYTI4MGZkNzBjNjU5ZjI5OTcwZTEzY2M4ZGU0MzY3NGEwZmMxODRjYjYzOWIzYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJiNTk1ZDZlMjU3ZGU5MzkwNDczNzc5NWRlZmY2MTBhMjVlNDRhM2M0YjUyNjE2NGE4Njc1NzAyZjQwYmNkNTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5NTZjNWFmMzk3MGM0NGVjMTcxNGIyMWRlMzNlMDAxNzQ5NjJhNTM2YWI1M2I1ZGVkODJjZjY5YmFkNWYzMDYifQ"
+        },
+        {
+          "resource": "repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py#L762-L839",
+          "version": "repo-lines-v1:sha256:5afc8c9ab3093e81838f422808362113c66d6e3a2cd62b45a7a942353bb2e2fb:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2ZjA2YWYxNzRlMGNmNzJjMTE2YjMzOWE1N2IxYTZhYjM0YTg1N2NhMWEyNTcwZWRmOWRkNTFlYzdjNzQ4MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0YmNiMjk0NGVhMWZiNGNjMzAzOWZlNjViNWQ1ZjI4NjdiMGMzNDY2ZDhjODY5YmFmMTU3ZDgyZjg3N2QwMGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxNTc2MmExODgzODE0ZGIyZDAxNzQxOWRlYjJjMzY4MDI3ZDIzMDhhZjFkOGEyMTAyMDlkODk1MmMzOWY1YmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJkNmE2NTNmNWRiZDVjZjY2MTRkYjk1MmZlYjY4N2Q2YmQ3ZmQxYjdjOWNhMjFjMDYxMjdkY2ZhZjFjZjQ5YTAifQ"
+        },
+        {
+          "resource": "repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py#L927-L978",
+          "version": "repo-lines-v1:sha256:a5e2460082f37f68cec408d0778c9d824ad7c71a9e3f499454e121af59b2c7ac:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhMTRmYjY0OTY4OTU0ZDNmZTlhMTU1Yzk4NGQ0M2UxMzI2ZWZlNGE5OGFhMTdjZjQ2ZDhmZmQyNmJlODZhYmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwOWUzNzlkYjUxMjMwNDFkZTdiZGQwMDYwMGE2ZmI2MDhmYTY2MGVmNjE5ZTEwNWFhYmZmNmYyYzk4ZWM3YmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5YjdmNDBkMjI2N2M0NTkxM2I3MjNmNmMxMmVkNDQwMDE3MmZlZjVlOWE0ZmMxOTYzMzEyZTM4NmI1OTFiMmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5OGRkNGNhNDBkYTY3MDFiYWM1NWMzYjMwZTJmNmFkMDc5NjdjYWUwY2Y2ZTVjMGFhNTFjZTYxMjY2NGUzZTYifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-19T08:04:44.778Z"
+    "at": "2026-11-20T08:04:05.944Z"
   }
 }

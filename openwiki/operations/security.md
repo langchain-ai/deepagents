@@ -4,64 +4,22 @@ title: Security and Trust Boundaries
 description: Operational guidance for host-shell authority and cleanup, filesystem policy, dcode trust, MCP/OAuth safety, and Talon hooks, subagents, channel admission, and unattended work.
 tags: [security, operations, trust-boundaries, sandboxing, approvals, credentials, mcp]
 sources:
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-f188d13aef04b643ced86520
-    resource: repo://libs/acp/tests/unit_tests/test_execute_permissions.py
-  - id: openwiki-source-3e5d1f5822b632090a155a7e
-    resource: repo://libs/code/deepagents_code/_repository_bounds.py
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
-  - id: openwiki-source-7f6b98925b5f1ba065df3a04
-    resource: repo://libs/code/deepagents_code/config.py
-  - id: openwiki-source-3b8cd1fe0dfb6ca543e059b2
-    resource: repo://libs/code/deepagents_code/extensions/runtime.py
-  - id: openwiki-source-0793010c72a4d07e67bc5b35
-    resource: repo://libs/code/deepagents_code/hooks/trust.py
-  - id: openwiki-source-a97cce048cd7efd394ae7dca
-    resource: repo://libs/code/deepagents_code/mcp_auth.py
-  - id: openwiki-source-faa6ae4d79960dbb4f1d3aeb
-    resource: repo://libs/code/deepagents_code/plugins/manifest.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-54521cccedf4bf9153674a9d
-    resource: repo://libs/code/tests/unit_tests/test_server_helpers.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-cbf86ab9c145113d54045954
-    resource: repo://libs/talon/deepagents_talon/hooks.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-31e40ff79779f51cafd03f01
-    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
-  - id: openwiki-source-82cac27adeecff8a900a40fa
-    resource: repo://libs/talon/deepagents_talon/mcp.py
-  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
-    resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-2d1f686d24d8182f60108ae7
-    resource: repo://libs/talon/deepagents_talon/subagents.py
-  - id: openwiki-source-267468fe937003d4716fe6c2
-    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-  - id: openwiki-source-7dcd7e37c18e77553a46cce3
-    resource: repo://libs/talon/tests/unit_tests/test_hooks.py
-  - id: openwiki-source-3d684c645b34f5e3a3092ca9
-    resource: repo://libs/talon/tests/unit_tests/test_questions.py
-  - id: openwiki-source-6cf260dd7a6018657221ec15
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py
-  - id: openwiki-source-23775c3de52f3ab95a13cb8b
-    resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
+  - id: openwiki-source-8de0ff38635f214c7268d8e7
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-17T08:03:47.818Z
+    at: 2026-11-20T08:04:05.944Z
 ---
 
 # Security and Trust Boundaries
@@ -170,7 +128,17 @@ Unknown direct-message senders require a time-limited pairing code bound to prov
 
 Talon tool approval policy is an exact-name, revisioned immutable invocation snapshot. Enabled entries create approval interrupts; updates require operator context and a compare-and-swap revision, and take effect only for the next invocation. An absent or `false` entry does not create an approval gate, so policy edits can reduce oversight and need the same operational review as any authorization change.
 
-Scheduled jobs and background-result delivery are **unattended**. Talon withholds question, breakout, tool-approval, and channel OAuth authorization handlers from background delivery; its runtime also rejects all approval interrupts for cron or background-delivery requests, even if a handler was supplied. Background subagents additionally clear the authorization handler before running. A protected action that interrupts consequently returns a message that it has not run, rather than leaving a prompt attached to an ended conversation. Scheduled work has a 30-minute outer bound and is repaired after timeout; revoking the paired sender that created a job cancels that sender's scheduled work. Pre-authorize the exact capabilities that unattended work needs, or design its tools to fail safely without an interactive person. Time bounds and denial prevent an unattended call from proceeding; they do not contain a capability already granted to its backend or tools.
+### Unattended delegation and result exposure
+
+A cron fire and a background-result delivery turn are **unattended**. For delivery, `TalonHost` supplies no tool-approval or authorization handler and disables the question handler; the runtime independently treats `trigger: "cron"` and `background_delivery` as non-operator contexts. It auto-rejects a cron approval interrupt and auto-rejects a background-delivery interrupt when a caller injects an approval handler. Thus metadata or a handler passed through a lower-level invocation cannot turn an unattended turn into an operator-authorized one.
+
+A detached attended-chat worker is different from a delivery turn, but has the same no-prompt rule. It runs in a copied context so it can retain required history and cron-origin scope, then explicitly clears the authorization handler and `APPROVAL_OPERATOR`, uses a new task thread ID, and forbids nested delegation. An approval interrupt is converted to `Subagent needs tool approval; the protected action has not run.` rather than being retained for a conversation that may have ended. Workers are in-memory and conversation-owned: their completed text is later injected as data only into the owning main conversation, where the host may start the unattended delivery turn.
+
+Cron delegation does **not** create such a worker. While `_SCHEDULED_TURN` is set, `task` and `start_async_task` run inline, return their result to the same graph turn, and leave no job to inspect, cancel, or deliver later. Talon hides those meaningless worker-management tools and changes the delegation guidance accordingly. Inline calls use a separate four-slot semaphore, queue rather than consume the attended-worker capacity, and default to a ten-minute per-delegation limit; an outer scheduled run is bounded to 30 minutes. Nested delegation remains refused. These are scheduling and availability controls, not a containment boundary for a capability already granted to the subagent backend or tools.
+
+Both paths turn timeout and ordinary failures into bounded safe result text instead of allowing an exception to escape and retry the graph. The generic failure result does not expose tool arguments or provider exception payloads; recognized HTTP failures provide only a status-class hint. Detached and inline results expose answer text only—excluding non-text reasoning blocks—and cap it at 64,000 characters. Preserve this failure conversion: an escaping inline deadline could cause graph retry to relaunch sibling delegation calls. Operators should pre-authorize only the exact unattended capabilities required, design effects to be safe under cancellation and retry, and never regard prompt suppression, approval denial, result filtering, or interpreter isolation as a substitute for backend, tool, OS, network, or credential authority boundaries.
+
+Scheduled work is repaired after its outer timeout; revoking the paired sender that created a job stops that sender's scheduled run. Time bounds and denial prevent an unattended call from proceeding, but do not contain an action that has already been granted authority.
 
 ## ACP and operating checklist
 

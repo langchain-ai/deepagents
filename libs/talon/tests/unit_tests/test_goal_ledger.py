@@ -78,6 +78,28 @@ def test_unreadable_ledger_fails_closed_without_overwrite(ledger: GoalLedger) ->
     assert json.loads(ledger.path.read_text())["version"] == 99
 
 
+def test_rejected_run_update_preserves_lease(ledger: GoalLedger) -> None:
+    goal = _active(ledger)
+    item = _planned(ledger, goal)
+    run = ledger.lease_run(goal.id, goal_revision=1, item_id=item.id, ttl=LEASE, now=NOW)
+    before = ledger.path.read_bytes()
+
+    with pytest.raises(ValidationError, match="detail"):
+        ledger.finish_run(run.id, result="error", detail="x" * 5000, now=NOW)
+    with pytest.raises(GoalLedgerError, match="artifact"):
+        ledger.finish_run(
+            run.id,
+            result="ok",
+            change=ItemChange(status="done", outcome="verified", artifact="   "),
+            now=NOW,
+        )
+
+    assert ledger.path.read_bytes() == before
+    finished = ledger.finish_run(run.id, result="error", detail="  retry later  ", now=NOW)
+    assert finished.detail == "retry later"
+    assert ledger.list_runs(goal.id) == [finished]
+
+
 def test_activation_requires_settled_charter_and_owner_confirmation(ledger: GoalLedger) -> None:
     goal = ledger.create_draft(scope=SCOPE, charter=GoalCharter(outcome="ship it"), now=NOW)
 

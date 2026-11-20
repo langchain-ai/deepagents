@@ -53,7 +53,9 @@ from deepagents_talon.goals.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Generator
+    from collections.abc import Collection, Generator, Mapping
+
+    from pydantic import BaseModel
 
 MAX_ITEM_ATTEMPTS = 3
 """Failed scheduled attempts before a work item is marked `failed`."""
@@ -566,13 +568,14 @@ class GoalLedger:
             _check_finish(run, result, change, current)
             run = _put(
                 records.runs,
-                run.model_copy(
-                    update={
+                _updated(
+                    run,
+                    {
                         "result": result,
                         "detail": detail,
                         "usage": usage or {},
                         "ended_at": current,
-                    }
+                    },
                 ),
             )
             if run.item_id is not None:
@@ -595,7 +598,7 @@ class GoalLedger:
             ]
             for run in expired:
                 detail = "lease expired before the run reported an outcome"
-                _put(records.runs, run.model_copy(update={"result": "unknown", "detail": detail}))
+                _put(records.runs, _updated(run, {"result": "unknown", "detail": detail}))
             for item in list(records.items):
                 if (
                     item.status == "running"
@@ -639,7 +642,7 @@ class GoalLedger:
             for pending in _pending_decisions(records, goal.id, item.id):
                 if pending.proposal_hash == proposal_hash:
                     return pending
-                _put(records.decisions, pending.model_copy(update={"state": "invalidated"}))
+                _put(records.decisions, _updated(pending, {"state": "invalidated"}))
             decision = HumanDecision(
                 id=_new_id(),
                 goal_id=goal.id,
@@ -685,8 +688,8 @@ class GoalLedger:
                 raise GoalLedgerError(msg)
             goal = records.goal(decision.goal_id)
             state = _decision_outcome(goal, decision, approve=approve, now=current)
-            decided = decision.model_copy(
-                update={"state": state, "origin_message": origin_message, "decided_at": current}
+            decided = _updated(
+                decision, {"state": state, "origin_message": origin_message, "decided_at": current}
             )
             _put(records.decisions, decided)
             status: WorkStatus = (
@@ -786,7 +789,7 @@ class GoalLedger:
                 "attempts": event.attempts + 1,
                 "updated_at": _utc(now),
             }
-            updated = event.model_copy(update=update)
+            updated = _updated(event, update)
             records.outbox[records.outbox.index(event)] = updated
             return updated
 
@@ -848,6 +851,10 @@ def _find[T: _Keyed](records: list[T], record_id: str, kind: str) -> T:
     raise GoalLedgerError(msg)
 
 
+def _updated[T: BaseModel](record: T, update: Mapping[str, object]) -> T:
+    return type(record).model_validate({**record.model_dump(), **update})
+
+
 def _put[T: _Keyed](records: list[T], record: T) -> T:
     index = next(i for i, existing in enumerate(records) if existing.id == record.id)
     records[index] = record
@@ -855,13 +862,13 @@ def _put[T: _Keyed](records: list[T], record: T) -> T:
 
 
 def _put_goal(records: _Records, goal: Goal, now: datetime | None, **update: object) -> Goal:
-    return _put(records.goals, goal.model_copy(update={**update, "updated_at": _utc(now)}))
+    return _put(records.goals, _updated(goal, {**update, "updated_at": _utc(now)}))
 
 
 def _put_item(
     records: _Records, item: WorkItem, now: datetime | None, **update: object
 ) -> WorkItem:
-    return _put(records.items, item.model_copy(update={**update, "updated_at": _utc(now)}))
+    return _put(records.items, _updated(item, {**update, "updated_at": _utc(now)}))
 
 
 def _transition_goal(records: _Records, goal: Goal, state: GoalState, now: datetime | None) -> Goal:
@@ -889,7 +896,7 @@ def _require_outcome(change: ItemChange) -> None:
     if change.outcome is None:
         msg = "completed work must record a verified or unverified outcome"
         raise GoalLedgerError(msg)
-    if change.outcome == "verified" and not change.artifact:
+    if change.outcome == "verified" and not (change.artifact or "").strip():
         msg = "a verified outcome needs an artifact or result link"
         raise GoalLedgerError(msg)
 
@@ -959,7 +966,7 @@ def _invalidate_decisions(records: _Records, goal_id: str, now: datetime | None)
     for decision in list(records.decisions):
         if decision.goal_id == goal_id and decision.state == "pending":
             update = {"state": "invalidated", "decided_at": _utc(now)}
-            _put(records.decisions, decision.model_copy(update=update))
+            _put(records.decisions, _updated(decision, update))
             item = records.item(decision.item_id)
             if item.status == "awaiting_decision":
                 _put_item(records, item, now, status="abandoned")

@@ -1274,6 +1274,47 @@ def _merge_mcp_configs_with_sources(
     return {"mcpServers": servers}, sources
 
 
+def resolve_mcp_server_sources(config_paths: Collection[Path]) -> dict[str, Path]:
+    """Map each server name to the config file whose definition wins.
+
+    Display-only provenance for the trust prompt, so a user can see which file
+    a server came from. Unreadable files are skipped; this never decides trust.
+
+    Args:
+        config_paths: Config paths in ascending precedence order.
+
+    Returns:
+        Server name to the path that supplied its highest-precedence definition.
+    """
+    loaded: list[tuple[Path, dict[str, Any]]] = []
+    for path in config_paths:
+        config, _ = _load_mcp_config_top_level_with_error(path)
+        if config is not None:
+            loaded.append((path, config))
+    _, sources = _merge_mcp_configs_with_sources(loaded)
+    return sources
+
+
+def is_user_mcp_config_path(path: Path) -> bool:
+    """Return whether `path` is the user-level MCP config file.
+
+    Outside a git repository the project root falls back to the working
+    directory. Started from home, the project candidate
+    `<home>/.deepagents/.mcp.json` is the user config itself, and discovery
+    deliberately keeps it at project scope.
+
+    Args:
+        path: A discovered config path.
+
+    Returns:
+        `True` only when the paths are known to be the same file.
+    """
+    return (
+        _same_config_location(path, PATHS.profile.mcp_config_file)
+        is MCPConfigIdentity.SAME
+    )
+
+
 def load_mcp_config_lenient(
     config_path: Path, *, disabled_servers: Collection[str] = ()
 ) -> dict[str, Any] | None:

@@ -15,7 +15,13 @@ from deepagents_talon.goals import (
 )
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import ChannelMessage
-from deepagents_talon.runtime import _CRON_ORIGIN, _list_goals_tool
+from deepagents_talon.runtime import (
+    _CRON_ORIGIN,
+    DeepAgentRuntime,
+    _list_goals_tool,
+    _update_goal_tool,
+)
+from deepagents_talon.tool_approvals import APPROVAL_OPERATOR, ApprovalSnapshot
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config
 
@@ -134,6 +140,61 @@ def test_agent_lists_only_current_owners_chat_goals(controller: GoalController) 
             else:
                 assert goal.id not in result
                 assert goal.charter.outcome not in result
+
+
+def test_agent_goal_update_requires_review_and_current_owned_revision(
+    controller: GoalController, store: CronJobStore
+) -> None:
+    _activate(controller)
+    [goal] = controller.ledger.list_goals()
+    runtime = DeepAgentRuntime(model="test", cron_store=store, goal_dir=controller.ledger.goal_dir)
+    policy = runtime._interrupt_on(ApprovalSnapshot("test", {"update_goal": False}))
+    assert policy["update_goal"] == {"allowed_decisions": ["approve", "reject"]}
+    tool = _update_goal_tool(controller)
+    patch = {"goal_id": goal.id, "revision": goal.revision, "changes": {"cadence": "every 6h"}}
+    origin = _CRON_ORIGIN.set(ORIGIN)
+    try:
+        tool.invoke(patch)
+        assert controller.ledger.get_goal(goal.id) == goal
+        operator = APPROVAL_OPERATOR.set(True)
+        try:
+            for other in (
+                replace(ORIGIN, sender_id="other"),
+                replace(ORIGIN, conversation_id="C2"),
+            ):
+                token = _CRON_ORIGIN.set(other)
+                try:
+                    tool.invoke(patch)
+                finally:
+                    _CRON_ORIGIN.reset(token)
+                assert controller.ledger.get_goal(goal.id) == goal
+            assert "Confirmed revision" in tool.invoke(patch)
+            assert "stale" in tool.invoke(patch)
+            [updated] = controller.ledger.list_goals()
+            assert updated.confirmed_revision == goal.revision + 1
+            assert updated.confirmed_charter == goal.charter.model_copy(
+                update={"cadence": "every 6h"}
+            )
+            assert _goal_jobs(store)[0].schedule.display == "every 6h"
+        finally:
+            APPROVAL_OPERATOR.reset(operator)
+    finally:
+        _CRON_ORIGIN.reset(origin)
+
+
+def test_agent_update_preserves_unconfirmed_operator_edits(controller: GoalController) -> None:
+    _activate(controller)
+    _send(controller, "edit sources: path:/new-source")
+    [pending] = controller.ledger.list_goals()
+    request = GoalRequest(scope=pending.scope, origin=ORIGIN, argument="", goal_id=pending.id)
+
+    reply = controller.update_goal(request, pending.revision, {"progress": "weekly closures"})
+
+    [updated] = controller.ledger.list_goals()
+    assert updated.confirmed_charter == pending.confirmed_charter
+    assert updated.charter.sources == ("path:/new-source",)
+    assert updated.charter.progress_test == "weekly closures"
+    assert f"confirm {updated.revision}" in reply
 
 
 def test_multiline_edit_preserves_field_values(controller: GoalController) -> None:

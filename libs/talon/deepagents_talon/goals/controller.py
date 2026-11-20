@@ -58,6 +58,7 @@ GOAL_USAGE = (
     "Goals keep working on an outcome for this chat.\n"
     "/goal <outcome> — start a draft goal.\n"
     "/goal list — show goal IDs, outcomes and states. Use /goal <id> <command> to select one.\n"
+    "You can also describe a goal change in chat and review the proposed update.\n"
     "/goal edit <field>: <value> — one field per line. Fields: "
     "outcome, sources, exclusions, progress, kpi, baseline, horizon, review, cadence, "
     "decisions. Separate list entries with `;`; send `none` to clear a field. "
@@ -415,6 +416,30 @@ class GoalController:
     def _edit(self, request: GoalRequest, text: str) -> str:
         goal = self._owned_goal(request)
         charter = _apply_edits(goal.charter, text)
+        return _review(self._save_edits(request, goal, charter))
+
+    def update_goal(self, request: GoalRequest, revision: int, changes: dict[str, str]) -> str:
+        """Apply an operator-approved patch to one specific goal revision."""
+        goal = self._owned_goal(request)
+        if not request.goal_id or goal.revision != revision:
+            msg = "The selected revision is stale. Review the goal again before updating it."
+            raise GoalLedgerError(msg)
+        if not changes or any(name not in _FIELDS for name in changes):
+            msg = f"Specify changes using these fields: {', '.join(_FIELDS)}."
+            raise GoalLedgerError(msg)
+        updates = {
+            _FIELDS[name]: _field_value(_FIELDS[name], value.strip())
+            for name, value in changes.items()
+        }
+        charter = _validated(GoalCharter, {**goal.charter.model_dump(), **updates})
+        if charter == goal.charter:
+            return "The goal already has those settings."
+        updated = self._save_edits(request, goal, charter)
+        if goal.confirmed_revision == revision and not charter.unresolved():
+            return self._confirm(request, str(updated.revision))
+        return _review(updated)
+
+    def _save_edits(self, request: GoalRequest, goal: Goal, charter: GoalCharter) -> Goal:
         owner = request.scope.owner_id
         goal = self.ledger.revise_charter(
             goal.id,
@@ -427,7 +452,7 @@ class GoalController:
             goal = self.ledger.submit_for_confirmation(
                 goal.id, owner_id=owner, expected_revision=goal.revision, now=self.now()
             )
-        return _review(goal)
+        return goal
 
     def _confirm(self, request: GoalRequest, text: str) -> str:
         try:
@@ -576,10 +601,17 @@ class GoalController:
         ]
 
 
-def list_owned_goals(ledger: GoalLedger, scope: GoalScope) -> str:
+def list_owned_goals(ledger: GoalLedger, scope: GoalScope, *, goal_id: str | None = None) -> str:
     """List open goals visible to the requesting owner in this conversation."""
-    goals = ledger.goals_for_conversation(scope)
-    return _goal_list([goal for goal in goals if goal.scope.owner_id == scope.owner_id])
+    owned = [
+        goal
+        for goal in ledger.goals_for_conversation(scope)
+        if goal.scope.owner_id == scope.owner_id
+    ]
+    if goal_id is None:
+        return _goal_list(owned)
+    goal = next((goal for goal in owned if goal.id == goal_id), None)
+    return _review(goal) if goal is not None else "No matching goal in this chat."
 
 
 def _goal_list(goals: list[Goal]) -> str:
@@ -588,7 +620,10 @@ def _goal_list(goals: list[Goal]) -> str:
     return "\n".join(
         [
             "Use /goal <id> <command>:",
-            *(f"{goal.id} ({goal.state}) {goal.charter.outcome}" for goal in goals),
+            *(
+                f"{goal.id} ({goal.state}) {goal.charter.outcome} [revision {goal.revision}]"
+                for goal in goals
+            ),
         ]
     )
 
@@ -657,7 +692,7 @@ def _review(goal: Goal) -> str:
     missing = goal.charter.unresolved()
     if missing:
         names = ", ".join("progress" if name == "progress_test" else name for name in missing)
-        parts.append(f"Still needed: {names}. Set them with /goal {goal.id} edit, for example:")
+        parts.append(f"Still needed: {names}. Describe them in chat, or use:")
         parts.append(
             f"/goal {goal.id} edit sources: tool:linear_list_issues; path:/srv/security/reports"
         )

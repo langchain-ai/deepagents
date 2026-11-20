@@ -2,6 +2,15 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.13](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.12...deepagents-code==0.2.13) (2026-11-20)
+
+
+### Bug Fixes
+
+* **code:** report F2-disabled unapproved MCP servers as disabled ([#7908](https://github.com/langchain-ai/deepagents/issues/7908)) ([ce4d8d3](https://github.com/langchain-ai/deepagents/commit/ce4d8d3165d523cd9ad6ab13d14384f4019b3a14))
+* **code:** report project MCP servers skipped for missing approval ([#7904](https://github.com/langchain-ai/deepagents/issues/7904)) ([edda7d3](https://github.com/langchain-ai/deepagents/commit/edda7d36260c81374532ffa5e534869351f0fdc7))
+* **code:** show source file in project MCP trust prompt ([#7903](https://github.com/langchain-ai/deepagents/issues/7903)) ([4bbf0e4](https://github.com/langchain-ai/deepagents/commit/4bbf0e40fccdcd8e2c3a5f5c121d4e91fa6d9443))
+
 ## [0.2.12](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.11...deepagents-code==0.2.12) (2026-11-20)
 
 ### Features

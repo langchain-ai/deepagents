@@ -139,6 +139,9 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
     Returns:
         Formatted markdown string, or `""` if no servers.
     """
+    # Unapproved project servers carry names and transports straight from an
+    # unreviewed `.mcp.json`; nothing about them may reach the model.
+    servers = [s for s in servers if s.status != "untrusted"]
     if not servers:
         return ""
 

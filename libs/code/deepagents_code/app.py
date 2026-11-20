@@ -934,8 +934,9 @@ def _format_mcp_server_changes(
 ) -> str:
     """Format MCP server changes for the `/reload` report.
 
-    Every server in `current` lands in exactly one bucket — loaded, failed,
-    unavailable, recovered, status-changed, reconfigured, or still-broken — so a
+    Every server in `current` lands in exactly one bucket — loaded, needs
+    approval, failed, unavailable, recovered, status-changed, reconfigured, or
+    still-broken — so a
     status the app grows later cannot silently fall through into "no changes".
     Config files whose parse status changed are flagged separately, since they
     arrive as synthetic entries rather than as servers.
@@ -1006,10 +1007,21 @@ def _format_mcp_server_changes(
         # self-comparison that would report it as unchanged.
         and (name not in before or before[name].status != "error")
     )
+    # Approval happens only in the startup prompt, so a project server added or
+    # edited mid-session lands here. Named on its own line with the way out,
+    # since a generic "unavailable" gives no hint that a restart is the fix.
+    needs_approval = sorted(
+        name
+        for name, server in servers.items()
+        if server.status == "untrusted"
+        and (name not in before or before[name].status != "untrusted")
+    )
     unavailable = sorted(
         name
         for name, server in servers.items()
-        if name not in before and server.status not in {"ok", "error"}
+        if name not in before
+        and server.status not in {"ok", "error"}
+        and name not in needs_approval
     )
     recovered = sorted(
         name
@@ -1024,6 +1036,7 @@ def _format_mcp_server_changes(
             and before[name].status != server.status
             and name not in failing
             and name not in recovered
+            and name not in needs_approval
         )
     )
     # A same-name server whose status held steady can still have been edited
@@ -1051,6 +1064,7 @@ def _format_mcp_server_changes(
     # so name it in both branches below rather than only when nothing changed.
     reported = (
         set(loaded)
+        | set(needs_approval)
         | set(failing)
         | set(unavailable)
         | set(recovered)
@@ -1062,7 +1076,7 @@ def _format_mcp_server_changes(
             name
             for name, server in servers.items()
             if name not in reported
-            and (server.status == "error" or server.needs_attention())
+            and (server.status in {"error", "untrusted"} or server.needs_attention())
         ]
         # Unrepaired config errors are excluded from `servers` entirely, and are
         # the one thing `/reload` most exists to surface.
@@ -1072,6 +1086,7 @@ def _format_mcp_server_changes(
     if not (
         loaded
         or removed
+        or needs_approval
         or failing
         or unavailable
         or recovered
@@ -1092,6 +1107,11 @@ def _format_mcp_server_changes(
         lines.append(f"  - Loaded: {', '.join(loaded)}")
     if removed:
         lines.append(f"  - Removed: {', '.join(removed)}")
+    if needs_approval:
+        lines.append(
+            f"  - Needs approval: {', '.join(needs_approval)} (restart to review "
+            "project MCP servers, or launch with --trust-project-mcp)"
+        )
     if failing:
         lines.append(f"  - Failed to load: {', '.join(failing)} (use /mcp for details)")
     if unavailable:

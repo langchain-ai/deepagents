@@ -295,18 +295,24 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
-            # Inputs to the `.github/scripts/tests` suite: the scripts and the
-            # workflows/templates they assert on, the release-please config,
-            # every package's pyproject/README (project-readme and release
-            # package-map checks), and the evals assets the eval-prep tests
-            # read. Push and merge_group runs ignore this and always run it.
+            # Every repo file the `.github/scripts/tests` suite reads (audited by
+            # tracing its file opens): the scripts and the workflows/templates
+            # they assert on, the release-please config, package and example
+            # pyproject/README files, the evals assets, the root `action.yml`
+            # with the dcode parser it maps onto, and the filesystem-backend
+            # tests whose ripgrep guard `test_ci_workflow` checks. Push and
+            # merge_group runs ignore this and always run the suite.
             release-scripts:
               - '.github/**'
               - 'release-please-config.json'
               - '.release-please-manifest.json'
+              - 'action.yml'
               - 'libs/**/pyproject.toml'
               - 'libs/**/README.md'
+              - 'examples/**/pyproject.toml'
               - 'libs/evals/**'
+              - 'libs/code/deepagents_code/main.py'
+              - 'libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py'
   # Run linting on changed packages
   lint-deepagents:
     name: "🧹 Lint deepagents"

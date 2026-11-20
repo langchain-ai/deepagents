@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TypeVar
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -300,6 +300,7 @@ class TestLaunchTool:
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "analyze data"}]},
             headers={},
+            metadata={"deepagents_launch_id": ANY},
         )
 
 

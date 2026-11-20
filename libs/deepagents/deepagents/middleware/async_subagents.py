@@ -12,13 +12,16 @@ Compatible with LangGraph Platform (managed) and self-hosted servers.
 import asyncio
 import dataclasses
 import html
+import inspect
 import json
 import logging
 import urllib.parse
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
+from functools import wraps
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
+from uuid import uuid4
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -26,6 +29,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ResponseT,
     TracePolicy,
     hook_config,
@@ -46,6 +50,7 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.errors import GraphBubbleUp
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -256,10 +261,38 @@ def _tasks_reducer(
     return merged
 
 
+class _LaunchReceipt(TypedDict):
+    """An owned thread whose initial run has not yet been confirmed."""
+
+    task_id: str
+    thread_id: str
+    agent_name: str
+    launch_id: str
+    created_at: str
+
+
+_LAUNCHES_KEY = "_unconfirmed_async_launches"
+_LAUNCH_ID_KEY = "deepagents_launch_id"
+_LAUNCH_READ_TIMEOUT = 5.0
+_LAUNCH_READ_LIMIT = 10
+
+
+def _launches_reducer(existing: dict[str, _LaunchReceipt] | None, update: dict[str, _LaunchReceipt | None]) -> dict[str, _LaunchReceipt]:
+    """Merge receipts; a confirmed launch removes its receipt with a tombstone."""
+    merged = dict(existing or {})
+    for task_id, receipt in update.items():
+        if receipt is None:
+            merged.pop(task_id, None)
+        else:
+            merged[task_id] = receipt
+    return merged
+
+
 class AsyncSubAgentState(AgentState):
     """State extension for async subagent task tracking."""
 
     async_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
+    _unconfirmed_async_launches: Annotated[NotRequired[dict[str, _LaunchReceipt]], PrivateStateAttr, _launches_reducer]
 
 
 class StartAsyncTaskSchema(BaseModel):
@@ -746,6 +779,107 @@ class _ClientCache:
             )
         return self._async[key]
 
+    def recover_launch(self, receipt: _LaunchReceipt) -> Run | None:
+        """Read an owned launch without repeating its creation request."""
+        try:
+            spec = self._agents[receipt["agent_name"]]
+            if not spec.get("url"):
+                return None  # The synchronous SDK cannot use ASGI transport.
+            with get_sync_client(url=spec.get("url"), headers=_resolve_headers(spec), timeout=_LAUNCH_READ_TIMEOUT) as client:
+                runs = client.runs.list(thread_id=receipt["thread_id"], limit=_LAUNCH_READ_LIMIT)
+            return _matching_launch(receipt, runs)
+        except GraphBubbleUp:
+            raise
+        except Exception as error:  # noqa: BLE001  # An unavailable read must not discard the receipt.
+            logger.warning("Could not confirm async launch %s: %s", receipt["task_id"], type(error).__name__)
+            return None
+
+    async def arecover_launch(self, receipt: _LaunchReceipt) -> Run | None:
+        """Read an owned launch within a bounded async polling budget."""
+        try:
+            spec = self._agents[receipt["agent_name"]]
+            async with get_client(url=spec.get("url"), headers=_resolve_headers(spec), timeout=_LAUNCH_READ_TIMEOUT) as client:
+                runs = await asyncio.wait_for(client.runs.list(thread_id=receipt["thread_id"], limit=_LAUNCH_READ_LIMIT), _LAUNCH_READ_TIMEOUT)
+            return _matching_launch(receipt, runs)
+        except GraphBubbleUp:
+            raise
+        except Exception as error:  # noqa: BLE001  # Cancellation and graph control flow still propagate.
+            logger.warning("Could not confirm async launch %s: %s", receipt["task_id"], type(error).__name__)
+            return None
+
+
+def _matching_launch(receipt: _LaunchReceipt, runs: Sequence[Run]) -> Run | None:
+    """Adopt only one run bearing this launch's correlation ID on its owned thread."""
+    matching = [
+        run
+        for run in runs
+        if run.get("thread_id") == receipt["thread_id"]
+        and (run.get("metadata") or {}).get(_LAUNCH_ID_KEY) == receipt["launch_id"]
+        and run.get("run_id")
+    ]
+    return matching[0] if len(matching) == 1 else None
+
+
+def _launch_receipt(task_id: str, name: str, launch_id: str) -> _LaunchReceipt:
+    return {
+        "task_id": task_id,
+        "thread_id": task_id,
+        "agent_name": name,
+        "launch_id": launch_id,
+        "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _confirmed_launch(receipt: _LaunchReceipt, run: Run) -> AsyncTask:
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "task_id": receipt["task_id"],
+        "thread_id": receipt["thread_id"],
+        "agent_name": receipt["agent_name"],
+        "run_id": run["run_id"],
+        "status": "running",
+        "created_at": receipt["created_at"],
+        "last_checked_at": now,
+        "last_updated_at": now,
+    }
+
+
+def _unconfirmed_launch_message(receipt: _LaunchReceipt) -> str:
+    return (
+        f"Async launch outcome is unconfirmed. task_id: {receipt['task_id']}. "
+        "The worker may already be running. Use check_async_task or list_async_tasks to recover it; "
+        "do not repeat the work merely because its launch response was lost."
+    )
+
+
+def _launch_command(receipt: _LaunchReceipt, run: Run | None, tool_call_id: str | None) -> Command:
+    if run is None:
+        return Command(
+            update={
+                _LAUNCHES_KEY: {receipt["task_id"]: receipt},
+                "messages": [ToolMessage(_unconfirmed_launch_message(receipt), tool_call_id=tool_call_id, status="error")],
+            }
+        )
+    return Command(
+        update={
+            "async_tasks": {receipt["task_id"]: _confirmed_launch(receipt, run)},
+            "messages": [ToolMessage(f"Launched async subagent. task_id: {receipt['task_id']}", tool_call_id=tool_call_id)],
+        }
+    )
+
+
+def _launch_is_uncertain(error: Exception) -> bool:
+    """Keep ordinary client rejections distinct from uncertain remote outcomes."""
+    if isinstance(error, GraphBubbleUp):
+        raise error
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    return not isinstance(status, int) or status >= 500 or status == 408  # noqa: PLR2004  # HTTP request timeout.
+
+
+def _launch_options(spec: AsyncSubAgent, runtime: ToolRuntime, launch_id: str) -> dict[str, Any]:
+    options = _run_options(spec, runtime)
+    return {**options, "metadata": {**options.get("metadata", {}), _LAUNCH_ID_KEY: launch_id}}
+
 
 def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -> str | None:
     """Return an error message if `agent_type` is not in `agent_map`, or `None` if valid."""
@@ -825,37 +959,21 @@ def _build_start_tool(
             return error
         spec = agent_map[subagent_type]
         messages = _start_task_messages(spec, runtime, description)
+        thread_id: str | None = None
+        launch_id = str(uuid4())
         try:
+            options = _launch_options(spec, runtime, launch_id)
             client = clients.get_sync(subagent_type)
             thread = client.threads.create(metadata=_thread_metadata(spec, runtime))
-            run = client.runs.create(
-                thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": messages},
-                **_run_options(spec, runtime),
-            )
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
-            return f"Failed to launch async subagent '{subagent_type}': {e}"
-        task_id = thread["thread_id"]
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        task: AsyncTask = {
-            "task_id": task_id,
-            "agent_name": subagent_type,
-            "thread_id": task_id,
-            "run_id": run["run_id"],
-            "status": "running",
-            "created_at": now,
-            "last_checked_at": now,
-            "last_updated_at": now,
-        }
-        msg = f"Launched async subagent. task_id: {task_id}"
-        return Command(
-            update={
-                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {task_id: task},
-            }
-        )
+            thread_id = thread["thread_id"]
+            run = client.runs.create(thread_id=thread_id, assistant_id=spec["graph_id"], input={"messages": messages}, **options)
+        except Exception as error:  # noqa: BLE001  # The SDK raises untyped errors.
+            if _launch_is_uncertain(error) and thread_id is not None:
+                receipt = _launch_receipt(thread_id, subagent_type, launch_id)
+                return _launch_command(receipt, clients.recover_launch(receipt), runtime.tool_call_id)
+            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, error)
+            return f"Failed to launch async subagent '{subagent_type}': {error}"
+        return _launch_command(_launch_receipt(thread_id, subagent_type, launch_id), run, runtime.tool_call_id)
 
     async def astart_async_task(
         description: str,
@@ -867,37 +985,21 @@ def _build_start_tool(
             return error
         spec = agent_map[subagent_type]
         messages = await _astart_task_messages(spec, runtime, description)
+        thread_id: str | None = None
+        launch_id = str(uuid4())
         try:
+            options = _launch_options(spec, runtime, launch_id)
             client = clients.get_async(subagent_type)
             thread = await client.threads.create(metadata=_thread_metadata(spec, runtime))
-            run = await client.runs.create(
-                thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": messages},
-                **_run_options(spec, runtime),
-            )
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
-            return f"Failed to launch async subagent '{subagent_type}': {e}"
-        task_id = thread["thread_id"]
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        task: AsyncTask = {
-            "task_id": task_id,
-            "agent_name": subagent_type,
-            "thread_id": task_id,
-            "run_id": run["run_id"],
-            "status": "running",
-            "created_at": now,
-            "last_checked_at": now,
-            "last_updated_at": now,
-        }
-        msg = f"Launched async subagent. task_id: {task_id}"
-        return Command(
-            update={
-                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {task_id: task},
-            }
-        )
+            thread_id = thread["thread_id"]
+            run = await client.runs.create(thread_id=thread_id, assistant_id=spec["graph_id"], input={"messages": messages}, **options)
+        except Exception as error:  # noqa: BLE001  # Cancellation still propagates.
+            if _launch_is_uncertain(error) and thread_id is not None:
+                receipt = _launch_receipt(thread_id, subagent_type, launch_id)
+                return _launch_command(receipt, await clients.arecover_launch(receipt), runtime.tool_call_id)
+            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, error)
+            return f"Failed to launch async subagent '{subagent_type}': {error}"
+        return _launch_command(_launch_receipt(thread_id, subagent_type, launch_id), run, runtime.tool_call_id)
 
     return StructuredTool.from_function(
         name="start_async_task",
@@ -1492,6 +1594,83 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
     )
 
 
+def _launches_for(runtime: ToolRuntime, task_id: str | None) -> list[_LaunchReceipt]:
+    """Select only receipts this parent owns, optionally for one task."""
+    receipts: dict[str, _LaunchReceipt] = runtime.state.get(_LAUNCHES_KEY) or {}
+    tracked = runtime.state.get("async_tasks") or {}
+    return [receipt for key, receipt in receipts.items() if key not in tracked and (task_id is None or key == task_id.strip())]
+
+
+def _recovered_update(receipts: Sequence[_LaunchReceipt], runs: Sequence[Run | None]) -> dict[str, Any]:
+    """Promote confirmed receipts without changing the confirmed-task schema."""
+    tasks = {receipt["task_id"]: _confirmed_launch(receipt, run) for receipt, run in zip(receipts, runs, strict=True) if run is not None}
+    return {"async_tasks": tasks, _LAUNCHES_KEY: dict.fromkeys(tasks)} if tasks else {}
+
+
+def _finish_recovery(result: str | Command, update: dict[str, Any], unresolved: Sequence[_LaunchReceipt], runtime: ToolRuntime) -> str | Command:
+    """Keep recovered ownership even when the requested operation fails."""
+    if not update and not unresolved:
+        return result
+    if isinstance(result, str):
+        messages = [] if result == "No async subagent tasks tracked." else [ToolMessage(result, tool_call_id=runtime.tool_call_id)]
+        operation: dict[str, Any] = {"messages": messages}
+    else:
+        operation = dict(result.update or {})
+    if unresolved:
+        messages = list(operation.get("messages", []))
+        # Listing returns a single tool response, including all unconfirmed handles.
+        text = "\n".join(_unconfirmed_launch_message(receipt) for receipt in unresolved)
+        if messages:
+            text = f"{messages[0].content}\n{text}"
+        operation["messages"] = [ToolMessage(text, tool_call_id=runtime.tool_call_id, status="error")]
+    merged = {**update, **operation, "async_tasks": {**update.get("async_tasks", {}), **operation.get("async_tasks", {})}}
+    return dataclasses.replace(result, update=merged) if isinstance(result, Command) else Command(update=merged)
+
+
+def _recoverable_tool(tool: StructuredTool, clients: _ClientCache) -> StructuredTool:
+    """Recover retained launches before operating on their confirmed run IDs."""
+    function = cast("Callable[..., str | Command]", tool.func)
+    coroutine = cast("Callable[..., Awaitable[str | Command]]", tool.coroutine)
+    signature = inspect.signature(function)
+
+    def prepare(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[inspect.BoundArguments, ToolRuntime, list[_LaunchReceipt]]:
+        bound = signature.bind(*args, **kwargs)
+        runtime = bound.arguments["runtime"]
+        return bound, runtime, _launches_for(runtime, bound.arguments.get("task_id"))
+
+    def finish(
+        bound: inspect.BoundArguments, runtime: ToolRuntime, receipts: list[_LaunchReceipt], runs: list[Run | None]
+    ) -> tuple[dict[str, Any], list[_LaunchReceipt]]:
+        update = _recovered_update(receipts, runs)
+        bound.arguments["runtime"] = dataclasses.replace(
+            runtime, state={**runtime.state, "async_tasks": {**(runtime.state.get("async_tasks") or {}), **update.get("async_tasks", {})}}
+        )
+        unresolved = [receipt for receipt, run in zip(receipts, runs, strict=True) if run is None]
+        return update, unresolved
+
+    @wraps(function)
+    def recover(*args: Any, **kwargs: Any) -> str | Command:
+        bound, runtime, receipts = prepare(args, kwargs)
+        update, unresolved = finish(bound, runtime, receipts, [clients.recover_launch(receipt) for receipt in receipts])
+        if unresolved and "task_id" in bound.arguments:
+            return _finish_recovery("Requested operation was not performed.", update, unresolved, runtime)
+        result = function(*bound.args, **bound.kwargs)
+        visible = unresolved if bound.arguments.get("status_filter") in (None, "all") else []
+        return _finish_recovery(result, update, visible, runtime)
+
+    @wraps(coroutine)
+    async def arecover(*args: Any, **kwargs: Any) -> str | Command:
+        bound, runtime, receipts = prepare(args, kwargs)
+        update, unresolved = finish(bound, runtime, receipts, list(await asyncio.gather(*(clients.arecover_launch(receipt) for receipt in receipts))))
+        if unresolved and "task_id" in bound.arguments:
+            return _finish_recovery("Requested operation was not performed.", update, unresolved, runtime)
+        result = await coroutine(*bound.args, **bound.kwargs)
+        visible = unresolved if bound.arguments.get("status_filter") in (None, "all") else []
+        return _finish_recovery(result, update, visible, runtime)
+
+    return tool.model_copy(update={"func": recover, "coroutine": arecover})
+
+
 def _build_async_subagent_tools(
     agents: list[AsyncSubAgent],
 ) -> list[StructuredTool]:
@@ -1510,10 +1689,15 @@ def _build_async_subagent_tools(
 
     return [
         _build_start_tool(agent_map, clients, launch_desc),
-        _build_check_tool(clients),
-        _build_update_tool(agent_map, clients),
-        _build_cancel_tool(clients),
-        _build_list_tasks_tool(clients),
+        *[
+            _recoverable_tool(tool, clients)
+            for tool in (
+                _build_check_tool(clients),
+                _build_update_tool(agent_map, clients),
+                _build_cancel_tool(clients),
+                _build_list_tasks_tool(clients),
+            )
+        ],
     ]
 
 
@@ -1658,7 +1842,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """(async) Record the notification that started this run, then add status updates from this agent's tasks."""
         recorded = self._record_notification(state) or {}
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
-        updates = await self._apull(tasks)
+        updates = await self._apull(tasks, state.get(_LAUNCHES_KEY) or {})
         if recorded.get("messages"):
             updates["messages"] = [*recorded["messages"], *updates.get("messages", [])]
         return {
@@ -1673,7 +1857,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     async def abefore_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """(async) Add status updates from this agent's tasks before the model call."""
-        return await self._apull(state.get("async_tasks") or {}) or None
+        return await self._apull(state.get("async_tasks") or {}, state.get(_LAUNCHES_KEY) or {}) or None
 
     def after_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Pass through: checking tasks needs the async path, which the Agent Server uses."""
@@ -1688,21 +1872,24 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         if not messages or getattr(messages[-1], "tool_calls", None):
             return None
-        updates = await self._apull(state.get("async_tasks") or {})
+        updates = await self._apull(state.get("async_tasks") or {}, state.get(_LAUNCHES_KEY) or {})
         if not updates.get("messages"):
             return updates or None
         return {**updates, "jump_to": "model"}
 
-    async def _apull(self, tasks: Mapping[str, AsyncTask]) -> dict[str, Any]:
+    async def _apull(self, tasks: Mapping[str, AsyncTask], receipts: Mapping[str, _LaunchReceipt] | None = None) -> dict[str, Any]:
         """Check unfinished tasks; return their updated records and a notification per new outcome.
 
         Outcomes the agent already saw (through a check, a list, or an earlier
         notification) aren't reported again. A task that can't be checked is
         skipped until the next check.
         """
+        pending = [receipt for key, receipt in (receipts or {}).items() if key not in tasks]
+        recovered = _recovered_update(pending, list(await asyncio.gather(*(self._clients.arecover_launch(receipt) for receipt in pending))))
+        tasks = {**tasks, **recovered.get("async_tasks", {})}
         unfinished = [task for task in tasks.values() if task["status"] in _UNFINISHED_STATUSES]
         observed = await asyncio.gather(*(self._aobserve_task(task) for task in unfinished))
-        records: dict[str, AsyncTask] = {}
+        records: dict[str, AsyncTask] = dict(recovered.get("async_tasks", {}))
         messages: list[dict[str, Any]] = []
         for task, found in zip(unfinished, observed, strict=True):
             if found is None:
@@ -1714,7 +1901,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             records[task["task_id"]] = _observed(task, status, run["run_id"])
             if status != task["status"] and (event := _check_event(task, run, thread, status)):
                 messages.append(_notification_message(event))
-        update: dict[str, Any] = {"async_tasks": records} if records else {}
+        update: dict[str, Any] = {**recovered, "async_tasks": records} if records else {}
         if messages:
             update["messages"] = messages
         return update

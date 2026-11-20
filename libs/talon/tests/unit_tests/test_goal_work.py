@@ -101,7 +101,10 @@ def test_discovery_adds_one_planned_item_and_deduplicates(
     )
     controller.finish_turn(item_turn, text='{"status": "waiting_for_source"}')
     _run(controller, job, _discovery())
-    assert len(ledger.list_items(goal_id)) == 1
+    assert ledger.get_item(item.id).status == "waiting_for_source"
+    _run(controller, job, _discovery().replace("new P1", "source is available"))
+    [resumed] = ledger.list_items(goal_id)
+    assert (resumed.id, resumed.status) == (item.id, "planned")
 
 
 def test_item_turn_records_verified_completion(
@@ -173,6 +176,18 @@ def test_timeout_flags_item_instead_of_retrying(
     assert controller.prepare_fire(job, ttl=TTL).item_id is None
 
 
+def test_parked_work_leaves_room_for_discovery(
+    controller: GoalController, ledger: GoalLedger
+) -> None:
+    job = _activate(controller)
+    for index in range(MAX_OPEN_ITEMS):
+        _run(controller, job, _discovery(key=f"SEC-{index}"))
+        _run(controller, job, None, failure="timeout")
+
+    assert _run(controller, job, _discovery(key="SEC-0")) == "discovery"
+    assert all(item.status == "needs_attention" for item in ledger.list_items(job.goal_id))
+
+
 def test_paused_goal_or_full_queue_makes_no_turn(
     controller: GoalController, store: CronJobStore
 ) -> None:
@@ -227,6 +242,8 @@ def test_read_scope_allows_only_named_read_only_tools_and_paths() -> None:
     assert scope.allows_call(linear_list_issues, {"team": "SEC"})
     assert not scope.allows_tool(linear_create_issue)
     assert unannotated.allows_tool(linear_create_issue)
+    linear_create_issue.metadata = {"mcp": {"tool": None}}
+    assert not unannotated.allows_tool(linear_create_issue)
     assert scope.allows_call(read_file, {"file_path": "/srv/reports/q4.md"})
     assert not scope.allows_call(read_file, {"file_path": "/srv/reports/../secrets.env"})
     assert not scope.allows_call(read_file, {"file_path": "/srv/reports-old/x"})

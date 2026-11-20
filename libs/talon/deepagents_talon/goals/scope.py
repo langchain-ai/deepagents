@@ -143,7 +143,8 @@ def is_read_only(tool: BaseTool) -> bool:
         `True` only for a literal read-only hint without a destructive hint.
     """
     mcp = (tool.metadata or {}).get("mcp")
-    annotations = mcp.get("tool", {}).get("annotations", {}) if isinstance(mcp, Mapping) else {}
+    descriptor = mcp.get("tool") if isinstance(mcp, Mapping) else None
+    annotations = descriptor.get("annotations") if isinstance(descriptor, Mapping) else None
     if not isinstance(annotations, Mapping):
         return False
     return (

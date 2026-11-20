@@ -22,7 +22,7 @@ from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronSchedule
 from deepagents_talon.goals.errors import GoalLedgerCorruptError, GoalLedgerError
 from deepagents_talon.goals.ledger import ItemChange
-from deepagents_talon.goals.models import CLOSED_WORK, GoalCharter, GoalScope
+from deepagents_talon.goals.models import SCHEDULED_WORK, GoalCharter, GoalScope
 from deepagents_talon.goals.scope import ReadScope
 from deepagents_talon.goals.work import (
     DiscoveryResult,
@@ -76,7 +76,7 @@ _CLEAR = frozenset({"none", "-"})
 _JOB_PREFIX = "goal:"
 
 MAX_OPEN_ITEMS = 5
-"""Open work items at which discovery pauses until some close."""
+"""Maximum number of items in the scheduled work queue."""
 
 DECISION_TTL = timedelta(days=7)
 """How long a requested owner decision stays valid."""
@@ -162,7 +162,7 @@ class GoalController:
         Recovery runs first: expired leases become unknown and a paused or
         missing job is reflected in the goal. No turn is leased unless the
         goal is active; a due planned item wins over discovery, and discovery
-        is skipped once `MAX_OPEN_ITEMS` items are open.
+        is skipped once `MAX_OPEN_ITEMS` items occupy the scheduled queue.
 
         Args:
             job: Claimed goal-owned cron job.
@@ -221,7 +221,7 @@ class GoalController:
             )
             leased = self.ledger.get_item(due.id) or due
             return GoalTurn(goal.id, run.id, due.id, item_prompt(charter, leased), scope)
-        if sum(item.status not in CLOSED_WORK for item in items) >= MAX_OPEN_ITEMS:
+        if sum(item.status in SCHEDULED_WORK for item in items) >= MAX_OPEN_ITEMS:
             return None
         run = self.ledger.lease_run(goal.id, goal_revision=revision, ttl=ttl, now=now)
         return GoalTurn(goal.id, run.id, None, discovery_prompt(charter, items), scope)
@@ -237,15 +237,21 @@ class GoalController:
         found = result.candidate
         if found is None:
             return
-        item, created = self.ledger.add_candidate(
+        item, _ = self.ledger.add_candidate(
             turn.goal_id,
             source_key=found.source_key,
             source_version=found.source_version,
             evidence=found.evidence,
             now=self.now(),
         )
-        if created:
-            change = ItemChange(status="planned", next_step=found.next_step or None)
+        if item.status == "candidate" or (
+            item.status == "waiting_for_source"
+            and found.evidence
+            and found.evidence != item.evidence
+        ):
+            change = ItemChange(
+                status="planned", evidence=found.evidence or None, next_step=found.next_step or None
+            )
             self.ledger.update_item(item.id, change, now=self.now())
 
     def _finish_item(self, turn: GoalTurn, item_id: str, text: str) -> None:

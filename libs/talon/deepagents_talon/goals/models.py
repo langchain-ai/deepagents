@@ -87,6 +87,8 @@ first, so an in-flight turn is never silently orphaned.
 """
 
 TERMINAL_WORK: frozenset[WorkStatus] = frozenset({"done", "abandoned"})
+SCHEDULED_WORK = _to("candidate", "planned", "running")
+"""Statuses that occupy the scheduled work queue."""
 
 _RECORD_CONFIG = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 

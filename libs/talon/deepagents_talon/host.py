@@ -16,10 +16,11 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 from deepagents_talon import commands as chat_commands
@@ -44,7 +45,14 @@ from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.effort import effort_levels, normalize_effort
-from deepagents_talon.goals import GoalController, GoalLedger, GoalRequest, GoalScope
+from deepagents_talon.goals import (
+    GoalController,
+    GoalLedger,
+    GoalLedgerCorruptError,
+    GoalLedgerError,
+    GoalRequest,
+    GoalScope,
+)
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -171,6 +179,7 @@ _AGENT_FAILURE_MESSAGE = "Something went wrong while working on that. Check Talo
 # hangs in any one subagent: the ticker runs due jobs one at a time, so an unbounded run
 # silences every other job.
 _SCHEDULED_RUN_TIMEOUT_SECONDS = 1800.0
+_GOAL_LEASE_MARGIN_SECONDS = 60.0
 _BACKGROUND_FOLLOW_UP = "Process the completed background subagent results."
 _BACKGROUND_RETRY_BASE_SECONDS = 2.0
 _BACKGROUND_RETRY_MAX_SECONDS = 60.0
@@ -495,6 +504,7 @@ class TalonHost:
                 started.append(channel)
                 await channel.start()
             if self.scheduler is not None:
+                await self._reconcile_goals()
                 await self.scheduler.start()
                 scheduler = self.scheduler
         except BaseException:
@@ -506,6 +516,16 @@ class TalonHost:
         if isinstance(self.agent, BackgroundRuntime):
             self._background_loop = asyncio.create_task(self._process_background_results())
         logger.info("Talon host started for assistant %s", self.config.assistant_id)
+
+    async def _reconcile_goals(self) -> None:
+        """Recover goal leases and job state before the scheduler dispatches."""
+        goals = self.goals
+        if goals is None:
+            return
+        try:
+            await asyncio.to_thread(goals.reconcile)
+        except GoalLedgerCorruptError, GoalLedgerError, CronJobError, OSError:
+            logger.exception("Could not reconcile goals at startup")
 
     async def stop(self) -> None:
         """Stop managed components and cancel in-flight agent work.
@@ -1450,9 +1470,8 @@ class TalonHost:
                 and delivers nothing.
         """
         if job.goal_id is not None:
-            if self.goals is None:
-                return SILENT_SENTINEL
-            return await asyncio.to_thread(self.goals.on_fire, job)
+            await self._run_goal_job(job)
+            return SILENT_SENTINEL
         conversation_root = f"{job.id}{_CRON_THREAD_SUFFIX}"
         conversation_id = f"{conversation_root}:{uuid4().hex}"
         async with self._conversation_lock(conversation_root):
@@ -1474,14 +1493,52 @@ class TalonHost:
                 self._scheduled_runs.pop(job.id, None)
                 self._revoked_runs.discard(job.id)
 
-    async def _bounded_scheduled_run(self, job: CronJob, conversation_id: str) -> str:
+    async def _run_goal_job(self, job: CronJob) -> None:
+        """Run a goal job fire: a cheap check, then at most one read-only model turn."""
+        goals = self.goals
+        if goals is None:
+            return
+        ttl = timedelta(seconds=_SCHEDULED_RUN_TIMEOUT_SECONDS + _GOAL_LEASE_MARGIN_SECONDS)
+        turn = await asyncio.to_thread(goals.prepare_fire, job, ttl=ttl)
+        if turn is None:
+            return
+        conversation_root = f"{job.id}{_CRON_THREAD_SUFFIX}"
+        conversation_id = f"{conversation_root}:{uuid4().hex}"
+        metadata = {
+            **_scheduled_metadata(job),
+            "goal_id": turn.goal_id,
+            "goal_read_scope": turn.scope.to_metadata(),
+        }
+        text: str | None = None
+        failure: Literal["timeout", "error"] | None = None
+        async with self._conversation_lock(conversation_root):
+            try:
+                text = await self._bounded_scheduled_run(
+                    job, conversation_id, prompt=turn.prompt, metadata=metadata
+                )
+            except TimeoutError:
+                failure = "timeout"
+            except Exception:
+                logger.exception("Goal turn for job %s failed", job.id)
+                failure = "error"
+        await asyncio.to_thread(goals.finish_turn, turn, text=text, failure=failure)
+
+    async def _bounded_scheduled_run(
+        self,
+        job: CronJob,
+        conversation_id: str,
+        *,
+        prompt: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> str:
         """Run one scheduled job under its timeout, repairing the thread on expiry."""
         try:
             async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
                 result = await self._invoke_agent(
                     conversation_id=conversation_id,
-                    text=job.prompt,
-                    metadata={**_scheduled_metadata(job), **await self._scheduled_history(job)},
+                    text=job.prompt if prompt is None else prompt,
+                    metadata=metadata
+                    or {**_scheduled_metadata(job), **await self._scheduled_history(job)},
                 )
         except TimeoutError:
             log_event(

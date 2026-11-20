@@ -64,6 +64,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
+from deepagents_talon.goals.scope import GOAL_READ_SCOPE, GoalScopeMiddleware, ReadScope
 from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -564,6 +565,7 @@ class DeepAgentRuntime:
         )
         middleware.extend(_skill_middleware(self.backend, diagnostics.skills, skill_tools))
         middleware.extend(self.middleware)
+        middleware.append(GoalScopeMiddleware())
         graph = create_deep_agent(
             model=model,
             tools=tools,
@@ -856,6 +858,7 @@ class DeepAgentRuntime:
                 progress_messages(request.message_handler, self.verbosity),
                 question_scope(_question_handler_from_request(request)),
                 _history_context(request),
+                _goal_scope(request),
             ):
                 async with (
                     self.checkpointer.protect_session(request.conversation_id)
@@ -1845,6 +1848,19 @@ def _current_cron_origin() -> CronOrigin:
         msg = "cron tools must be called from within a Talon conversation"
         raise RuntimeError(msg)
     return origin
+
+
+@contextlib.contextmanager
+def _goal_scope(request: AgentRequest) -> Generator[None]:
+    """Scope a scheduled goal turn's tools; any other turn keeps its full tool set."""
+    scope = None
+    if request.metadata.get("trigger") == "cron":
+        scope = ReadScope.from_metadata(request.metadata.get("goal_read_scope"))
+    token = GOAL_READ_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        GOAL_READ_SCOPE.reset(token)
 
 
 def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:

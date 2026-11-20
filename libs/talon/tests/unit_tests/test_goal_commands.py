@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
-from deepagents_talon.cron.scheduler import SILENT_SENTINEL
 from deepagents_talon.goals import (
     GoalController,
     GoalLedger,
@@ -195,11 +194,9 @@ def test_remove_deletes_goal_jobs_and_allows_a_new_goal(
     assert "Goal (draft)" in _send(controller, "a new outcome")
 
 
-def test_goal_fire_is_silent_and_disables_orphaned_jobs(
+def test_fire_for_a_removed_goal_disables_the_job(
     controller: GoalController, store: CronJobStore
 ) -> None:
-    _activate(controller)
-    [job] = _goal_jobs(store)
     orphan = store.create_job(
         prompt="x",
         schedule=CronSchedule.parse("every 1h"),
@@ -208,13 +205,11 @@ def test_goal_fire_is_silent_and_disables_orphaned_jobs(
         goal_id="gone",
     )
 
-    assert controller.on_fire(job) == SILENT_SENTINEL
-    assert controller.on_fire(orphan) == SILENT_SENTINEL
-    assert store.get_job(job.id).enabled
+    assert controller.prepare_fire(orphan, ttl=timedelta(minutes=5)) is None
     assert not store.get_job(orphan.id).enabled
 
 
-async def test_host_routes_goal_commands_and_jobs_without_the_model(tmp_path: Path) -> None:
+async def test_host_routes_goal_commands_without_the_model(tmp_path: Path) -> None:
     channel = RecordingChannel(provider="slack")
     agent = BlockingAgent()
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
@@ -225,13 +220,11 @@ async def test_host_routes_goal_commands_and_jobs_without_the_model(tmp_path: Pa
         for text in ("/goal ship it", f"/goal {SETTLED_EDIT}", "/goal confirm 2"):
             message = ChannelMessage(conversation_id="C1", text=text, sender_id=OWNER)
             await host.receive_message(channel, message)
-        [job] = _goal_jobs(store)
-        result = await host.run_scheduled_job(job)
     finally:
         await host.stop()
 
     assert channel.sent[-1][1].startswith("Goal active from revision 2.")
-    assert result == SILENT_SENTINEL
+    assert len(_goal_jobs(store)) == 1
     assert agent.requests == []
 
 

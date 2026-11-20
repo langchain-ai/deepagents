@@ -2391,6 +2391,9 @@ class _ThreadHistoryPayload:
     )
     """Persisted thread-wide cost detail, or `None` when absent."""
 
+    session_side_cost_usd: float = field(default=0.0, kw_only=True)
+    """Side-question and thread-naming spend included in `session_cost_usd`."""
+
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
 
@@ -4860,6 +4863,9 @@ class DeepAgentsApp(App):
 
         self._thread_restored_cost_usd: float = 0.0
         """Checkpoint cost without a local per-model breakdown."""
+
+        self._thread_restored_side_cost_usd: float = 0.0
+        """Side-request spend already included in `_thread_restored_cost_usd`."""
 
         self._thread_has_restored_model_usage: bool = False
         """Whether checkpoint history proves model usage predating local stats."""
@@ -9505,6 +9511,7 @@ class DeepAgentsApp(App):
         *,
         has_restored_model_usage: bool = False,
         breakdown: Mapping[str, object] | None = None,
+        side_cost_usd: float = 0.0,
     ) -> None:
         """Start local usage details for a newly activated thread.
 
@@ -9512,10 +9519,12 @@ class DeepAgentsApp(App):
             cost_usd: Cumulative cost restored from that thread's checkpoint.
             has_restored_model_usage: Whether restored history contains model usage.
             breakdown: Structured cost detail restored from the checkpoint.
+            side_cost_usd: Side-request spend already included in `cost_usd`.
         """
         self._thread_stats = SessionStats()
         self._session_cost_breakdown = breakdown
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._thread_restored_side_cost_usd = _coerce_session_cost_usd(side_cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
@@ -9645,6 +9654,25 @@ class DeepAgentsApp(App):
 
         return not pricing_data_available()
 
+    def _current_side_cost_usd(self) -> float:
+        """Side-question and thread-naming spend since this thread was loaded.
+
+        These requests are charged outside the turn stream, so they never reach
+        the per-type or per-model stats.
+
+        Returns:
+            Spend in USD, or `0.0` without a server-backed agent.
+        """
+        remote = self._remote_agent()
+        if remote is None or not self._lc_thread_id:
+            return 0.0
+        side_cost_usd = _coerce_session_cost_usd(
+            remote.get_cached_side_cost(
+                {"configurable": {"thread_id": self._lc_thread_id}}
+            )
+        )
+        return max(side_cost_usd - self._thread_restored_side_cost_usd, 0.0)
+
     def _format_cost_summary(self) -> str:
         """Build the running total and type/model breakdown for `/cost`.
 
@@ -9742,11 +9770,16 @@ class DeepAgentsApp(App):
             if kind in self._thread_stats.per_kind
             and self._thread_stats.per_kind[kind].priced_request_count
         ]
-        if priced_kinds:
+        side_cost_usd = self._current_side_cost_usd()
+        if priced_kinds or side_cost_usd > 0:
             lines.extend(["", "By type since this thread was loaded:"])
             for kind, kind_stats in priced_kinds:
                 lines.append(
                     f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
+                )
+            if side_cost_usd > 0:
+                lines.append(
+                    f"- Side questions and thread names: {format_cost(side_cost_usd)}"
                 )
         priced_models = [
             model
@@ -9778,7 +9811,9 @@ class DeepAgentsApp(App):
             0.0,
         )
         detail_gap_usd = (
-            authoritative_current_cost_usd - self._thread_stats.total_cost_usd
+            authoritative_current_cost_usd
+            - side_cost_usd
+            - self._thread_stats.total_cost_usd
         )
         comparison_tolerance = max(authoritative_current_cost_usd * 1e-6, 1e-9)
         if detail_gap_usd > comparison_tolerance:
@@ -21354,6 +21389,9 @@ class DeepAgentsApp(App):
                     payload,
                     session_cost_usd=cost["total"],
                     session_cost_breakdown=cost["breakdown"],
+                    session_side_cost_usd=remote.get_cached_side_cost(
+                        {"configurable": {"thread_id": thread_id}}
+                    ),
                 )
         messages = state_values.get("messages", [])
 
@@ -21712,6 +21750,7 @@ class DeepAgentsApp(App):
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
                 breakdown=payload.session_cost_breakdown,
+                side_cost_usd=payload.session_side_cost_usd,
             )
             if payload.cache_state is not None:
                 # Raw values on purpose: `_sync_cache_state_from_state` is the

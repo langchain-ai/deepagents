@@ -110,27 +110,28 @@ class GoalController:
         Returns:
             Reply for the starting chat.
         """
-        verb, _, rest = request.argument.strip().partition(" ")
-        if "\n" in verb:
-            verb, _, more = verb.partition("\n")
-            rest = f"{more}\n{rest}"
-        handler = {
-            "": self._status,
-            "status": self._status,
-            "help": lambda *_: GOAL_USAGE,
-            "edit": self._edit,
-            "confirm": self._confirm,
-            "remove": self._remove,
-        }.get(verb.lower())
         try:
-            if handler is None:
-                return self._start(request, request.argument.strip())
-            return handler(request, rest.strip())
+            return self._dispatch(request)
         except GoalLedgerCorruptError:
             logger.exception("Goal ledger is unreadable")
             return "The goal ledger could not be read, so nothing changed. Check Talon logs."
         except (GoalLedgerError, CronJobError) as exc:
             return str(exc)
+
+    def _dispatch(self, request: GoalRequest) -> str:
+        argument = request.argument.strip()
+        command = argument.lower()
+        if command in {"", "status"}:
+            return self._status(request)
+        if command == "help":
+            return GOAL_USAGE
+        if command == "remove":
+            return self._remove(request)
+        verb, *args = argument.split(maxsplit=1)
+        handler = {"edit": self._edit, "confirm": self._confirm}.get(verb.lower())
+        if handler is not None:
+            return handler(request, args[0] if args else "")
+        return self._start(request, argument)
 
     def on_fire(self, job: CronJob) -> str:
         """Handle a goal job firing; never invokes the model.
@@ -178,11 +179,15 @@ class GoalController:
         return _review(goal)
 
     def _confirm(self, request: GoalRequest, text: str) -> str:
-        if not text.isdigit():
+        try:
+            revision = int(text) if text.isdecimal() else None
+        except ValueError:
+            revision = None
+        if revision is None:
             return "Send /goal confirm <revision> with the revision number you reviewed."
         goal = self._owned_goal(request)
         goal = self.ledger.confirm(
-            goal.id, owner_id=request.scope.owner_id, revision=int(text), now=self.now()
+            goal.id, owner_id=request.scope.owner_id, revision=revision, now=self.now()
         )
         if not goal.activation_pending:
             self._sync_cadence(goal)
@@ -191,7 +196,7 @@ class GoalController:
         goal = self.ledger.activate(goal.id, goal_job_id=job.id, now=self.now())
         return f"Goal active from revision {goal.revision}. Next check: {_when(job.next_run_at)}."
 
-    def _status(self, request: GoalRequest, _text: str) -> str:
+    def _status(self, request: GoalRequest) -> str:
         goal = self._mirror_job(self._owned_goal(request))
         return "\n".join(
             [
@@ -202,7 +207,7 @@ class GoalController:
             ]
         )
 
-    def _remove(self, request: GoalRequest, _text: str) -> str:
+    def _remove(self, request: GoalRequest) -> str:
         goal = self._owned_goal(request)
         jobs = self.ledger.owned_job_ids(goal.id)
         self.ledger.remove(goal.id, owner_id=request.scope.owner_id, now=self.now())

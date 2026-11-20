@@ -84,6 +84,31 @@ def test_goal_activates_only_after_settled_charter_is_confirmed(
     assert (job.schedule.display, job.origin, job.enabled) == ("every 24h", ORIGIN, True)
 
 
+@pytest.mark.parametrize(
+    "outcome", ["help customers", "status page uptime", "remove deprecated APIs"]
+)
+def test_command_words_can_start_outcomes(controller: GoalController, outcome: str) -> None:
+    assert f"Outcome: {outcome}" in _send(controller, outcome)
+
+
+def test_remove_with_text_preserves_active_goal(
+    controller: GoalController, store: CronJobStore
+) -> None:
+    _activate(controller)
+    jobs = _goal_jobs(store)
+    assert "already has a goal" in _send(controller, "remove deprecated APIs")
+    assert _send(controller, "status").startswith("Goal (active)")
+    assert _goal_jobs(store) == jobs
+
+
+def test_multiline_edit_preserves_field_values(controller: GoalController) -> None:
+    _send(controller, "ship it")
+    reply = _send(controller, "edit\nsources: issue tracker\nprogress: closed issues")
+    assert "Sources: issue tracker" in reply
+    assert "Send /goal confirm 2" in reply
+    assert "revision number" in _send(controller, "confirm ²")
+
+
 def test_repeated_confirm_does_not_create_a_second_job(
     controller: GoalController, store: CronJobStore
 ) -> None:

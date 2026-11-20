@@ -762,6 +762,29 @@ class GoalLedger:
             records.outbox.append(event)
             return event, True
 
+    def claim_delivery(self, event_id: str) -> bool:
+        """Mark a pending notification as unknown before sending it.
+
+        Args:
+            event_id: Stable notification identifier.
+
+        Returns:
+            Whether this caller claimed the notification.
+        """
+        with self._editing() as records:
+            for index, event in enumerate(records.outbox):
+                if event.event_id == event_id and event.state == "pending":
+                    records.outbox[index] = _updated(
+                        event,
+                        {
+                            "state": "unknown",
+                            "attempts": event.attempts + 1,
+                            "updated_at": _utc(None),
+                        },
+                    )
+                    return True
+            return False
+
     def record_delivery(
         self,
         event_id: str,

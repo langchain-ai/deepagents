@@ -828,7 +828,8 @@ class TalonHost:
 
     async def _deliver_goal_event(self, goals: GoalController, event: OutboxEvent) -> None:
         record = goals.ledger.record_delivery
-        await asyncio.to_thread(record, event.event_id, state="unknown")
+        if not await asyncio.to_thread(goals.ledger.claim_delivery, event.event_id):
+            return
         destination = event.destination
         channel = await self.origin_channel(
             CronOrigin(conversation_id=destination.conversation_id, channel=destination.channel)

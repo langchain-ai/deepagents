@@ -267,3 +267,18 @@ async def test_failed_delivery_is_left_unknown_and_not_resent(tmp_path: Path) ->
     assert event.state == "unknown"
     assert "Updates not confirmed delivered: 1." in channel.sent[-1][1]
     assert all(text != "update" for _, text in channel.sent)
+
+
+async def test_overlapping_deliveries_send_once(tmp_path: Path, controller: GoalController) -> None:
+    job = _activate(controller)
+    controller.ledger.enqueue(job.goal_id, event_id="note-1", payload="update")
+    [event] = controller.ledger.list_outbox()
+    channel = _FlakyChannel()
+    host = TalonHost(config=_config(tmp_path), agent=BlockingAgent(), channels=[channel])
+
+    await asyncio.gather(
+        host._deliver_goal_event(controller, event), host._deliver_goal_event(controller, event)
+    )
+
+    assert channel.sent == [("C1", "update")]
+    assert controller.ledger.list_outbox()[0].state == "sent"

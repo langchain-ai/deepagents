@@ -3,9 +3,6 @@ type: runtime architecture
 title: Runtime Behavior and Failure Boundaries
 description: Execution ownership, synchronous subagent delegation boundaries, persistence, retry, interruption, and delivery semantics across Deep Agents, dcode, and Talon.
 tags: [deepagents, runtime, subagents, dcode, talon, offload, persistence, retries]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-13T08:03:55.116Z
 sources:
   - id: openwiki-source-074ce96a8baea27a6c43328b
     resource: repo://libs/code/deepagents_code/client/launch/server.py

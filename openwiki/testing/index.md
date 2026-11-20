@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, hermetic validation routes for ACP stdio negotiation, dcode model and Auto-mode boundaries, provider-native tool search, Talon host behavior, and the SDK deprecation adapter.
+- [Testing Guide](testing-guide.md) - Network-free, focused validation routes for dcode configuration and JavaScript cost accounting, Talon runtime and background-work boundaries, QuickJS persistence, and the Harbor LangGraph adapter.

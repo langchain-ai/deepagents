@@ -28,8 +28,8 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-19T08:04:44.778Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-19T08:04:44.778Z" }
+    at: 2026-11-20T08:04:05.944Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
 ---
 
 # Agent Client Protocol Integration
@@ -38,7 +38,7 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-19T08:04:44.778Z" }
 
 ## Compatibility and embedding boundary
 
-`deepagents-acp` 0.0.13 is an alpha package for Python `>=3.11,<4.0` and depends on `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. `deepagents-code` 0.2.11 requires Python `>=3.14,<3.15` and depends on `deepagents-acp>=0.0.13,<1.0.0`. A dcode ACP deployment must therefore meet dcode's narrower Python range.
+`deepagents-acp` 0.0.13 is an alpha package for Python `>=3.11,<4.0` and depends on `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. The `deepagents-code` 0.2.12 release line pins the Deep Agents SDK to `deepagents==0.7.41`, requires Python `>=3.14,<3.15`, and depends on `deepagents-acp>=0.0.13,<1.0.0`. ACP is the protocol adapter in that composition, not a separate dcode runtime: a dcode ACP deployment must meet dcode's narrower Python range and uses the SDK version selected by dcode.
 
 The ACP runner, `acp.run_agent`, is connected to dcode's stdin/stdout. The graph is in-process: dcode resolves the initial model, tools, MCP configuration, subagents, and SQLite checkpointer, then hands the adapter a factory. The generic adapter can instead be embedded with either a compiled graph or a factory taking `AgentSessionContext(cwd, mode, model)`. Mode and model selectors require a factory; supplying either alongside a compiled graph raises `ValueError`.
 

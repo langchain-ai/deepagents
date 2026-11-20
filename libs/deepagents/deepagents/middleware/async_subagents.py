@@ -810,6 +810,9 @@ class _ClientCache:
 
 def _matching_launch(receipt: _LaunchReceipt, runs: Sequence[Run]) -> Run | None:
     """Adopt only one run bearing this launch's correlation ID on its owned thread."""
+    # A full page may hide another matching run; do not infer uniqueness.
+    if len(runs) >= _LAUNCH_READ_LIMIT:
+        return None
     matching = [
         run
         for run in runs

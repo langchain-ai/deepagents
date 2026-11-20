@@ -41,7 +41,7 @@ def remote() -> Iterator[tuple[MagicMock, MagicMock, dict[str, Any]]]:
     def read(**_kwargs: Any) -> list[dict[str, Any]]:
         if state.get("read_error"):
             raise state["read_error"]
-        return state["runs"] if state["visible"] else []
+        return state["runs"][: _kwargs.get("limit", 10)] if state["visible"] else []
 
     sync.threads.create.return_value = {"thread_id": "owned-thread"}
     sync.runs.create.side_effect = start
@@ -141,7 +141,7 @@ async def test_unconfirmed_operation_preserves_receipt_and_does_not_mutate_remot
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("case", ["read_failure", "wrong_marker", "wrong_thread", "multiple"])
+@pytest.mark.parametrize("case", ["read_failure", "wrong_marker", "wrong_thread", "multiple", "truncated_page"])
 async def test_recovery_does_not_guess_unrelated_or_ambiguous_run(remote: tuple, *, asynchronous: bool, case: str) -> None:
     _, _, server = remote
     middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("worker")])
@@ -154,6 +154,10 @@ async def test_recovery_does_not_guess_unrelated_or_ambiguous_run(remote: tuple,
         server["runs"][0]["metadata"] = {"deepagents_launch_id": "another-launch"}
     elif case == "wrong_thread":
         server["runs"][0]["thread_id"] = "not-owned"
+    elif case == "truncated_page":
+        original = server["runs"][0]
+        server["runs"].extend({**original, "run_id": f"unrelated-{index}", "metadata": {}} for index in range(9))
+        server["runs"].append({**original, "run_id": "hidden-duplicate"})
     else:
         server["runs"].append({**server["runs"][0], "run_id": "another-run"})
     result = await operate(middleware, "check_async_task", state, asynchronous=asynchronous, task_id="owned-thread")

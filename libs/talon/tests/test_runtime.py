@@ -1448,3 +1448,78 @@ async def test_recovery_trace_has_named_root_and_conversation_metadata(monkeypat
     assert roots[0]["extra"]["metadata"]["conversation_id"] == "chat"
     state = await graph.aget_state({"configurable": {"thread_id": "chat"}})
     assert state.values["messages"][-1].content.startswith("[SYSTEM] Task interrupted")
+
+
+@pytest.mark.parametrize("tracing", [False, True])
+@pytest.mark.parametrize("failures", [0, 2, 3])
+async def test_retry_traces_group_attempts_by_final_outcome(monkeypatch, tracing, failures) -> None:
+    attempts = 0
+    sleep = Mock()
+
+    async def backoff(delay):
+        sleep(delay)
+
+    async def respond(_state):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= failures:
+            msg = f"connection reset {attempts}"
+            raise ConnectionError(msg)
+        return {"messages": [("assistant", "done")]}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", respond)
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        max_retries=3,
+        env={"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "key"} if tracing else {},
+    )
+    runtime._graph = builder.compile()
+    client = Mock()
+    monkeypatch.setattr("langsmith.run_trees.get_cached_client", lambda: client)
+    monkeypatch.setattr("deepagents_talon.runtime.asyncio.sleep", backoff)
+    with tracing_context(
+        enabled=tracing,
+        client=client,
+        tags=["deepagents-talon", "trigger:channel"],
+        metadata={"conversation_id": "chat", "message_id": "message"},
+    ):
+        if failures == 3:
+            with pytest.raises(ConnectionError, match="connection reset 3"):
+                await runtime._invoke_payload_with_retries({}, "chat", None)
+        else:
+            state = await runtime._invoke_payload_with_retries({}, "chat", None)
+            assert state["messages"][-1].content == "done"
+
+    await asyncio.to_thread(wait_for_all_tracers)
+    assert attempts == min(failures + 1, 3)
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2][: attempts - 1]
+    runs = [call.kwargs for call in client.create_run.call_args_list]
+    if not tracing:
+        assert not runs
+        return
+    roots = [run for run in runs if not run.get("parent_run_id")]
+    assert len(roots) == 1
+    root = roots[0]
+    assert root["name"] == "talon_turn"
+    assert set(root["tags"]) >= {"deepagents-talon", "trigger:channel"}
+    assert root["extra"]["metadata"]["message_id"] == "message"
+    children = [run for run in runs if run.get("parent_run_id") == root["id"]]
+    assert len(children) == attempts
+    assert {run["name"] for run in children} == {"LangGraph"}
+    assert sorted(run["extra"]["metadata"]["retry_attempt"] for run in children) == list(
+        range(1, attempts + 1)
+    )
+    final = next(
+        call.kwargs
+        for call in client.update_run.call_args_list
+        if call.kwargs.get("run_id") == root["id"]
+    )
+    assert final["extra"]["metadata"]["retry_attempts"] == attempts - 1
+    if failures == 3:
+        assert "connection reset 3" in final["error"]
+    else:
+        assert not final.get("error")
+        assert final["outputs"]["messages"][-1].content == "done"

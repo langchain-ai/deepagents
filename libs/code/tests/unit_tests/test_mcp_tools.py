@@ -58,10 +58,12 @@ from deepagents_code.mcp_tools import (
     discover_mcp_config_sources,
     extract_project_server_summaries,
     get_mcp_tools,
+    is_user_mcp_config_path,
     load_mcp_config,
     load_mcp_config_lenient,
     load_merged_mcp_configs_lenient,
     resolve_and_load_mcp_tools,
+    resolve_mcp_server_sources,
 )
 from deepagents_code.project_utils import ProjectContext
 
@@ -867,6 +869,40 @@ class TestLoadMCPConfig:
 
 class TestDiscoverMcpConfigs:
     """Tests for file-system discovery of MCP config files."""
+
+
+class TestTrustPromptProvenance:
+    """Tests for the display-only provenance helpers the trust prompt uses."""
+
+    def test_sources_follow_precedence_and_skip_unreadable(
+        self, tmp_path: Path
+    ) -> None:
+        """The later file wins a shared name; a broken file contributes nothing."""
+        low = tmp_path / "low.json"
+        high = tmp_path / "high.json"
+        broken = tmp_path / "broken.json"
+        low.write_text(
+            json.dumps({"mcpServers": {"a": {"command": "x"}, "b": {"command": "x"}}})
+        )
+        high.write_text(json.dumps({"mcpServers": {"b": {"command": "y"}}}))
+        broken.write_text("{not json")
+
+        sources = resolve_mcp_server_sources([low, high, broken, tmp_path / "gone"])
+
+        assert sources == {"a": low, "b": high}
+
+    def test_user_config_path_detection(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only the profile's own `.mcp.json` counts as the user config."""
+        home = tmp_path / "home"
+        profile = home / ".deepagents"
+        profile.mkdir(parents=True)
+        (profile / ".mcp.json").write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=home)
+
+        assert is_user_mcp_config_path(profile / ".mcp.json")
+        assert not is_user_mcp_config_path(home / ".mcp.json")
 
 
 class TestLoadMcpConfigLenient:

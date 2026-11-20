@@ -101,6 +101,11 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
         "Show or set reasoning effort for the current model across chats.",
         argument="A supported effort level, or default to restore provider defaults.",
     ),
+    ChatCommand(
+        "goal",
+        "Set, review, confirm, check, or remove a continuing goal for this chat.",
+        argument="An outcome to pursue, or status, edit, confirm, or remove.",
+    ),
 )
 """Every command the host dispatches, in the order `/help` lists them."""
 
@@ -114,6 +119,7 @@ PAIR = CHAT_COMMANDS[6].text
 MODEL = CHAT_COMMANDS[7].text
 SMART_MODEL = CHAT_COMMANDS[8].text
 EFFORT = CHAT_COMMANDS[9].text
+GOAL = CHAT_COMMANDS[10].text
 
 COMMANDS_BY_NAME: Mapping[str, ChatCommand] = MappingProxyType(
     {command.name: command for command in CHAT_COMMANDS},

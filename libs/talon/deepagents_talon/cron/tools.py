@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool, tool
 
 from deepagents_talon.cron.jobs import (
     CronJob,
+    CronJobError,
     CronJobStore,
     CronOrigin,
     CronSchedule,
@@ -191,6 +192,9 @@ class CronTools:
         Returns:
             Updated job as a JSON-compatible dictionary, with `upcoming` runs.
         """
+        changes = (name, prompt, schedule, repeat_times, until, deliver_to, skills)
+        if any(value is not None for value in changes):
+            self._refuse_goal_job(job_id, "only pause or resume a goal's job with `enabled`")
         parsed = None if schedule is None else CronSchedule.parse(schedule)
         job = self.store.edit_job(
             job_id,
@@ -216,7 +220,19 @@ class CronTools:
         Returns:
             Removed job as a JSON-compatible dictionary.
         """
+        self._refuse_goal_job(job_id, "remove its goal with `/goal remove` instead")
         return _tool_job(self.store.remove_job(job_id, origin=self.origin()))
+
+    def _refuse_goal_job(self, job_id: str, hint: str) -> None:
+        """Keep the goal controller the only writer of a goal job's definition.
+
+        Raises:
+            CronJobError: If the job belongs to a goal.
+        """
+        job = self.store.get_job(job_id, origin=self.origin())
+        if job is not None and job.goal_id is not None:
+            msg = f"job {job_id} belongs to a goal; {hint}"
+            raise CronJobError(msg)
 
     def as_langchain_tools(self) -> list[BaseTool]:
         """Return LangChain tools bound to this cron helper.
@@ -337,6 +353,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "until": data["until"],
         "deliver_to": data["deliver_to"],
         "skills": data["skills"],
+        "goal_id": data["goal_id"],
     }
     if upcoming:
         payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]

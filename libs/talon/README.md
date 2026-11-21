@@ -9,7 +9,7 @@ Deep Agents Talon is the local runtime host for long-running Deep Agents. It own
 Talon currently includes:
 
 - A host process with graceful shutdown, per-conversation interrupt-and-continue, and `/stop` cancellation.
-- A generic channel protocol plus WhatsApp, Telegram, Discord, and Slack adapters (WhatsApp is backed by a loopback Node bridge).
+- A generic channel protocol plus WhatsApp, Telegram, Discord, Slack, and native macOS iMessage adapters (WhatsApp is backed by a loopback Node bridge).
 - A persistent cron scheduler with agent-facing cron tool helpers.
 - MCP tool loading from explicit config paths or `~/.deepagents/.mcp.json`.
 - Optional LangSmith tracing for each channel or cron-triggered run.
@@ -369,6 +369,54 @@ DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 ```
 
 See `../../examples/talon/` for a runnable Docker Compose topology and `.env` reference.
+
+## iMessage (macOS)
+
+The iMessage adapter runs locally on a Mac signed in to Messages.app. Install
+[`imsg`](https://github.com/steipete/imsg) separately and grant the process launching
+Talon **Full Disk Access** to read Messages and **Automation → Messages** permission
+to send replies. No Apple credentials or public webhook are configured in Talon.
+
+```bash
+DEEPAGENTS_TALON_IMESSAGE_OPERATOR_ID=+14155551212 \
+AGENT_ASSISTANT_ID=imessage-local \
+AGENT_MODEL=<provider>:<model-id> \
+uv run deepagents-talon --imessage
+```
+
+You can also enable the adapter with `DEEPAGENTS_TALON_IMESSAGE_ENABLED=true`.
+Set `DEEPAGENTS_TALON_IMESSAGE_CLI_PATH` to an absolute executable path if `imsg`
+is not on `PATH`. Talon itself must run on macOS; a Linux container cannot access
+Messages.app.
+
+The default `self` exposure accepts incoming messages only from the exact phone
+numbers or email addresses in the comma-separated
+`DEEPAGENTS_TALON_IMESSAGE_OPERATOR_ID`. These are trusted **senders**, not the
+Mac's own account: all outgoing messages are ignored to prevent reply loops, so
+sending yourself a message from that account does not trigger Talon. Sender
+handles must match the values reported by `imsg watch --json`.
+
+To admit specific chats instead, set `DEEPAGENTS_TALON_IMESSAGE_EXPOSURE=allowlist`
+and `DEEPAGENTS_TALON_IMESSAGE_ALLOWLIST_CHATS` to comma-separated numeric chat IDs
+from `imsg chats --json`. Every participant in an allowed group can trigger the
+agent, and replies are visible to that group. Open exposure requires both
+`DEEPAGENTS_TALON_IMESSAGE_EXPOSURE=open` and
+`DEEPAGENTS_TALON_IMESSAGE_OPEN_ACK=allow-arbitrary-senders`; it grants arbitrary
+senders access to the agent's model credentials, tools, and host access.
+
+This adapter handles new incoming iMessage text and sends text and validated local
+file attachments back to the originating chat. It ignores SMS, message edits,
+retractions, reactions, and attachment-only messages. Inbound attachment downloads,
+voice transcription, editing sent messages, typing indicators, and sender pairing
+are not supported. Outbound files must remain inside
+`DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR` (or `DEEPAGENTS_TALON_WORKSPACE`, otherwise the
+working directory) and obey `DEEPAGENTS_TALON_MAX_MEDIA_BYTES`.
+
+The watch starts at the current Messages tail each time Talon starts; messages
+received while Talon is stopped are not replayed. Check channel status after a
+watch failure and restart after fixing permissions or the `imsg` installation.
+Failed or timed-out sends are not automatically retried because delivery may
+already have occurred.
 
 ## Telegram
 

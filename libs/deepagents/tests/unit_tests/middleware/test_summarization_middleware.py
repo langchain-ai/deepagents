@@ -2977,6 +2977,117 @@ async def _async_call_wrap_model_call(
     return call_wrap_model_call(middleware, state, runtime)
 
 
+_JSON_FORMAT = {"format": {"type": "json_object"}}
+
+
+def _configuration_update(**settings: Any) -> dict[str, Any]:
+    return {"type": "configuration_update", **settings}
+
+
+def _configured_messages(kept_update: dict[str, Any] | None = None) -> list[BaseMessage]:
+    """Return six messages whose first four are summarized and last two kept."""
+    kept_content: list[str | dict] = [{"type": "text", "text": "S4"}]
+    if kept_update is not None:
+        kept_content.insert(0, kept_update)
+    return [
+        HumanMessage(content=[_configuration_update(reasoning={"effort": "high"}, text=_JSON_FORMAT), "S0"], id="s0"),
+        AIMessage(content="S1", id="s1"),
+        HumanMessage(content=[_configuration_update(reasoning={"effort": "low"})], id="s2"),
+        AIMessage(content="S3", id="s3"),
+        HumanMessage(content=kept_content, id="s4"),
+        AIMessage(content="S5", id="s5"),
+    ]
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_summary_restates_configuration_from_replaced_history(use_async: bool) -> None:  # noqa: FBT001
+    """Settings changed by summarized messages stay in effect after the summary.
+
+    Updates merge per setting with the latest winning. The summarizer never sees
+    the blocks, and a message holding only an update is left out of its input.
+    """
+    seen: list[list[BaseMessage]] = []
+
+    def summarizer(messages: list[BaseMessage]) -> str:
+        seen.append(messages)
+        return "summary"
+
+    middleware = SummarizationMiddleware(
+        model=make_mock_model(),
+        backend=MockBackend(),
+        trigger=("messages", 6),
+        keep=("messages", 2),
+        summarizer=summarizer,
+    )
+    call = call_awrap_model_call if use_async else _async_call_wrap_model_call
+
+    result, request = await call(middleware, cast("AgentState[Any]", {"messages": _configured_messages()}), make_mock_runtime())
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert request is not None
+    summary = request.messages[0]
+    assert summary.content[0] == _configuration_update(reasoning={"effort": "low"}, text=_JSON_FORMAT)
+    assert "summary" in summary.text
+    assert result.command.update["_summarization_event"]["summary_message"] == summary
+    assert [(m.id, m.content) for m in seen[0]] == [("s0", ["S0"]), ("s1", "S1"), ("s3", "S3")]
+
+
+@pytest.mark.parametrize(
+    ("kept_update", "restated"),
+    [
+        (None, _configuration_update(reasoning={"effort": "low"}, text=_JSON_FORMAT)),
+        # Restated in full so the block stays complete; the kept update still wins.
+        (_configuration_update(reasoning={"effort": "medium"}), _configuration_update(reasoning={"effort": "low"}, text=_JSON_FORMAT)),
+        (_configuration_update(reasoning={"effort": "medium"}, text={"format": {"type": "text"}}), None),
+    ],
+)
+def test_summary_skips_configuration_the_kept_messages_override(
+    kept_update: dict[str, Any] | None,
+    restated: dict[str, Any] | None,
+) -> None:
+    middleware = SummarizationMiddleware(
+        model=make_mock_model(),
+        backend=MockBackend(),
+        trigger=("messages", 6),
+        keep=("messages", 2),
+    )
+    state = cast("AgentState[Any]", {"messages": _configured_messages(kept_update)})
+
+    _, request = call_wrap_model_call(middleware, state, make_mock_runtime())
+
+    assert request is not None
+    summary = request.messages[0]
+    if restated is None:
+        assert isinstance(summary.content, str)
+    else:
+        assert summary.content[0] == restated
+    assert request.messages[1].content == _configured_messages(kept_update)[4].content
+
+
+def test_chained_summary_keeps_restated_configuration() -> None:
+    """A later summary that replaces an earlier one restates its settings again."""
+    middleware = SummarizationMiddleware(
+        model=make_mock_model(),
+        backend=MockBackend(),
+        trigger=("messages", 6),
+        keep=("messages", 2),
+    )
+    runtime = make_mock_runtime()
+    messages = _configured_messages()
+    result, _ = call_wrap_model_call(middleware, cast("AgentState[Any]", {"messages": messages}), runtime)
+    assert isinstance(result, ExtendedModelResponse)
+    event = result.command.update["_summarization_event"]
+
+    later = [*messages, *(HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(6, 10))]
+    state = cast("AgentState[Any]", {"messages": later, "_summarization_event": event})
+    result, request = call_wrap_model_call(middleware, state, runtime)
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command.update["_summarization_event"]["cutoff_message_id"] == "s8"
+    assert request is not None
+    assert request.messages[0].content[0] == _configuration_update(reasoning={"effort": "low"}, text=_JSON_FORMAT)
+
+
 # -----------------------------------------------------------------------------
 # ContextOverflowError fallback tests
 # -----------------------------------------------------------------------------

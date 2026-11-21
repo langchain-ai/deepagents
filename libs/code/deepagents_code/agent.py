@@ -140,6 +140,7 @@ from deepagents_code.offload_middleware import (
 )
 from deepagents_code.output_truncation import (
     EmptyTruncatedReplyMiddleware,
+    EmptyTruncatedReplyRecovery,
     ModelOutputTruncatedError,
     SubagentTruncatedReplyMiddleware,
 )
@@ -2927,9 +2928,13 @@ def create_cli_agent(
         )
         # Interactive turns may legitimately be tool-free, so terminal-stall
         # recovery is installed only on headless stacks. The middleware itself
-        # activates only for the measured Fireworks GLM-5.2 endpoint.
+        # activates only for the measured Fireworks GLM-5.2 endpoint. A headless
+        # run has nobody to retry an empty reply cut off at the output limit,
+        # so that is retried once too.
         if not interactive:
-            middleware.append(_GlmTerminalStallRecovery())
+            middleware.extend(
+                [EmptyTruncatedReplyRecovery(), _GlmTerminalStallRecovery()]
+            )
         from deepagents_code.model_retry import CodeModelRetryMiddleware
 
         middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
@@ -3103,7 +3108,11 @@ def create_cli_agent(
         EmptyTruncatedReplyMiddleware(),
     ]
     if not interactive:
-        agent_middleware.append(_GlmTerminalStallRecovery())
+        # Nobody can retry a headless run, so retry an empty reply cut off at
+        # the output limit once before the guard above raises.
+        agent_middleware.extend(
+            [EmptyTruncatedReplyRecovery(), _GlmTerminalStallRecovery()]
+        )
 
     if headless_mcp_names:
         from deepagents_code.auto_mode import HeadlessMCPGuardMiddleware

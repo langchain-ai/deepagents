@@ -5258,6 +5258,7 @@ class TestCreateCliAgentInterpreterWiring:
         from deepagents_code.model_retry import CodeModelRetryMiddleware
         from deepagents_code.output_truncation import (
             EmptyTruncatedReplyMiddleware,
+            EmptyTruncatedReplyRecovery,
             SubagentTruncatedReplyMiddleware,
         )
 
@@ -5269,6 +5270,16 @@ class TestCreateCliAgentInterpreterWiring:
         guard = position(EmptyTruncatedReplyMiddleware)
         assert guard < position(_GlmTerminalStallRecovery)
         assert guard < position(CodeModelRetryMiddleware)
+        # Headless empty-reply recovery retries inside the guard, so the guard
+        # still raises when the retry is empty too.
+        assert (
+            sum(isinstance(item, EmptyTruncatedReplyRecovery) for item in middleware)
+            == 1
+        )
+        assert guard < position(EmptyTruncatedReplyRecovery)
+        assert position(EmptyTruncatedReplyRecovery) < position(
+            CodeModelRetryMiddleware
+        )
         for subagent in kwargs["subagents"]:
             stack = subagent["middleware"]
             guard = next(
@@ -5285,6 +5296,11 @@ class TestCreateCliAgentInterpreterWiring:
                 i
                 for i, item in enumerate(stack)
                 if isinstance(item, CodeModelRetryMiddleware)
+            )
+            assert guard < next(
+                i
+                for i, item in enumerate(stack)
+                if isinstance(item, EmptyTruncatedReplyRecovery)
             )
             assert (
                 sum(
@@ -5333,13 +5349,22 @@ class TestCreateCliAgentInterpreterWiring:
                 cwd=tmp_path,
             )
 
+        from deepagents_code.output_truncation import EmptyTruncatedReplyRecovery
+
         _, kwargs = mock_create.call_args
         assert not any(
             isinstance(item, _GlmTerminalStallRecovery) for item in kwargs["middleware"]
         )
+        # Interactive users retry themselves, so the guard error is shown as is.
+        assert not any(
+            isinstance(item, EmptyTruncatedReplyRecovery)
+            for item in kwargs["middleware"]
+        )
         for subagent in kwargs["subagents"]:
             assert not any(
-                isinstance(item, _GlmTerminalStallRecovery)
+                isinstance(
+                    item, _GlmTerminalStallRecovery | EmptyTruncatedReplyRecovery
+                )
                 for item in subagent["middleware"]
             )
 

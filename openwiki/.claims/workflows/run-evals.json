@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:87d46084cb1149fb6af0f747ea788a7af165e0f3f2759215e91161fdd86b69fc",
+  "pageVersion": "sha256:7d0ff368734854b56dd03484760680b235776df0f453dbbb1752b43b0f4d5591",
   "claims": [
     {
       "id": "claim_b860017fa5f346a49d6b77c4a8615a9c",
@@ -66,10 +66,14 @@
     },
     {
       "id": "claim_8deca7ea344043ff9edb122681d98c42",
-      "statement": "The Harbor LangGraph agent removes provider and LangSmith credential variables while performing shell operations and restores them afterward, preventing task commands from inheriting those secrets.",
+      "statement": "The Harbor dcode graph factory temporarily removes provider and LangSmith credential variables while it constructs the shell-backed agent, then restores them afterward, preventing those variables from being present during that construction.",
       "evidence": [
         {
-          "resource": "repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py#L45-L93",
+          "resource": "repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py#L313-L371",
+          "version": "repo-lines-v1:sha256:c37335bd99e422b3ec468471faab9e3b4bd9d7bdbd3ba201e6212c918f6cd9d7:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhNDJlYjhiY2U3MzE3NWU3YzBiYzRlNWU2YmJlOTg5YWQ3NzFjMjI2YWEyOTc4OWRmZmFkMzAwYzdhOTUxY2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1N2MzOTMyNmViNTE0ZDQzNjJjZGVhYWRjZTE0YzQ5ZmYwYjMwYWFmZWFkMWFmN2JiNTQ1ZmNhM2FlZmI0YTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlZjYwNTBjMGZmMjIyMzQ4ODE1OGQwNDQ1NDkxMjc4MzY3MzUwZTAzOWZjN2E3NGVhZmFjZDI3ZmZhOWNjNzAifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py#L53-L101",
           "version": "repo-lines-v1:sha256:cd11f3cd1da009cddb53fb4d2f4c030b45b56ea9e16c7f931f5b03a5a8a06f1b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzMGQ3ZmY0NzQ5Nzc2OTZkM2UyYzAzZDk0Njg5ODAwNGE0OTVlMTc4MzYzNDEzOTVkZjdjMWY2NGMwNGNhNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OTFhNTM5NTJiYmYxMzJmYjlkMjJkNGU5MDllOWUwYThlMTdjMzMwYmFhNGIwYWY5Mjc5ODFkM2FiMDc0ZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzNTJkMTYyNTE0MTMxYjkwZDE0OWI2YjNmMTRiNWQ0NmVkNDk0OGI2ZmE2ZTI0OTg2MDg4YWJiNjcwNGU5YjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyN2JhNGQwNDU2ZGU0OWYxM2I5NGRjZWM1ZDEwM2RmZjM2YWE3NDZkMzU1MjllOTgyZWRmNTRmMzdmNTU5ZDQifQ"
         }
       ]
@@ -331,10 +335,34 @@
           "version": "repo-lines-v1:sha256:92ec2fe60775ca57588b779bbae13ecb6ccc52d02f4a5d2795f8279c78ea85ac:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3NGM0ZDI5YTllMDQwOTExMjVlNjViZTk0NzdkMDk3ZGQ1MmJiOTFjYjMyYzEyOWYwNjhjODQ3YjljNmMzNzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlZTM1ODBmNzJjNTdlNjQyZDdlNzE3NTI5YzM2NzkwNDY2NmM4MmM0NDQ2ZjhhOTNiZDcxZDAzNTExMmY2YmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxZjkwZGVmNjVkNTg2YTliN2I0MTY4MGE4ODg0MjBjN2VjYTViNzg2YTk5ZTlkYzBjZjIzODZkNWJmZWFjNDgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_0c3079f201494c76995d62bb6bd39456",
+      "statement": "Before each Harbor invocation, the reusable workflow stages the current Deep Agents, Deep Agents Code, ACP, and QuickJS source trees into the LangGraph project's local dependencies; branch comparisons overlay only those agent libraries after verifying the resolved commit SHA, leaving the harness at the workflow ref.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_harbor_run.yml#L639-L673",
+          "version": "repo-lines-v1:sha256:57d5642de80d6cf83923f07b7e3c3ff593b24db941c422a8b2e8b8fb0838d6ba:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4OGZhZjU2MjAwNjg2ZmViMzJiNDRmYmUwYmE4ODhmZDlhNTJkYWViYWY2NmI3ZDJjZjUyNzQ2MmE1YmI4NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlOGQyY2MzNmVjZWE0NzcwMjc3ZGRhOTMyNTgxOWM3OTk2NzgyNWIyOThjNjJiNGI5MWFjZDhiYzRmODY5YjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjZjA2NjQwYTY5OGJhYWI4MjRiMWU0YWE0MjEwZGNlZDJmZTdlMzM3ZTRiYTA0MjQ0N2EyNDlmZjQ4M2M1MTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhNTg3YTFkZGIwMzA1YjE1OGE1MjZlOWZkODJhYjMwZDQ1NTg2M2NiMWY2Nzg0MWQ1ZDJjMDIzOWY4Mjc4NGUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_harbor_run.yml#L721-L760",
+          "version": "repo-lines-v1:sha256:a9eb1b7c9e1a046277f2fa5c8e49f2ea2e4ab5cddbabd1965cbd8473ed99cf73:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjZThiODJlMzgwNWEzYTE4MDAzZjJmZTQ1ZDRmNWRiYjQ3YWZkZThjMmRkZjU1OWNlZDJiNGZkYzRmNDA2MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5YWYwMzY3NDgyMDI2MTVmYzUyNzNmOGJhMjZhMGUwMDU4YTFmZWExMGRhOGQ2MDNmYzNmMTk3OGQ3YTEyODUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNmNDljZjE3OTI5ZmU1NDg5MGFmODJiZGI5NmNkMzY5NDE3NjY4MWM4ZDcwMzFiODQwYTlmZThjMzkxYTZhNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljMTRkZWE4Yzk0N2Y2ZGExNTg5NzVmMWQxNTljZWE2MDliOWViZTI0MzJhOTZhNDY4NmQ3NmFmMGE0MDE0YzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bd3d88f2c1214bc7bae7f082755ae61d",
+      "statement": "The Harbor graph builder defaults OpenAI models to the Responses API, applies a high reasoning default only to exact GLM-5.2 profiles when callers provide no reasoning control, and applies streaming, retry, and timeout defaults to Fireworks models without overriding caller kwargs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py#L134-L191",
+          "version": "repo-lines-v1:sha256:175d20489affeabc2408b1261a66cbd24486eeb95592139e146f23508567f0a7:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1MWJlOTk0NzQ5MTUwM2RhNWRjMDhkNjQ0M2Q3MWE0MWU2MzhlNDliZjM4MzRhMzc1MDYyOGM0ODEyN2EwODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1NmQ2N2Q1YzM4YzRlMDEyNzNkM2Q4NjQxMzNjNDVmYzcyYzQwYzhiMWE4YWEyNGE3OWE0NzdiZjU3MWEzZDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5ZWUxOTMyODRlODJmYjc2YWY0ZjRmNTgzZTQzZjA1MDdiNWYxMzJiMTY0ZTZkMzUyM2JhZmI5NGMwYzdiMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmZDBlNmEwZDIxYjBhNzk3YzFhOTczZTE2ZDE1ZTNhNGE2MDYwMmEyOTFiNzk2MDcxZDk2MDFlMjVkM2NkNzkifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-20T08:04:05.944Z"
+    "at": "2026-11-21T08:04:00.255Z"
   }
 }

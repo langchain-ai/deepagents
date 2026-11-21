@@ -3,9 +3,6 @@ type: runtime integration
 title: Talon Runtime Integration
 description: Talon composes a channel-owning host with a replaceable Deep Agents runtime. It documents graph assembly, per-invocation authority, process-local delegation, diagnostics, lifecycle, and compatibility with dcode and the SDK.
 tags: [talon, runtime, host, subagents, hooks, mcp, scheduling]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-20T08:04:05.944Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -31,6 +28,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
   - id: openwiki-source-1e472b2d67bd29dc25c17e85
     resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
   - id: openwiki-source-7dcd7e37c18e77553a46cce3
@@ -39,7 +38,12 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_memory_reload.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
+  - id: openwiki-source-ba64217fcf5745a7cb863296
+    resource: repo://libs/talon/tests/unit_tests/test_subagent_reload.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-21T08:04:00.255Z
 ---
 
 # Talon Runtime Integration
@@ -148,7 +152,7 @@ The host dispatches eligible completed results using an unattended `background_d
 
 ## Compatibility and operations
 
-Talon is an alpha package named `deepagents-talon`, requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. It depends on the Deep Agents SDK (`deepagents>=0.7.41`), `deepagents-code>=0.2.11,<1.0.0`, LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. The dcode relationship is focused on shared context-doctor, tool-catalog, skill/memory formatting, and sandbox capabilities; dcode does not own Talon channel delivery or worker lifecycle.
+Talon is an alpha package named `deepagents-talon` (version `0.1.1`), requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. It depends on the Deep Agents SDK (`deepagents>=0.7.41`), `deepagents-code>=0.2.12,<1.0.0`, LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. The dcode relationship is focused on shared context-doctor, tool-catalog, skill/memory formatting, and sandbox capabilities; dcode does not own Talon channel delivery or worker lifecycle.
 
 Relevant configuration includes the assistant manifest/home, model and context settings, optional sandbox, MCP configuration, `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, and `DEEPAGENTS_TALON_VERBOSITY`. Validate a normal attended turn and a cron turn separately: their authority and delegation lifecycle intentionally differ.
 
@@ -163,7 +167,9 @@ When changing this integration:
 
 ## Focused validation
 
-`tests/test_runtime.py` covers runtime tool refresh, transactional MCP replacement, graph wiring, subagent discovery, workspace selection, and backend hardening. `tests/test_host.py` covers lifecycle and host interaction boundaries. `tests/unit_tests/test_context_doctor.py` verifies content-free, non-mutating diagnostics and command behavior; `tests/unit_tests/test_memory_reload.py` verifies that updated memory sources appear on a later turn. Hook and research-subagent tests cover hook wire payloads, denial versus approval, trusted file loading, fresh context, explicit attachments, MCP protections, and opaque-agent approval enforcement.
+`tests/test_runtime.py` proves transactional MCP replacement: a graph is built before the tool tuple and active graph are replaced, and a failed build leaves both prior values active. `tests/unit_tests/test_subagent_reload.py` similarly proves that an active turn stays on its original graph and that a failed subagent compilation preserves the preceding configuration. `tests/test_host.py` covers lifecycle and host interaction boundaries, while `tests/unit_tests/test_background.py` exercises detached delivery, ownership, capacity, cancellation, failure containment, retry/requeue behavior, and the distinct inline scheduled path.
+
+`tests/unit_tests/test_memory_reload.py` is the regression guard for fresh sources: after a checkpointed turn, changes to every configured memory file—including a file edited through the agent's filesystem tools—appear on the next turn without duplicate memory blocks or stale text. `tests/unit_tests/test_context_doctor.py` verifies content-free, non-mutating diagnostics and command behavior. Hook and research-subagent tests cover hook wire payloads, denial versus approval, trusted file loading, fresh context, explicit attachments, MCP protections, and opaque-agent approval enforcement.
 
 ```bash
 cd libs/talon

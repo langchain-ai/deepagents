@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:fbe17494dc0f9131d4fd49432f7c830139d28b1c7c5b6e067595e877f71a90a5",
+  "pageVersion": "sha256:3ee21e98efde7708f98302302b45545f7dbf9e2a6f8a3bde0034997ebe9849b2",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -210,7 +210,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:f9220dde2150c8c76f4a0d7a32d6204a682ad355f234c95551b670dc9ed13ef8"
+          "version": "repo-file-v1:sha256:0e0c61b68d59e3cfb9ae8074facf5df350d8ffdc25abf49b34687eac2d68dd9a"
         }
       ]
     },
@@ -234,15 +234,15 @@
     },
     {
       "id": "claim_ca5f242df6d4427390736f3401c30e57",
-      "statement": "The current `deepagents-code` package is version `0.2.12`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.41` runtime dependency; the changelog identifies the Python 3.14 requirement introduced in 0.2.0 as a breaking change.",
+      "statement": "The current `deepagents-code` package is version `0.2.13`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.41` runtime dependency; the changelog identifies the Python 3.14 requirement introduced in 0.2.0 as a breaking change.",
       "evidence": [
         {
-          "resource": "repo://libs/code/CHANGELOG.md#L195-L199",
+          "resource": "repo://libs/code/CHANGELOG.md#L202-L206",
           "version": "repo-lines-v1:sha256:a9bad2712640d1aceb1366b1e7bcaa2f65cb3fc7118eae878370fff92673c169:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWZiMjE3NzdkOGU3ZjZmNmQ1MzBiNDQ0N2YwNWRhZDcwMTczZmFiNjZjYTk0ZDBkMmU0MTFmNmVhOTVkMjEzNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTU2OGEyYTVmODk2MDNhZDVkNTNhYzg4ZTVlYjRjZWIyYWQ1NTMyNzNlYWQ1M2I0ODZhYjg3OWJkMDY1MGNlMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDU2YmZiMjI3NjcwYmU3OGIwMTcwZGQ4OTQwNmQwMWE3MjQ2NDYyOTU5ZDY0MjA5MDA5MTVhMmI3YWU0NjYwNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDI1N2JjYmMzMThkNjQ0YzYyZDhjYzlkZjVmNmFmMjFiMzdmYWM5ZmUxYWJlYmY0NDU4YjZkMGFjZDI1OGE3MSJ9"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L32",
-          "version": "repo-lines-v1:sha256:776b5e24bb0bd8551471801120b0bb48365cbb607c492094e5848f6768222793:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkMmY2ZTU4ZGE3ZDNlYzhkNmE3NWUyNTg1MzJiMjA3MGRhYmIyOWJlZDVlZGQ0NmM5M2E0OTdkNzNiMWFhMzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyZmNmZTU0MTY3M2MyNDQ5NjZmYjMzMWNlMjI2YTVlOWMxYzQ2NjFkNzE0MjAwYTVlYTU5MmJlYjE1YTkzMTcifQ"
+          "version": "repo-lines-v1:sha256:6c11521175a422637e2bbaf57806e4f23b39bcf9c3e5bd3c8b6956ab405cc258:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkMmY2ZTU4ZGE3ZDNlYzhkNmE3NWUyNTg1MzJiMjA3MGRhYmIyOWJlZDVlZGQ0NmM5M2E0OTdkNzNiMWFhMzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyZmNmZTU0MTY3M2MyNDQ5NjZmYjMzMWNlMjI2YTVlOWMxYzQ2NjFkNzE0MjAwYTVlYTU5MmJlYjE1YTkzMTcifQ"
         }
       ]
     },
@@ -337,6 +337,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-20T08:04:05.944Z"
+    "at": "2026-11-21T08:04:00.255Z"
   }
 }

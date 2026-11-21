@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:aebc467303f0c36ebae98e701bc2b73770fbecffeb2a798ac1050a34ceee67dc",
+  "pageVersion": "sha256:36b28f82c039341165115355ccb05799bc91d94d5f6ea6bee23e74c50bdafb81",
   "claims": [
     {
       "id": "claim_6bdfb8742f1343cf8ba28d8db535656f",
@@ -138,19 +138,15 @@
     },
     {
       "id": "claim_ac945dca008547d49240be7ea5ddc9d1",
-      "statement": "Skill-declared `metadata.include_tools` controls conditional tool disclosure rather than permission: skill tools are withheld from ordinary tool registration, resolved after a relevant skill read or pin, and dispatched only through the recorded disclosure path.",
+      "statement": "A successful read or pin of a skill with `metadata.include_tools` can disclose its deferred or middleware-owned tools for the next model call, anchored at the first qualifying read; the middleware records only tools actually disclosed and admits an otherwise-unregistered call only through that latest recorded include-name path.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L1081-L1084",
-          "version": "repo-lines-v1:sha256:5cbe61b2e26a8dd519671608d5fd1fdee7df162b1b9b467ab3a3f29e263a8e84:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTAyMDE2ZDRlY2JmNGNiYWNkMjkzZmUzYThkZGY0MzJlNTZlZDZkOTE2NTk2MGY0MTkxZDIxMzc0NzhiMDhlNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjkwNmNjMjBkYTFmZGJmYmNhMGJhYjJlNDE2MDEwMmQ0ZTg1NGI0NzEwYjZmYTgzNzQ2M2MxNzY2YzlmN2Y2ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTllNmE4OGZmOWFjYmRkM2IyYmIyNTRiZTJjNDIzN2EwNDBiYzdjY2U4Mjk4MzE1YjkyMTNiOWQ1ZjA2MDdkOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjUwYjFlNzNhZjcwNzM5NjQ4OTg0ZjQyZGQzOTk5YjkzYjllNjhjYmU0MmFhMDYwMGZjOGRlOWY2MTY3NDc1OCJ9"
+          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py#L159-L269",
+          "version": "repo-lines-v1:sha256:fe643eb0f5fa5cc23b5184bf89bfbe964eee4ee7e63ca231457deebf1ae1eda2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNDljMTk4YWVmZjM4NGFjNjAyMmVjMDI2OWVhNjMwOThjYzNkMmJiNDA1YzUyOTJjMjhiMWQxN2ZmMDViMjY1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxODM5YmJhZDdlYTIxODYyMWJlNTM2YWQ1Y2Q0ODlkZjVjYTRiMjg0YzM0M2E2MTZjMDE4MTJlMGZlMTA1YTg2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjNzhhYWFjOTg3ZWEwMjJkZmRkNzk1OTMzM2YwMzdiN2ZlNWRhNjMyMDJlM2E3YWFjMjExNjZjZjcwOWFlNWFmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L1302-L1379",
-          "version": "repo-lines-v1:sha256:7948f14bacd6c7fed16276e00403baffa76109fbe94398ab6f8457cace43db42:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxYmY5MGZmYjZjMGM2ZmYyOGFhYjJiYzFjMWYxYmIxYjg5MzczZGRhYmE5NjQ1MWE1OWUzZDY1NDAxM2FiM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyZDdhMWIzMzg4MGVjODM1YWM0YjdlMmFkOWU3ZGViZjdkNzdlOGYzZGE1MmFlMDI2NzE4MWRiZTY4ZDBlYjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5Y2QwZTA0Y2I0MjJkNDA4ZjdmOTJlMzYzZWQyZDMwODY2ZjEyMzgzYTAzMTI0ODNjZDYwZmFiNmY5MzA1YTIifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L968-L987",
-          "version": "repo-lines-v1:sha256:58e69aa7e716cd5a9e27ef1239002224e3ecc7116d5866ef02821567704c68cc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYjk1ZThmMzhiNTk3ZmM2YTc3MzA3MjE3OWJiZDdkNTBjMWJmZTg0OWI0ZmU5MDcwNmU5MjdiYWVhYzYwY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZmVjYzgzMWM5Y2RiNTI1ODczMDZkMmRjMTg0N2I0ZWI0Mzc3NTQ2MTQyZjlmNDdhMTBlYmYxYzMzYTcyZWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0OTRlMTUwZjJhYmVmYzE4ODI2ZDM0MTBjZGQwNDFhYTY0MzI5MzUwZmVkOGY2MmUxNDIxNGI1ZjRmNmQ3YmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxMWZmZTRhYjQwMjUzYTg0MjM0MTYzOTkyYmEyNjQ0NTY5MzYxNGMwMzYwOTdlMjE1Njg3ZTljMmRkMWQ1MTUifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L1299-L1402",
+          "version": "repo-lines-v1:sha256:6ab53ab21f623e09eb6096430ff90a5906097a80d9b28b721fd9e52b913a1f69:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1MWJmOTBmZmI2YzBjNmZmMjhhYWIyYmMxYzFmMWJiMWI4OTM3M2RkYWJhOTY0NTFhNTllM2Q2NTQwMTNhYjNmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2YmUyZDQwNzBhM2MyNzU0MTU1ZDk3OTlmNjZiMTA1MDc4YzlhM2I5ZWYwMTAyZTcyODAxOTRlMzFmM2U3ODVmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwMmQ3YTFiMzM4ODBlYzgzNWFjNGI3ZTJhZDllN2RlYmY3ZDc3ZThmM2RhNTJhZTAyNjcxODFkYmU2OGQwZWIzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZTdhMDg1NWQ4MGY2NTVkNzQ3MGNmZjhiMmI0NmE2NmNlMTJlODJiMDg2ODk1NGNhNjIyMTgyMjM2OGM0ZDA3In0"
         }
       ]
     },
@@ -303,10 +299,28 @@
           "version": "repo-lines-v1:sha256:06dc35bd215226cdebd3d88e879de2818d6762a90a6edab942220997f36b2a15:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0MWQ5ZGVlYzQ5NzAzNDJiZTgwNDM3ZjZlYmFiODhlYTI3MTU2NDZiYjc2MWI5ZjM0ODg0Y2Y2MTQxOTE2OTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwY2UzNmE5YWRjM2JkNzU4NjM4ZDEzNzI2OGFhOWU5MDA3NzFlZjBhZDFhYWE1NWI2NzI3ZDcwZDFjMmFlMmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwZTVmOWZiNzZjY2I2OTBlZjExZDkyNDMyN2Q5MTdkNzkzNGY5NzQxZDk2NjgzZGU2YjgwZGZkMjcxNDYwZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIxM2ZhYWZlZmVkY2IyNTg4YjlhMDRmNTQxZTc2NjE2MjM5ODk1ZTRhZWJiMTAyNTYzMTc2Y2U1MTY1NGNiYmEifQ"
         }
       ]
+    },
+    {
+      "id": "claim_e66c6b5e91a442579582442290bb178e",
+      "statement": "Tool disclosure uses provider-native inline blocks at the stable post-read conversation anchor when the model profile supports mid-conversation tools, preserving the cached prefix; otherwise disclosed tools are bound into the request tool list, and provider-rejected schemas are withheld from both the model and the dispatch record.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py#L171-L221",
+          "version": "repo-lines-v1:sha256:fb1b6246a8d9761443421c89328129bb373d4b2716a823390ca9c10a17d98b89:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxYzhlYTdiMDdjNWQyMTcxZDI3ZmE0NzMxOWQ2MDNjMzJiNTcxYzc2YTMzNDk0NTQwZjBmOGVhM2ViZGMxODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzZmU1YjFmYzRjM2ExN2E3ZDhkZTc4NTc2ZGM2MWQ0ZmEyMzk2OWYxOWE4NzQ5ZTg1OWExYTEwMDMxZTQ0YmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI1OTA5NjQ3ODdjY2U0OTc3YWMxZjM2YTcwNTYzYmY0MzY4ODVjOTU0NzdjZTM2ODkyM2RmYzVkNDllM2MyYTQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_tool_disclosure.py#L104-L189",
+          "version": "repo-lines-v1:sha256:a8eb979208686ceb8f37c7c02bd98961e354be0def1d982d2b0ec979286e3819:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1YzViYWIyMjhiODRiYTQzZWE1MmNjY2YzOGYzZGUzZTg3YTg5Yjg3MmNiYmZkOThmNjE0MDA1MzM5NzM5MDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhM2Y0MzM1MjFlNTZkODczZjEzOTgwZDA3OTk2NzIwMmU0YTdkYzQyNjliNzE2YTQ2ZDliNmNiOTI1OWQzMGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkMDhlMjFlMjI3YzUzZTNhMTJjNDRjMjU0YjVmOGRjNDNlOWRjNzQ5ZjY2MWQxODFhYTc4NjJhMzk2M2Q4YjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRiZTYxOTQwYzJkZTQ3YTRkOThlYzYxZjRhYTU4YzBmYTQyNDJhNTg1ZGUxNWFjNDVmYjI2OTY2Zjc3ZWZhNmIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_tool_disclosure.py#L72-L93",
+          "version": "repo-lines-v1:sha256:ea664eecd9bc317967b47878e546fa00dd3ae829c7c727c640b42762b58c77cf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliZmZiMWI2MThiOTM2ZWE2YjZmZTkwYWE2ZGNmNDUzYWI2ZTNlZGZkMmViMTE0NjZjYjMzNjlhZGJmOTBiNjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5MGRhY2Y3YTYzNDk2ZmNkMDQ3OTg0ZGNkNWZkODQyMjM0ZWU1MzQ1MzM5YjgxZGExOWU1ZWQyYzAzNjNjNjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwZmYzMzU5NTY5YWNkMGFjNjZiNDMzZTcwNTFlMjViYjE1ZmYzMWMzNzFhNTljMWRiYWYyZGM5ZWM4YjBjZTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4NmZhMTFhNDBjYTllNzVmNjkwY2JjYWFiZGJmOTViZDE4N2NiMzgxZDRmMWY2MTgzZTFjOTNlZjg4M2M0N2YifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-20T08:04:05.944Z"
+    "at": "2026-11-21T08:04:00.255Z"
   }
 }

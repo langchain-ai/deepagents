@@ -166,6 +166,10 @@ https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 Other providers (`google_genai`, `fireworks`, `xai`, ...) document no link
 between effort and cache identity, so their effort settings stay out of the
 projection: including them would fire the modal on a false premise.
+On GPT-6+, dcode sends `/effort` changes that way (see
+`configuration_update`), so `cache_identity_params_changed` leaves effort out
+of the comparison there.
+
 `openai_codex` resolves no cache policy today (`resolve_prompt_cache_policy`
 gates on the `openai` provider), so its entries matter only for checkpointed
 storage until that changes.
@@ -799,6 +803,35 @@ def _openai_uses_thirty_minute_cache(model_name: str) -> bool:
     return (major, minor) >= (5, 6)
 
 
+def configuration_update_supported(
+    model_spec: str | None, model_params: Mapping[str, Any] | None = None
+) -> bool:
+    """Return whether effort changes can ride a `configuration_update` block.
+
+    OpenAI documents the block for GPT-6 and newer on the Responses API. The
+    version check is a stand-in until `langchain-openai` can fall back for
+    models that reject it.
+
+    Args:
+        model_spec: `provider:model` spec of the active model.
+        model_params: Effective invocation params, when known; an explicit
+            `use_responses_api=False` rules the block out.
+
+    Returns:
+        `True` for an OpenAI GPT-6+ model not pinned to Chat Completions.
+    """
+    if not model_spec or ":" not in model_spec:
+        return False
+    provider, model_name = model_spec.split(":", 1)
+    if provider.strip().lower() != "openai":
+        return False
+    if model_params is not None and model_params.get("use_responses_api") is False:
+        return False
+    effective = _effective_model_name(provider, model_name.strip())
+    match = _OPENAI_MODEL_VERSION.match((effective or "").lower())
+    return match is not None and int(match.group("major")) >= 6  # noqa: PLR2004  # GPT-6 introduced `configuration_update`.
+
+
 def _anthropic_minimum_tokens(model_name: str) -> int:
     """Return the documented minimum cacheable prefix for a Claude model."""
     normalized = model_name.lower()
@@ -978,7 +1011,7 @@ def resolve_prompt_cache_policy(
     return None
 
 
-_EFFORT_IDENTITY_KEY = "reasoning_effort"
+EFFORT_IDENTITY_KEY = "reasoning_effort"
 """Checkpoint key the effective effort value is projected under.
 
 Canonical rather than request-shaped: the identity question is whether the
@@ -1006,7 +1039,7 @@ def _effort_identity_entries(
         provider: Lowercase provider name from the model spec.
 
     Returns:
-        `{_EFFORT_IDENTITY_KEY: value}` when an effort setting is present and
+        `{EFFORT_IDENTITY_KEY: value}` when an effort setting is present and
             non-`None`, or `{}` when the provider has none configured.
     """
     from deepagents_code.reasoning_effort import _effort_paths
@@ -1014,11 +1047,11 @@ def _effort_identity_entries(
     for path in _effort_paths(provider):
         if len(path) == 1:
             if path[0] in model_params and model_params[path[0]] is not None:
-                return {_EFFORT_IDENTITY_KEY: model_params[path[0]]}
+                return {EFFORT_IDENTITY_KEY: model_params[path[0]]}
         else:
             nested = model_params.get(path[0])
             if isinstance(nested, dict) and nested.get(path[1]) is not None:
-                return {_EFFORT_IDENTITY_KEY: nested[path[1]]}
+                return {EFFORT_IDENTITY_KEY: nested[path[1]]}
     return {}
 
 
@@ -1046,6 +1079,39 @@ def cache_identity_params(
             result.update(_effort_identity_entries(model_params, provider))
             return result
     return {key: value for key, value in model_params.items() if key in keys}
+
+
+def cache_identity_params_changed(
+    current_params: Mapping[str, Any] | None,
+    last_params: Mapping[str, Any] | None,
+    *,
+    model_spec: str,
+    last_spec: str | None,
+) -> bool:
+    """Return whether cache-participating params moved since the last turn.
+
+    On a model that takes `configuration_update`, an effort change on a thread
+    that already reached that model keeps the recorded request-level effort
+    and carries the new one in a block (see `configuration_update`), so the
+    effort no longer moves the cached prefix there.
+
+    Args:
+        current_params: Effective params for the upcoming request.
+        last_params: Cache-identity params recorded by the last successful turn.
+        model_spec: `provider:model` spec for the upcoming request.
+        last_spec: Spec recorded by the last successful turn.
+
+    Returns:
+        `True` when a cache-identity param differs.
+    """
+    current = cache_identity_params(current_params, model_spec=model_spec)
+    last = cache_identity_params(last_params, model_spec=last_spec)
+    if model_spec == last_spec and configuration_update_supported(
+        model_spec, current_params
+    ):
+        current.pop(EFFORT_IDENTITY_KEY, None)
+        last.pop(EFFORT_IDENTITY_KEY, None)
+    return current != last
 
 
 def estimate_rewarm_cost(

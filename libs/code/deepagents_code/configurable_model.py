@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from deepagents._models import (  # noqa: PLC2701
@@ -26,7 +27,7 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
@@ -35,6 +36,7 @@ from deepagents_code.cold_cache import (
     cache_identity_params,
     cache_request,
 )
+from deepagents_code.configuration_update import prepare_request
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -800,6 +802,7 @@ def _checkpoint_command(
     cache_params: dict[str, Any] | None = None,
     *,
     response: ModelResponse | None = None,
+    message: HumanMessage | None = None,
 ) -> Command[Any]:
     """Build the private resume-state update for a completed model call.
 
@@ -818,11 +821,16 @@ def _checkpoint_command(
             `resolved.model_params_known` is true, falls back to the identity
             projection of the runtime overrides.
         response: This request's response, used to attribute cache activity.
+        message: A `HumanMessage` that gained a `configuration_update` block for
+            this request. It replaces the stored message (same ID) so the block
+            keeps its position in history on later turns.
 
     Returns:
         Command carrying cache timing and effective model metadata.
     """
     update: dict[str, Any] = {}
+    if message is not None:
+        update["messages"] = [message]
     # Use the resolved spec, not `_apply_overrides`'s `ctx.model`: when an
     # override fails with `ModelConfigError`, `_apply_overrides` falls back to
     # the original model while `ctx.model` still names the rejected override.
@@ -997,6 +1005,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             cache_params = _effective_cache_params(
                 resolved.model_spec, resolved.model_params
             )
+            prepared = prepare_request(
+                resolved.request,
+                resolved.model_spec,
+                cache_params,
+                persist=self._persist_model_state,
+            )
+            resolved = replace(resolved, request=prepared.request)
+            cache_params = prepared.cache_params
             activity = CacheActivity(
                 requested_at=_utc_now_iso(),
                 model_spec=resolved.model_spec or "",
@@ -1017,6 +1033,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             cache_endpoint,
             cache_params,
             response=response,
+            message=prepared.message,
         )
         return ExtendedModelResponse(model_response=response, command=command)
 
@@ -1057,6 +1074,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 resolved.model_spec,
                 resolved.model_params,
             )
+            prepared = await asyncio.to_thread(
+                partial(prepare_request, persist=self._persist_model_state),
+                resolved.request,
+                resolved.model_spec,
+                cache_params,
+            )
+            resolved = replace(resolved, request=prepared.request)
+            cache_params = prepared.cache_params
             activity = CacheActivity(
                 requested_at=_utc_now_iso(),
                 model_spec=resolved.model_spec or "",
@@ -1077,5 +1102,6 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             cache_endpoint,
             cache_params,
             response=response,
+            message=prepared.message,
         )
         return ExtendedModelResponse(model_response=response, command=command)

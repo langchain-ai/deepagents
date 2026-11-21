@@ -773,6 +773,33 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     return [summary, *messages[cutoff:]]
 
 
+def _user_message_text(content: str | list[str | dict[str, Any]]) -> str:
+    """Return the displayable text of a stored user message's content.
+
+    `configuration_update` blocks (attached by `/effort` on GPT-6 threads) are
+    request settings, not text the user typed, so they are left out. Content
+    that is otherwise only text blocks renders as that text.
+
+    Returns:
+        The message text, or the remaining blocks' `str()` for mixed content.
+    """
+    if isinstance(content, str):
+        return content
+    blocks = [
+        block
+        for block in content
+        if not (isinstance(block, dict) and block.get("type") == "configuration_update")
+    ]
+    texts = [
+        block.get("text")
+        for block in blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    if blocks and len(texts) == len(blocks) and all(isinstance(t, str) for t in texts):
+        return "".join(cast("list[str]", texts))
+    return str(blocks)
+
+
 def _is_tool_message(msg: Any) -> bool:  # noqa: ANN401
     """Return whether `msg` is a tool message in object or serialized form."""
     if isinstance(msg, dict):
@@ -13468,7 +13495,7 @@ class DeepAgentsApp(App):
             from deepagents_code.cold_cache import (
                 ColdCacheWarning,
                 RewarmEstimate,
-                cache_identity_params,
+                cache_identity_params_changed,
                 debug_stand_in_policy,
                 endpoint_cache_identity,
                 estimate_rewarm_cost,
@@ -13610,9 +13637,14 @@ class DeepAgentsApp(App):
                     # Anthropic reasoning-effort settings participate because
                     # both providers render effort into the prefix: OpenAI may
                     # rewrite model-side instructions, Anthropic always renders
-                    # the thinking config into the prompt.
-                    or cache_identity_params(current_params, model_spec=model_spec)
-                    != cache_identity_params(last_params, model_spec=last_spec)
+                    # the thinking config into the prompt, except where the
+                    # change rides a GPT-6 `configuration_update` block.
+                    or cache_identity_params_changed(
+                        current_params,
+                        last_params,
+                        model_spec=model_spec,
+                        last_spec=last_spec,
+                    )
                     # `None` means no endpoint was ever recorded -- e.g. a
                     # thread checkpointed before this field existed, or one
                     # whose stored value was unreadable and discarded on load.
@@ -21089,9 +21121,7 @@ class DeepAgentsApp(App):
             if is_internal_message(msg):
                 continue
             if isinstance(msg, HumanMessage):
-                content = (
-                    msg.content if isinstance(msg.content, str) else str(msg.content)
-                )
+                content = _user_message_text(msg.content)
 
                 pinned = pinned_skill_parts(msg)
                 skill_meta = (msg.additional_kwargs or {}).get("__skill")

@@ -31322,7 +31322,7 @@ class TestColdCacheWarningFlow:
     @pytest.mark.parametrize(
         ("model_spec", "expected_reason"),
         [
-            ("openai:gpt-6-astra", "identity_changed"),
+            ("openai:gpt-6-astra", None),
             ("openai:gpt-5.6", "identity_changed"),
             ("anthropic:claude-opus-5", "identity_changed"),
             ("google_genai:gemini-3", None),
@@ -31337,7 +31337,9 @@ class TestColdCacheWarningFlow:
         OpenAI documents that changing `reasoning.effort` can rewrite
         model-side instructions, and Anthropic renders thinking config into
         the prompt, so an effort change invalidates the cached prefix for
-        both. Google documents no such link, so no warning may fire there.
+        both. GPT-6 instead receives the change as a `configuration_update`
+        block and keeps the request-level effort, and Google documents no
+        link, so no warning may fire for either.
         """
         from deepagents_code.model_config import ModelConfig
 

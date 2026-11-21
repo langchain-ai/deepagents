@@ -94,6 +94,7 @@ Production agents powered by the LangChain stack:
 | [**Agents as Folders**](downloading_agents/) | Download a zip, unzip, and run |
 | [**Better Harness**](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness |
 | [**Rubric Middleware**](rubric_middleware/) | Grader-model rubric feedback loop that revises output until all criteria pass |
+| [**Engineering Org**](feature-build-team/) | Three-level org of async subagents that builds a feature in parallel and takes mid-flight steering |
 
 Each example has its own `README` with setup instructions.
 

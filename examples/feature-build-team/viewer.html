@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deep Agents Org</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --lc-dark: #030710; --lc-card: #0B1120; --lc-border-dark: #1A2740; --lc-muted: #6B8299;
+    --lc-body: #C8DDF0; --lc-white: #FFFFFF; --lc-blue: #7FC8FF; --lc-blue-hover: #99D4FF;
+    --lc-lime: #E3FF8F; --lc-rose: #B27D75; --lc-lavender: #D5C3F7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: grid; grid-template-rows: auto 1fr; background: var(--lc-dark);
+    color: var(--lc-body); font: 14px/1.5 "Lausanne", "Inter", -apple-system, sans-serif; overflow: hidden;
+  }
+  header { display: flex; align-items: center; gap: 14px; padding: 14px 24px; border-bottom: 1px solid var(--lc-border-dark); }
+  header svg.logo { height: 20px; color: var(--lc-white); }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; color: var(--lc-white); letter-spacing: -0.01em; }
+  .overline { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--lc-blue); }
+  .legend { margin-left: auto; display: flex; gap: 20px; font-size: 12px; color: var(--lc-body); }
+  .legend span { display: flex; align-items: center; gap: 8px; }
+  .legend i { width: 22px; height: 2px; border-radius: 2px; }
+  main { display: grid; grid-template-columns: 340px minmax(0, 1fr); min-height: 0; }
+  section { min-height: 0; display: flex; flex-direction: column; }
+  section:first-child { border-right: 1px solid var(--lc-border-dark); }
+  section > h2 { margin: 0; padding: 16px 20px 10px; }
+
+  /* Chat */
+  #chat { flex: 1; overflow-y: auto; padding: 4px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .bubble { padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
+  .bubble.user { align-self: flex-end; background: var(--lc-blue); color: var(--lc-dark); max-width: 88%; }
+  .status { align-self: flex-end; margin-top: -6px; font-size: 11px; color: var(--lc-muted); }
+  .status.queued::before { content: "● "; color: var(--lc-blue); }
+  .status.sent::before { content: "✓ "; }
+  .bubble.lead { background: var(--lc-card); border: 1px solid var(--lc-border-dark); }
+  .bubble b, .said b { color: var(--lc-white); font-weight: 600; }
+  .bubble code, .said code { font: 12px "JetBrains Mono", monospace; color: var(--lc-blue); }
+  form { display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--lc-border-dark); }
+  input {
+    flex: 1; min-width: 0; background: var(--lc-card); border: 1px solid var(--lc-border-dark); border-radius: 8px;
+    color: var(--lc-white); padding: 10px 12px; font: inherit;
+  }
+  input:focus { outline: none; border-color: var(--lc-blue); }
+  button {
+    background: var(--lc-blue); color: var(--lc-dark); font: 600 14px "Inter", sans-serif; border: none;
+    border-radius: 8px; padding: 10px 16px; cursor: pointer;
+  }
+  button:hover { background: var(--lc-blue-hover); }
+  button.ghost { background: transparent; color: var(--lc-muted); border: 1px solid var(--lc-border-dark); }
+  button.ghost:hover { color: var(--lc-white); border-color: var(--lc-muted); }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 20px 0; border-top: 1px solid var(--lc-border-dark); }
+  .suggestions button { font-size: 12px; padding: 6px 10px; }
+
+  /* Org */
+  #org { flex: 1; min-height: 0; overflow: hidden; padding: 12px 24px 24px; display: flex; justify-content: center; }
+  .tree { position: relative; transform-origin: top center; display: flex; flex-direction: column; align-items: center; gap: 56px; }
+  .row { display: flex; gap: 28px; align-items: flex-start; position: relative; z-index: 1; }
+  .team { display: flex; flex-direction: column; align-items: center; gap: 56px; }
+  .kids { display: flex; gap: 12px; }
+  svg.edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 0; pointer-events: none; }
+  .edge { fill: none; stroke: var(--lc-border-dark); stroke-width: 1.5; }
+  .edge.lit { stroke-width: 2.5; animation: lit 10s linear forwards; }
+  .edge.spawn { stroke: var(--lc-blue); }
+  .edge.steer { stroke: var(--lc-rose); }
+  .edge.report { stroke: var(--lc-lime); }
+  .head-spawn { fill: var(--lc-blue); }
+  .head-steer { fill: var(--lc-rose); }
+  .head-report { fill: var(--lc-lime); }
+  @keyframes lit { 0% { opacity: 0; } 5% { opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; } }
+
+  .card {
+    width: 200px; height: 164px; box-sizing: border-box; overflow: hidden; background: var(--lc-card);
+    border: 1px solid var(--lc-border-dark); border-radius: 14px; padding: 12px 14px; transition: border-color .3s, box-shadow .3s;
+  }
+  .card.lead-card { width: 300px; }
+  .card.engineer { width: 168px; }
+  .card .top { display: flex; align-items: flex-start; gap: 8px; }
+  .card .name { color: var(--lc-white); font-weight: 600; font-size: 13px; }
+  .card .role { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--lc-muted); }
+  .chip {
+    margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 100px; border: 1px solid currentColor; white-space: nowrap;
+  }
+  .chip.working { color: var(--lc-blue); }
+  .chip.done { color: var(--lc-lime); }
+  .chip.idle { color: var(--lc-muted); }
+  .card.working { border-color: rgba(127, 200, 255, .55); box-shadow: 0 0 16px rgba(127, 200, 255, .22); }
+  .card.done { border-color: rgba(227, 255, 143, .4); }
+  .card.lit-spawn { box-shadow: 0 0 0 2px var(--lc-blue), 0 0 24px rgba(127, 200, 255, .45); }
+  .card.lit-steer { box-shadow: 0 0 0 2px var(--lc-rose), 0 0 24px rgba(178, 125, 117, .6); }
+  .card.lit-report { box-shadow: 0 0 0 2px var(--lc-lime), 0 0 24px rgba(227, 255, 143, .35); }
+  .activity {
+    margin-top: 8px; height: 16px; font: 11px/1.4 "JetBrains Mono", monospace; color: var(--lc-blue); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .said {
+    margin-top: 6px; height: 54px; font-size: 12px; line-height: 18px; color: var(--lc-muted); display: -webkit-box; -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .empty { margin: 80px auto; max-width: 420px; text-align: center; color: var(--lc-muted); }
+  .empty h3 { color: var(--lc-white); font-size: 22px; letter-spacing: -0.01em; margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<header>
+  <svg class="logo" viewBox="0 0 489 489" fill="currentColor" aria-hidden="true"><path d="M153.197 324.988C181.918 296.266 198.063 257.269 198.063 216.654C198.063 176.039 181.904 137.042 153.197 108.32L44.866 0C16.159 28.7218 0 67.7192 0 108.334C0 148.949 16.159 187.946 44.866 216.668L153.183 324.988H153.197Z"/><path d="M379.871 335.012C351.164 306.304 312.153 290.145 271.554 290.145C230.954 290.145 191.944 306.304 163.223 335.012L271.554 443.346C300.261 472.054 339.271 488.213 379.885 488.213C420.498 488.213 459.495 472.054 488.215 443.346L379.885 335.012H379.871Z"/><path d="M45.13 443.096C73.8509 471.804 112.847 487.963 153.461 487.963V334.762H0.25C0.263942 375.377 16.409 414.374 45.13 443.096Z"/><path d="M421.695 174.84C392.974 146.132 353.978 129.959 313.35 129.973C272.737 129.973 233.74 146.132 205.02 174.854L313.35 283.188L421.695 174.84Z"/></svg>
+  <h1>Deep Agents · Engineering Org</h1>
+  <span class="overline">Multi-agent orchestration</span>
+  <div class="legend">
+    <span><i style="background:var(--lc-blue)"></i>Delegate ↓</span>
+    <span><i style="background:var(--lc-rose)"></i>Steer ↓</span>
+    <span><i style="background:var(--lc-lime)"></i>Report ↑</span>
+  </div>
+</header>
+<main>
+  <section>
+    <h2 class="overline">You ↔ Lead</h2>
+    <div id="chat"></div>
+    <div class="suggestions">
+      <button class="ghost" data-text="Build a URL shortener with click counts.">URL shortener</button>
+      <button class="ghost" data-text="Change of plan: store links in SQLite instead of memory.">Steer: use SQLite</button>
+      <button class="ghost" data-text="Also add an expiry date to each short link.">Steer: add expiry</button>
+    </div>
+    <form id="send"><input id="text" placeholder="Ask the lead to build something…" autocomplete="off"><button>Send</button></form>
+    <div style="padding:0 20px 16px"><button class="ghost" id="new" style="width:100%">New run</button></div>
+  </section>
+  <section>
+    <h2 class="overline">Org</h2>
+    <div id="org"></div>
+  </section>
+</main>
+<script>
+const ROLE = { lead: "Engineering lead", api_lead: "Team lead", web_lead: "Team lead", qa_lead: "Team lead" };
+const LIT_MS = 10000;
+const seen = new Set();
+const litEdge = {};
+const litCard = {};
+let primed = false;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const md = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+const label = (name) => name.replace(/_/g, " ");
+const litKind = (map, name) => (map[name] && Date.now() - map[name].at < LIT_MS ? map[name].kind : "");
+
+function card(node, cls) {
+  const kind = litKind(litCard, node.name);
+  return `<div class="card ${cls} ${node.phase} ${kind ? `lit-${kind}` : ""}" data-name="${esc(node.name)}">
+    <div class="top"><div><div class="role">${ROLE[node.name] || "Engineer"}</div><div class="name">${esc(label(node.name))}</div></div>
+    <span class="chip ${node.phase}">${node.phase}</span></div>
+    <div class="activity">${node.activity ? `› ${esc(node.activity)}` : ""}</div>
+    <div class="said">${md(node.said)}</div>
+  </div>`;
+}
+
+function track(nodes) {
+  for (const node of nodes) {
+    for (const ev of node.events) {
+      if (seen.has(ev.id)) continue;
+      seen.add(ev.id);
+      if (!primed) continue;
+      const at = Date.now();
+      const child = ev.kind === "report" ? ev.from : ev.to;
+      litEdge[child] = { kind: ev.kind, at };
+      litCard[ev.to] = { kind: ev.kind, at };
+    }
+  }
+  primed = true;
+}
+
+function renderOrg(nodes) {
+  const org = document.getElementById("org");
+  if (!nodes.length) {
+    org.innerHTML = `<div class="empty"><h3>One lead. Three teams. Six engineers.</h3>
+      Ask the lead for a feature. It delegates to team leads, who delegate to engineers.</div>`;
+    return;
+  }
+  const root = nodes[0];
+  const kids = (id) => nodes.filter((n) => n.parent === id);
+  const teams = kids(root.id).map((t) => `<div class="team">${card(t, "")}
+      ${kids(t.id).length ? `<div class="kids">${kids(t.id).map((e) => card(e, "engineer")).join("")}</div>` : ""}</div>`);
+  org.innerHTML = `<div class="tree"><svg class="edges"></svg>
+    <div class="row">${card(root, "lead-card")}</div>
+    ${teams.length ? `<div class="row">${teams.join("")}</div>` : ""}</div>`;
+  const tree = org.querySelector(".tree");
+  const scale = Math.min(1, org.clientWidth / tree.scrollWidth, (org.clientHeight - 12) / tree.scrollHeight);
+  tree.style.transform = `scale(${scale})`;
+  drawEdges(tree, nodes);
+}
+
+function box(el, tree) {
+  let x = 0, y = 0;
+  for (let n = el; n && n !== tree; n = n.offsetParent) { x += n.offsetLeft; y += n.offsetTop; }
+  return { x, y, w: el.offsetWidth, h: el.offsetHeight };
+}
+
+function drawEdges(tree, nodes) {
+  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const cardOf = (name) => tree.querySelector(`.card[data-name="${CSS.escape(name)}"]`);
+  const paths = [];
+  const lit = [];
+  for (const node of nodes) {
+    const parent = byId[node.parent];
+    if (!parent) continue;
+    const a = box(cardOf(parent.name), tree), b = box(cardOf(node.name), tree);
+    const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x + b.w / 2, y2 = b.y, mid = (y1 + y2) / 2;
+    paths.push(`<path class="edge" d="M${x1},${y1} V${mid} H${x2} V${y2}"/>`);
+    const kind = litKind(litEdge, node.name);
+    if (!kind) continue;
+    const d = kind === "report" ? `M${x2},${y2} V${mid} H${x1} V${y1 + 2}` : `M${x1},${y1} V${mid} H${x2} V${y2 - 2}`;
+    const age = Date.now() - litEdge[node.name].at;
+    lit.push(`<path class="edge lit ${kind}" style="animation-delay:-${age}ms" marker-end="url(#head-${kind})" d="${d}"/>`);
+  }
+  const heads = ["spawn", "steer", "report"].map((k) => `<marker id="head-${k}" viewBox="0 0 10 10" refX="9" refY="5"
+    markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="head-${k}" d="M0,0 L10,5 L0,10 z"/></marker>`);
+  tree.querySelector("svg.edges").innerHTML = `<defs>${heads.join("")}</defs>${paths.join("")}${lit.join("")}`;
+}
+
+const STATUS = { queued: "Queued · the lead reads it after its current step", sent: "Sent to the lead" };
+const status = (m) => (m.status ? `<div class="status ${m.status}">${STATUS[m.status]}</div>` : "");
+
+function renderChat(chat) {
+  const box = document.getElementById("chat");
+  const html = chat.map((m) => `<div class="bubble ${m.role}">${md(m.text)}</div>${status(m)}`).join("");
+  if (box.dataset.html !== html) {
+    box.dataset.html = html;
+    box.innerHTML = html;
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+let last = { nodes: [], chat: [] };
+async function poll() {
+  try {
+    last = await (await fetch("/api/state")).json();
+    track(last.nodes);
+    renderChat(last.chat);
+  } catch (e) { /* server restarting */ }
+  renderOrg(last.nodes);
+  setTimeout(poll, 1000);
+}
+
+async function send(text) {
+  if (!text.trim()) return;
+  renderChat([...last.chat, { role: "user", text, status: "queued" }]);
+  await fetch("/api/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
+}
+
+document.getElementById("send").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = document.getElementById("text");
+  send(input.value);
+  input.value = "";
+});
+document.querySelectorAll(".suggestions button").forEach((b) => b.addEventListener("click", () => send(b.dataset.text)));
+document.getElementById("new").addEventListener("click", async () => {
+  await fetch("/api/new", { method: "POST" });
+  seen.clear();
+});
+window.addEventListener("resize", () => renderOrg(last.nodes));
+poll();
+</script>
+</body>
+</html>

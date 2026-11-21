@@ -1,0 +1,15 @@
+[project]
+name = "feature-build-team-example"
+version = "0.1.0"
+description = "A lead agent that plans a feature and builds it with parallel async coding subagents"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "deepagents>=0.7.32,<0.8.0",
+    "fastapi>=0.162.0",
+    "langchain-google-genai>=4.4.2",
+    "langgraph-cli[inmem]>=0.4.40",
+    "uvicorn>=0.54.0",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }

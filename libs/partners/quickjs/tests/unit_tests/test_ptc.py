@@ -24,7 +24,7 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
     to_camel_case,
 )
-from tests.unit_tests._slots import drop_slots, install_tools, slot_of
+from tests.unit_tests._slots import ainstall_tools, drop_slots, slot_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -326,7 +326,7 @@ def test_render_ptc_prompt_rejects_invalid_js_identifiers() -> None:
 
 async def test_tool_invocation_from_repl(repl: _Slot) -> None:
     calls: list[dict] = []
-    install_tools(repl, [_greet_tool(calls)])
+    await ainstall_tools(repl, [_greet_tool(calls)])
     outcome = await repl.eval_async('await tools.greet({name: "world", times: 2})')
     assert outcome.error_type is None, outcome.error_message
     # tool returned the string "hi world x2"
@@ -351,7 +351,7 @@ async def test_undefined_object_property_uses_schema_default(
         func=_fn,
         args_schema=_In,
     )
-    install_tools(repl, [tool])
+    await ainstall_tools(repl, [tool])
 
     empty = await repl.eval_async("await tools.myTool({})")
     assert empty.error_type is None, empty.error_message
@@ -369,7 +369,7 @@ async def test_undefined_object_property_uses_schema_default(
 async def test_promise_all_runs_tools_concurrently(repl: _Slot) -> None:
     """`Promise.all` on two tool calls resolves both before returning."""
     calls: list[dict] = []
-    install_tools(repl, [_greet_tool(calls)])
+    await ainstall_tools(repl, [_greet_tool(calls)])
     outcome = await repl.eval_async(
         "const results = await Promise.all([\n"
         '  tools.greet({name: "a"}),\n'
@@ -385,7 +385,7 @@ async def test_promise_all_runs_tools_concurrently(repl: _Slot) -> None:
 async def test_command_tool_output_is_visible_to_js(
     repl: _Slot,
 ) -> None:
-    install_tools(repl, [_command_tool()])
+    await ainstall_tools(repl, [_command_tool()])
     outcome = await repl.eval_async(
         "await tools.emitCommand({value: 1});\n"
         "await tools.emitCommand({value: 2});\n"
@@ -398,7 +398,7 @@ async def test_command_tool_output_is_visible_to_js(
 async def test_command_tool_does_not_change_eval_outcome_shape(
     repl: _Slot,
 ) -> None:
-    install_tools(repl, [_command_tool()])
+    await ainstall_tools(repl, [_command_tool()])
     first = await repl.eval_async("await tools.emitCommand({value: 7})")
     assert first.error_type is None, first.error_message
     assert first.result == "value=7"
@@ -410,7 +410,7 @@ async def test_command_tool_does_not_change_eval_outcome_shape(
 
 
 async def test_toolmessage_list_uses_last_message_content(repl: _Slot) -> None:
-    install_tools(repl, [_tool_message_list_tool()])
+    await ainstall_tools(repl, [_tool_message_list_tool()])
     outcome = await repl.eval_async("await tools.emitMessages({value: 9})")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "second=9"
@@ -419,7 +419,7 @@ async def test_toolmessage_list_uses_last_message_content(repl: _Slot) -> None:
 async def test_mixed_list_uses_tail_message(
     repl: _Slot,
 ) -> None:
-    install_tools(repl, [_mixed_list_tool()])
+    await ainstall_tools(repl, [_mixed_list_tool()])
     outcome = await repl.eval_async("await tools.emitMixed({value: 11})")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "from-list-tail=11"
@@ -439,7 +439,7 @@ async def test_tool_failure_surfaces_as_js_error(repl: _Slot) -> None:
         func=_boom,
         args_schema=_In,
     )
-    install_tools(repl, [tool])
+    await ainstall_tools(repl, [tool])
     outcome = await repl.eval_async(
         "try { await tools.boom({x: 1}); 'no-throw' } catch (e) { e.message }"
     )
@@ -450,24 +450,24 @@ async def test_tool_failure_surfaces_as_js_error(repl: _Slot) -> None:
 async def test_install_tools_skips_invalid_js_identifier_names(
     repl: _Slot,
 ) -> None:
-    install_tools(repl, [_echo_tool("123bad")])
+    await ainstall_tools(repl, [_echo_tool("123bad")])
     outcome = await repl.eval_async('typeof tools["123bad"]')
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "undefined"
 
 
 async def test_dropped_tool_kept_by_code_fails_the_eval(repl: _Slot) -> None:
-    install_tools(repl, [_echo_tool()])
+    await ainstall_tools(repl, [_echo_tool()])
     kept = await repl.eval_async("globalThis.keep = tools.echo; typeof keep")
     assert kept.result == "function"
-    install_tools(repl, [_echo_tool("other")])
+    await ainstall_tools(repl, [_echo_tool("other")])
     outcome = await repl.eval_async("await keep({msg: 'x'})")
     assert outcome.error_type == "TypeError"
     assert outcome.error_message == "tools.echo is no longer available"
 
 
 async def test_tools_proxy_behaves_like_a_plain_object(repl: _Slot) -> None:
-    install_tools(repl, [_echo_tool()])
+    await ainstall_tools(repl, [_echo_tool()])
     outcome = await repl.eval_async(
         "[typeof tools.echo, typeof tools.missing, 'echo' in tools,"
         " Object.keys(tools).join(','), JSON.stringify(tools),"
@@ -484,8 +484,8 @@ async def test_install_tools_is_idempotent(repl: _Slot) -> None:
     """Calling install_tools twice with the same set is a no-op for the guest."""
     calls: list[dict] = []
     tool = _greet_tool(calls)
-    install_tools(repl, [tool])
-    install_tools(repl, [tool])
+    await ainstall_tools(repl, [tool])
+    await ainstall_tools(repl, [tool])
     outcome = await repl.eval_async('await tools.greet({name: "x"})')
     assert outcome.result == "hi x x1"
     assert len(calls) == 1
@@ -493,8 +493,8 @@ async def test_install_tools_is_idempotent(repl: _Slot) -> None:
 
 async def test_install_tools_shrinks_namespace(repl: _Slot) -> None:
     """Dropping a tool removes it from `globalThis.tools` on next install."""
-    install_tools(repl, [_greet_tool(), _echo_tool("echo")])
-    install_tools(repl, [_greet_tool()])
+    await ainstall_tools(repl, [_greet_tool(), _echo_tool("echo")])
+    await ainstall_tools(repl, [_greet_tool()])
     outcome = await repl.eval_async("typeof tools.echo")
     assert outcome.result == "undefined"
     outcome2 = await repl.eval_async("typeof tools.greet")
@@ -510,7 +510,7 @@ async def test_ptc_host_call_budget_exceeded_surfaces_error(
         max_stdout_chars=4_000,
         max_ptc_calls=2,
     )
-    install_tools(limited, [_greet_tool()])
+    await ainstall_tools(limited, [_greet_tool()])
     outcome = await limited.eval_async(
         "await tools.greet({name: 'a'});\n"
         "await tools.greet({name: 'b'});\n"
@@ -532,7 +532,7 @@ async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
         max_stdout_chars=4_000,
         max_ptc_calls=1,
     )
-    install_tools(limited, [_greet_tool()])
+    await ainstall_tools(limited, [_greet_tool()])
     outcome = await limited.eval_async(
         "try {\n"
         "  await tools.greet({name: 'ok'});\n"
@@ -555,7 +555,7 @@ async def test_ptc_host_call_budget_resets_each_eval(
         max_stdout_chars=4_000,
         max_ptc_calls=1,
     )
-    install_tools(limited, [_greet_tool()])
+    await ainstall_tools(limited, [_greet_tool()])
     first = await limited.eval_async("await tools.greet({name: 'a'})")
     second = await limited.eval_async("await tools.greet({name: 'b'})")
     assert first.error_type is None, first.error_message
@@ -571,7 +571,7 @@ async def test_ptc_host_call_budget_none_disables_limit(
         max_stdout_chars=4_000,
         max_ptc_calls=None,
     )
-    install_tools(unlimited, [_greet_tool()])
+    await ainstall_tools(unlimited, [_greet_tool()])
     outcome = await unlimited.eval_async(
         "await tools.greet({name: 'a'});\n"
         "await tools.greet({name: 'b'});\n"
@@ -981,7 +981,7 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
     assert "count: number" in prompt
 
     # And the bridge delivers an object with those fields, not a string.
-    install_tools(repl, [tool])
+    await ainstall_tools(repl, [tool])
     outcome = await repl.eval_async(
         "const r = await tools.getStatus({});\n`${typeof r}:${r.status}:${r.count}`"
     )

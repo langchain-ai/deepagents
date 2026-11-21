@@ -549,6 +549,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         catalog_loader: Callable[[Sequence[str], str | None], Awaitable[ModelCatalog]]
         | None = None,
         resolve_model: Callable[[str], Awaitable[ModelMetadata]] | None = None,
+        validate_selection: Callable[[str], str | None] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
 
@@ -585,6 +586,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             catalog_loader: Load discovery and readiness from the inference host.
                 Without it, use the shared loader in the current process.
             resolve_model: Validate and normalize a choice before persisting it.
+            validate_selection: Check a chosen spec before the selector closes.
+                Returns an error to show in the footer, keeping the selector
+                open, or `None` to accept the choice.
         """
         super().__init__()
         self._current_model = current_model
@@ -604,6 +608,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._result_callback = result_callback
         self._catalog_loader = catalog_loader
         self._resolve_model = resolve_model
+        self._validate_selection = validate_selection
         self._catalog: ModelCatalog | None = None
         self._catalog_config: ModelConfig | None = None
         self._recommended_only = not curated
@@ -2576,8 +2581,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Cancel the selection."""
         self._dismiss_with_result(None)
 
+    def _show_selection_error(self, message: str) -> None:
+        """Show a rejected selection in the footer until the next restore."""
+        self._stop_help_restore_timer()
+        self.query_one(".model-selector-help", Static).update(
+            Content.styled(message, f"bold {theme.get_theme_colors(self).error}")
+        )
+        self._help_error_shown = True
+
     def _dismiss_with_result(self, result: tuple[str, str] | None) -> None:
         """Dismiss the selector and notify an optional direct result callback."""
+        if result is not None and self._validate_selection is not None:
+            problem = self._validate_selection(result[0])
+            if problem is not None:
+                self._show_selection_error(problem)
+                return
         if self._result_callback is not None:
             self._result_callback(result)
         self.dismiss(result)

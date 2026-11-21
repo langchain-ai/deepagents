@@ -3102,6 +3102,56 @@ enabled = false
                     break
         assert results == [False]
 
+    async def test_codex_success_posts_no_credential_event_outside_sign_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only `dcode auth login` treats a ChatGPT sign-in as a saved key.
+
+        The main app resumes its server on `CredentialSaved`, so `/auth` must
+        keep not posting it for ChatGPT.
+        """
+        from datetime import datetime, timedelta
+
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+
+        async def _signed_in(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(
+                logged_in=True,
+                store_path=tmp_path / "missing.json",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _signed_in)
+        monkeypatch.setattr(
+            codex_integration, "default_store_path", lambda: tmp_path / "missing.json"
+        )
+        clear_caches()
+        closed: list[bool | None] = []
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager(initial_provider="openai_codex")
+            await pilot.pause()
+            manager = cast("AuthManagerScreen", app.screen)
+            on_closed = manager._on_codex_closed
+
+            def _record(result: bool | None) -> None:
+                closed.append(result)
+                on_closed(result)
+
+            monkeypatch.setattr(manager, "_on_codex_closed", _record)
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if closed:
+                    break
+            await pilot.pause()
+
+        assert closed == [True]
+        assert app.credential_saved_count == 0
+
     async def test_codex_selection_when_signed_in_shows_signout_overlay(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

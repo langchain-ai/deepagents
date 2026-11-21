@@ -17,6 +17,8 @@ from tests._common import FakeChatModel
 if TYPE_CHECKING:
     from typing import Literal
 
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+
     from langchain_quickjs.middleware import REPLState
 
 CONSOLE_LOG_CODE = "for (let i = 0; i < 200; i += 1) {  console.log(`line-${i}`);}'ok';"
@@ -78,12 +80,14 @@ def make_agent(
     code: str,
     middleware: CodeInterpreterMiddleware,
     repeats: int,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> Any:
     """Create a deep agent with a scripted fake chat model."""
     messages = finite_script(code, repeats=repeats)
     return create_deep_agent(
         model=FakeChatModel(messages=messages),
         middleware=[middleware],
+        checkpointer=checkpointer,
     )
 
 

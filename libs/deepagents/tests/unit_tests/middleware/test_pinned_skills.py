@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.filesystem import FilesystemPermission
 from deepagents.middleware.skills import MAX_SKILL_FILE_SIZE, SkillsMiddleware, SkillsState
 from deepagents.middleware.subagents import CompiledSubAgent
 from deepagents.middleware.summarization import SummarizationMiddleware
@@ -195,6 +196,51 @@ def test_skill_unreadable_since_it_was_loaded_is_skipped(tmp_path: Path, content
 
     assert result["messages"][-1].content == "done"
     assert _pinned_messages(model.call_history[-1]["messages"]) == [HOUSE_STYLE_PINNED]
+
+
+def _pin_from_input(agent: CompiledStateGraph, name: str, path: str, mode: str) -> None:
+    """Pin `name`, claimed by the input's `skills_metadata` to live at `path`."""
+    skill = {"name": name, "description": "Injected", "path": path, "license": None, "compatibility": None, "metadata": {}, "allowed_tools": []}
+    invoke(agent, {"messages": [HumanMessage("go")], "skills_metadata": [skill], "pinned_skills": [name]}, mode, CONFIG)
+
+
+def test_input_skills_metadata_pins_a_valid_skill_md(tmp_path: Path, mode: str) -> None:
+    write_skill(tmp_path, "crm", content=CRM)
+    model = _model()
+
+    _pin_from_input(_agent(tmp_path, model), "crm", "/skills/crm/SKILL.md", mode)
+
+    assert _pinned_messages(model.call_history[0]["messages"]) == [CRM_PINNED]
+
+
+@pytest.mark.parametrize("mode_name", ["deny", "interrupt"])
+def test_input_skills_metadata_skips_a_skill_md_not_allowed_to_read(tmp_path: Path, mode: str, mode_name: str) -> None:
+    write_skill(tmp_path, "crm", content=CRM)
+    model = _model()
+    rules = [FilesystemPermission(operations=["read"], paths=["/skills/crm/**"], mode=mode_name)]
+
+    _pin_from_input(_agent(tmp_path, model, permissions=rules), "crm", "/skills/crm/SKILL.md", mode)
+
+    assert _pinned_messages(model.call_history[0]["messages"]) == []
+
+
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        pytest.param("secrets/notes.md", CRM, id="not-a-skill-md"),
+        pytest.param("secrets/SKILL.md", "secret", id="no-frontmatter"),
+        pytest.param("secrets/SKILL.md", HOUSE_STYLE, id="other-name"),
+    ],
+)
+def test_input_skills_metadata_skips_a_file_that_is_not_the_skill(tmp_path: Path, mode: str, path: str, content: str) -> None:
+    write_skill(tmp_path, "crm", content=CRM)
+    (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / path).write_text(content)
+    model = _model()
+
+    _pin_from_input(_agent(tmp_path, model), "crm", f"/{path}", mode)
+
+    assert _pinned_messages(model.call_history[0]["messages"]) == []
 
 
 @tool

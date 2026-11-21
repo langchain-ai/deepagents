@@ -174,6 +174,9 @@ class AsyncSubAgent(TypedDict):
 _WAITING = "waiting"
 """Task status for a subagent waiting for a human: its run finished but its thread is interrupted."""
 
+_DELEGATED = "delegated"
+"""Task status for a subagent whose run finished while its own async tasks are unfinished; it reports again when they finish."""
+
 _UpdateStrategy = Literal["interrupt", "enqueue"]
 """How a follow-up runs while the subagent is busy, as `AsyncSubAgent.update_strategy`."""
 
@@ -212,7 +215,7 @@ class AsyncTask(TypedDict):
     """
 
     status: str
-    """Current task status (e.g., `'pending'`, `'running'`, `'waiting'`, `'success'`, `'error'`, `'cancelled'`).
+    """Current task status (e.g., `'pending'`, `'running'`, `'waiting'`, `'delegated'`, `'success'`, `'error'`, `'cancelled'`).
 
     `'pending'` means the latest run hasn't started yet. After a queued follow-up,
     an earlier run may still be working.
@@ -291,9 +294,11 @@ class CancelAsyncTaskSchema(BaseModel):
 class ListAsyncTasksSchema(BaseModel):
     """Input schema for the `list_async_tasks` tool."""
 
-    status_filter: Literal["running", "pending", "waiting", "success", "error", "cancelled", "all"] | None = Field(
+    status_filter: Literal["running", "pending", "waiting", "delegated", "success", "error", "cancelled", "all"] | None = Field(
         default=None,
-        description="Filter tasks by status. One of: 'running', 'pending', 'waiting', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
+        description=(
+            "Filter tasks by status. One of: 'running', 'pending', 'waiting', 'delegated', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'."
+        ),
     )
 
 
@@ -508,8 +513,9 @@ class TaskEvent(TypedDict):
     agent_name: str
     """The async subagent's name, as in the task's `AsyncTask.agent_name`."""
 
-    status: Literal["success", "error", "timeout", "cancelled", "waiting"]
-    """`waiting` means the subagent paused for input or approval; `cancelled`, that its run was cancelled on the server."""
+    status: Literal["success", "error", "timeout", "cancelled", "waiting", "delegated"]
+    """`waiting` means the subagent paused for input or approval; `cancelled`, that its run was cancelled on the server;
+    `delegated`, that its run ended while its own async tasks are still running."""
 
     run_id: NotRequired[str]
     """The subagent run that ended."""
@@ -548,6 +554,7 @@ def _notification_body(update: _TaskUpdate) -> list[dict[str, Any]]:
         "timeout": "The task ran too long and was stopped. Decide whether to retry with a smaller task, or tell the user.",
         "cancelled": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
+        "delegated": "The subagent handed work to its own subagents and isn't finished; it reports again when they finish. Keep working.",
     }[update["status"]]
     blocks: list[dict[str, Any]] = []
     if "result" in update:
@@ -649,7 +656,9 @@ def _event(task_id: str, agent_name: str, status: str, run_id: str | None, **det
     return cast("_TaskUpdate", event)
 
 
-def _task_event(config: RunnableConfig, agent_name: str, status: Literal["success", "error", "waiting"], **details: object) -> _TaskUpdate:
+def _task_event(
+    config: RunnableConfig, agent_name: str, status: Literal["success", "error", "waiting", "delegated"], **details: object
+) -> _TaskUpdate:
     """Describe how this run's task ended."""
     return _event(str((config.get("configurable") or {}).get("thread_id", "")), agent_name, status, _current_run_id(config), **details)
 
@@ -919,12 +928,33 @@ def _task_status(run: Run, thread: Thread | None) -> str:
         return "cancelled"
     if run["status"] != "success" or thread is None:
         return run["status"]
-    return _THREAD_TO_TASK_STATUS.get(thread.get("status"), "success")
+    status = _THREAD_TO_TASK_STATUS.get(thread.get("status"), "success")
+    return _DELEGATED if status == "success" and _has_unfinished_tasks(thread.get("values")) else status
+
+
+def _has_unfinished_tasks(values: object) -> bool:
+    """Whether a subagent's state tracks async tasks of its own that haven't finished."""
+    tasks = values.get("async_tasks") if isinstance(values, Mapping) else None
+    if not isinstance(tasks, Mapping):
+        return False
+    return any(isinstance(task, Mapping) and task.get("status") in _UNFINISHED_STATUSES for task in tasks.values())
 
 
 def _needs_latest_run(run: Run, thread: Thread | None) -> bool:
     """Whether a newer run exists than the tracked one, e.g. after a resume from another client."""
     return run["status"] == "success" and thread is not None and thread.get("status") in {"busy", "error"}
+
+
+def _latest_run(client: SyncLangGraphClient, task: AsyncTask) -> Run:
+    """The newest run on a task's thread; a delegated task's subagents start runs the parent didn't."""
+    runs = client.runs.list(thread_id=task["thread_id"], limit=1)
+    return runs[0] if runs else client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+
+
+async def _alatest_run(client: LangGraphClient, task: AsyncTask) -> Run:
+    """Async version of `_latest_run`."""
+    runs = await client.runs.list(thread_id=task["thread_id"], limit=1)
+    return runs[0] if runs else await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
 
 
 def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
@@ -936,7 +966,7 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
 
     Raises if the thread can't be read, since a paused run also ends as `success`.
     """
-    run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    run = _latest_run(client, task) if task["status"] == _DELEGATED else client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
     if run["status"] == "interrupted" and task["status"] != "cancelled":
         run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
@@ -949,7 +979,10 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
 
 async def _aobserve(client: LangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
     """Async version of `_observe`."""
-    run = await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    if task["status"] == _DELEGATED:
+        run = await _alatest_run(client, task)
+    else:
+        run = await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
     if run["status"] == "interrupted" and task["status"] != "cancelled":
         run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
@@ -967,6 +1000,11 @@ def _pending_interrupts(thread: Thread | None) -> list[Interrupt]:
     return [item for items in (thread.get("interrupts") or {}).values() for item in items]
 
 
+_DELEGATED_NOTE = (
+    "The subagent handed work to its own subagents, which are still running. "
+    "It reports again when they finish, so keep working; `result` is its latest answer, not its final one."
+)
+
 _WAITING_NOTE = (
     "The subagent is waiting for a human. The user answers it directly; you can't answer or approve it. "
     "Keep working; check again later for its result."
@@ -982,9 +1020,11 @@ def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict
     result: dict[str, Any] = {"status": status, "thread_id": thread_id}
     if status == "pending":
         result["note"] = "The latest run hasn't started yet. If it is a queued follow-up, an earlier run may still be working."
-    elif status == "success":
+    elif status in {"success", _DELEGATED}:
         values = thread.get("values") if thread else None
         result["result"] = _final_content(values if isinstance(values, Mapping) else {})
+        if status == _DELEGATED:
+            result["note"] = _DELEGATED_NOTE
     elif status == "error":
         error_detail = run.get("error")
         result["error"] = str(error_detail) if error_detail else "The async subagent encountered an error."
@@ -1102,6 +1142,7 @@ def _build_check_tool(
         description=(
             "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
             "If the status is `waiting`, it also returns what the subagent is asking the user. "
+            "If the status is `delegated`, the subagent's own subagents are still working, and it reports again when they finish. "
             "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
             "rather than reporting a status from a previous tool result."
         ),
@@ -1454,7 +1495,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
     def list_async_tasks(
         runtime: ToolRuntime,
-        status_filter: Literal["running", "pending", "waiting", "success", "error", "cancelled", "all"] | None = None,
+        status_filter: Literal["running", "pending", "waiting", "delegated", "success", "error", "cancelled", "all"] | None = None,
     ) -> str | Command:
         tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
@@ -1465,7 +1506,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
     async def alist_async_tasks(
         runtime: ToolRuntime,
-        status_filter: Literal["running", "pending", "waiting", "success", "error", "cancelled", "all"] | None = None,
+        status_filter: Literal["running", "pending", "waiting", "delegated", "success", "error", "cancelled", "all"] | None = None,
     ) -> str | Command:
         tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
@@ -1481,7 +1522,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         description=(
             "List tracked async subagent tasks with their current live statuses. "
             "By default shows all tasks. Use `status_filter` to narrow by status "
-            "(e.g. 'running', 'pending', 'waiting', 'success', 'error', 'cancelled'). "
+            "(e.g. 'running', 'pending', 'waiting', 'delegated', 'success', 'error', 'cancelled'). "
             "Use `check_async_task` to get the full result of a specific completed task, "
             "or what a `waiting` task is asking the user. "
             "Statuses shown earlier in the conversation are always stale, so call this to read current "
@@ -1519,11 +1560,11 @@ def _build_async_subagent_tools(
 
 def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:
     """The notification for a task outcome a check found, or `None` for outcomes not worth waking for."""
-    if status not in {"success", "error", "timeout", "cancelled", _WAITING}:
+    if status not in {"success", "error", "timeout", "cancelled", _WAITING, _DELEGATED}:
         return None
     result = _build_check_result(run, task["thread_id"], thread)
     details: dict[str, object] = {"interrupts": result["interrupts"]} if "interrupts" in result else {}
-    if status == "success":
+    if status in {"success", _DELEGATED}:
         details["result"] = result["result"]
     if status == "error":
         details["error"] = "The subagent failed."
@@ -1533,7 +1574,7 @@ def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) 
 _PULL_TIMEOUT_SECONDS = 5
 """How long the parent waits on one task's status before skipping it until the next check."""
 
-_UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING})
+_UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING, _DELEGATED})
 """Tracked task statuses that can still change, so the parent checks them for status updates."""
 
 

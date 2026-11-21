@@ -3,9 +3,6 @@ type: operations guide
 title: CI Gates and Labels
 description: Operate merge-facing CI, PR metadata checks, release dependency safeguards, and manual Harbor evaluation workflows. Covers acknowledgement labels, trusted boundaries, failure behavior, release publication controls, and focused tests.
 tags: [ci, github-actions, labels, releases, dependency-management, evaluations]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-20T08:04:05.944Z
 sources:
   - id: openwiki-source-3638ff2c170b760df159d81b
     resource: repo://.github/actions/uv_setup/action.yml
@@ -17,6 +14,8 @@ sources:
     resource: repo://.github/scripts/checks/ci_gate.py
   - id: openwiki-source-f59dcf85e4ad8ca3f9f6d5de
     resource: repo://.github/scripts/checks/curated_apply_only.py
+  - id: openwiki-source-666ffb85801f05fea2a2adbf
+    resource: repo://.github/scripts/evals/unified_prep.py
   - id: openwiki-source-07ac367f59bbed1812fef155
     resource: repo://.github/scripts/labeling/check_pr_scope_files.py
   - id: openwiki-source-f87398ca371fc238611bbff7
@@ -69,7 +68,10 @@ sources:
     resource: repo://.github/workflows/release.yml
   - id: openwiki-source-b6252e3f3473cd89534f2acb
     resource: repo://.github/workflows/unified_evals.yml
-generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-21T08:04:00.255Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
 ---
 
 # CI Gates and Labels
@@ -193,7 +195,7 @@ The leaf workflow owns matrix expansion, shards selected work after task selecti
 
 ### Unified multi-model experiments
 
-`📊 Evals - Unified` is also manually dispatched. Prep parses models, categories, harnesses, optional comparison branches, profile, and task filters into a flat per-model/category/shard matrix. For `full`, it enumerates live tasks using the same category map and local-dataset preparation as execution; `lite` uses its frozen subset. Unknown categories, no categories, or unknown task selections fail during preparation rather than after spend starts. The eval job calls `_harbor_run.yml` once per model configuration with a non-fail-fast matrix and an aggregate runner budget.
+`📊 Evals - Unified` is also manually dispatched. Prep parses models, categories, harnesses, optional comparison branches, profile, and task filters into a flat per-model/category/shard matrix. For `full`, it enumerates live tasks using the same category map and local-dataset preparation as execution; `lite` uses its frozen subset. Unknown categories, no categories, unknown task selections, invalid native-agent/provider combinations, or native-agent branch comparisons fail during preparation rather than after spend starts. It resolves each comparison branch to a 40-character remote SHA, bounds per-model task concurrency at 40, aggregate runners at 80, the outer GitHub matrix at its configured cap, and post-pack jobs at 400. The eval job calls `_harbor_run.yml` once per model configuration with a non-fail-fast matrix and the derived runner budget.
 
 A branch comparison deliberately keeps datasets, verifiers, scoring, and the Harbor harness at the workflow revision; only the agent libraries are overlaid from a validated resolved branch SHA. This makes compared-agent differences interpretable without allowing an older branch to replace evaluation infrastructure.
 

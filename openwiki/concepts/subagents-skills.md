@@ -8,6 +8,10 @@ sources:
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-5c9c6a877b43f30407158658
+    resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
+  - id: openwiki-source-7ea3398bfcef6293d69f22e8
+    resource: repo://libs/deepagents/deepagents/middleware/_tool_disclosure.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
@@ -36,8 +40,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-20T08:04:05.944Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
+    at: 2026-11-21T08:04:00.255Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
 ---
 
 # Subagents and Skills
@@ -154,7 +158,11 @@ A scheduled turn has no later conversation turn that can consume a detached resu
 
 `SkillsMiddleware` indexes configured sources before an agent run. The model sees the skill name, description, optional annotations, and path in the system prompt; it must read `SKILL.md` to obtain the full instructions. The index is checkpointed: any list, including an empty list, is reused, while setting `skills_metadata` to `None` requests a reload. Sources are processed in order and later same-named skills replace earlier metadata. Pinning named skills appends their bodies without frontmatter as one-time messages before the next model call; unknown or unreadable names are skipped.
 
-A skill can declare `metadata.include_tools`. Such tools are deliberately kept out of ordinary middleware tool registration. Reading the skill (or pinning it) allows the middleware to resolve and disclose those tools for that model call, and it records the disclosure needed to dispatch a later tool call. A tool is therefore not callable merely because a skill exists or is listed; a new model request recomputes disclosure from the applicable skill reads.
+A skill can declare `metadata.include_tools`. Tools supplied to `SkillsMiddleware` for this purpose are deliberately kept out of ordinary middleware tool registration, so merely listing a skill does not make them callable. A successful `read_file` result for the named `SKILL.md`—including a partial or later-truncated result—or a pinned-skill message counts as a read. For every model call, the middleware finds those reads still present in the request, resolves each unclaimed include name, and records the gated tools actually disclosed by that call. At tool time it admits an otherwise-unregistered tool only when that latest record maps its name to the include name; it resolves again and leaves the request unchanged (therefore invalid) if the resolver no longer returns it.
+
+Disclosure is anchored at the first qualifying skill read that produces each tool, rather than appended to the front-level tool list mid-conversation. A tool already in the request is not re-added; a deferred request tool (`extras={"defer_loading": True}`) is undeferred after the read, while a middleware-owned skill tool is added. This controls what schema the model receives and the matching dispatch gate; it does **not** grant filesystem access, credentials, approval, authorization, or ownership of a remote task.
+
+When the selected model profile supports mid-conversation tools, the disclosure is emitted as a provider-native inline block at a stable insertion point after the anchored read and its tool-result batch. The same anchored block remains at the same conversation position on later calls, preserving the cached prefix. Anthropic and OpenAI Responses have inline encodings; an unsupported provider instead binds disclosed tools in `request.tools`, which changes the prefix. A schema that Anthropic rejects is withheld on both paths, so the recorded gate never claims the model saw it.
 
 Keep these independent decisions separate when designing or reviewing a system:
 
@@ -173,6 +181,7 @@ The focused tests make the intended boundaries executable:
 - `libs/deepagents/tests/unit_tests/test_subagent_refusal.py` verifies that declarative and compiled local children turn returned or raised model refusals—including structured-output refusals—into a task result, while a main agent still raises by default.
 - `libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py` verifies the fork's inherited prompt prefix, task-local instructions, skill prohibition, state distinctions, and recursion refusal; `middleware/test_fork_payload.py` additionally checks provider payload equivalence, inherited history, cache-control placement, and task-message boundaries.
 - `libs/deepagents/tests/unit_tests/test_async_subagents.py` verifies tool construction and validation, task-state reduction, launch records, isolated versus fork launch payloads, and the remote task lifecycle. In particular, the launch-payload test is the boundary test for a fork being a snapshot of messages rather than inheritance of the parent graph.
+- The skills middleware tests should cover the distinction between merely listed, read, and pinned skills; resolver failure or drift; deferred request tools; and provider-specific inline placement. The key invariant is that tool-time dispatch agrees with what the immediately preceding model call was actually shown.
 - `libs/talon/tests/unit_tests/test_background.py` covers owner isolation, capacity, cancellation, independent worker thread IDs, acknowledgement/requeue/drop delivery semantics, timeout and sanitized error behavior, result text projection, remote streaming, and scheduled inline fan-out.
 - `libs/talon/tests/unit_tests/test_research_subagents.py` covers fresh-context isolation, explicit attachments and per-task selection, no implicit general-purpose role, recursive-delegation denial, approval behavior for fresh versus compiled children, and rejection of Talon fork mode.
 
@@ -180,8 +189,8 @@ When changing delegation, preserve which component owns execution and policy: SD
 
 ## Related
 
-- [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
-- [Context management](/openwiki/concepts/context-management.md)
-- [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
-- [Talon scheduling](/openwiki/concepts/talon-scheduling.md)
+- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
+- [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)
+- [Sandbox partners](/openwiki/integrations/sandbox-partners.md)
 - [Talon integration](/openwiki/integrations/talon.md)
+- [Testing guide](/openwiki/testing/testing-guide.md)

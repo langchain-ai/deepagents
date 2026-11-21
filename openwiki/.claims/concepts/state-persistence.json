@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:be75191653aa9f6038c5e285de07f9579cbd30299e60e3e4ddaadc514e6eb181",
+  "pageVersion": "sha256:415804b04adc092053e3a5472b2123d3e76dab37039823181a3d6140f3be7c25",
   "claims": [
     {
       "id": "claim_6aacf0b3f58b455fa74a28b37e78cae1",
@@ -271,10 +271,88 @@
           "version": "repo-lines-v1:sha256:8acee44d9d98de559b69bab1a06255417eac6d3c4f15bb7019caf1bd42e61044:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0MTZjM2EyMjI4YmVjZDZiMDBiM2U3NjlhNzA5YzBhNjdlYzY3YjhlNWNmZWE5YmY3ZjM3ZjhjZWNmZWFhNjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlY2E0NzYyZTdlZDY5YWZmYWYwMTUzZjdiYzBlMDMyYTQ3NmMxYWIwMTY4N2JjMjRjNWIzZDM5OTc0ZWRjMDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiMzI4MGFjZmM5NmZmMDk4NGNjNTg5NjU1YjE0ODAyOWVmYTkwMDY1NmVhYzA5MmVhNWQ3MjBkMzFhZDNkMTAifQ"
         }
       ]
+    },
+    {
+      "id": "claim_3bd3283bcaf743ad8fdf629726743b01",
+      "statement": "Deep agents checkpoint messages through a DeltaChannel using the message delta reducer and a snapshot frequency of 50, reducing message checkpoint growth from O(N²) to O(N).",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L77-L81",
+          "version": "repo-lines-v1:sha256:e47d0b2fd19bca75e0def15f2e79648dfbf2ec8428f131e763aa18e166e6d76c:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmZkNWUxZjQ2NzNiZGRlN2Y5MTMxNTkxZDRhYzk5ZjBlNGFiMTY2NTNkMGJlOTBkYWJiYTQ0N2Q4ZTgzMDRmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjIwMDk3ZTRhYTUwMDY4YmExNTdmOWEyNzM5ZmFkODY5OTVlMWUwY2RjY2RhZGM1ODk3YzIwMzRjNzRkM2VmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWM0YWMzZDdlMTMxMjlmNWQ0ZWMzMWM1YzA5NGU1OTNlZmRkNTdlMTc5ODczMzU4MTJjY2MxNWNiNGJjMGY3NyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_593ad5af907e4539a8fffa9740e28fd5",
+      "statement": "Stable, non-None message IDs are required across checkpoint serialization and resumed synchronous or asynchronous invocations; the messages-reducer regression tests cover object and dictionary inputs, delta replay from a None checkpoint, and reset semantics.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py#L2-L130",
+          "version": "repo-lines-v1:sha256:cccd7daba91b0ac53077a2aa59363087d4bccc1b58c863a857e3937b5459006d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ODRkY2U4OWQ4MzExODI3MzgyMWYxYWYyZmJmY2M4MDFkMjM0MzQyNGYwNDVmOGE3OWU1NDI1ODY1ZWY0NDM3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MSwicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0N2FiMWQ0ODQwNjE5NDI4ZTBhMGEwNjA4MTQwYWQ2YWNhMTUxNGMwOGZkMjU3MzJmMTdkOWVkZDk4MDhlNjUyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkYjc2NzFjOTY5M2U0NmQwZTZlNjQzOGM1NzllNmY1NDI4ODU5ZmY1YWM5ZmE2Yjc5NThiZWZjYjY0YzkyOWNjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_36097a81c02741f28147fbaffbda39d6",
+      "statement": "dcode's ResumeStateMiddleware writes latest-model context-token usage into private checkpoint state, while the resume schema separates graph-written successful-turn facts from client- or graph-written goal and rubric state so a selected checkpoint can rehydrate the UI without replaying history.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/resume_state.py#L2-L54",
+          "version": "repo-lines-v1:sha256:f4f72d5f23505fe047dd388e007dacf6b7aaf794b51dd7f9fa0c6775358e2989:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0NzE4Y2IwMGQ5ODA4N2JjMGQ0NGUwZGU2ODY2OGE3NDQ0ODRlYTNiZTkxZDk5MTU3YzM4MTZmZjQ1Y2Y2YzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4ZDZiYjNkYjAxMzMxYmJhNzc0NjBhYTk3MDkxMTM5NDkyYmUxZDRhMmJlNWZiNmM3ZTgyMjBkZWQyNmUwYWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/resume_state.py#L313-L354",
+          "version": "repo-lines-v1:sha256:c20c46bd6a1c2293c62e37f2681853ca0f469dfcae5465c91690d59b844349e1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzYWNhN2NhZGExMjIzMGVhNGZiZTlmNWM1YTU3ODljNzQzMzEyY2E0NmFiN2E0ODg4NzU0NmRlNDM4NjZiZTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliZmEzMzM0MGU5NDk2N2IzZDMwY2RjOTVlMzZkNzI3NDgyZGNiM2ZhYjlkMzA0N2M4MTNjNGMzNjAxODlmMDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk2OTRhM2RmMzJhMTRmMzY2YWI2ZTMwN2VmMTZiZGQzZmU1NzA2NDAwMjdhNDhlZjk1MDc1NDIwZmIyNjJkOTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_resume_state.py#L91-L182",
+          "version": "repo-lines-v1:sha256:dbe405fbeda5a722623d9b09dd35282c8d6ea3707ee5ae4296a546874b078a7b:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlNTUwMWI1NTdkNDEzMjM5NDAxMDVhMTIwNjcyMTg2YWMxZGIwMjZiOTViOWQ4MTY3MTJlNzVhZmI1MjliNGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2ZTY0YTQ3ODkwMDM4ZjFkNzA3ODk2NDRmNTFjZGNlM2YwZTQ5ZDBkMWQ5NjVmYjNkZTBiMzc0N2I5NDg4NmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczZTgzN2I3MzBmNGFlNzJiZmE3ZDllMzNkMGUwNzBjZjcxOTk0ZjM4NzJkYWYyMDBjN2I3NTIyOTZmOGQ2NzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjNjgzNDQ5YjY1MmViZDEyZmJlN2Q2YmFmYTgyYWQyNmRjNTk1NDlmNDVmNWQzYWQxNWZiZjkzNjk1NWRiNzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a8c011d631ee41e599cd0330bb702b9f",
+      "statement": "LocalContextMiddleware persists its private context snapshot in graph state but maintains a bounded, process-local parent-snapshot cache solely for forked subagents; a missing cache falls back to detection, and changed post-summary context is appended as an internal message.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L751-L842",
+          "version": "repo-lines-v1:sha256:c45f90975fa0bf247f53a609d522d4c143dbf387f1b4524524ea28b9c7c1fd85:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkMjdiY2ViMWEyYjM1NGY1ODE5MTdmN2RiNzM3NjI3NWQ0NTdmZDcxMDQ5ODg4M2Y3Y2NhMDVhZTA1N2ZjNWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhYjNlOTE3ZGY3Y2E0OGQ4NzU0NmNkYzhmYmY2ZDhjZjMyZjdlM2RmNTE1Y2I2MDhlMDkxNmUzM2EwMDYzNWYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/local_context.py#L909-L1006",
+          "version": "repo-lines-v1:sha256:09c54fb219f3357fbaf57db41c11f0a1f6b8e4ace5f7d9f8c5a2b2438e216732:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5OTA3NGNiYzJjMDZkMjc4ZDg2YjFjNzliM2JkMTI2ZmU2MjEzNmQxZDcyNWM2OTI0NTRiOTJhM2JhNWU4YzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0Y2I2YTVjYTY5MWY3N2JkMDgxYjc3OGZjYWU5YWM0NmFiN2JjMDFhZTA4N2I3ODJkOWMyMTg2NGM0NzdkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MGFiZmI4YjEwNjcxZTE5OGZjNTFmZTc3MDg5MjZkMGVkYTk2ZjY0OTYwMWQzMDYwODQyM2YyYmZlOTBiZDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9dc60a8bc07848e38b7d44d3503b5d3e",
+      "statement": "QuickJS thread mode persists an isolated interpreter snapshot in private checkpoint state and restores it lazily; snapshots form a delta chain, are dropped when oversized or on snapshot failure, and can be authenticated with an HMAC bound to the slot ID before restoration.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/middleware.py#L493-L604",
+          "version": "repo-lines-v1:sha256:0d221e6168a7779fedd48703c4182a919b96e1c673c001dd8fce309a57dede04:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlZjhhNjdhYmY5MThhNjRlNTE2NDFkM2U0NWM1ZDY2OWMyMDIxNTM5YmRlNjUwZDYyNTFiYzIyNDRkZWNhYzg3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmYTI5NTZmYWEyMmY3M2ZjZmRiMzM1ODgxYzk4ZDI3YjVjMWE1NmY2MzY1MTFhMGE5YTM0ZjQ2YjhjODM1YzliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZjFlNWZiOGFhZmE0OWRiNTZiZTA1YWY0NGZlMDdhYTU4OTQ3Nzk1NmEzMjAxZDNlMmFjNDQ5ZjAyODlmZGI2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2MmE5NjYxZDhmNWY1Yjg1ODkxYzRjZDQ4N2ZhMjM4ZDBmNGM3ZjA5NmQ3NjkwMGUyZGRiMzk2NzdjMzQxNzY4In0"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/middleware.py#L736-L837",
+          "version": "repo-lines-v1:sha256:191493126a4f21ed169fa090ad1b0a2a374307c2e78e1760e568e10bbc0b73a1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzMGI4NDM0OTI3OTExN2NiZTk3N2ViOWM0NDA5NzMwM2IzZjMyZThjNDE5Y2FiM2ZhMzcwNWMzMzcxOWM5ZWNhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmYTI5NTZmYWEyMmY3M2ZjZmRiMzM1ODgxYzk4ZDI3YjVjMWE1NmY2MzY1MTFhMGE5YTM0ZjQ2YjhjODM1YzliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2YWU5ZTczNTdlMWE3NTNiNjk0MjBlY2Y0NTQ5YTZiMjI1NjEzMmJhMTdiMmViNDE4YWEzZWM0MTJmZmM4MzQ5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/middleware.py#L77-L88",
+          "version": "repo-lines-v1:sha256:4dcff1df28083d778233f8ae8606963d64548d5bb4b36984564870d7f8775e43:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2NmM5ZjA5MjE2NmJiNWU3MWQxMGM1YThlNTZhOGZhZGQzMTZmOTQ1NzYwNmFmMWY0N2JiNTRhNTIxMDBlM2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3NDE0MDg2NDJjMDkzNDg5MTkyOTk1ODVjOGYwOWI1ZDgwNTU1NzcwZGQ5YWEyZmRiYTU4ZjA0NzlhNmVkZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3YTg3Y2I0Y2VjZWQ5ZWIwMGFjN2I4YjhhM2FiZDk4ODBhMjE5NTljZWNkOGY5NGU2NTAzN2Y4MTZkY2ZjMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjMTNjYWZkOTU5ODYzMjUzODM4OTNkNDk5YjY5ZDBhMWQ0Yzg3ZmNmNTJhOGJlMjU2MGY0OWZiMjgzNzI0NGMifQ"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_snapshot_persistence.py#L105-L169",
+          "version": "repo-lines-v1:sha256:08d0e170ad73656b5378d4a333e45ceb38c996603d85901be1bd306fe6a92edf:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiYmJhN2JlYjAxNjg3ZWZhNjc0NzRlOTE1NTMzZmY5NmQzYTQzMDcyZTQ1NDRiZGIzNmIzMGE0N2JlZDk4MGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5NzcwZDM3NThlZTJhOGQwYTg3NmQ5NzkyYmIwZDRmZDdiNzUwYWM2MTAwNDU2NTY2NDc2MzMzY2MxMTY2ZDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlOTY1Zjk4ZTAwMTBjODVjOWM0Mzg0N2EwYzNhYTcyYjNiOTk0OWQzY2IyMTkyN2IwYTgwOGJlMTUzMThiNGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_snapshot_persistence.py#L388-L442",
+          "version": "repo-lines-v1:sha256:a72136f5f5641ad19d97f7dee738f807618f94fae988bf972f70da0fbb415862:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NjY0MzQwNzlhYjlkODdkMjhjZTA4MzAwZWI3NjY1NzkzNmEyZGUwZjEwOTUyYjEyMjlmN2QyZTcyNzQ0OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5NzljYjNiMDM5MTBhMmJlMzM4ZTFlOWJkMWU2MTRkMzA4MGYyNzZlZDdhMDRjZmYzZTRlMzdiOWE2NmE4NzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmYjdkYzE0NjdjZTZkODAxNzJjMDk5MjRiMDU2MDZhZjA0Y2RmNDBlZTk0MGVmMmEyMmY1MmQxZGQxYmFhYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1MmExZGY5MjdhY2EwNmY5OGQ3MmU2NzZlYzk2MmI1MGFjNjdjYzE4MzU4OWMxMjI3NjUyM2NiODQ0ODcxNmIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-10T08:04:01.717Z"
+    "at": "2026-11-21T08:04:00.255Z"
   }
 }

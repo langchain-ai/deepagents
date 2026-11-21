@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.1...deepagents-talon==0.1.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **talon:** explain unavailable model failures with recovery guidance ([#7690](https://github.com/langchain-ai/deepagents/issues/7690)) ([6231ae4](https://github.com/langchain-ai/deepagents/commit/6231ae4781537ac953acc610ecb61723f0661042))
+* **talon:** extend Anthropic prompt caching to one hour ([#7881](https://github.com/langchain-ai/deepagents/issues/7881)) ([846d418](https://github.com/langchain-ai/deepagents/commit/846d418bc96506f67e5e58960eaf9266d0abf558))
+* **talon:** group retry attempts under one turn trace ([#7880](https://github.com/langchain-ai/deepagents/issues/7880)) ([0880e5c](https://github.com/langchain-ai/deepagents/commit/0880e5c0345d7e89b6e92e3e23e4ae0a90b921ea))
+* **talon:** honor scoped authorization for local CLI retrieval ([#7887](https://github.com/langchain-ai/deepagents/issues/7887)) ([4a8ef7b](https://github.com/langchain-ai/deepagents/commit/4a8ef7b5c817c5f2cfe193f08869fb9286ec4267))
+* **talon:** keep confirmed write batches on main ([#7882](https://github.com/langchain-ai/deepagents/issues/7882)) ([44d483f](https://github.com/langchain-ai/deepagents/commit/44d483ff37233a9209e8b5054491f587dbde2c3d))
+* **talon:** preserve safe provider status in subagent failures ([#7884](https://github.com/langchain-ai/deepagents/issues/7884)) ([d419402](https://github.com/langchain-ai/deepagents/commit/d4194025238da9445458f401e249dd86ac7c0947))
+* **talon:** preserve user messages across turn retries ([#7883](https://github.com/langchain-ai/deepagents/issues/7883)) ([4c66d93](https://github.com/langchain-ai/deepagents/commit/4c66d93fd81d3ea4c786a68a4504a063284b128b))
+* **talon:** refresh memory on every conversation turn ([#7885](https://github.com/langchain-ai/deepagents/issues/7885)) ([c0d403c](https://github.com/langchain-ai/deepagents/commit/c0d403c8ed9e028360779a2e113d875dbd477cbb))
+
 ## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.0...deepagents-talon==0.1.1) (2026-11-19)
 
 ### Features

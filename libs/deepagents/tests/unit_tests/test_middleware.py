@@ -15,6 +15,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from langgraph.errors import GraphInterrupt, ParentCommand
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
@@ -97,6 +98,42 @@ class _SandboxBackend(SandboxBackendProtocol, StateBackend):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         return ExecuteResponse(output="", exit_code=0)
+
+
+class _RaisingSandbox(SandboxBackendProtocol, StateBackend):
+    """Sandbox whose file operations and `execute` raise the exception it was built with."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self._error = error
+
+    def _fail(self, *args: object, **kwargs: object):
+        raise self._error
+
+    ls = read = write = edit = delete = glob = grep = _fail
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        raise self._error
+
+    @property
+    def id(self) -> str:
+        return "raising-sandbox"
+
+
+_FILE_TOOL_ARGS = {
+    "ls": {"path": "/dir"},
+    "read_file": {"file_path": "/notes.txt"},
+    "write_file": {"file_path": "/notes.txt", "content": "text"},
+    "edit_file": {"file_path": "/notes.txt", "old_string": "old", "new_string": "new"},
+    "delete": {"file_path": "/notes.txt"},
+    "glob": {"pattern": "*.txt"},
+    "grep": {"pattern": "needle"},
+}
+"""Valid arguments for each file tool, keyed by tool name."""
+
+
+class _StopRun(BaseException):
+    """Stands in for errors outside `Exception`, such as `KeyboardInterrupt`."""
 
 
 class TestAddMiddleware:
@@ -3245,6 +3282,29 @@ class TestFilesystemMiddleware:
         raised = execute_tool.invoke({"command": "echo test", "runtime": rt})
         assert raised.status == "error"
         assert raised.artifact is None
+
+    @pytest.mark.parametrize("tool_name", [name for name in _FILE_TOOL_ARGS if name != "glob"])
+    def test_file_tool_raises_backend_failure(self, tool_name: str) -> None:
+        """A backend that fails, such as a sandbox service that is down, ends the run instead of reaching the model."""
+        middleware = FilesystemMiddleware(backend=_RaisingSandbox(RuntimeError("backend service unavailable")))
+        file_tool = next(tool for tool in middleware.tools if tool.name == tool_name)
+
+        with pytest.raises(RuntimeError, match="backend service unavailable"):
+            file_tool.invoke({**_FILE_TOOL_ARGS[tool_name], "runtime": _runtime("call_1")})
+
+    @pytest.mark.parametrize("tool_name", _FILE_TOOL_ARGS)
+    @pytest.mark.parametrize(
+        "error",
+        [GraphInterrupt(), ParentCommand(Command()), _StopRun()],
+        ids=["interrupt", "parent_command", "base_exception"],
+    )
+    def test_file_tool_propagates_control_flow(self, tool_name: str, error: BaseException) -> None:
+        """Interrupts, parent commands and errors outside `Exception` raised under the backend are not turned into error messages."""
+        middleware = FilesystemMiddleware(backend=_RaisingSandbox(error))
+        file_tool = next(tool for tool in middleware.tools if tool.name == tool_name)
+
+        with pytest.raises(type(error)):
+            file_tool.invoke({**_FILE_TOOL_ARGS[tool_name], "runtime": _runtime("call_1")})
 
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""

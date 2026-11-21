@@ -38,6 +38,7 @@ from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.channels.untracked_value import UntrackedValue
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -2781,6 +2782,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             try:
                 glob_result = future.result()
+            except GraphBubbleUp:
+                # Interrupts and parent commands are control flow, not a failed search.
+                raise
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
                 # run_glob's finally already released the slot before the
                 # exception propagated, so do not release again here.
@@ -2859,6 +2863,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             try:
                 glob_result = task.result()
+            except GraphBubbleUp:
+                # Interrupts and parent commands are control flow, not a failed search.
+                raise
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
                 return ToolMessage(
                     content=f"Error: glob failed: {e}",

@@ -15,8 +15,10 @@ import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
+from uuid import uuid4
 
 import yaml
 from deepagents import create_deep_agent
@@ -31,12 +33,13 @@ from deepagents.middleware.summarization import (
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
-from langsmith import trace
+from langsmith import get_tracing_context, trace, tracing_context
 
 from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_code.tools import create_web_search_tool, fetch_url
@@ -72,6 +75,7 @@ from deepagents_talon.interfaces import (
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY
+from deepagents_talon.memory import TalonMemoryMiddleware
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
     ACTIVE_MODEL,
@@ -114,6 +118,7 @@ if TYPE_CHECKING:
     from langchain_core.callbacks import AsyncCallbackHandler
     from langchain_core.language_models import BaseChatModel
     from langgraph.types import Checkpointer
+    from langsmith.run_trees import RunTree
 
     from deepagents_talon.questions import QuestionHandler
 
@@ -516,6 +521,7 @@ class DeepAgentRuntime:
                 self.backend,
             ),
             ModelSelectionMiddleware(),
+            AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
             ProgressMessages(),
         ]
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
@@ -546,6 +552,15 @@ class DeepAgentRuntime:
             system_prompt=self._resolve_system_prompt(),
             skills=tuple(self._resolve_skills() or ()),
             memory=tuple(self._resolve_memory() or ()),
+        )
+        middleware.extend(
+            [
+                TalonMemoryMiddleware(
+                    backend=self.backend, sources=list(diagnostics.memory), add_cache_control=True
+                )
+            ]
+            if diagnostics.memory
+            else []
         )
         middleware.extend(_skill_middleware(self.backend, diagnostics.skills, skill_tools))
         middleware.extend(self.middleware)
@@ -702,6 +717,23 @@ class DeepAgentRuntime:
             result = cleanup()
             if isinstance(result, Awaitable):
                 await result
+
+    async def has_tool_activity(self, conversation_id: str) -> bool:
+        """Report checkpointed tool results since the latest user message."""
+        get_state = getattr(self._graph, "aget_state", None)
+        if not callable(get_state):
+            return False
+        snapshot = await get_state({"configurable": {"thread_id": conversation_id}})
+        values = cast("Mapping[str, object]", getattr(snapshot, "values", {}))
+        messages = values.get("messages", [])
+        if not isinstance(messages, list):
+            return False
+        for message in reversed(messages):
+            if getattr(message, "type", None) == "human":
+                return False
+            if getattr(message, "type", None) == "tool":
+                return True
+        return False
 
     async def recover_interrupted(self, conversation_id: str) -> None:
         """Append an interruption marker after the latest committed checkpoint."""
@@ -1152,6 +1184,7 @@ class DeepAgentRuntime:
                 {
                     "role": "user",
                     "content": content,
+                    "id": str(uuid4()),
                     "additional_kwargs": {"talon_history_source": source},
                 },
             ]
@@ -1202,7 +1235,6 @@ class DeepAgentRuntime:
         conversation_id: str,
         activity: AgentActivityCallback | None,
     ) -> object:
-        invoke = self._graph_invoke()
         config: dict[str, object] = {
             "recursion_limit": self.recursion_limit,
             "configurable": {"thread_id": conversation_id},
@@ -1215,8 +1247,50 @@ class DeepAgentRuntime:
         if activity is not None:
             config["callbacks"] = [activity]
         self._add_interruption_callback(config)
+        tracing = get_tracing_context()
+        tracing["enabled"] = True
+        with (
+            (
+                tracing_context(**tracing)
+                if langsmith_tracing_enabled(self.env)
+                else contextlib.nullcontext()
+            ),
+            (
+                trace(
+                    "talon_turn",
+                    inputs={"input": payload},
+                    metadata=cast("dict[str, object] | None", config.get("metadata")),
+                )
+                if langsmith_tracing_enabled(self.env)
+                else contextlib.nullcontext()
+            ) as turn,
+        ):
+            try:
+                state = await self._invoke_payload_attempts(payload, conversation_id, config, turn)
+            except asyncio.CancelledError as exc:
+                if turn is not None:
+                    await UserInterruptionCallback().on_chain_error(exc, run_id=turn.id)
+                raise
+            if turn is not None:
+                turn.end(outputs=state if isinstance(state, dict) else {"output": state})
+            return state
+
+    async def _invoke_payload_attempts(
+        self,
+        payload: object,
+        conversation_id: str,
+        config: dict[str, object],
+        turn: RunTree | None,
+    ) -> object:
+        invoke = self._graph_invoke()
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
+            if turn is not None:
+                turn.add_metadata({"retry_attempts": attempt})
+                config["metadata"] = {
+                    **cast("dict[str, object]", config.get("metadata", {})),
+                    "retry_attempt": attempt + 1,
+                }
             try:
                 hooks = self._hooks.get()
                 kwargs = {"context": hooks.context} if hooks is not None else {}
@@ -2046,6 +2120,8 @@ def _is_retryable(exc: Exception) -> bool:
 
     text = str(exc).lower()
     status_code = _status_code(exc)
+    if status_code == HTTPStatus.TOO_MANY_REQUESTS and "blocked by gateway policies" in text:
+        return False
     if status_code in _RETRYABLE_STATUS_CODES:
         return True
     if status_code == _BAD_REQUEST_STATUS_CODE:

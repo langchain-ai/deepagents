@@ -11,15 +11,20 @@ import asyncio
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
-from typing import Any
+from typing import Any, NotRequired
 
 import pytest
 from deepagents import create_deep_agent
+from deepagents.middleware import FilesystemMiddleware
+from langchain.agents import AgentState, create_agent
+from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command, interrupt
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
@@ -259,3 +264,197 @@ async def test_quickjs_async_parallel_agents() -> None:
         tool_message = _eval_tool_message(result)
         _assert_result_contains(tool_message.content, str(index * 10))
         assert result["messages"][-1].content == f"done-{index}"
+
+
+class _ClaimState(AgentState):
+    claims: NotRequired[dict[str, str]]
+
+
+class _ClaimMiddleware(AgentMiddleware):
+    state_schema = _ClaimState
+
+
+@tool("write_claim")
+def write_claim(claim_id: str, value: str, runtime: ToolRuntime) -> Command:
+    """Store a claim in graph state."""
+    claims = {**(runtime.state.get("claims") or {}), claim_id: value}
+    message = ToolMessage(content="stored", tool_call_id=runtime.tool_call_id)
+    return Command(update={"claims": claims, "messages": [message]})
+
+
+@tool("read_claim")
+def read_claim(claim_id: str, runtime: ToolRuntime) -> str:
+    """Read a claim from graph state."""
+    return (runtime.state.get("claims") or {}).get(claim_id, "missing")
+
+
+@tool("route_claim")
+def route_claim() -> Command:
+    """Store a claim and route to another node."""
+    return Command(goto="elsewhere", update={"claims": {"routed": "x"}})
+
+
+@tool("resume_claim")
+def resume_claim() -> Command:
+    """Store a claim on the parent graph and resume it."""
+    return Command(graph=Command.PARENT, resume="r", update={"claims": {"r": "x"}})
+
+
+@tool("list_claim")
+def list_claim() -> Command:
+    """Store a claim as a list of key-value pairs."""
+    return Command(update=[("claims", {"listed": "x"})])
+
+
+@tool("mixed_claim")
+def mixed_claim() -> list[Command]:
+    """Store a claim, then route to another node."""
+    return [Command(update={"claims": {"mixed": "x"}}), Command(goto="elsewhere")]
+
+
+@tool("ask_human")
+def ask_human() -> str:
+    """Pause the run for a human answer."""
+    return str(interrupt("ok?"))
+
+
+_CLAIM_TOOLS = [
+    write_claim,
+    read_claim,
+    route_claim,
+    resume_claim,
+    list_claim,
+    mixed_claim,
+    ask_human,
+]
+
+
+def _claim_agent(code: str, **kwargs: Any) -> Any:
+    return create_agent(
+        model=FakeChatModel(messages=_script(code)),
+        middleware=[
+            TodoListMiddleware(),
+            FilesystemMiddleware(),
+            _ClaimMiddleware(),
+            CodeInterpreterMiddleware(ptc=["write_todos", "write_file", *_CLAIM_TOOLS]),
+        ],
+        **kwargs,
+    )
+
+
+_GO = {"messages": [HumanMessage(content="go")]}
+_WRITE_C1 = "await tools.writeClaim({claim_id: 'c1', value: 'v1'});\n"
+
+
+async def test_ptc_state_updates_apply_and_are_readable_in_same_eval() -> None:
+    """`tools.*` state updates land in the graph and later calls see them."""
+    code = (
+        "await tools.writeTodos({todos: [{content: 'a', status: 'pending'}]});\n"
+        + _WRITE_C1
+        + "await tools.writeFile({file_path: '/one.txt', content: '1'});\n"
+        "await tools.writeFile({file_path: '/two.txt', content: '2'});\n"
+        "await tools.readClaim({claim_id: 'c1'})"
+    )
+    result = await _claim_agent(code).ainvoke(_GO)
+
+    _assert_result_contains(_eval_tool_message(result).content, "v1")
+    assert result["todos"] == [{"content": "a", "status": "pending"}]
+    assert result["claims"] == {"c1": "v1"}
+    assert {"/one.txt", "/two.txt"} <= set(result["files"])
+    assert [m.name for m in result["messages"] if isinstance(m, ToolMessage)] == [
+        "eval"
+    ]
+
+
+def test_ptc_state_updates_apply_under_sync_invoke() -> None:
+    result = _claim_agent(_WRITE_C1 + "'ok'").invoke(_GO)
+
+    assert result["claims"] == {"c1": "v1"}
+
+
+@pytest.mark.parametrize(
+    ("call", "returned"),
+    [
+        ("routeClaim", "Command(goto=...)"),
+        ("resumeClaim", "Command(graph=..., resume=...)"),
+        ("listClaim", "Command(update=...) as list"),
+        ("mixedClaim", "Command(goto=...)"),
+    ],
+    ids=["goto", "graph-resume", "list-update", "mixed-list"],
+)
+async def test_ptc_unsupported_command_fails_eval_and_writes_nothing(
+    call: str, returned: str
+) -> None:
+    """A `Command` eval cannot apply fails the eval; none of its result is written."""
+    result = await _claim_agent(f"await tools.{call}({{}})").ainvoke(_GO)
+
+    content = _eval_tool_message(result).content
+    assert '<error type="UnsupportedCommand">' in content, content
+    assert f"tools.{call} returned {returned}" in content
+    assert "claims" not in result
+    assert result["messages"][-1].content == "done"
+
+
+async def test_ptc_state_updates_apply_once_after_interrupt_and_resume() -> None:
+    code = _WRITE_C1 + "await tools.askHuman({})"
+    agent = _claim_agent(code, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t"}}
+
+    await agent.ainvoke(_GO, config=config)
+    assert "claims" not in (await agent.aget_state(config)).values
+    result = await agent.ainvoke(Command(resume="yes"), config=config)
+
+    _assert_result_contains(_eval_tool_message(result).content, "yes")
+    assert result["claims"] == {"c1": "v1"}
+
+
+@tool("slow")
+async def slow_tool() -> str:
+    """Sleep briefly so a sibling eval overlaps this one."""
+    await asyncio.sleep(0.1)
+    return "done"
+
+
+async def test_quickjs_mode_call_overlapping_eval_fails_loudly() -> None:
+    """Of two overlapping `mode="call"` evals, one fails and the other finishes."""
+    model = FakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "await tools.slow({})"},
+                            "id": "call_slow",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "eval",
+                            "args": {"code": "await tools.slow({})"},
+                            "id": "call_fast",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="finished"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(mode="call", ptc=[slow_tool])],
+    )
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="go")]})
+
+    contents = {
+        m.tool_call_id: m.content
+        for m in result["messages"]
+        if isinstance(m, ToolMessage) and m.name == "eval"
+    }
+    # The tool node may start either eval first; exactly one of them wins.
+    failed = [c for c in contents.values() if '<error type="ConcurrentEval">' in c]
+    assert len(failed) == 1
+    assert sum("done" in c for c in contents.values()) == 1
+    assert result["messages"][-1].content == "finished"

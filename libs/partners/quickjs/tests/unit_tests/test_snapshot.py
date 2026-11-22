@@ -30,6 +30,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs._repl import _Slot
 from langchain_quickjs._snapshot import (
     coerce_record,
     normalize_signing_key,
@@ -37,6 +38,7 @@ from langchain_quickjs._snapshot import (
     sign_snapshot,
     verify_snapshot,
 )
+from tests.unit_tests._slots import drop_slots, slot_of, warm_slot
 
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
@@ -61,11 +63,11 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
     try:
         slot_id = "snapshot-roundtrip"
         state = {"_quickjs_slot_id": slot_id}
-        repl = mw._registry.get(slot_id)
+        repl = warm_slot(mw, slot_id)
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert slot_id not in mw._registry._slots
+        assert slot_of(mw, slot_id)._context is not None
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = mw.before_agent(
@@ -73,12 +75,11 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
             runtime=MagicMock(),
         )
         restore_slot_id = _assert_slot_update(before_update)
-        restored = mw._registry.get(restore_slot_id)
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored = warm_slot(mw, restore_slot_id)
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
@@ -87,11 +88,11 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
     try:
         slot_id = "async-snapshot-roundtrip"
         state = {"_quickjs_slot_id": slot_id}
-        repl = mw._registry.get(slot_id)
+        repl = warm_slot(mw, slot_id)
         await repl.eval_async("const answer = 42")
         update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert slot_id not in mw._registry._slots
+        assert slot_of(mw, slot_id)._context is not None
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = await mw.abefore_agent(
@@ -99,12 +100,11 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
             runtime=MagicMock(),
         )
         restore_slot_id = _assert_slot_update(before_update)
-        restored = mw._registry.get(restore_slot_id)
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored = warm_slot(mw, restore_slot_id)
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
@@ -112,7 +112,7 @@ async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
     mw = CodeInterpreterMiddleware()
     state = {"_quickjs_snapshot_payload": b"not-a-snapshot"}
     state.update(mw.before_agent(state=state, runtime=MagicMock()) or {})
-    assert mw._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+    assert slot_of(mw, state["_quickjs_slot_id"]) is None
     assert mw.after_agent(state, MagicMock()) is None
     runtime = ToolRuntime(
         state=state,
@@ -139,7 +139,7 @@ async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
         assert result.update["_quickjs_snapshot_hmac"] is None
         assert "_SnapshotRestoreError" in result.update["messages"][0].content
         assert "requested code was not executed" in result.update["messages"][0].content
-        repl = mw._registry.get(state["_quickjs_slot_id"])
+        repl = warm_slot(mw, state["_quickjs_slot_id"])
         assert repl.eval_sync("typeof executed").result == "undefined"
         update = mw.after_agent(state, MagicMock())
         restored = replay_snapshot_chain(
@@ -147,7 +147,7 @@ async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
         )
         assert restored != b"not-a-snapshot"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_before_agent_ignores_empty_delta_channel_seed() -> None:
@@ -162,9 +162,9 @@ def test_before_agent_ignores_empty_delta_channel_seed() -> None:
             runtime=MagicMock(),
         )
         slot_id = _assert_slot_update(update)
-        assert mw._registry.get_if_exists(slot_id) is None
+        assert slot_of(mw, slot_id) is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 async def test_abefore_agent_ignores_empty_delta_channel_seed() -> None:
@@ -176,9 +176,9 @@ async def test_abefore_agent_ignores_empty_delta_channel_seed() -> None:
             runtime=MagicMock(),
         )
         slot_id = _assert_slot_update(update)
-        assert mw._registry.get_if_exists(slot_id) is None
+        assert slot_of(mw, slot_id) is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_after_agent_clears_payload_on_snapshot_failure() -> None:
@@ -186,16 +186,16 @@ def test_after_agent_clears_payload_on_snapshot_failure() -> None:
     try:
         slot_id = "snapshot-failure"
         state = {"_quickjs_slot_id": slot_id}
-        repl = mw._registry.get(slot_id)
+        repl = warm_slot(mw, slot_id)
         with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
             update = mw.after_agent(state=state, runtime=MagicMock())
         assert update == {
             "_quickjs_snapshot_payload": None,
             "_quickjs_snapshot_hmac": None,
         }
-        assert slot_id not in mw._registry._slots
+        assert slot_of(mw, slot_id)._context is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
@@ -203,16 +203,16 @@ def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
     try:
         slot_id = "snapshot-size-cap"
         state = {"_quickjs_slot_id": slot_id}
-        repl = mw._registry.get(slot_id)
+        repl = warm_slot(mw, slot_id)
         with patch.object(repl, "create_snapshot", return_value=b"12345"):
             update = mw.after_agent(state=state, runtime=MagicMock())
         assert update == {
             "_quickjs_snapshot_payload": None,
             "_quickjs_snapshot_hmac": None,
         }
-        assert slot_id not in mw._registry._slots
+        assert slot_of(mw, slot_id)._context is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
@@ -220,7 +220,7 @@ async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
     try:
         slot_id = "async-snapshot-size-cap"
         state = {"_quickjs_slot_id": slot_id}
-        repl = mw._registry.get(slot_id)
+        repl = warm_slot(mw, slot_id)
         with patch.object(
             repl,
             "acreate_snapshot",
@@ -231,9 +231,9 @@ async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
             "_quickjs_snapshot_payload": None,
             "_quickjs_snapshot_hmac": None,
         }
-        assert slot_id not in mw._registry._slots
+        assert slot_of(mw, slot_id)._context is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def _make_snapshots() -> list[bytes]:
@@ -348,7 +348,7 @@ def test_snapshot_update_first_write_is_anchor() -> None:
         update = mw._snapshot_update(payload=b"hello-world", prior=b"", slot_id="t")
         assert update == {"_quickjs_snapshot_payload": ("snap", b"hello-world")}
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_snapshot_update_subsequent_write_is_patch() -> None:
@@ -364,7 +364,7 @@ def test_snapshot_update_subsequent_write_is_patch() -> None:
         # And it reconstructs the new snapshot exactly.
         assert bsdiff4.patch(snaps[0], blob) == snaps[1]
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_snapshot_update_falls_back_to_anchor_when_patch_not_smaller() -> None:
@@ -378,7 +378,7 @@ def test_snapshot_update_falls_back_to_anchor_when_patch_not_smaller() -> None:
         update = mw._snapshot_update(payload=payload, prior=prior, slot_id="t")
         assert update == {"_quickjs_snapshot_payload": ("snap", payload)}
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_after_agent_emits_patch_against_prior_state() -> None:
@@ -388,7 +388,7 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
         # Turn 1: establish a snapshot anchor.
         slot_id = "patch-prior"
         state = {"_quickjs_slot_id": slot_id}
-        repl = mw._registry.get(slot_id)
+        repl = warm_slot(mw, slot_id)
         repl.eval_sync("globalThis.x = 1")
         first = mw.after_agent(state=state, runtime=MagicMock())
         prior_full = replay_snapshot_chain(b"", [first["_quickjs_snapshot_payload"]])
@@ -398,8 +398,9 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
             state={"_quickjs_snapshot_payload": prior_full}, runtime=MagicMock()
         )
         slot_id = _assert_slot_update(before_update)
-        repl2 = mw._registry.get(slot_id)
-        repl2.eval_sync("globalThis.y = 2", snapshot_payload=prior_full)
+        repl2 = warm_slot(mw, slot_id)
+        repl2.restore_snapshot(prior_full)
+        repl2.eval_sync("globalThis.y = 2")
         second = mw.after_agent(
             state={
                 "_quickjs_slot_id": slot_id,
@@ -419,10 +420,11 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
         restore_update = mw.before_agent(
             state={"_quickjs_snapshot_payload": final}, runtime=MagicMock()
         )
-        restored = mw._registry.get(_assert_slot_update(restore_update))
-        assert restored.eval_sync("x + y", snapshot_payload=final).result == "3"
+        restored = warm_slot(mw, _assert_slot_update(restore_update))
+        restored.restore_snapshot(final)
+        assert restored.eval_sync("x + y").result == "3"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 class _GrowingHeapModel(GenericFakeChatModel):
@@ -573,20 +575,20 @@ def test_mode_turn_keeps_reset_behavior() -> None:
     try:
         slot_id = "mode-turn"
         state = {"_quickjs_slot_id": slot_id}
-        repl = mw._registry.get(slot_id)
+        repl = warm_slot(mw, slot_id)
         repl.eval_sync("globalThis.answer = 42")
         update = mw.after_agent(state=state, runtime=MagicMock())
         assert update is None
-        assert slot_id not in mw._registry._slots
+        assert slot_of(mw, slot_id)._context is None
 
         before_update = mw.before_agent(
             state={"_quickjs_snapshot_payload": b"ignored"},
             runtime=MagicMock(),
         )
         before_slot_id = _assert_slot_update(before_update)
-        assert mw._registry.get_if_exists(before_slot_id) is None
+        assert slot_of(mw, before_slot_id) is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_mode_call_ignores_snapshot_payload() -> None:
@@ -597,9 +599,9 @@ def test_mode_call_ignores_snapshot_payload() -> None:
             runtime=MagicMock(),
         )
         before_slot_id = _assert_slot_update(before_update)
-        assert mw._registry.get_if_exists(before_slot_id) is None
+        assert slot_of(mw, before_slot_id) is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 # Signing keys used by the HMAC tests below. `_SIGNING_KEY` is the "real"
@@ -687,7 +689,7 @@ def test_empty_key_rejected_at_construction() -> None:
 def test_after_agent_emits_hmac_when_key_set() -> None:
     mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -703,13 +705,13 @@ def test_after_agent_emits_hmac_when_key_set() -> None:
             mw._snapshot_signing_key, materialized, _signing_thread_id(mw), tag
         )
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_after_agent_no_hmac_when_key_unset() -> None:
     mw = CodeInterpreterMiddleware()  # thread mode, no key -> no signing
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -717,14 +719,14 @@ def test_after_agent_no_hmac_when_key_unset() -> None:
         assert isinstance(update, dict)
         assert "_quickjs_snapshot_hmac" not in update
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_signed_snapshot_roundtrip_restores() -> None:
     """A snapshot signed in after_agent restores cleanly in before_agent."""
     mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -740,27 +742,25 @@ def test_signed_snapshot_roundtrip_restores() -> None:
             runtime=MagicMock(),
         )
         assert before_update is None
-        restored = mw._registry.get(_signing_thread_id(mw))
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored = warm_slot(mw, _signing_thread_id(mw))
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_before_agent_rejects_missing_hmac() -> None:
     """Key configured but snapshot carries no tag -> rejected, not restored."""
     mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
         )
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
 
-        repl = mw._registry.get(_signing_thread_id(mw))
-        with patch.object(repl, "restore_snapshot") as restore:
+        with patch.object(_Slot, "_arestore_snapshot") as restore:
             before_update = mw.before_agent(
                 state={
                     "_quickjs_slot_id": _signing_thread_id(mw),
@@ -774,14 +774,14 @@ def test_before_agent_rejects_missing_hmac() -> None:
             "_quickjs_snapshot_hmac": None,
         }
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_before_agent_rejects_tampered_payload() -> None:
     """Attacker mutates the stored snapshot bytes; the tag no longer matches."""
     mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -802,7 +802,7 @@ def test_before_agent_rejects_tampered_payload() -> None:
         assert before_update["_quickjs_snapshot_payload"] is None
         assert before_update["_quickjs_snapshot_hmac"] is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_before_agent_rejects_wrong_key_signature() -> None:
@@ -810,7 +810,7 @@ def test_before_agent_rejects_wrong_key_signature() -> None:
     signer = CodeInterpreterMiddleware(snapshot_signing_key=_WRONG_SIGNING_KEY)
     verifier = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
     try:
-        repl = signer._registry.get(_signing_thread_id(signer))
+        repl = warm_slot(signer, _signing_thread_id(signer))
         repl.eval_sync("const answer = 42")
         update = signer.after_agent(
             state={"_quickjs_slot_id": _signing_thread_id(signer)}, runtime=MagicMock()
@@ -830,15 +830,15 @@ def test_before_agent_rejects_wrong_key_signature() -> None:
             "_quickjs_snapshot_hmac": None,
         }
     finally:
-        signer._registry.close()
-        verifier._registry.close()
+        drop_slots(signer)
+        drop_slots(verifier)
 
 
 async def test_abefore_agent_rejects_tampered_payload() -> None:
     """Async restore path enforces the same rejection."""
     mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         await repl.eval_async("const answer = 42")
         update = await mw.aafter_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -859,13 +859,13 @@ async def test_abefore_agent_rejects_tampered_payload() -> None:
         assert before_update["_quickjs_snapshot_payload"] is None
         assert before_update["_quickjs_snapshot_hmac"] is None
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 async def test_asigned_snapshot_roundtrip_restores() -> None:
     mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         await repl.eval_async("const answer = 42")
         update = await mw.aafter_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -881,12 +881,11 @@ async def test_asigned_snapshot_roundtrip_restores() -> None:
             runtime=MagicMock(),
         )
         assert before_update is None
-        restored = mw._registry.get(_signing_thread_id(mw))
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored = warm_slot(mw, _signing_thread_id(mw))
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_no_key_restores_without_verification() -> None:
@@ -897,7 +896,7 @@ def test_no_key_restores_without_verification() -> None:
     """
     mw = CodeInterpreterMiddleware()  # no key
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         repl.eval_sync("const answer = 42")
         update = mw.after_agent(
             state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -911,12 +910,11 @@ def test_no_key_restores_without_verification() -> None:
             runtime=MagicMock(),
         )
         assert before_update is None
-        restored = mw._registry.get(_signing_thread_id(mw))
-        assert (
-            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
-        )
+        restored = warm_slot(mw, _signing_thread_id(mw))
+        restored.restore_snapshot(materialized)
+        assert restored.eval_sync("answer").result == "42"
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 def test_snapshot_size_cap_clears_hmac() -> None:
@@ -925,7 +923,7 @@ def test_snapshot_size_cap_clears_hmac() -> None:
         snapshot_signing_key=_SIGNING_KEY, max_snapshot_bytes=4
     )
     try:
-        repl = mw._registry.get(_signing_thread_id(mw))
+        repl = warm_slot(mw, _signing_thread_id(mw))
         with patch.object(repl, "create_snapshot", return_value=b"12345"):
             update = mw.after_agent(
                 state={"_quickjs_slot_id": _signing_thread_id(mw)}, runtime=MagicMock()
@@ -935,7 +933,7 @@ def test_snapshot_size_cap_clears_hmac() -> None:
             "_quickjs_snapshot_hmac": None,
         }
     finally:
-        mw._registry.close()
+        drop_slots(mw)
 
 
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
@@ -995,7 +993,7 @@ async def test_failed_restore_clears_checkpoint_before_agent_finishes(
         assert state.values.get("_quickjs_snapshot_hmac") is None
         assert "requested code was not executed" in state.values["messages"][-1].content
     finally:
-        middleware._registry.close()
+        drop_slots(middleware)
 
 
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
@@ -1005,14 +1003,14 @@ async def test_restore_error_reaches_tool_boundary_before_code_runs(
     from langchain_quickjs._repl import _SnapshotRestoreError
 
     middleware = CodeInterpreterMiddleware()
-    repl = middleware._registry.get("restore-error-boundary")
+    repl = warm_slot(middleware, "restore-error-boundary")
 
     async def evaluate():
         if invoke_mode == "ainvoke":
-            return await repl.eval_async(
-                "globalThis.executed = true", snapshot_payload=b"invalid"
-            )
-        return repl.eval_sync("globalThis.executed = true", snapshot_payload=b"invalid")
+            await repl.arestore_snapshot(b"invalid")
+        else:
+            repl.restore_snapshot(b"invalid")
+        return repl.eval_sync("globalThis.executed = true")
 
     try:
         with pytest.raises(
@@ -1022,4 +1020,4 @@ async def test_restore_error_reaches_tool_boundary_before_code_runs(
         assert isinstance(caught.value, RuntimeError)
         assert repl.eval_sync("typeof executed").result == "undefined"
     finally:
-        middleware._registry.close()
+        drop_slots(middleware)

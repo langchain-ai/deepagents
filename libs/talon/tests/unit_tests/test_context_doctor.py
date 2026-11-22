@@ -61,7 +61,7 @@ async def test_fresh_report_reads_configured_sources_without_writing_state(runti
     assert not (await runtime._graph.aget_state({"configurable": {"thread_id": "chat"}})).values
 
 
-async def test_report_uses_current_thread_checkpoint_and_cached_memory(runtime):
+async def test_report_uses_current_thread_checkpoint_and_current_memory(runtime, tmp_path):
     config = {"configurable": {"thread_id": "chat"}}
     await runtime._graph.aupdate_state(
         config,
@@ -73,13 +73,21 @@ async def test_report_uses_current_thread_checkpoint_and_cached_memory(runtime):
                     usage_metadata={"input_tokens": 1234, "output_tokens": 3, "total_tokens": 1237},
                 ),
             ],
-            "memory_contents": {"cached": "cached private memory"},
+            "memory_contents": {"cached": "cached private memory", "other": "obsolete preference"},
             "skills_metadata": [],
         },
     )
     before = await runtime._graph.aget_state(config)
     report = await runtime.context_doctor("chat")
+    (tmp_path / "assistant" / "memory.md").write_text("updated preference " * 1000)
+    updated = await runtime.context_doctor("chat")
     after = await runtime._graph.aget_state(config)
+
+    assert await runtime._context_diagnostics._memory(
+        {"memory_contents": {"cached": "obsolete preference"}}
+    ) == {str(tmp_path / "assistant" / "memory.md"): "updated preference " * 1000}
+    assert "AGENTS.md memory (1 files)" in report
+    assert updated != report
 
     assert "1,234" in report
     assert "Skills index (0 loaded)" in report

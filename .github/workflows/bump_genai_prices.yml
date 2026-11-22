@@ -27,9 +27,11 @@
 #   the ceiling making every run a green no-op forever — is caught by a
 #   PyPI check that files a tracking issue when the newest release is one
 #   the manifest excludes.
-# - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
-#   files inside the managed `libs/code` package would make release-please
-#   open a separate `release(deepagents-code)` PR (multi-component fan-out).
+# - The PR title is `chore(deps):` on purpose, so the daily floor raise does
+#   not cut a `deepagents-code` release on its own; the new floor ships with
+#   the next `feat`/`fix` release of the package. A bump-worthy type would
+#   release only `deepagents-code` (release-please ignores `uv.lock`), not fan
+#   out.
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.

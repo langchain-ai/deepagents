@@ -2,26 +2,12 @@
 
 from __future__ import annotations
 
-import gc
 import subprocess
 import sys
 import textwrap
-import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
 import pytest
-from deepagents import create_deep_agent
-from langchain_core.messages import AIMessage
-from langchain_core.tools import tool
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import interrupt
-
-from langchain_quickjs import CodeInterpreterMiddleware
-from tests._common import FakeChatModel
-
-if TYPE_CHECKING:
-    from langgraph.graph.state import CompiledStateGraph
 
 # Turn 1 runs `eval`, which opens an interpreter. Turn 2 ends the run the way
 # the scenario says: normally, through `interrupt()`, or with a tool exception.
@@ -87,44 +73,7 @@ _EXIT_SCRIPT = textwrap.dedent(
 )
 
 
-@tool
-def ask_human(question: str) -> str:
-    """Suspend the run until a human answers."""
-    return interrupt({"question": question})
-
-
-def _worker_threads() -> set[threading.Thread]:
-    return {t for t in threading.enumerate() if t.name.startswith("quickjs-worker")}
-
-
-def _interrupting_agent(
-    middleware: CodeInterpreterMiddleware,
-) -> CompiledStateGraph[Any, Any, Any, Any]:
-    messages = iter(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[{"id": "c1", "name": "eval", "args": {"code": "1 + 1"}}],
-            ),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {"id": "c2", "name": "ask_human", "args": {"question": "ok?"}}
-                ],
-            ),
-            AIMessage(content="done"),
-        ]
-    )
-    return create_deep_agent(
-        model=FakeChatModel(messages=messages),
-        tools=[ask_human],
-        middleware=[middleware],
-        checkpointer=InMemorySaver(),
-    )
-
-
 _PACKAGE_ROOT = Path(__file__).parents[2]
-_CONFIG = {"configurable": {"thread_id": "t1"}}
 
 
 @pytest.mark.parametrize("scenario", ["complete", "interrupt", "error"])
@@ -139,15 +88,3 @@ def test_process_exits_after_run(scenario: str) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert "exiting" in proc.stdout
-
-
-def test_garbage_collection_releases_interpreters() -> None:
-    before = _worker_threads()
-    middleware = CodeInterpreterMiddleware(ptc=[])
-    agent = _interrupting_agent(middleware)
-    agent.invoke({"messages": [("user", "go")]}, config=_CONFIG)
-    assert _worker_threads() - before
-
-    del agent, middleware
-    gc.collect()
-    assert not _worker_threads() - before

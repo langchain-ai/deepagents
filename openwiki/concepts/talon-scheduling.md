@@ -34,7 +34,7 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_subagent_control.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-17T08:03:47.818Z
+    at: 2026-11-20T08:04:05.944Z
 generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
 ---
 

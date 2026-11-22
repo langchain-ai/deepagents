@@ -612,6 +612,18 @@ class RemoteAgent:
         """
         return self._cost_tracker(_require_thread_id(config)).snapshot()
 
+    def get_cached_side_cost(self, config: Mapping[str, Any]) -> float:
+        """Read the side-question and thread-naming spend included in the total.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            Last known side-request spend in USD, or `0.0` before any is reported.
+        """
+        side = self._cost_tracker(_require_thread_id(config)).side_breakdown
+        return side["total_cost_usd"] if side is not None else 0.0
+
     async def aget_session_cost(
         self,
         config: Mapping[str, Any],

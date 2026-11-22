@@ -412,7 +412,7 @@ make stage-harbor-local-deps
 
 # Run via Docker (sequential, all tasks)
 uv run harbor run \
-  --agent deepagents_harbor.agent:DeepAgentsLangGraph \
+  --agent langgraph \
   --agent-kwarg python_version=3.14 \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \
@@ -426,7 +426,7 @@ uv run harbor run \
 
 # Run via LangSmith sandboxes with tracing
 uv run harbor run \
-  --agent deepagents_harbor.agent:DeepAgentsLangGraph \
+  --agent langgraph \
   --agent-kwarg python_version=3.14 \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \
@@ -479,7 +479,7 @@ MODEL="$MODEL" HARBOR_LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-termi
 # Run Harbor directly (-n = concurrency; add -l N to limit tasks)
 make stage-harbor-local-deps
 uv run harbor run \
-  --agent deepagents_harbor.agent:DeepAgentsLangGraph \
+  --agent langgraph \
   --agent-kwarg python_version=3.14 \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \

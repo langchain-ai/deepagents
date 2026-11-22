@@ -934,8 +934,9 @@ def _format_mcp_server_changes(
 ) -> str:
     """Format MCP server changes for the `/reload` report.
 
-    Every server in `current` lands in exactly one bucket — loaded, failed,
-    unavailable, recovered, status-changed, reconfigured, or still-broken — so a
+    Every server in `current` lands in exactly one bucket — loaded, needs
+    approval, failed, unavailable, recovered, status-changed, reconfigured, or
+    still-broken — so a
     status the app grows later cannot silently fall through into "no changes".
     Config files whose parse status changed are flagged separately, since they
     arrive as synthetic entries rather than as servers.
@@ -1006,10 +1007,21 @@ def _format_mcp_server_changes(
         # self-comparison that would report it as unchanged.
         and (name not in before or before[name].status != "error")
     )
+    # Approval happens only in the startup prompt, so a project server added or
+    # edited mid-session lands here. Named on its own line with the way out,
+    # since a generic "unavailable" gives no hint that a restart is the fix.
+    needs_approval = sorted(
+        name
+        for name, server in servers.items()
+        if server.status == "untrusted"
+        and (name not in before or before[name].status != "untrusted")
+    )
     unavailable = sorted(
         name
         for name, server in servers.items()
-        if name not in before and server.status not in {"ok", "error"}
+        if name not in before
+        and server.status not in {"ok", "error"}
+        and name not in needs_approval
     )
     recovered = sorted(
         name
@@ -1024,6 +1036,7 @@ def _format_mcp_server_changes(
             and before[name].status != server.status
             and name not in failing
             and name not in recovered
+            and name not in needs_approval
         )
     )
     # A same-name server whose status held steady can still have been edited
@@ -1051,6 +1064,7 @@ def _format_mcp_server_changes(
     # so name it in both branches below rather than only when nothing changed.
     reported = (
         set(loaded)
+        | set(needs_approval)
         | set(failing)
         | set(unavailable)
         | set(recovered)
@@ -1062,7 +1076,7 @@ def _format_mcp_server_changes(
             name
             for name, server in servers.items()
             if name not in reported
-            and (server.status == "error" or server.needs_attention())
+            and (server.status in {"error", "untrusted"} or server.needs_attention())
         ]
         # Unrepaired config errors are excluded from `servers` entirely, and are
         # the one thing `/reload` most exists to surface.
@@ -1072,6 +1086,7 @@ def _format_mcp_server_changes(
     if not (
         loaded
         or removed
+        or needs_approval
         or failing
         or unavailable
         or recovered
@@ -1092,6 +1107,11 @@ def _format_mcp_server_changes(
         lines.append(f"  - Loaded: {', '.join(loaded)}")
     if removed:
         lines.append(f"  - Removed: {', '.join(removed)}")
+    if needs_approval:
+        lines.append(
+            f"  - Needs approval: {', '.join(needs_approval)} (restart to review "
+            "project MCP servers, or launch with --trust-project-mcp)"
+        )
     if failing:
         lines.append(f"  - Failed to load: {', '.join(failing)} (use /mcp for details)")
     if unavailable:
@@ -2370,6 +2390,9 @@ class _ThreadHistoryPayload:
         default=None, kw_only=True
     )
     """Persisted thread-wide cost detail, or `None` when absent."""
+
+    session_side_cost_usd: float = field(default=0.0, kw_only=True)
+    """Side-question and thread-naming spend included in `session_cost_usd`."""
 
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
@@ -4840,6 +4863,9 @@ class DeepAgentsApp(App):
 
         self._thread_restored_cost_usd: float = 0.0
         """Checkpoint cost without a local per-model breakdown."""
+
+        self._thread_restored_side_cost_usd: float = 0.0
+        """Side-request spend already included in `_thread_restored_cost_usd`."""
 
         self._thread_has_restored_model_usage: bool = False
         """Whether checkpoint history proves model usage predating local stats."""
@@ -9485,6 +9511,7 @@ class DeepAgentsApp(App):
         *,
         has_restored_model_usage: bool = False,
         breakdown: Mapping[str, object] | None = None,
+        side_cost_usd: float = 0.0,
     ) -> None:
         """Start local usage details for a newly activated thread.
 
@@ -9492,10 +9519,12 @@ class DeepAgentsApp(App):
             cost_usd: Cumulative cost restored from that thread's checkpoint.
             has_restored_model_usage: Whether restored history contains model usage.
             breakdown: Structured cost detail restored from the checkpoint.
+            side_cost_usd: Side-request spend already included in `cost_usd`.
         """
         self._thread_stats = SessionStats()
         self._session_cost_breakdown = breakdown
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._thread_restored_side_cost_usd = _coerce_session_cost_usd(side_cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
@@ -9625,6 +9654,25 @@ class DeepAgentsApp(App):
 
         return not pricing_data_available()
 
+    def _current_side_cost_usd(self) -> float:
+        """Side-question and thread-naming spend since this thread was loaded.
+
+        These requests are charged outside the turn stream, so they never reach
+        the per-type or per-model stats.
+
+        Returns:
+            Spend in USD, or `0.0` without a server-backed agent.
+        """
+        remote = self._remote_agent()
+        if remote is None or not self._lc_thread_id:
+            return 0.0
+        side_cost_usd = _coerce_session_cost_usd(
+            remote.get_cached_side_cost(
+                {"configurable": {"thread_id": self._lc_thread_id}}
+            )
+        )
+        return max(side_cost_usd - self._thread_restored_side_cost_usd, 0.0)
+
     def _format_cost_summary(self) -> str:
         """Build the running total and type/model breakdown for `/cost`.
 
@@ -9722,11 +9770,16 @@ class DeepAgentsApp(App):
             if kind in self._thread_stats.per_kind
             and self._thread_stats.per_kind[kind].priced_request_count
         ]
-        if priced_kinds:
+        side_cost_usd = self._current_side_cost_usd()
+        if priced_kinds or side_cost_usd > 0:
             lines.extend(["", "By type since this thread was loaded:"])
             for kind, kind_stats in priced_kinds:
                 lines.append(
                     f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
+                )
+            if side_cost_usd > 0:
+                lines.append(
+                    f"- Side questions and thread names: {format_cost(side_cost_usd)}"
                 )
         priced_models = [
             model
@@ -9758,7 +9811,9 @@ class DeepAgentsApp(App):
             0.0,
         )
         detail_gap_usd = (
-            authoritative_current_cost_usd - self._thread_stats.total_cost_usd
+            authoritative_current_cost_usd
+            - side_cost_usd
+            - self._thread_stats.total_cost_usd
         )
         comparison_tolerance = max(authoritative_current_cost_usd * 1e-6, 1e-9)
         if detail_gap_usd > comparison_tolerance:
@@ -21334,6 +21389,9 @@ class DeepAgentsApp(App):
                     payload,
                     session_cost_usd=cost["total"],
                     session_cost_breakdown=cost["breakdown"],
+                    session_side_cost_usd=remote.get_cached_side_cost(
+                        {"configurable": {"thread_id": thread_id}}
+                    ),
                 )
         messages = state_values.get("messages", [])
 
@@ -21692,6 +21750,7 @@ class DeepAgentsApp(App):
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
                 breakdown=payload.session_cost_breakdown,
+                side_cost_usd=payload.session_side_cost_usd,
             )
             if payload.cache_state is not None:
                 # Raw values on purpose: `_sync_cache_state_from_state` is the

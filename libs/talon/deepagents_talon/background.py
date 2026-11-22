@@ -114,6 +114,41 @@ _SCHEDULED_INSTRUCTIONS = (
 )
 
 
+_SERVER_ERROR_STATUSES = range(500, 600)
+_FAILURE_HINTS = {
+    401: "authentication or permission problem; tell the operator",
+    402: "billing/payment problem; retrying will not help — tell the operator",
+    403: "authentication or permission problem; tell the operator",
+    404: "model not found; tell the operator",
+    429: "rate limited; retry later",
+}
+
+
+def _failure_summary(exc: BaseException, subagent_name: str) -> str:
+    """Describe recognized HTTP failures without exposing exception payloads."""
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        status = getattr(current, "status_code", None)
+        if not isinstance(status, int):
+            status = getattr(getattr(current, "response", None), "status_code", None)
+        if type(status) is int:
+            hint = _FAILURE_HINTS.get(status)
+            if status in _SERVER_ERROR_STATUSES:
+                hint = "transient provider problem; retry later"
+            if hint:
+                return (
+                    f"Subagent {subagent_name} failed: its model provider returned "
+                    f"HTTP {status} ({hint})."
+                )
+        pending.extend(error for error in (current.__context__, current.__cause__) if error)
+    return _FAILED_RESULT
+
+
 @contextmanager
 def _track_consumed_results(owner: str, results: dict[str, str]) -> Generator[None]:
     """Collect results exposed to this turn without acknowledging them until success."""
@@ -401,12 +436,16 @@ class BackgroundSubagents(AgentMiddleware):
                                 tool_call_id=request.tool_call["id"],
                             )
                         return _clamp(await handler(request))
-                except Exception:
+                except Exception as exc:
                     logger.exception("Inline subagent failed")
                     # This result reaches the model and the user: no arguments, no
                     # credentials.
                     return ToolMessage(
-                        _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT,
+                        _TIMED_OUT_RESULT
+                        if timeout.expired()
+                        else _failure_summary(
+                            exc, str(request.tool_call["args"].get("subagent_type", ""))
+                        ),
                         tool_call_id=request.tool_call["id"],
                         status="error",
                     )
@@ -452,10 +491,10 @@ class BackgroundSubagents(AgentMiddleware):
         except asyncio.CancelledError:
             job.cancelled = True
             job.control.record("cancelled")
-        except Exception:
+        except Exception as exc:
             logger.exception("Background subagent %s failed", task_id)
             # This result reaches the model and the user: no arguments, no credentials.
-            job.result = _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT
+            job.result = _TIMED_OUT_RESULT if timeout.expired() else _failure_summary(exc, job.name)
             job.control.record("timed_out" if timeout.expired() else "error")
         finally:
             job.control.record("finished")

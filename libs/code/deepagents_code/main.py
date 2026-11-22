@@ -4943,7 +4943,9 @@ def _check_mcp_project_trust(
         ProjectServerSummary,
         discover_mcp_config_sources,
         extract_project_server_summaries,
+        is_user_mcp_config_path,
         load_merged_mcp_configs_lenient,
+        resolve_mcp_server_sources,
     )
     from deepagents_code.project_utils import ProjectContext
 
@@ -5039,9 +5041,35 @@ def _check_mcp_project_trust(
 
     prompt_console.print()
     prompt_console.print("[bold yellow]Approve project MCP servers:[/bold yellow]")
+    server_sources = resolve_mcp_server_sources(project_configs)
     for name, kind, summary in prompt_servers:
         prompt_console.print(
             f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
+        )
+        source = server_sources.get(name)
+        if source is not None:
+            prompt_console.print(
+                f"    [dim]from {escape(PATHS.display(source))}[/dim]",
+                highlight=False,
+                soft_wrap=True,
+            )
+    # Outside a git repository the project root falls back to the working
+    # directory, so starting from home makes the user config a project
+    # candidate too. Discovery keeps it at project scope on purpose; say why.
+    # A profile configured inside a real repo collides the same way, but there
+    # the project framing is accurate, so the note is limited to the fallback.
+    if project_context.project_root is None and any(
+        is_user_mcp_config_path(server_sources[name])
+        for name, _kind, _summary in prompt_servers
+        if name in server_sources
+    ):
+        prompt_console.print(
+            "  [dim]This is your user MCP config. It is gated as a project "
+            f"config because {escape(PATHS.display(project_root))} is not in a "
+            "git repository; start inside a repository to load it without "
+            "approval.[/dim]",
+            highlight=False,
+            soft_wrap=True,
         )
     prompt_console.print()
 

@@ -2,6 +2,25 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.13](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.12...deepagents-code==0.2.13) (2026-11-20)
+
+### Bug Fixes
+
+- Correctly report unapproved MCP servers disabled via F2 as disabled, and report project MCP servers skipped due to missing approval ([#7908](https://github.com/langchain-ai/deepagents/pull/7908), [#7904](https://github.com/langchain-ai/deepagents/pull/7904)).
+- Show the source file in the project MCP trust prompt ([#7903](https://github.com/langchain-ai/deepagents/pull/7903)).
+
+## [0.2.12](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.11...deepagents-code==0.2.12) (2026-11-20)
+
+### Features
+
+- Added Gemini 4 Neon and GPT-6.2 Astra and Sol to the model picker ([#7861](https://github.com/langchain-ai/deepagents/pull/7861), [#7831](https://github.com/langchain-ai/deepagents/pull/7831)).
+
+### Bug Fixes
+
+- Changed OpenAI `prompt_cache_key` from per-thread to shared across threads within a local profile, improving prompt-cache reuse across sessions ([#7839](https://github.com/langchain-ai/deepagents/pull/7839)).
+- Fixed Auto mode to resolve relative paths consistently with file tools ([#7821](https://github.com/langchain-ai/deepagents/pull/7821)).
+- Fixed PTC tool discovery to read exposed tools rather than the QuickJS prompt cache ([#7848](https://github.com/langchain-ai/deepagents/pull/7848)).
+
 ## [0.2.11](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.10...deepagents-code==0.2.11) (2026-11-18)
 
 ### Bug Fixes

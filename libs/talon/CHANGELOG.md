@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.0...deepagents-talon==0.1.1) (2026-11-19)
+
+### Features
+
+- Ask structured clarifying questions in chat. ([#7607](https://github.com/langchain-ai/deepagents/pull/7607))
+- Inspect and guide background subagents. ([#7609](https://github.com/langchain-ai/deepagents/pull/7609))
+- Enable or disable configured MCP servers, and use skill-scoped MCP tools. ([#7608](https://github.com/langchain-ai/deepagents/pull/7608), [#7280](https://github.com/langchain-ai/deepagents/pull/7280))
+- Add command hooks for the main agent and local subagents. ([#7380](https://github.com/langchain-ai/deepagents/pull/7380), [#7381](https://github.com/langchain-ai/deepagents/pull/7381))
+- Filter conversation history by time window and role. ([#7712](https://github.com/langchain-ai/deepagents/pull/7712))
+- Support DeepSeek reasoning levels. ([#7439](https://github.com/langchain-ai/deepagents/pull/7439))
+- Add a `media-cpu` extra with CPU-only PyTorch on Linux. ([#7596](https://github.com/langchain-ai/deepagents/pull/7596))
+
+### Bug Fixes
+
+- Block precompiled delegation when approvals are enabled, and reject tool approvals without a sender. ([#7604](https://github.com/langchain-ai/deepagents/pull/7604), [#7605](https://github.com/langchain-ai/deepagents/pull/7605))
+- Reject symlinked hook configuration. ([#7603](https://github.com/langchain-ai/deepagents/pull/7603))
+- Erase hook transcripts when deleting conversation history. ([#7382](https://github.com/langchain-ai/deepagents/pull/7382))
+- Prevent shell workarounds for unavailable integrations. ([#7622](https://github.com/langchain-ai/deepagents/pull/7622))
+- Avoid duplicate subagent result delivery, and correctly extract text from subagent and tool-attached task results. ([#7619](https://github.com/langchain-ai/deepagents/pull/7619), [#7645](https://github.com/langchain-ai/deepagents/pull/7645), [#7652](https://github.com/langchain-ai/deepagents/pull/7652))
+- Preserve SDK refusal reporting for tool-attached tasks. ([#7760](https://github.com/langchain-ai/deepagents/pull/7760))
+- Avoid stale WhatsApp Web cache on startup. ([#7631](https://github.com/langchain-ai/deepagents/pull/7631))
+- Preserve gateway provider reasoning controls. ([#7047](https://github.com/langchain-ai/deepagents/pull/7047))
+- Preserve optional MCP arguments when using the Responses API. ([#7530](https://github.com/langchain-ai/deepagents/pull/7530))
+- Provide actionable MCP login errors and summarize stored values in MCP approval prompts. ([#7646](https://github.com/langchain-ai/deepagents/pull/7646), [#7812](https://github.com/langchain-ai/deepagents/pull/7812))
+- Correctly parse comma-separated skills and memory paths. ([#7625](https://github.com/langchain-ai/deepagents/pull/7625))
+- Delegate lengthy investigations earlier and summarize fresh subagent context. ([#7621](https://github.com/langchain-ai/deepagents/pull/7621), [#7676](https://github.com/langchain-ai/deepagents/pull/7676))
+- Download only Transformers files for local speech models. ([#7597](https://github.com/langchain-ai/deepagents/pull/7597))
+- Suppress unchanged `list_subagents` polls. ([#7677](https://github.com/langchain-ai/deepagents/pull/7677))
+- Identify user interruptions in traces. ([#7623](https://github.com/langchain-ai/deepagents/pull/7623))
+
 ## [0.1.0](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.9...deepagents-talon==0.1.0) (2026-10-22)
 
 ### ⚠ BREAKING CHANGES

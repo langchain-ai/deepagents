@@ -5,6 +5,7 @@ import contextvars
 import logging
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -30,6 +31,7 @@ from deepagents_talon.background import (
     _SCHEDULED_TURN,
     _TIMED_OUT_RESULT,
     BackgroundSubagents,
+    _failure_summary,
     _track_consumed_results,
 )
 from deepagents_talon.cron import CronOrigin
@@ -643,7 +645,12 @@ async def test_background_timeout_is_reported_separately_from_failure(monkeypatc
     @tool
     async def task() -> str:
         """Never return."""
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            error = RuntimeError("secret provider message")
+            error.status_code = 402
+            raise error from None
         return "done"
 
     background = BackgroundSubagents()
@@ -865,7 +872,12 @@ async def test_inline_fan_out_queues_beyond_the_slot_limit(monkeypatch):
 
 async def test_inline_timeout_is_reported_separately_from_failure():
     async def handler(_request):
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            error = RuntimeError("secret provider message")
+            error.status_code = 402
+            raise error from None
 
     @tool
     async def task() -> str:
@@ -1325,3 +1337,75 @@ async def test_listing_state_is_isolated_between_concurrent_turns():
     finally:
         release.set()
         await background.cancel()
+
+
+@pytest.mark.parametrize("scheduled", [False, True])
+@pytest.mark.parametrize(
+    ("status", "hint"),
+    [
+        (401, "authentication or permission"),
+        (402, "billing/payment"),
+        (404, "model not found"),
+        (429, "rate limited"),
+        (500, "transient"),
+    ],
+)
+async def test_provider_failure_is_actionable_without_sensitive_data(scheduled, status, hint):
+    @tool
+    async def task(description: str) -> str:
+        """Fail with a provider status."""
+        assert description
+        error = RuntimeError("secret exception message")
+        error.status_code = status
+        raise error
+
+    async def handler(request):
+        return await request.tool.ainvoke(request.tool_call)
+
+    background = BackgroundSubagents()
+    token = _SCHEDULED_TURN.set(scheduled)
+    try:
+        result = await background.awrap_tool_call(
+            _request("chat", task, subagent_type="researcher", description="secret task"), handler
+        )
+        if scheduled:
+            summary = result.content
+            assert result.status == "error"
+        else:
+            await asyncio.gather(*(job.worker for job in background._jobs.values()))
+            (job,) = background._jobs.values()
+            summary = job.result
+        assert f"HTTP {status}" in summary
+        assert hint in summary
+        assert "researcher" in summary
+        assert "secret" not in summary
+        if status == 402:
+            assert "retrying will not help" in summary
+            assert "tell the operator" in summary
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+def test_failure_summary_finds_wrapped_http_response_without_payload(link):
+    response = httpx.Response(
+        402, text="secret response body", request=httpx.Request("GET", "https://example.com/secret")
+    )
+    provider = httpx.HTTPStatusError(
+        "secret exception message", request=response.request, response=response
+    )
+    wrapper = RuntimeError("secret wrapper")
+    setattr(wrapper, link, provider)
+    provider.__context__ = wrapper
+    summary = _failure_summary(wrapper, "researcher")
+    assert "HTTP 402" in summary
+    assert "billing/payment" in summary
+    assert "secret" not in summary
+
+
+@pytest.mark.parametrize("status", ["402", 400])
+def test_failure_summary_keeps_generic_fallback(status):
+    error = RuntimeError("secret exception message")
+    error.status_code = status
+    error.__context__ = error
+    assert _failure_summary(error, "researcher") == _FAILED_RESULT

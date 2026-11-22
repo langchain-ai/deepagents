@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
-from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryMiddleware, MemoryState
+from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryState
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -19,6 +19,7 @@ from deepagents_code.context_doctor import (
     render_context_doctor_report,
 )
 from deepagents_code.tool_catalog import collect_tools_from_agent
+from deepagents_talon.memory import TalonMemoryMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -93,7 +94,7 @@ class ContextDoctor:
         if not self.memory:
             return {}
         state = cast("MemoryState", dict(values))
-        middleware = MemoryMiddleware(backend=self.backend, sources=list(self.memory))
+        middleware = TalonMemoryMiddleware(backend=self.backend, sources=list(self.memory))
         loaded = await middleware.abefore_agent(state, Runtime(), {})
         return (loaded or state).get("memory_contents", {})
 

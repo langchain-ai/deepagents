@@ -63,6 +63,8 @@ def _is_disabled() -> bool:
 
 def _open_tty() -> TextIO | None:
     """Return an open `/dev/tty` handle, or `None` if unavailable."""
+    if sys.platform == "win32":
+        return None
     try:
         return pathlib.Path("/dev/tty").open("w", encoding="utf-8")
     except OSError:

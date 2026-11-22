@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import pathlib
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -75,6 +76,25 @@ class TestWriteTerminalEscape:
         monkeypatch.setattr(terminal_escape, "_is_stream_tty", lambda _stream: False)
         assert write_terminal_escape("\x1b]9;4;0;0\a") is False
 
+    def test_windows_uses_terminal_stderr_without_opening_dev_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class TerminalStderr(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        def unexpected_open(*_args: object, **_kwargs: object) -> None:
+            pytest.fail("Windows must not open /dev/tty")
+
+        stderr = TerminalStderr()
+        monkeypatch.setattr(
+            terminal_escape, "sys", SimpleNamespace(platform="win32", __stderr__=stderr)
+        )
+        monkeypatch.setattr(pathlib.Path, "open", unexpected_open)
+
+        assert write_terminal_escape("\x1b]9;4;0;0\a") is True
+        assert stderr.getvalue() == "\x1b]9;4;0;0\a"
+
     def test_no_op_when_disabled_by_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(terminal_escape.NO_TERMINAL_ESCAPE, "1")
         fake = _FakeTTY()
@@ -110,6 +130,9 @@ class TestWriteTerminalEscape:
             raise OSError(msg)
 
         monkeypatch.setattr(pathlib.Path, "open", _raising_open)
+        monkeypatch.setattr(
+            terminal_escape, "sys", SimpleNamespace(platform="linux", __stderr__=None)
+        )
         monkeypatch.setattr(terminal_escape, "_is_stream_tty", lambda _stream: False)
         assert write_terminal_escape("\x1b]9;4;0;0\a") is False
 

@@ -2512,7 +2512,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         summary="Default model spec ('provider:model') used at launch.",
         kind=OptionKind.STR,
         toml_keys=("models", "default"),
-        cli_flag="--set-default-model",
+        cli_flag="--default-model",
     ),
     ConfigOption(
         key="models.recent",
@@ -3152,7 +3152,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         default=True,
         env_var=_env_vars.AUTO_UPDATE,
         toml_keys=("update", "auto_update"),
-        cli_flag="--set-auto-update",
+        cli_flag="--auto-update",
     ),
     ConfigOption(
         key="update.no_update_check",

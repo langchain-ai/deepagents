@@ -746,8 +746,15 @@ def _windows_git_bash() -> Path | None:
     Returns:
         Path to Git Bash, or `None` if Git for Windows is not installed.
     """
-    git = shutil.which("git")
-    if git is not None:
+    # Windows also searches the current directory, which may be an untrusted
+    # project, so only absolute `PATH` entries are considered.
+    path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if Path(entry).is_absolute()
+    )
+    git = shutil.which("git", path=path)
+    if git is not None and Path(git).is_absolute():
         # `git` may be a shim (e.g. Scoop), so ask it where it is installed.
         try:
             exec_path = subprocess.run(  # noqa: S603  # fixed argv with resolved Git path

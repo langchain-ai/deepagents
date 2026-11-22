@@ -652,7 +652,9 @@ class TestWindowsGitBash:
         bash.parent.mkdir(parents=True)
         bash.touch()
         exec_path = tmp_path / "Git" / "mingw64" / "libexec" / "git-core"
-        monkeypatch.setattr(shutil, "which", lambda _: "git.exe")
+        monkeypatch.setattr(
+            shutil, "which", Mock(return_value=str(tmp_path / "Git" / "cmd" / "git"))
+        )
         monkeypatch.setattr(
             subprocess,
             "run",
@@ -662,17 +664,33 @@ class TestWindowsGitBash:
         assert _windows_git_bash() == bash
 
     def test_no_bash_when_git_is_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(shutil, "which", lambda _: None)
+        monkeypatch.setattr(shutil, "which", Mock(return_value=None))
 
         assert _windows_git_bash() is None
 
-    def test_no_bash_when_git_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(shutil, "which", lambda _: "git.exe")
+    def test_no_bash_when_git_fails(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", Mock(return_value=str(tmp_path / "git")))
         monkeypatch.setattr(
             subprocess, "run", Mock(side_effect=subprocess.TimeoutExpired("git", 5))
         )
 
         assert _windows_git_bash() is None
+
+    def test_never_runs_git_from_the_project(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("PATH", os.pathsep.join([".", "tools", str(tmp_path)]))
+        # Windows searches the current directory before `PATH`.
+        which = Mock(return_value=r".\git.exe")
+        run = Mock()
+        monkeypatch.setattr(shutil, "which", which)
+        monkeypatch.setattr(subprocess, "run", run)
+
+        assert _windows_git_bash() is None
+        assert which.call_args.kwargs["path"] == str(tmp_path)
+        run.assert_not_called()
 
 
 class TestSectionHeader:

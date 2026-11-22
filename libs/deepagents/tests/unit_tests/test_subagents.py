@@ -1839,6 +1839,43 @@ class TestSubAgents:
         task_tool_message = tool_messages[0]
         assert task_tool_message.content == "Plain text result without structured response"
 
+    @pytest.mark.parametrize("preamble", ["", "Checking the order."])
+    def test_returns_result_of_return_direct_subagent_tool(self, preamble: str) -> None:
+        """A terminal tool result is returned to the parent task caller."""
+
+        @tool(return_direct=True)
+        def lookup_order() -> str:
+            """Read the current order status."""
+            return "Order shipped."
+
+        child = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content=preamble, tool_calls=[{"name": "lookup_order", "args": {}, "id": "lookup"}]),
+                ]
+            )
+        )
+        parent = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "task", "args": {"description": "Check order", "subagent_type": "orders"}, "id": "task-call"}],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=parent,
+            subagents=[SubAgent(name="orders", description="Looks up orders", system_prompt="Read order status.", model=child, tools=[lookup_order])],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage("Where is my order?")]})
+
+        task_result = next(msg for msg in result["messages"] if isinstance(msg, ToolMessage) and msg.tool_call_id == "task-call")
+        assert task_result.content == "Order shipped."
+
     def test_fallback_skips_trailing_empty_ai_message(self) -> None:
         """Skip a trailing empty AIMessage and use the last AIMessage with text.
 

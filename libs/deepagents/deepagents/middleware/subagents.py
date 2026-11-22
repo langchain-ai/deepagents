@@ -285,8 +285,9 @@ class CompiledSubAgent(TypedDict):
 
     When the subagent completes, the parent reads the returned state:
     if `structured_response` is non-`None`, it is JSON-serialized and used as
-    the `ToolMessage` content; otherwise, the last non-empty `AIMessage`
-    text is used.
+    the `ToolMessage` content. Otherwise, a successful terminal
+    `ToolMessage` supplies the result when a tool ends the run directly.
+    For other runs, the last non-empty `AIMessage` text is used.
 
     Examples:
         Using `create_agent` with `response_format`:
@@ -847,16 +848,20 @@ def _build_task_tool(  # noqa: C901, PLR0915
             k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys and not _is_unchanged(k, v, inputs)
         }
 
+        content: str | list[str | dict[str, Any]]
+        last_message = result["messages"][-1] if result["messages"] else None
         structured = result.get("structured_response")
         if structured is not None:
             if hasattr(structured, "model_dump_json"):
-                content: str = structured.model_dump_json()
+                content = structured.model_dump_json()
             elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
                 content = json.dumps(dataclasses.asdict(structured))
             else:
                 content = json.dumps(structured)
-        elif refusal := _refusal_in(result["messages"][-1] if result["messages"] else None):
+        elif refusal := _refusal_in(last_message):
             content = _refusal_notice(refusal)
+        elif isinstance(last_message, ToolMessage) and last_message.status == "success":
+            content = last_message.content
         else:
             # Walk back to the last AIMessage with non-empty text. Anthropic
             # occasionally emits a trailing empty `end_turn` AIMessage after a

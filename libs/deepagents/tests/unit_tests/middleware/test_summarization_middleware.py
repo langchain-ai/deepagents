@@ -1015,6 +1015,32 @@ class TestOffloadingBasic:
         expected_section_count = 2  # One existing + one new summarization section
         assert new_string.count("## Summarized at") == expected_section_count
 
+    @pytest.mark.parametrize("mode", ["sync", "async"])
+    @pytest.mark.parametrize("existing", [None, "## Summarized at 2024-01-01T00:00:00Z\n\nEarlier turn\n\n"])
+    async def test_summary_only_eviction_does_not_write_empty_history(self, mode: str, existing: str | None) -> None:
+        """A chained summarization links existing history without adding a section."""
+        backend = MockBackend(existing_content=existing)
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 3),
+            keep=("messages", 2),
+        )
+        messages = make_conversation_messages(num_old=0, num_recent=2, include_previous_summary=True)
+        state = cast("AgentState[Any]", {"messages": messages, "_summarization_session_id": "summary-only"})
+        runtime = make_mock_runtime()
+
+        if mode == "async":
+            _, request = await call_awrap_model_call(middleware, state, runtime)
+        else:
+            _, request = call_wrap_model_call(middleware, state, runtime)
+
+        assert request is not None
+        assert request.messages[0].additional_kwargs.get("lc_source") == "summarization"
+        assert ("/conversation_history/summary-only.md" in request.messages[0].text) == (existing is not None)
+        assert not backend.write_calls
+        assert not backend.edit_calls
+
     def test_typical_tool_heavy_conversation(self) -> None:
         """Test with a realistic tool-heavy conversation pattern.
 

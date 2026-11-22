@@ -1391,16 +1391,13 @@ A condensed summary follows:
             session_id: Id naming the history file.
 
         Returns:
-            The file path where history was offloaded, or `None` on failure.
+            The path to stored history, or `None` if unavailable.
         """
         path = self._get_history_path(session_id)
 
         # Filter out previous summary messages to avoid redundant storage.
         # Base64 images are already converted to path references by the caller.
         filtered_messages = self._filter_summary_messages(messages)
-
-        timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
@@ -1419,6 +1416,11 @@ A condensed summary follows:
                 e,
             )
 
+        if not filtered_messages:
+            return path if existing_content else None
+
+        timestamp = datetime.now(UTC).isoformat()
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
         combined_content = existing_content + new_section
 
         try:
@@ -1468,16 +1470,13 @@ A condensed summary follows:
             session_id: Id naming the history file.
 
         Returns:
-            The file path where history was offloaded, or `None` on failure.
+            The path to stored history, or `None` if unavailable.
         """
         path = self._get_history_path(session_id)
 
         # Filter out previous summary messages to avoid redundant storage.
         # Base64 images are already converted to path references by the caller.
         filtered_messages = self._filter_summary_messages(messages)
-
-        timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns
@@ -1496,6 +1495,11 @@ A condensed summary follows:
                 e,
             )
 
+        if not filtered_messages:
+            return path if existing_content else None
+
+        timestamp = datetime.now(UTC).isoformat()
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
         combined_content = existing_content + new_section
 
         try:
@@ -1712,7 +1716,7 @@ A condensed summary follows:
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
         file_path = self._offload_to_backend(backend, offloaded_media_messages, session_id)
-        if file_path is None:
+        if file_path is None and any(not self._is_summary_message(msg) for msg in offloaded_media_messages):
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
             warnings.warn(msg, stacklevel=2)
@@ -1857,7 +1861,7 @@ A condensed summary follows:
             self._aoffload_to_backend(backend, offloaded_media_messages, session_id),
             self._acreate_summary(offloaded_media_messages),
         )
-        if file_path is None:
+        if file_path is None and any(not self._is_summary_message(msg) for msg in offloaded_media_messages):
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
             warnings.warn(msg, stacklevel=2)

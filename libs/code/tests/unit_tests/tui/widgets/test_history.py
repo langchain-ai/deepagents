@@ -58,6 +58,56 @@ class TestSkillInvocationHistory:
         assert entry == "some regular text"
 
 
+def test_short_sessions_compact_persisted_history(tmp_path: Path) -> None:
+    history_file = tmp_path / "history.jsonl"
+    for i in range(13):
+        HistoryManager(history_file, max_entries=3).add(f"prompt {i}")
+
+    persisted = [json.loads(line) for line in history_file.read_text().splitlines()]
+    assert 3 <= len(persisted) <= 6
+    assert persisted[-3:] == ["prompt 10", "prompt 11", "prompt 12"]
+
+
+def test_compaction_retains_other_sessions_recent_prompts(tmp_path: Path) -> None:
+    history_file = tmp_path / "history.jsonl"
+    first = HistoryManager(history_file, max_entries=3)
+    second = HistoryManager(history_file, max_entries=3)
+    for i in range(6):
+        first.add(f"prompt {i}")
+    second.add("from second session")
+    first.add("from first session")
+
+    assert HistoryManager(history_file, max_entries=3).recent_prompts() == (
+        "from first session",
+        "from second session",
+        "prompt 5",
+    )
+
+
+def test_failed_compaction_preserves_the_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    history_file = tmp_path / "history.jsonl"
+    manager = HistoryManager(history_file, max_entries=2)
+    prompts = ["first", "second", "third", "fourth", "fifth"]
+    for prompt in prompts[:-1]:
+        manager.add(prompt)
+
+    def fail_replace(*_args: object) -> None:
+        raise PermissionError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(history_file), "replace", fail_replace)
+        manager.add(prompts[-1])
+
+    assert manager.history_unwritable
+    assert [
+        json.loads(line) for line in history_file.read_text().splitlines()
+    ] == prompts
+    manager.add("sixth")
+    assert manager.recent_prompts() == ("sixth", "fifth")
+
+
 class TestRecentPrompts:
     """Prompt snapshots refresh, deduplicate, and bound persisted history."""
 

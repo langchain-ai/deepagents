@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+import os
+from collections import deque
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +14,7 @@ logger = logging.getLogger(__name__)
 class HistoryManager:
     """Manages command history with file persistence.
 
-    Uses append-only writes for concurrent safety. Multiple agents can
-    safely write to the same history file without corruption.
+    Sessions share an append log and periodically compact it under a writer lock.
     """
 
     def __init__(self, history_file: Path, max_entries: int = 100) -> None:
@@ -29,6 +27,8 @@ class HistoryManager:
         self.history_file = history_file
         self.max_entries = max_entries
         self._entries: list[str] = []
+        self._disk_version: tuple[int, int] | None = None  # inode and byte length
+        self._disk_count = 0
         self._failed_persist: list[str] = []
         self._read_failed = False
         self._write_failed = False
@@ -37,8 +37,8 @@ class HistoryManager:
         self._query: str = ""
         self._load_history()
 
-    def _read_history(self) -> list[str] | None:
-        """Read all persisted entries, tolerating legacy malformed lines.
+    def _read_history(self, *, limit: int | None = None) -> list[str] | None:
+        """Read persisted entries, decoding only the requested suffix.
 
         Sets `history_unreadable` so callers can tell a file they cannot read
         from one that is simply not there yet. The two are opposite facts to
@@ -54,18 +54,15 @@ class HistoryManager:
 
         try:
             with self.history_file.open("r", encoding="utf-8") as f:
-                entries = []
+                lines: deque[str] = deque(maxlen=limit or None)
+                count = 0
                 for raw_line in f:
                     line = raw_line.rstrip("\n\r")
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        entry = line
-                    entries.append(entry if isinstance(entry, str) else str(entry))
-                self._read_failed = False
-                return entries
+                    if line:
+                        count += 1
+                        lines.append(line)
+                self._disk_version = (os.fstat(f.fileno()).st_ino, f.tell())
+                self._disk_count = count
         except OSError, UnicodeDecodeError:
             logger.warning(
                 "Failed to read history from %s",
@@ -74,6 +71,16 @@ class HistoryManager:
             )
             self._read_failed = True
             return None
+
+        entries = []
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                entry = line
+            entries.append(entry if isinstance(entry, str) else str(entry))
+        self._read_failed = False
+        return entries
 
     @property
     def history_unreadable(self) -> bool:
@@ -99,7 +106,7 @@ class HistoryManager:
 
     def _load_history(self) -> None:
         """Load the bounded navigation history from file."""
-        self._entries = (self._read_history() or [])[-self.max_entries :]
+        self._entries = self._read_history(limit=self.max_entries) or []
 
     def recent_prompts(self) -> tuple[str, ...]:
         """Refresh and return unique prompts in newest-first order.
@@ -152,10 +159,25 @@ class HistoryManager:
         Returns:
             `True` when the entry was persisted, `False` otherwise.
         """
+        from filelock import FileLock
+
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
-            with self.history_file.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(text) + "\n")
+            with FileLock(f"{self.history_file}.lock", timeout=1):
+                with self.history_file.open("a", encoding="utf-8") as f:
+                    before = os.fstat(f.fileno())
+                    f.write(json.dumps(text) + "\n")
+                    end = f.tell()
+                # A peer may have appended or atomically replaced the file.
+                # Only reuse the count if it describes the file we appended to.
+                if (
+                    self._disk_version == (before.st_ino, before.st_size)
+                    and self._disk_count < 2 * self.max_entries
+                ):
+                    self._disk_count += 1
+                    self._disk_version = (before.st_ino, end)
+                elif self.max_entries:
+                    self._compact_history()
         except OSError:
             logger.warning(
                 "Failed to append history entry to %s",
@@ -167,15 +189,24 @@ class HistoryManager:
         return True
 
     def _compact_history(self) -> None:
-        """Rewrite history file to remove old entries.
+        """Refresh the on-disk count and trim an oversized log under the writer lock."""
+        from tempfile import NamedTemporaryFile
 
-        Only called when entries exceed 2x max_entries to minimize rewrites.
-        """
+        entries = self._read_history(limit=self.max_entries)
+        if entries is None or self._disk_count <= 2 * self.max_entries:
+            return
         try:
-            self.history_file.parent.mkdir(parents=True, exist_ok=True)
-            with self.history_file.open("w", encoding="utf-8") as f:
-                for entry in self._entries:
+            with NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.history_file.parent,
+                delete_on_close=False,
+            ) as f:
+                for entry in entries:
                     f.write(json.dumps(entry) + "\n")
+                f.close()
+                Path(f.name).replace(self.history_file)
+            self._disk_version = None
         except OSError:
             logger.warning(
                 "Failed to compact history file %s",
@@ -214,10 +245,8 @@ class HistoryManager:
         if not self._append_to_file(text):
             self._failed_persist.append(text)
 
-        # Compact only when we have 2x max entries (rare operation)
         if len(self._entries) > self.max_entries * 2:
             self._entries = self._entries[-self.max_entries :]
-            self._compact_history()
 
         self.reset_navigation()
 

@@ -38,6 +38,7 @@ from deepagents_code.output_truncation import (
 from deepagents_code.tui.widgets.messages import ErrorMessage
 
 if TYPE_CHECKING:
+    from langchain_anthropic import ChatAnthropic
     from langchain_core.callbacks import CallbackManagerForLLMRun
     from langchain_core.messages import BaseMessage
 
@@ -845,3 +846,139 @@ def test_headless_recovery_defers_to_glm_recovery() -> None:
         )
 
     assert len(remaining) == 1
+
+
+_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+
+
+def _anthropic_model(
+    *, effort_levels: list[str] | None, model_name: str = "claude-haiku-5-5"
+) -> ChatAnthropic:
+    from langchain_anthropic import ChatAnthropic
+    from pydantic import SecretStr
+
+    profile: dict[str, Any] = {"max_output_tokens": 128000}
+    if effort_levels is not None:
+        profile["reasoning_effort_levels"] = effort_levels
+    return ChatAnthropic(
+        model_name=model_name,
+        api_key=SecretStr("test"),
+        max_tokens=128000,
+        profile=profile,
+    )
+
+
+def _anthropic_headless_request(model: BaseChatModel) -> ModelRequest:
+    return ModelRequest(
+        model=model,
+        messages=[HumanMessage(content="run")],
+        tools=[],
+        system_prompt="base prompt",
+        state={"messages": []},
+        runtime=cast("Any", SimpleNamespace(context={"model": None})),
+        model_settings={"effort": "high", "cache_control": {"type": "ephemeral"}},
+    )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_headless_recovery_lowers_reasoning_effort_on_retry(
+    capsys: pytest.CaptureFixture[str], *, asynchronous: bool
+) -> None:
+    """The retry runs at `low` effort; the first attempt keeps its settings."""
+    model = _anthropic_model(effort_levels=_EFFORT_LEVELS)
+    stalled = _response(
+        [{"type": "thinking", "thinking": "Planning...", "signature": "s"}],
+        metadata=_ANTHROPIC_MAX_TOKENS,
+    )
+    recovered = _response(metadata={"stop_reason": "tool_use"}, with_tool_call=True)
+
+    response, seen = await _headless_stack(
+        [stalled, recovered],
+        request=_anthropic_headless_request(model),
+        asynchronous=asynchronous,
+    )
+
+    assert response is recovered
+    assert seen[0].model_settings == {
+        "effort": "high",
+        "cache_control": {"type": "ephemeral"},
+    }
+    # `effort` would win over `reasoning_effort` in `ChatAnthropic`, so it is
+    # dropped; unrelated settings are kept.
+    assert seen[1].model_settings == {
+        "reasoning_effort": "low",
+        "cache_control": {"type": "ephemeral"},
+    }
+    assert "retrying once at reasoning effort 'low'" in capsys.readouterr().err
+
+
+def test_lowered_effort_reaches_the_anthropic_request() -> None:
+    """`ChatAnthropic` sends the retry's call-time effort as `output_config`."""
+    from deepagents_code.output_truncation import _lowered_effort_settings
+
+    model = _anthropic_model(effort_levels=_EFFORT_LEVELS)
+    settings = _lowered_effort_settings(_anthropic_headless_request(model))
+    assert settings is not None
+
+    payload = model._get_request_payload([HumanMessage(content="run")], **settings)
+
+    assert payload["output_config"]["effort"] == "low"
+    assert "reasoning_effort" not in payload
+    assert "effort" not in payload
+
+
+def test_lowered_effort_falls_back_to_the_profile_registry() -> None:
+    """A model built without dcode's profile fallbacks still gets `low` effort.
+
+    The Harbor eval runner builds the model with `init_chat_model`, whose
+    profile has no `reasoning_effort_levels` for Claude Haiku 5.5.
+    """
+    from deepagents_code.output_truncation import _lowered_effort_settings
+
+    model = _anthropic_model(effort_levels=None)
+    settings = _lowered_effort_settings(_anthropic_headless_request(model))
+
+    assert settings == {
+        "reasoning_effort": "low",
+        "cache_control": {"type": "ephemeral"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("model_name", "effort_levels"),
+    [
+        pytest.param("claude-3-haiku-20240307", None, id="no-effort-support"),
+        pytest.param("claude-haiku-5-5", ["medium", "high"], id="no-low-level"),
+    ],
+)
+def test_headless_recovery_keeps_settings_without_low_effort(
+    capsys: pytest.CaptureFixture[str],
+    model_name: str,
+    effort_levels: list[str] | None,
+) -> None:
+    """Models that cannot take `low` effort retry with the instruction only."""
+    model = _anthropic_model(effort_levels=effort_levels, model_name=model_name)
+    request = _anthropic_headless_request(model)
+    stalled = _response([], metadata=_ANTHROPIC_MAX_TOKENS)
+    recovered = _response(metadata={"stop_reason": "tool_use"}, with_tool_call=True)
+    remaining = [stalled, recovered]
+    seen: list[ModelRequest] = []
+
+    def model_call(inner: ModelRequest) -> ModelResponse[Any]:
+        seen.append(inner)
+        return remaining.pop(0)
+
+    assert EmptyTruncatedReplyRecovery().wrap_model_call(request, model_call) is (
+        recovered
+    )
+    assert seen[1].model_settings == request.model_settings
+    err = capsys.readouterr().err
+    assert "retrying once" in err
+    assert "reasoning effort" not in err
+
+
+def test_headless_recovery_keeps_non_anthropic_settings() -> None:
+    """A provider string or non-Anthropic model never gets effort settings."""
+    from deepagents_code.output_truncation import _lowered_effort_settings
+
+    assert _lowered_effort_settings(_headless_request("openai:gpt-6.1-sol")) is None

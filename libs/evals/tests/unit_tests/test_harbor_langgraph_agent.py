@@ -699,6 +699,17 @@ def test_build_model_respects_explicit_use_responses_api(
     assert captured_init == [{"model": "openai:gpt-5", "kwargs": {"use_responses_api": False}}]
 
 
+def test_build_model_sets_kimi_context_window() -> None:
+    model = langgraph_agent._build_model(
+        {
+            "model": "fireworks:accounts/fireworks/models/kimi-k3p1-pro",
+            "model_kwargs": {"api_key": "test"},
+        }
+    )
+
+    assert model.profile["max_input_tokens"] == 1_048_576
+
+
 async def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

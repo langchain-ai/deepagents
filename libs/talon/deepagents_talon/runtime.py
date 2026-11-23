@@ -65,6 +65,11 @@ from deepagents_talon.claude_sessions import (
     enabled as claude_sessions_enabled,
 )
 from deepagents_talon.clock import current_time
+from deepagents_talon.codex_sessions import (
+    SEND_TOOL as CODEX_SEND_TOOL,
+    CodexSessions,
+    enabled as codex_sessions_enabled,
+)
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
@@ -437,8 +442,11 @@ class DeepAgentRuntime:
             max_running=_positive_int_from_env(self.env, MAX_BACKGROUND_TASKS_ENV_KEY)
             or _MAX_RUNNING,
         )
-        self.claude_sessions = (
-            ClaudeSessions(self.background, self.env) if claude_sessions_enabled(self.env) else None
+        self.claude_sessions, self.codex_sessions = (
+            ClaudeSessions(self.background, self.env)
+            if claude_sessions_enabled(self.env)
+            else None,
+            CodexSessions(self.background) if codex_sessions_enabled(self.env) else None,
         )
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)
@@ -718,6 +726,8 @@ class DeepAgentRuntime:
         """
         if self.claude_sessions is not None:
             await self.claude_sessions.close()
+        if self.codex_sessions is not None:
+            await self.codex_sessions.close()
         if not await self.background.cancel():
             msg = "Background subagents did not stop; runtime resources remain open"
             raise RuntimeError(msg)
@@ -1076,6 +1086,8 @@ class DeepAgentRuntime:
             # Reaching another session must never run unreviewed, so no policy file can
             # turn this off: a missing tools.json entry would otherwise mean no prompt.
             policy[SEND_TOOL] = {"allowed_decisions": ["approve", "reject"]}
+        if self.codex_sessions is not None:
+            policy[CODEX_SEND_TOOL] = {"allowed_decisions": ["approve", "reject"]}
         for name, config in policy.items():
             if config:
                 approval: InterruptOnConfig = (
@@ -1140,6 +1152,8 @@ class DeepAgentRuntime:
             tools.extend(cron.as_langchain_tools())
         if self.claude_sessions is not None:
             tools.extend(self.claude_sessions.tools)
+        if self.codex_sessions is not None:
+            tools.extend(self.codex_sessions.tools)
         tools.extend(self.tools if runtime_tools is None else runtime_tools)
         return tools
 

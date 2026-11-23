@@ -1856,6 +1856,39 @@ def _without_dependencies(entries: list[str]) -> list[str]:
     return kept
 
 
+def collapse_dependency_section(changelog_body: str) -> str:
+    """Render the changelog's Dependencies subsection as a collapsed toggle.
+
+    Only the GitHub release body is rendered this way; CHANGELOG.md keeps the
+    plain `### Dependencies` heading. The bullets are copied unchanged, so the
+    release page still says nothing about the package that the file does not.
+    """
+    lines = changelog_body.splitlines()
+    headings = [i for i, line in enumerate(lines) if line.strip() == DEPENDENCIES_HEADING]
+    if not headings:
+        return changelog_body
+    start = headings[0]
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("### ")),
+        len(lines),
+    )
+    entries = [line for line in lines[start + 1 : end] if line.strip()]
+    if not entries:
+        return changelog_body
+    count = sum(1 for line in entries if line.lstrip().startswith(("- ", "* ")))
+    noun = "change" if count == 1 else "changes"
+    toggle = [
+        "<details>",
+        f"<summary>Dependencies ({count} {noun})</summary>",
+        "",
+        *entries,
+        "",
+        "</details>",
+    ]
+    tail = ["", *lines[end:]] if end < len(lines) else []
+    return "\n".join([*lines[:start], *toggle, *tail])
+
+
 def upsert_dependency_section(
     changelog: str, version: str, change_lines: list[str]
 ) -> str | None:
@@ -2081,7 +2114,7 @@ def build_release_notes(
         pkg_name=package,
         version=version,
         changelog_body=_with_section(
-            changelog_body,
+            collapse_dependency_section(changelog_body),
             f"[Full changelog](https://github.com/{repository}/blob/"
             f"{release_sha}/{working_dir}/CHANGELOG.md)",
         ),

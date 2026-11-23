@@ -49,7 +49,11 @@ from deepagents_talon.mcp_config import (
     MCPConfigStore,
     agent_workspace_root,
 )
-from deepagents_talon.mcp_oauth import parse_oauth_config
+from deepagents_talon.mcp_oauth import (
+    MCPOAuthConfigError,
+    parse_oauth_config,
+    require_secret_reference,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
@@ -753,7 +757,25 @@ def _resolve_server_env(
             key: _resolve_string(value, f"{name}.{field}.{key}", env)
             for key, value in values.items()
         }
+    _resolve_client_secret(name, resolved, env)
     return resolved
+
+
+def _resolve_client_secret(name: str, server: dict[str, object], env: Mapping[str, str]) -> None:
+    oauth = server.get("oauth")
+    if not isinstance(oauth, dict) or "client_secret" not in oauth:
+        return
+    try:
+        require_secret_reference(oauth)
+    except MCPOAuthConfigError as exc:
+        msg = f"MCP server {name!r}: {exc}"
+        raise MCPConfigError(msg) from None
+    server["oauth"] = {
+        **oauth,
+        "client_secret": _resolve_string(
+            oauth["client_secret"], f"{name}.oauth.client_secret", env
+        ),
+    }
 
 
 def _resolve_string(value: object, field: str, env: Mapping[str, str]) -> str:

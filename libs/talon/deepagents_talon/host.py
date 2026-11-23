@@ -935,7 +935,7 @@ class TalonHost:
                 )
                 return
             recovery_degraded = outcome is _CancelOutcome.DEGRADED
-        if isinstance(self.agent, BackgroundRuntime):
+        if isinstance(self.agent, BackgroundRuntime) and route.metadata.get("trigger") != "goal":
             self._background_routes[conversation_id] = route
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation

@@ -1822,7 +1822,17 @@ def build_dependency_section(
     if old is None or new is None:
         return ""
     lines = _dependency_change_lines(old, new)
-    return "### Dependencies\n\n" + "\n".join(lines) if lines else ""
+    if not lines:
+        return ""
+    # Collapsed like the Git log: the list can run long on a release that
+    # carries several floor raises, and it is reference detail, not the notes.
+    noun = "change" if len(lines) == 1 else "changes"
+    return (
+        "<details>\n"
+        f"<summary>Dependencies ({len(lines)} {noun})</summary>\n\n"
+        + "\n".join(lines)
+        + "\n\n</details>"
+    )
 
 
 # ── Main entry point ────────────────────────────────────────────────────────

@@ -163,7 +163,7 @@ A few rules of thumb for picking a type that respects what *should* end up in us
 
 - A change is **release-note-worthy** if a downstream user could observe it: new API, changed behavior, fixed bug, perceptible perf delta. Use `feat`, `fix`, or `perf`.
 - Internal-only work (refactors, test-only changes, CI tweaks, dependency bumps with no behavior change, comment/docstring updates) belongs in a hidden type. These still trigger a release PR rebase if one is open, but never appear in the changelog.
-- For dependency changes, the type decides *when* the change ships, not *whether* it's listed. The GitHub release body gets a **Dependencies** section listing every `requires-python`, `[project.dependencies]`, and `[project.optional-dependencies]` change since the previous tag, diffed from `pyproject.toml`, whatever type the commit had. So ask one question: do users need this on PyPI now?
+- For dependency changes, the type decides *when* the change ships, not *whether* it's listed. The GitHub release body gets a collapsible **Dependencies** block listing every `requires-python`, `[project.dependencies]`, and `[project.optional-dependencies]` change since the previous tag, diffed from `pyproject.toml`, whatever type the commit had. So ask one question: do users need this on PyPI now?
   - **Yes: use `fix(<pkg>)`.** Merging opens a release PR for that package. Examples: lifting a cap that blocks installing a new `langchain-core` major, raising a floor because the code now calls an API only the newer version has, or a security fix.
   - **No: use `chore`.** The change sits on `main` and ships with the package's next release, whenever someone merges a `feat` or `fix` there. Example: the routine floor raises `raise_langchain_minimums.yml` opens.
   - When a `fix` PR makes the dependency change itself, the change shows up twice, and each entry says something different: the **Bug Fixes** entry says why, and **Dependencies** shows the range.
@@ -310,7 +310,7 @@ The [release workflow (`.github/workflows/release.yml`)](https://github.com/lang
 
 1. **Setup** - Resolves package name to working directory
 2. **Build** - Creates distribution package
-3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts the changelog, lists runtime dependency range changes since the previous tag under **Dependencies**, appends a collapsible package-scoped Git log (newest commit first, up to 100 commits, truncated further if the log grows large), collects contributor shoutouts, and adds a **Special thanks** section crediting the users who filed the issues the release's PRs closed; pre-release checks run tests against the built package
+3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts the changelog, lists runtime dependency range changes since the previous tag in a collapsible **Dependencies** block, appends a collapsible package-scoped Git log (newest commit first, up to 100 commits, truncated further if the log grows large), collects contributor shoutouts, and adds a **Special thanks** section crediting the users who filed the issues the release's PRs closed; pre-release checks run tests against the built package
 4. **Test PyPI** - Publishes to test.pypi.org for validation (after pre-release checks pass)
 5. **Publish** - Publishes to PyPI (requires Test PyPI to succeed)
 6. **Mark Release** - Creates a published GitHub release with the built artifacts; updates PR labels. For the SDK (`libs/deepagents`), we set it as the repository's `latest` (unless it's a pre-release).

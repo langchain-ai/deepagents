@@ -3867,7 +3867,8 @@ class TestDependencySection:
         head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
         body, _ = _build(tmp_path, head)
 
-        section = body.split("### Dependencies\n\n", 1)[1].split("\n\n", 1)[0]
+        section = body.split("<summary>Dependencies (6 changes)</summary>\n\n", 1)[1]
+        section = section.split("\n\n</details>", 1)[0]
         assert section.splitlines() == [
             "- Python: `>=3.11` → `>=3.12`",
             "- Added `added-dep[extra]` `>=0.5`",
@@ -3895,9 +3896,9 @@ class TestDependencySection:
 
         assert (
             body.index("* fix something")
-            < body.index("### Dependencies")
+            < body.index("<summary>Dependencies")
             < body.index("[Full changelog]")
-            < body.index("<details>")
+            < body.index("<summary>Git log")
         )
 
     def test_omitted_when_nothing_changed(self, tmp_path: Path) -> None:
@@ -3905,7 +3906,7 @@ class TestDependencySection:
         head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, unchanged)
         body, warnings = _build(tmp_path, head)
 
-        assert "### Dependencies" not in body
+        assert "<summary>Dependencies" not in body
         assert not any("pyproject.toml" in w for w in warnings), warnings
 
     def test_omitted_for_initial_release(self, tmp_path: Path) -> None:
@@ -3915,15 +3916,15 @@ class TestDependencySection:
         )
         body, warnings = _build(tmp_path, head)
 
-        assert "### Dependencies" not in body
+        assert "<summary>Dependencies" not in body
         assert not any("pyproject.toml" in w for w in warnings), warnings
 
     def test_unreadable_manifest_warns_instead_of_failing(self, tmp_path: Path) -> None:
         head = _release_with_manifests(tmp_path, None, _NEW_PYPROJECT)
         body, warnings = _build(tmp_path, head)
 
-        assert "### Dependencies" not in body
-        assert "<details>" in body
+        assert "<summary>Dependencies" not in body
+        assert "<summary>Git log" in body
         assert any(
             "pyproject.toml at example==1.0.0" in w and "omitted" in w
             for w in warnings
@@ -3933,7 +3934,7 @@ class TestDependencySection:
         head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, "[project\n")
         body, warnings = _build(tmp_path, head)
 
-        assert "### Dependencies" not in body
+        assert "<summary>Dependencies" not in body
         assert any("Could not parse" in w for w in warnings), warnings
 
 

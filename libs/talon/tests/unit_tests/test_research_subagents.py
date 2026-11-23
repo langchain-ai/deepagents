@@ -7,7 +7,7 @@ from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents.backends import StateBackend
+from deepagents.backends import FilesystemBackend, StateBackend
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -1019,3 +1019,85 @@ async def test_transcript_reads_compact_fresh_subagent_history(
         assert list((tmp_path / "artifacts").rglob("*.md"))
     finally:
         await runtime.stop()
+
+
+@pytest.mark.parametrize("storage", ["fallback", "state", "filesystem"])
+async def test_fresh_subagent_offloads_large_tool_results(tmp_path, storage) -> None:
+    backend = (
+        FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        if storage == "filesystem"
+        else StateBackend()
+    )
+    content = "first line\n" + "evidence\n" * 11_110 + "last line"
+    recovered = []
+
+    @tool
+    def lookup() -> str:
+        """Retrieve research evidence."""
+        return content
+
+    @tool
+    def verify_saved() -> str:
+        """Read the archived research evidence."""
+        listing = backend.ls("/large_tool_results/")
+        assert listing.entries
+        path = listing.entries[0]["path"]
+        downloaded = backend.download_files([path])[0]
+        recovered.append((path, downloaded.content.decode()))
+        return "Archive verified"
+
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("lookup")]),
+            AIMessage(content="", tool_calls=[_call("verify_saved")]),
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [lookup, verify_saved]}],
+        model,
+        None,
+        backend=None if storage == "fallback" else backend,
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    assert result["messages"][-1].content == "Reviewed"
+    path, saved = recovered[0]
+    assert saved == content
+    for messages in model._seen[1:]:
+        preview = next(
+            message.content
+            for message in messages
+            if isinstance(message, ToolMessage) and message.name == "lookup"
+        )
+        assert path in preview
+        assert "first line" in preview
+        assert "last line" in preview
+        assert "offset" in preview
+        assert "limit" in preview
+        assert len(preview) < 10_000
+        assert content not in str(messages)
+    assert all(names == ["lookup", "verify_saved"] for names in model._tools)
+
+
+@pytest.mark.parametrize(
+    ("name", "size"), [("lookup", 79_999), ("lookup", 80_000), ("read_file", 100_000)]
+)
+async def test_fresh_subagent_retains_small_and_excluded_results(name, size) -> None:
+    content = "x" * size
+    lookup = StructuredTool.from_function(lambda: content, name=name, description="Read evidence")
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call(name)]),
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [lookup]}], model, None
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    message = next(item for item in model._seen[-1] if isinstance(item, ToolMessage))
+    assert message.content == content
+    assert not result.get("files")
+    assert all(names == [name] for names in model._tools)

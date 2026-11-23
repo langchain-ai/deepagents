@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from deepagents.backends import StateBackend
-from deepagents.middleware.filesystem import FilesystemState
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemState
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents import create_agent
@@ -261,6 +261,21 @@ def _task_only(state: dict[str, object]) -> dict[str, object]:
     return {"messages": state["messages"]}
 
 
+class _ToolResultEvictionMiddleware(AgentMiddleware):
+    """Reuse filesystem result eviction without attaching filesystem tools or prompts."""
+
+    def __init__(self, backend: BackendProtocol) -> None:
+        self._filesystem = FilesystemMiddleware(backend=backend)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Offload oversized results using the SDK threshold and excluded tools."""
+        return await self._filesystem.awrap_tool_call(request, handler)
+
+
 def _compile_fresh(
     spec: LocalSubAgent,
     model: str | BaseChatModel,
@@ -293,16 +308,22 @@ def _compile_fresh(
         effective_model = spec.get("model", model)
         if isinstance(effective_model, str):
             effective_model = init_chat_model(effective_model)
+        storage = backend if backend is not None else StateBackend()
         summarization = create_summarization_middleware(
             effective_model,
-            backend if backend is not None else StateBackend(),
+            storage,
             trim_tokens_to_summarize=_summary_trim_limit(effective_model),
         )
         graph = create_agent(
             model=effective_model,
             tools=spec.get("tools", []),
             system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
-            middleware=[summarization, *middleware, *hook_middleware],
+            middleware=[
+                summarization,
+                _ToolResultEvictionMiddleware(storage),
+                *middleware,
+                *hook_middleware,
+            ],
             state_schema=FilesystemState,
             checkpointer=InMemorySaver() if hooks else False,
         )

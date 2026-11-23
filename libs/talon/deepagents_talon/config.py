@@ -165,6 +165,11 @@ class TalonConfig:
         return self.home / "cron"
 
     @property
+    def goal_dir(self) -> Path:
+        """Location of the previous goal ledger, when upgrading an existing assistant."""
+        return self.home / "goals"
+
+    @property
     def channel_dir(self) -> Path:
         """Directory reserved for channel session state."""
         return self.home / "channels"

@@ -36,6 +36,7 @@ from mcp.types import (
 from deepagents_talon import mcp
 from deepagents_talon.authorization import current_authorization_invocation
 from deepagents_talon.config import TalonConfig
+from deepagents_talon.goals.scope import is_read_only
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
 from deepagents_talon.runtime import DeepAgentRuntime
@@ -538,3 +539,32 @@ async def test_stdio_processes_exit_after_discovery_and_invocation(tmp_path: Pat
                 os.kill(int(pidfile.read_text()), 0)
     finally:
         await mcp.FastMCPClient(transport).close()
+
+
+@pytest.mark.parametrize("official", [False, True])
+async def test_unannotated_langsmith_reads_require_official_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, official: bool
+) -> None:
+    server = FastMCP("langsmith")
+
+    @server.tool
+    def fetch_runs() -> str:
+        return "runs"
+
+    @server.tool
+    def create_run() -> str:
+        return "created"
+
+    async def connection(*_args: object) -> tuple[FastMCPTransport, str]:
+        return FastMCPTransport(server), "streamable_http"
+
+    url = "https://api.smith.langchain.com/mcp" if official else "https://example.org/mcp"
+    path = tmp_path / "mcp.json"
+    path.write_text(json.dumps({"mcpServers": {"langsmith": {"url": url}}}))
+    monkeypatch.setattr(mcp, "_connection", connection)
+    config = TalonConfig.from_env({"DEEPAGENTS_TALON_MCP_CONFIG": str(path)}, base_home=tmp_path)
+    loaded = await mcp.load_mcp_tools(config)
+    assert {t.name: is_read_only(t) for t in loaded.tools} == {
+        "langsmith_fetch_runs": official,
+        "langsmith_create_run": False,
+    }

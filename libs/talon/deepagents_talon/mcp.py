@@ -435,9 +435,12 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 tool.metadata = {
                     **(tool.metadata or {}),
                     "_deepagents_talon_mcp": True,
-                    "_deepagents_talon_known_read": known_read,
                     **({"_deepagents_talon_skill_only": True} if server.get("skillOnly") else {}),
                 }
+                if known_read:
+                    tool.metadata["_deepagents_talon_known_read"] = True
+                else:
+                    tool.metadata.pop("_deepagents_talon_known_read", None)
             loaded = list(_filter_tools(name, server, loaded))
         except (
             ExceptionGroup,

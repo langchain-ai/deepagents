@@ -14,7 +14,7 @@ import tempfile
 import threading
 import uuid
 import weakref
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
@@ -178,6 +178,7 @@ class CronJobDict(TypedDict):
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
     goal_id: NotRequired[str | None]
+    goal_sources: NotRequired[list[str]]
 
 
 class CronJobWireDict(TypedDict):
@@ -683,8 +684,8 @@ class CronJob:
         deliver_to: Where results post when the origin is a channel thread:
             `channel` posts to the parent channel, `thread` replies in the thread.
         skills: Skill names whose full instructions load into each run.
-        goal_id: Goal that owns this job, or `None` for an ordinary job. A
-            goal-owned job fires the goal controller instead of a model turn.
+        goal_id: Continuing goal run in its owner's chat, or `None` for an ordinary job.
+        goal_sources: Read boundaries inherited from a previously confirmed charter.
     """
 
     id: str
@@ -705,6 +706,7 @@ class CronJob:
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
     goal_id: str | None = None
+    goal_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -757,6 +759,7 @@ class CronJob:
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
             "goal_id": self.goal_id,
+            **({"goal_sources": list(self.goal_sources)} if self.goal_sources is not None else {}),
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -832,6 +835,9 @@ class CronJob:
             skills=pinned_skills(_list_field(record, "skills")),
             # Jobs saved before this field existed belong to no goal.
             goal_id=_optional_str_field(record, "goal_id"),
+            goal_sources=tuple(_string_list(record, "goal_sources"))
+            if "goal_sources" in record
+            else None,
         )
 
 
@@ -885,6 +891,7 @@ class CronJobStore:
         deliver_to: DeliverTo = "channel",
         skills: Sequence[str] = (),
         goal_id: str | None = None,
+        continuing: bool = False,
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -899,6 +906,7 @@ class CronJobStore:
             deliver_to: Whether a thread origin's results post to its channel or thread.
             skills: Skill names to pin to each run; see `pinned_skills`.
             goal_id: Goal that owns the job, if any.
+            continuing: Create a recurring goal owned by the sender of the originating message.
             now: Creation time override for deterministic tests.
 
         Returns:
@@ -918,8 +926,14 @@ class CronJobStore:
             until = None if until is None else _coerce_utc(until)
             next_run_at = _first_run_at(schedule, current)
             _check_until(schedule, next_run_at, until)
+            job_id = uuid.uuid4().hex[:12]
+            if continuing and (
+                schedule.kind != "recurring" or not origin.sender_id or not origin.channel
+            ):
+                msg = "Goals need a recurring schedule, channel and identified sender."
+                raise CronJobError(msg)
             job = CronJob(
-                id=uuid.uuid4().hex[:12],
+                id=job_id,
                 assistant_id=self.assistant_id,
                 name=name,
                 prompt=prompt,
@@ -935,11 +949,28 @@ class CronJobStore:
                 until=until,
                 deliver_to=deliver_to,
                 skills=pinned,
-                goal_id=goal_id,
+                goal_id=job_id if continuing else goal_id,
             )
             jobs = [*self.list_jobs(), job]
             self._write_jobs(jobs)
             return job
+
+    def import_goal_ledger(self, directory: Path) -> None:
+        """Archive the old ledger only after all converted jobs have been saved."""
+        path = directory / "ledger.json"
+        with self._lock:
+            if not path.exists():
+                return
+            from deepagents_talon.goals.legacy import import_goals  # noqa: PLC0415  # Upgrade only.
+
+            jobs = (
+                _decode_store(self.path.read_bytes(), path=self.path) if self.path.exists() else []
+            )
+            if jobs is None:
+                msg = "Cannot import goals into an unreadable job store."
+                raise CronJobError(msg)
+            self._write_jobs(import_goals(path.read_bytes(), jobs, self.assistant_id))
+            path.replace(directory / "ledger.imported.json")
 
     def list_jobs(self, *, origin: CronOrigin | None = None) -> list[CronJob]:
         """List jobs, optionally scoped to an origin conversation.
@@ -953,7 +984,7 @@ class CronJobStore:
         jobs = self._read_jobs()
         if origin is None:
             return jobs
-        return [job for job in jobs if _same_origin_scope(job.origin, origin)]
+        return [job for job in jobs if _in_scope(job, origin)]
 
     def due_jobs(self, *, now: datetime | None = None) -> list[CronJob]:
         """Return enabled jobs due at or before `now`.
@@ -1035,7 +1066,7 @@ class CronJobStore:
             current = _coerce_utc(now)
             result: list[CronJob] = []
             for job in jobs:
-                if job.id != job_id or not _same_origin_scope(job.origin, origin):
+                if job.id != job_id or not _in_scope(job, origin):
                     result.append(job)
                     continue
                 next_run_at = (
@@ -1088,7 +1119,7 @@ class CronJobStore:
             removed: CronJob | None = None
             result: list[CronJob] = []
             for job in jobs:
-                if job.id == job_id and _same_origin_scope(job.origin, origin):
+                if job.id == job_id and _in_scope(job, origin):
                     removed = job
                     continue
                 result.append(job)
@@ -1301,7 +1332,7 @@ class CronJobStore:
             logger.warning("Could not read cron store %s", self.path, exc_info=True)
             return [], None
         identity = (info.st_mtime_ns, info.st_size, info.st_ino)
-        return _decode_store(raw, path=self.path), identity
+        return _decode_store(raw, path=self.path) or [], identity
 
     def _write_jobs(self, jobs: list[CronJob]) -> None:
         self._ensure_store()
@@ -1651,8 +1682,24 @@ def _positive_int(value: str) -> int:
     return number
 
 
-def _same_origin_scope(left: CronOrigin, right: CronOrigin) -> bool:
-    return left.channel == right.channel and _origin_scope(left) == _origin_scope(right)
+def _in_scope(job: CronJob, origin: CronOrigin) -> bool:
+    if job.origin.channel != origin.channel:
+        return False
+    if job.goal_id is not None:
+        return bool(
+            origin.sender_id
+            and job.origin.sender_id == origin.sender_id
+            and job.origin.conversation_id == origin.conversation_id
+        )
+    return _origin_scope(job.origin) == _origin_scope(origin)
+
+
+def _string_list(record: _Record, key: str) -> list[str]:
+    values = _list_field(record, key)
+    if not all(isinstance(value, str) for value in values):
+        msg = f"Expected strings in {key}."
+        raise CronJobError(msg)
+    return cast("list[str]", values)
 
 
 def _origin_scope(origin: CronOrigin) -> str:
@@ -1711,34 +1758,28 @@ def _format_time(value: datetime) -> str:
     return _coerce_utc(value).isoformat()
 
 
-def _decode_store(raw: bytes, *, path: Path) -> list[CronJob]:
-    """Decode the store file, treating anything unreadable as an empty store.
-
-    A malformed file must not raise: `_read_jobs` sits under the scheduler's
-    tick loop, which has no exception handler, so a throw here would silently
-    kill the ticker for the life of the process. Returning empty degrades to
-    "no jobs scheduled" and lets the next write heal the file, at the cost of
-    dropping whatever could not be read -- hence the loud log.
+def _decode_store(raw: bytes, *, path: Path) -> list[CronJob] | None:
+    """Decode the store file, distinguishing an unreadable store from an empty one.
 
     Args:
         raw: File contents.
         path: Store path, for diagnostics.
 
     Returns:
-        Parsed jobs, or an empty list if the file cannot be read.
+        Parsed jobs, or None if the file cannot be read.
     """
     try:
         data = json.loads(raw)
     except ValueError:
         logger.warning("Discarding cron store %s: not valid JSON", path, exc_info=True)
-        return []
+        return None
     if not isinstance(data, dict):
         logger.warning(
             "Discarding cron store %s: expected a JSON object, found %s",
             path,
             type(data).__name__,
         )
-        return []
+        return None
     version = data.get("version")
     if version != CRON_STORE_VERSION:
         logger.warning(
@@ -1747,7 +1788,7 @@ def _decode_store(raw: bytes, *, path: Path) -> list[CronJob]:
             version,
             CRON_STORE_VERSION,
         )
-        return []
+        return None
     jobs = data.get("jobs")
     if not isinstance(jobs, list):
         logger.warning(
@@ -1755,12 +1796,12 @@ def _decode_store(raw: bytes, *, path: Path) -> list[CronJob]:
             path,
             type(jobs).__name__,
         )
-        return []
+        return None
     try:
         return [CronJob.from_dict(item) for item in jobs]
     except CronJobError:
         logger.exception("Discarding cron store %s: a job record is malformed", path)
-        return []
+        return None
 
 
 _MISSING = object()

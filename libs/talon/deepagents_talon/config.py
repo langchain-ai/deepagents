@@ -128,7 +128,6 @@ class TalonConfig:
             self.manifest_dir,
             self.agents_dir,
             self.cron_dir,
-            self.goal_dir,
             self.channel_dir,
             self.inbound_media_dir,
         ):
@@ -167,7 +166,7 @@ class TalonConfig:
 
     @property
     def goal_dir(self) -> Path:
-        """Directory reserved for the private goal ledger."""
+        """Location of the previous goal ledger, when upgrading an existing assistant."""
         return self.home / "goals"
 
     @property

@@ -34,7 +34,7 @@ FILE_READ_TOOLS: Mapping[str, str] = {
 }
 """Filesystem read tools and the argument that names the path they read."""
 
-ALWAYS_ALLOWED = frozenset({"current_time"})
+ALWAYS_ALLOWED = frozenset({"current_time", "ask_user"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,13 +44,15 @@ class ReadScope:
     Args:
         tools: Tool names the owner named; each must also have a known read-only contract.
         paths: Absolute directories the filesystem read tools may address.
+        job_id: Job this goal may update or finish.
     """
 
     tools: frozenset[str] = frozenset()
     paths: tuple[str, ...] = ()
+    job_id: str | None = None
 
     @classmethod
-    def from_sources(cls, sources: Iterable[str]) -> ReadScope:
+    def from_sources(cls, sources: Iterable[str], *, job_id: str | None = None) -> ReadScope:
         """Derive the enforceable scope from charter source entries.
 
         `tool:<name>` names a tool and `path:<absolute dir>` names a directory.
@@ -58,6 +60,7 @@ class ReadScope:
 
         Args:
             sources: Confirmed charter sources.
+            job_id: The goal job whose progress this turn may update.
 
         Returns:
             The read scope.
@@ -68,33 +71,8 @@ class ReadScope:
             for s in sources
             if s.startswith(PATH_PREFIX) and s.removeprefix(PATH_PREFIX).strip().startswith("/")
         ]
-        return cls(tools=frozenset(filter(None, tools)), paths=tuple(dict.fromkeys(paths)))
-
-    def to_metadata(self) -> dict[str, list[str]]:
-        """Serialize for agent request metadata."""
-        return {"tools": sorted(self.tools), "paths": list(self.paths)}
-
-    @classmethod
-    def from_metadata(cls, value: object) -> ReadScope | None:
-        """Parse request metadata; malformed values yield the empty scope.
-
-        Args:
-            value: Value of the `goal_read_scope` metadata key.
-
-        Returns:
-            The scope, or `None` when the key was absent.
-        """
-        if value is None:
-            return None
-        if not isinstance(value, Mapping):
-            return cls()
-        tools = value.get("tools")
-        paths = value.get("paths")
-        return cls.from_sources(
-            [
-                *(f"{TOOL_PREFIX}{t}" for t in _strings(tools)),
-                *(f"{PATH_PREFIX}{p}" for p in _strings(paths)),
-            ]
+        return cls(
+            tools=frozenset(filter(None, tools)), paths=tuple(dict.fromkeys(paths)), job_id=job_id
         )
 
     def allows_tool(self, tool: object) -> bool:
@@ -102,6 +80,8 @@ class ReadScope:
         name = getattr(tool, "name", None)
         if not isinstance(tool, BaseTool) or not isinstance(name, str):
             return False
+        if name in {"edit_job", "remove_job"}:
+            return self.job_id is not None
         if name in ALWAYS_ALLOWED or (name in FILE_READ_TOOLS and self.paths):
             return True
         return name in self.tools and is_read_only(tool)
@@ -111,6 +91,8 @@ class ReadScope:
         if not self.allows_tool(tool):
             return False
         name = getattr(tool, "name", "")
+        if name in {"edit_job", "remove_job"}:
+            return args.get("job_id") == self.job_id
         argument = FILE_READ_TOOLS.get(name)
         if argument is None:
             return True
@@ -208,7 +190,7 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
     if missing:
         msg = f"Goal check blocked by unavailable read tools: {', '.join(sorted(missing))}"
         raise GoalToolsUnavailableError(msg)
-    return request.override(tools=allowed)
+    return request.override(tools=[*allowed])
 
 
 def _refusal(request: ToolCallRequest) -> ToolMessage | None:
@@ -226,7 +208,3 @@ def _refusal(request: ToolCallRequest) -> ToolMessage | None:
 
 def _safe_pattern(pattern: object) -> bool:
     return not isinstance(pattern, str) or (not pattern.startswith("/") and ".." not in pattern)
-
-
-def _strings(value: object) -> list[str]:
-    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []

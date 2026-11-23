@@ -108,7 +108,7 @@ _INSTRUCTIONS = (
 # model told the result arrives later ends its turn without one, and a scheduled turn that
 # says nothing is suppressed rather than delivered.
 _SCHEDULED_INSTRUCTIONS = (
-    "This is a scheduled run with nobody to talk to while it works. The task and "
+    "This is a scheduled run. The task and "
     "start_async_task tools run a subagent to completion and return its result to you "
     "directly, so act on that result in this same turn -- no later turn will."
 )

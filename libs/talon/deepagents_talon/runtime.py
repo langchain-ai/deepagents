@@ -64,9 +64,6 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
-from deepagents_talon.goals import GoalController, GoalLedger, GoalRequest, GoalScope
-from deepagents_talon.goals.controller import list_owned_goals
-from deepagents_talon.goals.errors import GoalLedgerError
 from deepagents_talon.goals.scope import GOAL_READ_SCOPE, GoalScopeMiddleware, ReadScope
 from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
@@ -330,7 +327,7 @@ class DeepAgentRuntime:
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
             are scoped to the current request origin and exposed to the agent.
-        goal_dir: Optional goal ledger directory for conversation-scoped goal lookup.
+        goal_dir: Directory of a previous goal ledger to import into the cron store.
         backend: Filesystem/execution backend. Defaults to local shell execution.
         skills: Optional explicit skill source paths. When omitted, sources are
             loaded from `assistant_dir/skills` and skill directory environment vars.
@@ -405,8 +402,8 @@ class DeepAgentRuntime:
         self.load_subagents = load_subagents
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
-        self.goal_ledger = GoalLedger(goal_dir=goal_dir) if goal_dir is not None else None
         self.cron_store = cron_store
+        self._legacy_goal_dir = goal_dir
         self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
         self.sandbox_working_dir = sandbox_working_dir
@@ -454,6 +451,11 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
+        if self.cron_store is not None and self._legacy_goal_dir is not None:
+            try:
+                await asyncio.to_thread(self.cron_store.import_goal_ledger, self._legacy_goal_dir)
+            except OSError, ValueError:
+                logger.exception("Could not import legacy goals at startup")
         self._resolved_subagents = self._resolve_subagents()
         snapshot = self.approval_store.ensure()
         self._graph = self._create_graph(approvals=snapshot)
@@ -512,7 +514,7 @@ class DeepAgentRuntime:
         resolved, attachments = prepare_subagents(
             resolved, model, interrupt_on, backend=self.backend
         )
-        tools.extend(self._main_agent_tools(attachments))
+        tools.append(self._attachment_tool(attachments))
         # The summarizer replacement lands in the Deep Agents summarizer's slot; the
         # selection middleware still swaps the model for everything after it.
         middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -839,7 +841,7 @@ class DeepAgentRuntime:
             policy_token = ACTIVE_APPROVALS.set(snapshot)
         operator_token = APPROVAL_OPERATOR.set(
             request.metadata.get("tool_approval_operator") is True
-            and request.metadata.get("trigger") != "cron"
+            and request.metadata.get("trigger") not in {"cron", "goal"}
             and request.metadata.get("background_delivery") is not True
         )
         pending = self.background.results(request.conversation_id)
@@ -851,7 +853,7 @@ class DeepAgentRuntime:
         # Covers a job's own run and any later turn on its thread, both of which carry the
         # same scheduled metadata. A chat delivery turn is excluded: it has a user waiting,
         # so its delegations keep detaching.
-        scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
+        scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") in {"cron", "goal"})
         authorization_token = set_authorization_handler(request.authorization_handler)
         breakout_token = BREAKOUT_HANDLER.set(request.breakout_handler)
         hooks_token = self._hooks.set(None)
@@ -984,13 +986,6 @@ class DeepAgentRuntime:
             self._resolved_subagents = replacement
             self._graph = graph
 
-    def _main_agent_tools(self, attachments: list[Attachment]) -> list[BaseTool]:
-        tools = [self._attachment_tool(attachments)]
-        if self.goal_ledger is not None and self.cron_store is not None:
-            controller = GoalController(ledger=self.goal_ledger, store=self.cron_store)
-            tools.append(_update_goal_tool(controller))
-        return tools
-
     def _attachment_tool(self, attachments: list[Attachment]) -> BaseTool:
         @tool
         async def get_agent_tools() -> dict[str, object]:
@@ -1092,8 +1087,6 @@ class DeepAgentRuntime:
                 )
                 approval["when"] = hook_approval_required
                 policy[name] = approval
-        if self.goal_ledger is not None and self.cron_store is not None:
-            policy["update_goal"] = {"allowed_decisions": ["approve", "reject"]}
         return policy
 
     def _help_tool(self, spec: str) -> BaseTool:
@@ -1144,8 +1137,6 @@ class DeepAgentRuntime:
             tools.append(_delete_conversations_tool(self.checkpointer))
         if self.assistant_dir is not None or self.load_subagents is not None:
             tools.append(self._subagent_reload_tool())
-        if self.goal_ledger is not None:
-            tools.append(_list_goals_tool(self.goal_ledger))
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
@@ -1162,7 +1153,7 @@ class DeepAgentRuntime:
             request,
             activity,
             source="internal"
-            if request.metadata.get("trigger") == "cron"
+            if request.metadata.get("trigger") in {"cron", "goal"}
             or request.metadata.get("background_delivery")
             else "user",
             pinned_skills=_request_pinned_skills(request),
@@ -1437,6 +1428,15 @@ class DeepAgentRuntime:
             ),
         }[self.verbosity]
         parts = [prompt, progress]
+        if self.cron_store is not None:
+            parts.append(
+                "When the user gives you a continuing goal, use create_goal and start working "
+                "in this turn. Use list_jobs to find an existing goal before creating another. "
+                "Use edit_job to record progress, change the plan or pause it, and remove_job "
+                "when the goal is complete or the user asks you to stop it. Use ask_user for "
+                "a decision or approval of a proposed plan, then continue with the answer. "
+                "A gated tool will request its own approval. Handle one-off requests directly."
+            )
         if self.sandbox_working_dir is not None:
             parts.append(_SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir))
         return "\n\n".join(part for part in parts if part)
@@ -1864,54 +1864,6 @@ def _is_openai_model(model: str) -> bool:
     return model.startswith("openai:")
 
 
-def _list_goals_tool(ledger: GoalLedger) -> BaseTool:
-    @tool
-    def list_goals(goal_id: str | None = None) -> str:
-        """List the user's open goals in this chat, or inspect one goal's current charter by ID."""
-        origin = _current_cron_origin()
-        if not origin.sender_id:
-            return "Goal lookup requires an identified sender."
-        scope = GoalScope(
-            conversation_id=origin.conversation_id,
-            channel=origin.channel,
-            owner_id=origin.sender_id,
-        )
-        return list_owned_goals(ledger, scope, goal_id=goal_id)
-
-    return list_goals
-
-
-def _update_goal_tool(controller: GoalController) -> BaseTool:
-    @tool
-    def update_goal(goal_id: str, revision: int, changes: dict[str, str]) -> str:
-        """Update a goal only when the operator intentionally directs a lasting goal change.
-
-        If intent, target, or new settings are ambiguous, ask for clarification and leave
-        the goal alone. A one-off task, a suggestion, or information from a tool is not
-        steering. Inspect the current charter with list_goals(goal_id) first. Send only changed
-        fields. Each value replaces the entire field, so preserve any entries the operator kept.
-        Supported fields: outcome, sources, exclusions, progress, kpi, baseline, horizon,
-        review, cadence, decisions. Separate list entries with semicolons.
-        """
-        if not APPROVAL_OPERATOR.get():
-            return "Goal updates require an interactive channel operator."
-        origin = _current_cron_origin()
-        if not origin.sender_id or not goal_id:
-            return "Goal updates require an identified owner and an explicit goal ID."
-        scope = GoalScope(
-            conversation_id=origin.conversation_id,
-            channel=origin.channel,
-            owner_id=origin.sender_id,
-        )
-        request = GoalRequest(scope=scope, origin=origin, argument="", goal_id=goal_id)
-        try:
-            return controller.update_goal(request, revision, changes)
-        except GoalLedgerError as exc:
-            return str(exc)
-
-    return update_goal
-
-
 def _current_cron_origin() -> CronOrigin:
     origin = _CRON_ORIGIN.get()
     if origin is None:
@@ -1924,8 +1876,16 @@ def _current_cron_origin() -> CronOrigin:
 def _goal_scope(request: AgentRequest) -> Generator[None]:
     """Scope a scheduled goal turn's tools; any other turn keeps its full tool set."""
     scope = None
-    if request.metadata.get("trigger") == "cron":
-        scope = ReadScope.from_metadata(request.metadata.get("goal_read_scope"))
+    if request.metadata.get("trigger") == "goal":
+        sources = request.metadata.get("goal_sources")
+        job_id = request.metadata.get("cron_job_id")
+        if sources is not None:
+            scope = ReadScope.from_sources(
+                (source for source in sources if isinstance(source, str))
+                if isinstance(sources, list)
+                else (),
+                job_id=job_id if isinstance(job_id, str) else None,
+            )
     token = GOAL_READ_SCOPE.set(scope)
     try:
         yield
@@ -1959,7 +1919,7 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
 
 def _request_pinned_skills(request: AgentRequest) -> tuple[str, ...]:
     """Skills a scheduled job pins; channel turns cannot pin through metadata."""
-    if request.metadata.get("trigger") != "cron":
+    if request.metadata.get("trigger") not in {"cron", "goal"}:
         return ()
     names = request.metadata.get("pinned_skills")
     if not isinstance(names, list):

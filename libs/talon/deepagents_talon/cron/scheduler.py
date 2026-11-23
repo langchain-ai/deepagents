@@ -54,6 +54,7 @@ class PersistentCronScheduler:
         self.tick_seconds = tick_seconds
         self.now = now or (lambda: datetime.now(UTC))
         self._task: asyncio.Task[None] | None = None
+        self._goals: dict[str, asyncio.Task[None]] = {}
         self._stopped = asyncio.Event()
 
     async def start(self) -> None:
@@ -66,25 +67,40 @@ class PersistentCronScheduler:
     async def stop(self) -> None:
         """Stop the scheduler ticker."""
         self._stopped.set()
-        if self._task is None:
-            return
-        self._task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._task
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
         self._task = None
+        goals = list(self._goals.values())
+        for task in goals:
+            task.cancel()
+        await asyncio.gather(*goals, return_exceptions=True)
+        self._goals.clear()
 
     async def tick_once(self) -> None:
         """Remove finished jobs, then run all jobs due at the current clock value once.
 
-        The sweep runs first and due jobs run one after another inside the
-        tick, so it never removes a job that is mid-run.
+        A goal can wait for a chat reply across ticks. Coalesce its subsequent
+        wakeups while that turn is running and keep dispatching other jobs.
         """
         current = self.now()
         self._discard_finished(current)
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
         for job in jobs:
-            await self._run_due_job(job, current)
+            if job.goal_id is None:
+                await self._run_due_job(job, current)
+            elif job.id not in self._goals:
+                self._goals[job.id] = asyncio.create_task(self._run_goal(job, current))
+
+    async def _run_goal(self, job: CronJob, now: datetime) -> None:
+        try:
+            await self._run_due_job(job, now)
+        except Exception:
+            logger.exception("Failed to dispatch goal %s", job.id)
+        finally:
+            self._goals.pop(job.id, None)
 
     async def _ticker(self) -> None:
         """Scan for due jobs until stopped, surviving a failed scan.

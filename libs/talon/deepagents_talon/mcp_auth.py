@@ -205,6 +205,7 @@ class FileTokenStorage:
         warn_agent_workspace_path(path, agent_root, subject="MCP credential storage")
         self.path = path
         self._force_authorization = force_authorization
+        self._oauth = oauth or MCPOAuthConfig()
 
     async def get_tokens(self) -> OAuthToken | None:
         """Return stored OAuth tokens."""
@@ -259,21 +260,41 @@ class FileTokenStorage:
         values = {
             "tokens": json.loads(tokens.model_dump_json()),
             "expires_at": _token_expiry(tokens),
-            "client_info": json.loads(client_info.model_dump_json(exclude_none=True)),
+            "client_info": self._persisted_client_info(client_info),
         }
         await asyncio.to_thread(self._update_values, values)
         _mark_authorization_complete()
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        """Return stored OAuth client registration."""
+        """Return stored OAuth client registration.
+
+        A configured `client_secret` is never written to disk, so it is
+        attached here, and only to the client it was issued for.
+        """
         data = await asyncio.to_thread(self._read)
         raw = data.get("client_info") if data is not None else None
-        return OAuthClientInformationFull.model_validate(raw) if raw is not None else None
+        if raw is None:
+            return None
+        client_info = OAuthClientInformationFull.model_validate(raw)
+        if self._oauth.client_secret is None or client_info.client_id != self._oauth.client_id:
+            return client_info
+        return client_info.model_copy(
+            update={
+                "client_secret": self._oauth.client_secret,
+                "token_endpoint_auth_method": self._oauth.token_endpoint_auth_method,
+            }
+        )
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        """Persist OAuth client registration."""
-        value = json.loads(client_info.model_dump_json(exclude_none=True))
+        """Persist OAuth client registration, without a configured secret."""
+        value = self._persisted_client_info(client_info)
         await asyncio.to_thread(self._update, "client_info", value)
+
+    def _persisted_client_info(self, client_info: OAuthClientInformationFull) -> dict[str, object]:
+        # The configured secret lives in the environment; a copy in this file
+        # would outlive rotation and widen where it can be read from.
+        exclude = {"client_secret"} if self._oauth.client_secret is not None else set()
+        return json.loads(client_info.model_dump_json(exclude_none=True, exclude=exclude))
 
     def _read(self) -> dict[str, object] | None:
         try:
@@ -964,7 +985,7 @@ def build_oauth_provider(
         server_url: Remote MCP endpoint URL.
         storage: Credential storage bound to the server identity.
         interactive: Whether to use terminal instead of channel authorization.
-        oauth: Optional assigned public-client settings.
+        oauth: Optional pre-registered client settings.
 
     Returns:
         A configured MCP SDK OAuth provider.
@@ -1012,7 +1033,7 @@ async def prepare_oauth_login(
     Args:
         server_url: Remote MCP endpoint URL.
         storage: Credential storage bound to the server identity.
-        oauth: Optional assigned public-client settings.
+        oauth: Optional pre-registered client settings.
     """
     if oauth is not None and oauth.client_id is not None:
         redirect_uri = oauth.callback_url or (
@@ -1021,6 +1042,9 @@ async def prepare_oauth_login(
         client_info = OAuthClientInformationFull(
             **_client_metadata(redirect_uri).model_dump(), client_id=oauth.client_id
         )
+        if oauth.client_secret is not None:
+            client_info.client_secret = oauth.client_secret
+            client_info.token_endpoint_auth_method = oauth.token_endpoint_auth_method
         await storage.set_client_info(client_info)
     elif _is_slack_mcp_url(server_url):
         await _preseed_slack_client_info(storage)
@@ -1207,9 +1231,9 @@ def format_login_error(exc: BaseException) -> str:
         return "OAuth network request failed; check connectivity and retry login."
     if type(exc).__name__ == "OAuthFlowError":
         return (
-            "OAuth login was rejected; verify the assigned client_id, registered callback_url "
-            "and scopes, then retry with a fresh callback. Servers without dynamic registration "
-            "require an explicit client_id."
+            "OAuth login was rejected; verify the assigned client_id, client_secret, registered "
+            "callback_url and scopes, then retry with a fresh callback. Servers without dynamic "
+            "registration require an explicit client_id."
         )
     if isinstance(exc, (OSError, ValidationError, TypeError, ValueError)):
         first = str(exc).splitlines()

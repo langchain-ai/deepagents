@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING, cast
 
 from langchain_core.tools import tool
 
-from deepagents_talon.mcp_oauth import MCPOAuthConfigError, parse_oauth_config
+from deepagents_talon.mcp_oauth import (
+    MCPOAuthConfigError,
+    parse_oauth_config,
+    require_secret_reference,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Mapping
@@ -451,6 +455,7 @@ def _validate_server(server: dict[str, object]) -> None:
         if server.get("auth") != "oauth" or _derived_transport(server) == "stdio":
             msg = "MCP oauth settings require a remote server with auth set to oauth."
             raise MCPOAuthConfigError(msg)
+        require_secret_reference(server["oauth"])
         parse_oauth_config(server["oauth"])
     transport = _derived_transport(server)
     for field, choices in _ENUMS.items():

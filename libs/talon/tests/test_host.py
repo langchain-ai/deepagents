@@ -17,6 +17,7 @@ from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.channels.slack import _convert_event
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
+from deepagents_talon.cron.scheduler import PersistentCronScheduler
 from deepagents_talon.host import (
     _BACKGROUND_FOLLOW_UP,
     TalonHost,
@@ -1067,21 +1068,36 @@ async def test_two_runs_of_one_job_never_overlap(tmp_path: Path) -> None:
         await host.stop()
 
 
-async def test_channel_background_turn_drops_interactive_authority(tmp_path: Path) -> None:
+async def test_goal_wake_preserves_the_chat_route_for_background_delivery(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = RoutedAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    host.scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=host.run_scheduled_job,
+        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
+    )
+    goal = store.create_job(
+        prompt="Check the release",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(channel="test", conversation_id="chat", sender_id="bob"),
+        continuing=True,
+    )
     await host.start()
     try:
         agent.background.pending.add("test:chat")
-        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="hello"))
+        await host.receive_message(channel, ChannelMessage("chat", "research", sender_id="alice"))
         await asyncio.wait_for(host._tasks["test:chat"], 2)
+        await host.run_scheduled_job(goal)
+        assert agent.requests[-1].metadata["trigger"] == "goal"
 
         await host._dispatch_background_results()
         await asyncio.wait_for(host._tasks["test:chat"], 2)
 
         follow_up = agent.requests[-1]
         assert follow_up.text == _BACKGROUND_FOLLOW_UP
+        assert follow_up.metadata["sender_id"] == "alice"
         assert "trigger" not in follow_up.metadata
         assert follow_up.metadata["background_delivery"] is True
         assert follow_up.approval_handler is None

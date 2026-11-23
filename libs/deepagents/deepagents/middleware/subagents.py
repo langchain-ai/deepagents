@@ -10,6 +10,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
     ContextT,
     ModelRequest,
     ModelResponse,
@@ -27,6 +28,7 @@ from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMes
 from langchain_core.runnables import Runnable, RunnableBinding, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.pregel import Pregel
+from langgraph.runtime import Runtime
 from langgraph.types import Command, StreamMode
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -77,6 +79,9 @@ _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
 Lets `task`/`atask` refuse recursive delegation at call time instead of
 omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 """
+
+_FORK_PRIVATE_STATE_CONFIG_KEY = "__deepagents_fork_private_state"
+"""Configurable key carrying the parent's `PrivateStateAttr` values into a forked subagent."""
 
 _FORK_INSTRUCTIONS_KEY = "_deepagents_fork_instructions"
 """Private spec key holding a declarative fork's own `system_prompt`.
@@ -591,6 +596,28 @@ class _ForkTaskToolMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self.tools = [task_tool]
 
 
+def _fork_private_state_update(config: RunnableConfig) -> dict[str, Any] | None:
+    """Return the parent's `PrivateStateAttr` values carried in `config`, if any."""
+    return (config.get("configurable") or {}).get(_FORK_PRIVATE_STATE_CONFIG_KEY) or None
+
+
+class _ForkPrivateStateMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    """Writes the parent's `PrivateStateAttr` values into a forked subagent's state.
+
+    `create_agent` drops `PrivateStateAttr` keys from graph input. The `task` tool
+    passes them under `_FORK_PRIVATE_STATE_CONFIG_KEY`, and `before_agent` writes
+    them as a state update. `before_agent` does not run again when the fork resumes.
+    """
+
+    def before_agent(self, state: AgentState, runtime: Runtime, config: RunnableConfig) -> dict[str, Any] | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+        """Write the parent's private state at the start of the fork."""
+        return _fork_private_state_update(config)
+
+    async def abefore_agent(self, state: AgentState, runtime: Runtime, config: RunnableConfig) -> dict[str, Any] | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+        """Async version of `before_agent`."""
+        return _fork_private_state_update(config)
+
+
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
@@ -793,6 +820,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # order matches.
         fs_index = next((i for i, m in enumerate(fork_middleware) if isinstance(m, FilesystemMiddleware)), -1)
         fork_middleware.insert(fs_index + 1, _ForkTaskToolMiddleware(fork_task_tool))
+        # Runs before every other `before_agent` hook.
+        fork_middleware.insert(0, _ForkPrivateStateMiddleware())
         resolved["middleware"] = fork_middleware
         return cast("SubAgent", resolved)
 
@@ -930,6 +959,13 @@ def _build_task_tool(  # noqa: C901, PLR0915
             subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent_runnable, subagent_state
 
+    def _fork_private_configurable(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Return configurable entries carrying a declarative fork's inherited `PrivateStateAttr` values."""
+        if not state.get(_FORKED_CONTEXT_KEY):
+            return {}
+        private = {key: value for key, value in state.items() if key in private_state_keys}
+        return {_FORK_PRIVATE_STATE_CONFIG_KEY: private} if private else {}
+
     def task(
         description: str,
         subagent_type: str,
@@ -958,7 +994,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the `task` call's id. Checkpointers copy config metadata into each
         # checkpoint, so the subagent's stored namespace names the call that ran it.
         subagent_config: RunnableConfig = {
-            "configurable": {"ls_agent_type": "subagent"},
+            "configurable": {"ls_agent_type": "subagent", **_fork_private_configurable(subagent_state)},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
         fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
@@ -999,7 +1035,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the `task` call's id. Checkpointers copy config metadata into each
         # checkpoint, so the subagent's stored namespace names the call that ran it.
         subagent_config: RunnableConfig = {
-            "configurable": {"ls_agent_type": "subagent"},
+            "configurable": {"ls_agent_type": "subagent", **_fork_private_configurable(subagent_state)},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
         fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")

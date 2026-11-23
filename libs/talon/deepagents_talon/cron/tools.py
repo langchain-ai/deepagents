@@ -227,6 +227,35 @@ class CronTools:
         return build_cron_tools(self)
 
 
+def _goal_tool(cron: CronTools) -> BaseTool:
+    @tool
+    def create_goal(outcome: str, schedule: str) -> dict[str, Any]:
+        """Save a continuing goal after initial discovery in this chat.
+
+        Args:
+            outcome: Desired result, user constraints (including any requested timing),
+                relevant findings, and the next step.
+            schedule: Recurring check-in schedule based on the user's timing or when
+                progress is next possible, e.g. `every 10m` for a build due in ten minutes.
+        """
+        try:
+            if not outcome.strip():
+                return {"error": "A goal needs an outcome."}
+            job = cron.store.create_job(
+                prompt=outcome.strip(),
+                name=outcome.strip().splitlines()[0][:100],
+                schedule=CronSchedule.parse(schedule),
+                origin=cron.origin(),
+                deliver_to="thread",
+                continuing=True,
+            )
+            return _tool_job(job, upcoming=True)
+        except Exception as exc:  # noqa: BLE001
+            return _tool_error(exc)
+
+    return create_goal
+
+
 def build_cron_tools(cron: CronTools) -> list[BaseTool]:
     """Build agent-facing cron management tools.
 
@@ -318,7 +347,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
 
-    return [create_job, list_jobs, edit_job, remove_job]
+    return [create_job, list_jobs, edit_job, remove_job, _goal_tool(cron)]
 
 
 def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
@@ -337,6 +366,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "until": data["until"],
         "deliver_to": data["deliver_to"],
         "skills": data["skills"],
+        "goal_id": data["goal_id"],
     }
     if upcoming:
         payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]

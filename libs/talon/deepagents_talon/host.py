@@ -42,7 +42,7 @@ from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore
-from deepagents_talon.cron.scheduler import is_silent
+from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.effort import effort_levels, normalize_effort
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -362,10 +362,15 @@ class TalonHost:
         self._stopped = asyncio.Event()
         self._running = False
 
-    async def _agent_failure_message(self, conversation_id: str) -> str:
+    async def _agent_failure_message(self, turn: _Turn, error: Exception) -> str:
+        if _is_model_unavailable(error):
+            return (
+                f"Model {turn.model or getattr(self.agent, 'default_model', 'default')} "
+                "is unavailable. Send /model default or choose another model with /model."
+            )
         check = getattr(self.agent, "has_tool_activity", None)
         try:
-            if callable(check) and await check(conversation_id):
+            if callable(check) and await check(turn.conversation_id):
                 return (
                     "Something went wrong after tools ran. Actions may have partially completed. "
                     "Check the results before retrying, and check Talon logs."
@@ -1048,8 +1053,7 @@ class TalonHost:
             # host sets. A scheduled turn's cron identity is what its tools scope by.
             **route.metadata,
         }
-        # No scheduled turn reaches here: a job's run calls `_invoke_agent` directly, and
-        # its delegations finish inside that run rather than earning a delivery turn.
+        goal_wake = route.metadata.get("trigger") == "goal"
         unattended = bool(route.metadata.get("background_delivery"))
         if isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled:
             metadata["history_channel"] = _channel_key(channel, turn.provider)
@@ -1063,7 +1067,7 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
-        operator = not unattended and _is_operator(channel, route.message)
+        operator = not unattended and not goal_wake and _is_operator(channel, route.message)
 
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
@@ -1095,10 +1099,7 @@ class TalonHost:
                 conversation_id=agent_conversation_id,
                 text=message.text,
                 metadata=metadata,
-                # A scheduled turn has no operator to ask. Approvals are auto-denied
-                # upstream for `trigger: cron`, and an authorization prompt raises on
-                # the absent sender rather than reaching anyone, so both are withheld
-                # exactly as `run_scheduled_job` withholds them.
+                # Goal wakes can ask their owner, but cannot initiate account authorization.
                 approval_handler=None
                 if unattended
                 else (
@@ -1111,7 +1112,7 @@ class TalonHost:
                     )
                 ),
                 authorization_handler=None
-                if unattended
+                if unattended or goal_wake
                 else (
                     lambda event: self._handle_authorization_event(
                         channel,
@@ -1129,15 +1130,13 @@ class TalonHost:
                 model=turn.model,
                 effort=turn.effort,
             )
-            suppress_result = agent_conversation_id in self._terminal_authorizations
-        except Exception as error:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
-            text = await self._agent_failure_message(agent_conversation_id)
-            if _is_model_unavailable(error):
-                text = (
-                    f"Model {turn.model or getattr(self.agent, 'default_model', 'default')} "
-                    "is unavailable. Send /model default or choose another model with /model."
-                )
-            result = AgentResult(text=text)
+            suppress_result = agent_conversation_id in self._terminal_authorizations or (
+                goal_wake and is_silent(result.text)
+            )
+        except Exception as error:
+            if goal_wake:
+                raise
+            result = AgentResult(text=await self._agent_failure_message(turn, error))
         finally:
             active = False
             self._clear_authorization(agent_conversation_id)
@@ -1347,6 +1346,8 @@ class TalonHost:
 
     async def _bounded_scheduled_run(self, job: CronJob, conversation_id: str) -> str:
         """Run one scheduled job under its timeout, repairing the thread on expiry."""
+        if job.goal_id is not None:
+            return await self._continue_goal(job)
         try:
             async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
                 result = await self._invoke_agent(
@@ -1365,6 +1366,45 @@ class TalonHost:
                 await self.agent.recover_interrupted(conversation_id)
             raise
         return result.text
+
+    async def _continue_goal(self, job: CronJob) -> str:
+        """Wait for the owner's chat to be free, then run with its normal feedback handlers."""
+        store = getattr(self.scheduler, "store", None)
+        channel = await self.origin_channel(job.origin)
+        if (
+            not isinstance(store, CronJobStore)
+            or channel is None
+            or not job.origin.channel
+            or not job.origin.sender_id
+        ):
+            msg = "Cannot reach the owner of the scheduled goal."
+            raise RuntimeError(msg)
+        root = self._conversation_root(job.origin.channel, job.origin.conversation_id)
+        while self.running:
+            async with self._conversation_lock(root):
+                current = store.get_job(job.id, origin=job.origin)
+                if current is None or (job.enabled and not current.enabled):
+                    return SILENT_SENTINEL
+                thread = self._agent_conversation_id(root)
+                active = self._tasks.get(thread)
+                if active is None or active.done():
+                    if thread in self._blocked:
+                        msg = "Goal chat is waiting for a previous turn to stop."
+                        raise RuntimeError(msg)
+                    route = _goal_route(channel, current, root, thread)
+                    await self._replace_agent_turn(route)
+                    turn = self._tasks[thread]
+                    break
+            await asyncio.wait([active])
+        else:
+            return SILENT_SENTINEL
+        # A user message may interrupt this goal. It owns the chat from that point on.
+        try:
+            await turn
+        except asyncio.CancelledError:
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
+        return SILENT_SENTINEL
 
     async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
         """Return the origin chat's read-only history scope, or none when ambiguous."""
@@ -1438,7 +1478,7 @@ class TalonHost:
         metadata = {
             **metadata,
             "tool_approval_operator": tool_approval_operator is True
-            and metadata.get("trigger") != "cron"
+            and metadata.get("trigger") not in {"cron", "goal"}
             and not metadata.get("background_delivery"),
         }
         try:
@@ -2380,6 +2420,28 @@ def _outbound_media_from_refs(
             path = getattr(ref, "path", None)
             failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
     return media, failed
+
+
+def _goal_route(channel: ChannelAdapter, job: CronJob, root: str, thread: str) -> _BackgroundRoute:
+    if job.goal_id != job.id and job.goal_sources is None:
+        msg = "This goal's original charter must be imported before it can run."
+        raise ValueError(msg)
+    metadata: dict[str, object] = {"trigger": "goal", "cron_job_id": job.id}
+    if job.skills:
+        metadata["pinned_skills"] = list(job.skills)
+    if job.goal_sources is not None:
+        metadata["goal_sources"] = list(job.goal_sources)
+    message = ChannelMessage(
+        job.origin.conversation_id,
+        f"Continue this goal (job {job.id}, scheduled {job.schedule.display}). Take the next "
+        "useful step. If the next useful check has shifted, update the schedule with edit_job "
+        "while honoring any timing the user requested. Ask through ask_user "
+        "when you need a decision. Report meaningful progress, otherwise return [SILENT].\n\n"
+        + job.prompt,
+        sender_id=job.origin.sender_id,
+        metadata={"history_chat": job.origin.history_chat or job.origin.conversation_id},
+    )
+    return _BackgroundRoute(channel, message, root, thread, job.origin.channel, metadata)
 
 
 def _scheduled_metadata(job: CronJob) -> dict[str, object]:

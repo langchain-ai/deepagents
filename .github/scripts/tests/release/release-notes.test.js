@@ -699,7 +699,7 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   assert.match(calls.createComment[0].body, /```\n@release-bot draft\n```/);
   assert.match(calls.createComment[0].body, /only way to skip the curated-notes merge gate/);
   // The header advertises the steering form so maintainers learn it from the draft.
-  assert.match(calls.createComment[0].body, /Keep the version heading intact\. To regenerate with steering/);
+  assert.match(calls.createComment[0].body, /Keep the version heading intact\. The `### Dependencies` list is generated from `pyproject\.toml`; don't edit it, or apply will fail\. To regenerate with steering/);
   assert.match(calls.createComment[0].body, /@release-bot draft <instructions>/);
   // No instructions were recorded in state, so nothing is echoed.
   assert.ok(!calls.createComment[0].body.includes('<details>'));
@@ -771,6 +771,50 @@ test('prepare apply replaces only the changelog section and records immutable ha
   assert.equal(state.baseHead, MAIN_HEAD);
   assert.equal(state.originalBodyHash, releaseNotes.exactSha256(releasePr().body));
   assert.match(state.body, /\* Add a useful feature/);
+});
+
+const GENERATED_DEPS = '### Dependencies\n\n- `langsmith`: `>=0.15.1` → `>=0.16.0`';
+
+async function applyWithDependencies(t, { draftDeps, changelogDeps }) {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const generated = changelogDeps ? `${GENERATED_SECTION}\n${changelogDeps}\n` : GENERATED_SECTION;
+  const section = draftDeps ? `${CURATED_SECTION}\n${draftDeps}\n` : CURATED_SECTION;
+  const comments = [overrideComment({ section, fingerprint: releaseNotes.changelogFingerprint(generated) })];
+  const { github } = makeGithub({ comments, files: new Map([[HEAD, changelog(generated)]]) });
+  await releaseNotes.prepareApply({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    changelogFile: workspace.file,
+    stateFile: path.join(workspace.root, 'apply.json'),
+    ...BOT_AUTH,
+  });
+  return releaseNotes.extractVersionSection(fs.readFileSync(workspace.file, 'utf8'), VERSION);
+}
+
+test('apply writes an untouched generated Dependencies list', async t => {
+  const written = await applyWithDependencies(t, { draftDeps: GENERATED_DEPS, changelogDeps: GENERATED_DEPS });
+  assert.equal(written, releaseNotes.canonical(`${CURATED_SECTION}\n${GENERATED_DEPS}\n`));
+});
+
+test('apply refuses a draft whose Dependencies list was edited', async t => {
+  await assert.rejects(
+    applyWithDependencies(t, {
+      draftDeps: '### Dependencies\n\n- `langsmith`: `>=0.15.1` → `>=9.9.9`',
+      changelogDeps: GENERATED_DEPS,
+    }),
+    /`### Dependencies` list in the draft does not match the one generated from `pyproject\.toml`\. Restore the generated list in the draft comment, or run @release-bot draft/,
+  );
+});
+
+test('apply refuses a Dependencies list the changelog does not have', async t => {
+  await assert.rejects(
+    applyWithDependencies(t, { draftDeps: '### Dependencies\n\n- made up', changelogDeps: '' }),
+    /`### Dependencies` list in the draft does not match/,
+  );
 });
 
 test('apply rejects concurrent PR-body and override revisions', async t => {

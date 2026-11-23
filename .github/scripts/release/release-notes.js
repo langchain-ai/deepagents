@@ -511,7 +511,7 @@ function overrideBody({ component, version, head, mainHead, headingHash, fingerp
     `changelog-fingerprint: ${fingerprint}`,
     'state: draft',
     '-->',
-    `Review and edit the release notes between the content markers below as needed. Keep the version heading intact. To regenerate with steering instead of editing by hand, run \`${COMMAND_MENTION} draft <instructions>\`.`,
+    `Review and edit the release notes between the content markers below as needed. Keep the version heading intact. The \`### Dependencies\` list is generated from \`pyproject.toml\`; don't edit it, or apply will fail. To regenerate with steering instead of editing by hand, run \`${COMMAND_MENTION} draft <instructions>\`.`,
     // Echo the maintainer's draft instructions so the prompt that produced this
     // draft is auditable on the PR, and so a later draft with different
     // instructions produces a visibly distinct comment. Escape HTML so the
@@ -1013,6 +1013,13 @@ async function prepareApply({ github, owner, repo, number, expectedHead, changel
   const alreadyApplied = currentSection === curatedSection;
   if (!alreadyApplied && changelogFingerprint(currentSection) !== override.metadata['changelog-fingerprint']) {
     throw new Error(`New generated release entries appeared; run ${COMMAND_MENTION} draft before apply`);
+  }
+  // The Dependencies list is generated from pyproject.toml, so the draft must
+  // carry it unchanged. Refuse loudly rather than rewrite a maintainer's edit.
+  if (splitDependencies(override.section).dependencies !== splitDependencies(currentSection).dependencies) {
+    throw new Error(
+      `The \`### Dependencies\` list in the draft does not match the one generated from \`pyproject.toml\`. Restore the generated list in the draft comment, or run ${COMMAND_MENTION} draft to regenerate it`,
+    );
   }
 
   const updatedChangelog = alreadyApplied

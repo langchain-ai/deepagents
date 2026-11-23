@@ -3790,6 +3790,153 @@ class TestChangelogFailuresAreNeverSilent:
         assert any("missing-tags check could not run" in w for w in warnings), warnings
 
 
+# ── Dependency section ───────────────────────────────────────────────────────
+
+_OLD_PYPROJECT = """\
+[project]
+name = "example"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-core>=1.8.0,<2.0.0",
+    "langgraph >= 1.2.20, < 2.0.0",
+    "removed-dep>=1.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+vertex = ["langchain-google-vertexai>=3.2.0,<4.0.0"]
+
+[dependency-groups]
+test = ["pytest>=8.0"]
+"""
+
+_NEW_PYPROJECT = """\
+[project]
+name = "example"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain_core>=1.8.3,<2.0.0",
+    "langgraph<2.0.0,>=1.2.20",
+    "added-dep[extra]>=0.5",
+    "tomli>=2.2; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+vertex = ["langchain-google-vertexai>=3.2.5,<4.0.0"]
+
+[dependency-groups]
+test = ["pytest>=9.0"]
+"""
+
+
+def _release_with_manifests(
+    repo: Path, old: str | None, new: str, *, changelog: str = "## 1.0.1\n"
+) -> str:
+    """Tag a release with *old* as its manifest, then commit *new* and return HEAD.
+
+    *old* of None tags a release that has no `pyproject.toml` at all.
+    """
+    _init_repo(repo)
+    if old is None:
+        _commit(repo, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): base")
+    else:
+        _commit(repo, PACKAGE_PATH / "pyproject.toml", old, "feat(example): base")
+    _git(repo, "tag", "example==1.0.0")
+    _commit(repo, PACKAGE_PATH / "pyproject.toml", new, "chore(deps): raise floors")
+    return _commit(
+        repo, PACKAGE_PATH / "CHANGELOG.md", changelog, "release(example): 1.0.1"
+    )
+
+
+def _build(repo: Path, release_sha: str) -> tuple[str, list[str]]:
+    return brn.build_release_notes(
+        repo,
+        package="example",
+        version="1.0.1",
+        release_sha=release_sha,
+        repository=REPOSITORY,
+        offline=True,
+        working_dir=str(PACKAGE_PATH),
+    )
+
+
+class TestDependencySection:
+    """The release body lists runtime dependency range changes since the last tag."""
+
+    def test_lists_runtime_changes_only(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
+        body, _ = _build(tmp_path, head)
+
+        section = body.split("### Dependencies\n\n", 1)[1].split("\n\n", 1)[0]
+        assert section.splitlines() == [
+            "- Python: `>=3.11` → `>=3.12`",
+            "- Added `added-dep[extra]` `>=0.5`",
+            "- `langchain_core`: `>=1.8.0,<2.0.0` → `>=1.8.3,<2.0.0`",
+            "- Removed `removed-dep`",
+            "- `tomli; python_version < '3.11'`: `>=2.0` → `>=2.2`",
+            (
+                "- `langchain-google-vertexai`: `>=3.2.0,<4.0.0` → `>=3.2.5,<4.0.0`"
+                " (`vertex` extra)"
+            ),
+        ]
+        # A reordered or re-spaced specifier is not a change, and dev-only
+        # dependency groups never ship, so neither is listed.
+        assert "langgraph" not in section
+        assert "pytest" not in section
+
+    def test_sits_between_changelog_and_full_changelog_link(
+        self, tmp_path: Path
+    ) -> None:
+        changelog = "## 1.0.1\n\n### Bug Fixes\n\n* fix something\n"
+        head = _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=changelog
+        )
+        body, _ = _build(tmp_path, head)
+
+        assert (
+            body.index("* fix something")
+            < body.index("### Dependencies")
+            < body.index("[Full changelog]")
+            < body.index("<details>")
+        )
+
+    def test_omitted_when_nothing_changed(self, tmp_path: Path) -> None:
+        unchanged = _OLD_PYPROJECT.replace('name = "example"', 'name = "example"\n')
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, unchanged)
+        body, warnings = _build(tmp_path, head)
+
+        assert "### Dependencies" not in body
+        assert not any("pyproject.toml" in w for w in warnings), warnings
+
+    def test_omitted_for_initial_release(self, tmp_path: Path) -> None:
+        _init_repo(tmp_path)
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "pyproject.toml", _NEW_PYPROJECT, "feat: init"
+        )
+        body, warnings = _build(tmp_path, head)
+
+        assert "### Dependencies" not in body
+        assert not any("pyproject.toml" in w for w in warnings), warnings
+
+    def test_unreadable_manifest_warns_instead_of_failing(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, None, _NEW_PYPROJECT)
+        body, warnings = _build(tmp_path, head)
+
+        assert "### Dependencies" not in body
+        assert "<details>" in body
+        assert any(
+            "pyproject.toml at example==1.0.0" in w and "omitted" in w
+            for w in warnings
+        ), warnings
+
+    def test_invalid_toml_warns_instead_of_failing(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, "[project\n")
+        body, warnings = _build(tmp_path, head)
+
+        assert "### Dependencies" not in body
+        assert any("Could not parse" in w for w in warnings), warnings
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 

@@ -35,6 +35,7 @@ import secrets
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 from typing import NamedTuple
 
@@ -1667,6 +1668,163 @@ def finalize_body(base_body: str, git_log_details: str) -> tuple[str, list[str]]
     return base_body, warnings
 
 
+# ── Dependency changes ──────────────────────────────────────────────────────
+
+# PEP 508 requirement split into name, extras, version specifier, and marker.
+# A full parser (`packaging`) is deliberately avoided to keep the script
+# dependency-free; manifests here only use the `name[extras] spec; marker`
+# shape, and anything that does not match is reported verbatim instead.
+_REQUIREMENT_RE = re.compile(
+    r"^\s*(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*"
+    r"(?P<extras>\[[^\]]*\])?\s*"
+    r"(?P<spec>[^;]*?)\s*"
+    r"(?:;\s*(?P<marker>.*?))?\s*$"
+)
+
+
+class Requirement(NamedTuple):
+    """One runtime requirement, keyed for comparison across releases."""
+
+    label: str
+    """Display name: the requirement name plus any extras and marker."""
+
+    spec: str
+    """Whitespace-free version specifier as written; empty when unconstrained."""
+
+
+def _normalize_spec(spec: str) -> str:
+    """Strip whitespace, keeping clause order as written for display."""
+    return ",".join(c for c in re.sub(r"\s+", "", spec).split(",") if c)
+
+
+def _same_spec(a: str, b: str) -> bool:
+    """Compare specifiers ignoring clause order, so a reorder is not a change."""
+    return sorted(a.split(",")) == sorted(b.split(","))
+
+
+def _parse_requirement(text: str, extra: str) -> tuple[tuple[str, ...], Requirement]:
+    """Parse *text* into a comparison key and a displayable requirement.
+
+    The key holds the extra, the PEP 503-normalized name, and the marker, so a
+    package listed under several markers is compared marker by marker.
+    """
+    match = _REQUIREMENT_RE.match(text)
+    if not match:
+        return (extra, text.strip(), ""), Requirement(text.strip(), "")
+    name = match["name"]
+    marker = re.sub(r"\s+", " ", match["marker"] or "")
+    label = name + (match["extras"] or "") + (f"; {marker}" if marker else "")
+    key = (extra, re.sub(r"[-_.]+", "-", name).lower(), marker)
+    return key, Requirement(label, _normalize_spec(match["spec"]))
+
+
+def _project_table(pyproject: dict[str, object]) -> dict[str, object]:
+    """Return the `[project]` table, or an empty dict when absent or malformed."""
+    project = pyproject.get("project")
+    return project if isinstance(project, dict) else {}
+
+
+def _runtime_requirements(
+    pyproject: dict[str, object],
+) -> dict[tuple[str, ...], Requirement]:
+    """Collect the requirements users install, keyed by `_parse_requirement`.
+
+    Covers `[project.dependencies]` and `[project.optional-dependencies]`;
+    `[dependency-groups]` is skipped because it never ships to PyPI.
+    """
+    project = _project_table(pyproject)
+    groups: dict[str, object] = {"": project.get("dependencies", [])}
+    optional = project.get("optional-dependencies", {})
+    if isinstance(optional, dict):
+        groups.update(optional)
+    requirements: dict[tuple[str, ...], Requirement] = {}
+    for extra, entries in groups.items():
+        for entry in entries if isinstance(entries, list) else []:
+            key, requirement = _parse_requirement(str(entry), extra)
+            requirements[key] = requirement
+    return requirements
+
+
+def _requires_python(pyproject: dict[str, object]) -> str:
+    """Return the normalized `requires-python` specifier, or "" when unset."""
+    return _normalize_spec(str(_project_table(pyproject).get("requires-python", "")))
+
+
+def _dependency_change_lines(
+    old: dict[str, object], new: dict[str, object]
+) -> list[str]:
+    """List `requires-python` and runtime requirement changes, core deps first.
+
+    Requirements sort by extra (core deps have the empty extra) and then name.
+    """
+    lines: list[str] = []
+    old_python, new_python = _requires_python(old), _requires_python(new)
+    if not _same_spec(old_python, new_python):
+        lines.append(f"- Python: `{old_python or 'any'}` → `{new_python or 'any'}`")
+
+    before, after = _runtime_requirements(old), _runtime_requirements(new)
+    for key in sorted(before.keys() | after.keys()):
+        old_req, new_req = before.get(key), after.get(key)
+        suffix = f" (`{key[0]}` extra)" if key[0] else ""
+        if old_req is None and new_req is not None:
+            spec = new_req.spec or "any version"
+            lines.append(f"- Added `{new_req.label}` `{spec}`{suffix}")
+        elif new_req is None and old_req is not None:
+            lines.append(f"- Removed `{old_req.label}`{suffix}")
+        elif old_req and new_req and not _same_spec(old_req.spec, new_req.spec):
+            was, now = old_req.spec or "any version", new_req.spec or "any version"
+            lines.append(f"- `{new_req.label}`: `{was}` → `{now}`{suffix}")
+    return lines
+
+
+def _read_pyproject_at(
+    repo: Path, working_dir: str, ref: str, warnings: list[str]
+) -> dict[str, object] | None:
+    """Parse `pyproject.toml` as it stood at *ref*, or warn and return None."""
+    rel_path = f"{working_dir}/pyproject.toml"
+    result = _git_run(repo, "show", f"{ref}:{rel_path}")
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        warnings.append(
+            f"Could not read {rel_path} at {ref}"
+            + (f" ({detail})" if detail else "")
+            + "; the Dependencies section was omitted"
+        )
+        return None
+    try:
+        return tomllib.loads(result.stdout)
+    except tomllib.TOMLDecodeError as err:
+        warnings.append(
+            f"Could not parse {rel_path} at {ref} ({err}); the Dependencies"
+            " section was omitted"
+        )
+        return None
+
+
+def build_dependency_section(
+    repo: Path,
+    working_dir: str,
+    prev_tag: str,
+    release_sha: str,
+    warnings: list[str],
+) -> str:
+    """Summarize dependency range changes since *prev_tag*, or return "".
+
+    Routine floor raises land as hidden `chore` commits so they never cut a
+    release on their own. Diffing the manifest here still surfaces them, along
+    with any other range change, in the release that ships them. An initial
+    release (no *prev_tag*) has nothing to compare against and gets no section.
+    """
+    if not prev_tag:
+        return ""
+    old = _read_pyproject_at(repo, working_dir, prev_tag, warnings)
+    new = _read_pyproject_at(repo, working_dir, release_sha, warnings)
+    if old is None or new is None:
+        return ""
+    lines = _dependency_change_lines(old, new)
+    return "### Dependencies\n\n" + "\n".join(lines) if lines else ""
+
+
 # ── Main entry point ────────────────────────────────────────────────────────
 
 
@@ -1819,6 +1977,14 @@ def build_release_notes(
     git_log_details = generate_git_log(
         repo_root, working_dir, prev_tag, release_sha, repository, warnings
     )
+
+    # Placed after the changelog section and before the full-changelog link,
+    # so it reads as part of this version's notes.
+    dependency_section = build_dependency_section(
+        repo_root, working_dir, prev_tag, release_sha, warnings
+    )
+    if dependency_section:
+        changelog_body = _with_section(changelog_body, dependency_section)
 
     if offline:
         warnings.append("Offline mode: skipping contributor and releaser lookups.")

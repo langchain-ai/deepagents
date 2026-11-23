@@ -872,7 +872,7 @@ requires-dist = [
     { name = "langchain-google-genai", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.4.0" },
     { name = "langgraph", specifier = ">=1.2.24,<2.0.0" },
-    { name = "langsmith", specifier = ">=0.15.1" },
+    { name = "langsmith", specifier = ">=0.16.0" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0" },
     { name = "wcmatch", specifier = ">=11.0" },
@@ -1169,9 +1169,9 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.4.1,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.43,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.38.3,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.38.4,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.14,<1.0.0" },
-    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.15.1" },
+    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.16.0" },
     { name = "markdownify", specifier = ">=1.2.3" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
@@ -3079,7 +3079,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.38.3"
+version = "0.38.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -3090,9 +3090,9 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/01/d123cbea564fe46085f307ce513e26f7ec11c9dd5381f2f8fda0b0a3c543/langgraph_runtime_inmem-0.38.3.tar.gz", hash = "sha256:578af12d87b7850283077f006b22bdf1b055e56f229609868175f9fcea1d2243", size = 145078, upload-time = "2026-11-17T23:36:31.182Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/a2/15bf23013553f63eef35d8ec1f4598792661bb3ac4fdd95396b5d8158a7e/langgraph_runtime_inmem-0.38.4.tar.gz", hash = "sha256:3691c04ef48f13c24473e8938950986efc09c0b5b6fcda33c78ce75be9c42f06", size = 145086, upload-time = "2026-11-21T00:20:54.408Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/68/8e7e0b8153f7f3598d0991f71272994f29007aebe3c009ae3d4e082d924d/langgraph_runtime_inmem-0.38.3-py3-none-any.whl", hash = "sha256:f6a82728ae28e3bab100ede1afaa672a169335ba2284d96d13ebe49bc5d57dfc", size = 64991, upload-time = "2026-11-17T23:36:29.638Z" },
+    { url = "https://files.pythonhosted.org/packages/70/7f/22e58aac95126a00b6c6241f49464cac0957c89e0c1cbecd99db2d52b40a/langgraph_runtime_inmem-0.38.4-py3-none-any.whl", hash = "sha256:3e4963d0d0a678af6268f1b78a20f0f072ca46afffefd19c7e09b934c857a003", size = 64991, upload-time = "2026-11-21T00:20:53.196Z" },
 ]
 
 [[package]]
@@ -3113,7 +3113,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.15.1"
+version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3131,9 +3131,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2d/c0/65952c5d22c20653edf3dc6581241ec570797b506aef9afde767772f9bae/langsmith-0.15.1.tar.gz", hash = "sha256:8257beb14033ed94550a37e24b836d204b57b79f91bf6620491b66600d26b546", size = 5119400, upload-time = "2026-11-20T01:59:24.486Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e9/d0/48f803bba3f2032739095779977f38771a350d0b527d44de2ddb0ce067ca/langsmith-0.16.0.tar.gz", hash = "sha256:8111f149c720bc838ee16104d9eec59fe9379d67015dbce00b4fd2dcd910ca69", size = 5123269, upload-time = "2026-11-21T00:39:39.171Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/7f/1ab9fe2a0fc733784fb37d29a5e54e514581ee955d68a57f1d2b377256d4/langsmith-0.15.1-py3-none-any.whl", hash = "sha256:9d8ddba87cd4812cbbf10f90aea63f82280a1df7cd8f6bfc446f83b23b62c246", size = 1033242, upload-time = "2026-11-20T01:59:22.304Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/20/7fdaa85d1ff7a45f611b52e2be0c75d28d95b54420ab0083d672f32aa7df/langsmith-0.16.0-py3-none-any.whl", hash = "sha256:edd738910a595751218299c9791099db1b5c63ae6dc21ca68009dbfb6344524a", size = 1036883, upload-time = "2026-11-21T00:39:37.173Z" },
 ]
 
 [package.optional-dependencies]

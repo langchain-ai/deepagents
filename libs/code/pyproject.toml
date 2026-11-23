@@ -35,7 +35,7 @@ dependencies = [
     # Client-server architecture
     "langgraph-sdk>=0.4.14,<1.0.0",
     "langgraph-cli[inmem]>=0.4.43,<1.0.0",
-    "langgraph-runtime-inmem>=0.38.3,<1.0.0",
+    "langgraph-runtime-inmem>=0.38.4,<1.0.0",
     "httpx>=0.28.1",
 
     # Core model providers - others are added as optional
@@ -60,7 +60,7 @@ dependencies = [
     "markdownify>=1.2.3",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.15.1",
+    "langsmith[sandbox]>=0.16.0",
 
     # Tools
     "tavily-python>=0.7.26",
@@ -103,7 +103,7 @@ dependencies = [
     "anyio>=4.14.2",
 
     # ACP
-    "deepagents-acp>=0.0.13,<1.0.0",
+    "deepagents-acp>=0.1.0,<1.0.0",
     "mcp>=2.0.0",
 ]
 

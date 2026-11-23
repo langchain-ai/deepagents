@@ -20,6 +20,10 @@
   "graphs": {
     "dcode": "./langgraph_agent.py:make_graph",
     "bare": "./langgraph_agent.py:make_bare_graph",
-    "tau3": "./langgraph_agent.py:make_tau3_graph"
+    "bare-no-task": "./langgraph_agent.py:make_bare_no_task_graph",
+    "tau3": "./langgraph_agent.py:make_tau3_graph",
+    "bare-code-mixed": "./langgraph_agent.py:make_code_mixed_graph",
+    "bare-code-routed": "./langgraph_agent.py:make_code_routed_graph",
+    "bare-code-only": "./langgraph_agent.py:make_code_only_graph"
   }
 }

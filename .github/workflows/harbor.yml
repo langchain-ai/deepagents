@@ -118,13 +118,17 @@ on:
           - docker
           - langsmith
       agent_impl:
-        description: "Harness: a Deep Agents graph run through Harbor's LangGraph agent (dcode, bare, tau3), or Harbor's built-in codex, claude-code, or pi."
+        description: "Harness: a Deep Agents graph run through Harbor's LangGraph agent (dcode, bare, tau3, or bare-no-task and the bare-code-* code mode variants), or Harbor's built-in codex, claude-code, or pi."
         required: true
         default: "dcode"
         type: choice
         options:
           - dcode
           - bare
+          - bare-no-task
+          - bare-code-mixed
+          - bare-code-routed
+          - bare-code-only
           - tau3
           - codex
           - claude-code

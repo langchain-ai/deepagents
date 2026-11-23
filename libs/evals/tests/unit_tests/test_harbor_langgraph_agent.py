@@ -5,20 +5,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from deepagents_code.config import runtime_state
 from fastmcp import FastMCP
 from harbor.agents.installed.langgraph import LangGraph
 from langchain.mcp import MCPAdapter
+from langchain_core.language_models import LangSmithParams
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import BaseTool
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator, Sequence
+
+    from langgraph.graph.state import CompiledStateGraph
 
 _MODEL_IDENTITY_FIELDS = (
     "model_name",
@@ -54,6 +61,10 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
         "dcode": "./langgraph_agent.py:make_graph",
         "bare": "./langgraph_agent.py:make_bare_graph",
         "tau3": "./langgraph_agent.py:make_tau3_graph",
+        "bare-no-task": "./langgraph_agent.py:make_bare_no_task_graph",
+        "bare-code-mixed": "./langgraph_agent.py:make_code_mixed_graph",
+        "bare-code-routed": "./langgraph_agent.py:make_code_routed_graph",
+        "bare-code-only": "./langgraph_agent.py:make_code_only_graph",
     }
     assert not (project_path / "langsmith.py").exists()
 
@@ -1036,3 +1047,110 @@ def test_make_graph_passes_no_tools_when_the_search_key_is_absent(
     langgraph_agent.make_graph({"configurable": {"cwd": str(tmp_path)}})
 
     assert captured[0] is None
+
+
+_FILE_TOOLS = {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"}
+
+
+async def _tools_model_sees(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    factory: Callable[[dict[str, object]], Awaitable[object]],
+    script: str | None = None,
+) -> tuple[dict[str, str], list[ToolMessage]]:
+    """Run one turn of a graph factory and return the tools bound on its last model call.
+
+    The model calls `eval` with `script` first when it is given. Each call gets a
+    fresh model name because code mode graphs register a process-wide harness
+    profile under the model's spec.
+    """
+    seen: dict[str, str] = {}
+    replies = [AIMessage(content="done")]
+    if script is not None:
+        call = {"name": "eval", "args": {"code": script}, "id": "call-1", "type": "tool_call"}
+        replies.insert(0, AIMessage(content="", tool_calls=[call]))
+
+    class FakeChat(GenericFakeChatModel):
+        model_name: str = f"model-{uuid.uuid4().hex}"
+
+        def _get_ls_params(
+            self, stop: list[str] | None = None, **kwargs: object
+        ) -> LangSmithParams:
+            return LangSmithParams(ls_provider="fake", ls_model_name=self.model_name)
+
+        def bind_tools(
+            self,
+            tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
+            **kwargs: object,
+        ) -> FakeChat:
+            seen.clear()
+            seen.update({t.name: t.description for t in tools if isinstance(t, BaseTool)})
+            return self
+
+        def _generate(
+            self, messages: list[BaseMessage], *args: object, **kwargs: object
+        ) -> ChatResult:
+            reply = replies.pop(0) if len(replies) > 1 else replies[0]
+            return ChatResult(generations=[ChatGeneration(message=reply)])
+
+    model = FakeChat(messages=iter(()))
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _configurable: model)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    agent = cast(
+        "CompiledStateGraph[Any, Any, Any, Any]",
+        await factory(
+            {"configurable": {"model": f"fake:{model.model_name}", "cwd": str(tmp_path)}}
+        ),
+    )
+    result = await agent.ainvoke({"messages": [{"role": "user", "content": "go"}]})
+    return seen, [m for m in result["messages"] if isinstance(m, ToolMessage)]
+
+
+async def test_bare_no_task_graph_drops_only_the_task_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen, _ = await _tools_model_sees(
+        monkeypatch, tmp_path, langgraph_agent.make_bare_no_task_graph
+    )
+
+    assert set(seen) == {"execute", *_FILE_TOOLS}
+
+
+@pytest.mark.filterwarnings("ignore:The class `CodeInterpreterMiddleware` is in beta")
+async def test_code_mixed_graph_adds_eval_beside_every_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen, _ = await _tools_model_sees(monkeypatch, tmp_path, langgraph_agent.make_code_mixed_graph)
+
+    assert set(seen) == {"eval", "execute", *_FILE_TOOLS}
+
+
+@pytest.mark.filterwarnings("ignore:The class `CodeInterpreterMiddleware` is in beta")
+async def test_code_routed_graph_moves_file_tools_into_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen, _ = await _tools_model_sees(monkeypatch, tmp_path, langgraph_agent.make_code_routed_graph)
+
+    assert set(seen) == {"eval", "execute"}
+    for hidden in ("read_file", "grep", "glob"):
+        assert hidden not in seen["execute"]
+
+
+@pytest.mark.filterwarnings("ignore:The class `CodeInterpreterMiddleware` is in beta")
+async def test_code_only_graph_runs_shell_and_files_from_scripts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "in.txt").write_text("hello")
+    script = (
+        f"const text = await fs.readFile({str(tmp_path / 'in.txt')!r});"
+        "const out = await tools.execute({command: 'echo shell-ok'});"
+        "[text, out]"
+    )
+
+    seen, results = await _tools_model_sees(
+        monkeypatch, tmp_path, langgraph_agent.make_code_only_graph, script
+    )
+
+    assert set(seen) == {"eval"}
+    assert "hello" in results[0].content
+    assert "shell-ok" in results[0].content

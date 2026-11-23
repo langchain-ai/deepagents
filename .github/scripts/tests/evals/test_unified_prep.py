@@ -167,8 +167,9 @@ def test_claude_code_rejects_minimal_reasoning_effort(tmp_path, monkeypatch):
 
 
 def test_module_impl_sets_match_registry():
-    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3", "codex", "claude-code", "pi"}
-    assert up.CODE_AGENT_IMPLS == {"bare", "dcode", "codex", "claude-code", "pi"}
+    code_mode = {"bare-no-task", "bare-code-mixed", "bare-code-routed", "bare-code-only"}
+    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3", "codex", "claude-code", "pi", *code_mode}
+    assert up.CODE_AGENT_IMPLS == {"bare", "dcode", "codex", "claude-code", "pi", *code_mode}
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):
     import pytest

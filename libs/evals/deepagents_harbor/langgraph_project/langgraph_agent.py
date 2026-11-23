@@ -10,9 +10,14 @@ import re
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
-from deepagents import create_deep_agent
+from deepagents import (
+    GeneralPurposeSubagentProfile,
+    HarnessProfile,
+    create_deep_agent,
+    register_harness_profile,
+)
 from deepagents.backends import LocalShellBackend
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
@@ -20,6 +25,7 @@ from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
+from langchain_quickjs import CodeInterpreterMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -54,6 +60,25 @@ _MODEL_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
 Without `max_input_tokens`, summarization falls back to a fixed 170K-token
 trigger, far below these models' context windows.
 """
+
+CodeModeRouting = Literal["mixed", "routed", "code_only"]
+"""How a code mode graph splits tools between the model and scripts."""
+
+# Built-in file tools. Scripts in every code mode graph do file work through `fs`.
+_FILE_TOOLS = frozenset({"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"})
+
+# The default `execute` description ends by telling the model to use `read_file`,
+# `grep`, and `glob` instead of the shell. Graphs that hide those tools use this
+# copy of the default without that bullet.
+_CODE_MODE_EXECUTE_DESCRIPTION = """Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).
+
+Usage:
+- Quote paths containing spaces (e.g. cd "/path/with spaces").
+- Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
+- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default."""
+
+# Above the 4,000-character default, so one test or build log fits in an eval result.
+_CODE_MODE_MAX_RESULT_CHARS = 20_000
 
 # Bounds on the gated `web_search` tool (see `_web_search_tool`).
 _WEB_SEARCH_MAX_RESULTS = 10
@@ -488,29 +513,160 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
+    tools = await _task_tools(configurable)
+    # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
+    # prompt-free default. The sandbox workdir is already enforced by the shell
+    # backend's `root_dir`.
+    return create_deep_agent(
+        model=model,
+        backend=_bare_backend(configurable),
+        tools=tools or None,
+        skills=_skills(configurable),
+    )
+
+
+def _bare_backend(configurable: dict[str, object]) -> LocalShellBackend:
+    """Build the shell backend the bare graphs run on, rooted at Harbor's workdir."""
     # Harbor runs each task in its own isolated container rooted at the workdir,
     # and tasks operate on the real sandbox paths, so path virtualization is
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
     # so the bare agent uses paths as-is rather than resolving against a virtual root.
-    backend = LocalShellBackend(
+    return LocalShellBackend(
         root_dir=_workdir(configurable),
         inherit_env=False,
         env={name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ},
         virtual_mode=False,
     )
-    # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
-    # prompt-free default. The sandbox workdir is already enforced by the shell
-    # backend's `root_dir`.
+
+
+async def _task_tools(configurable: dict[str, object]) -> list[BaseTool]:
+    """Return the task's MCP tools, plus `web_search` when its key is set."""
     tools = await _mcp_tools(configurable)
     search_tool = _web_search_tool()
     if search_tool is not None:
         tools.append(search_tool)
+    return tools
+
+
+class _Routes(NamedTuple):
+    """Which tools one code mode variant gives the model and which it gives scripts."""
+
+    hidden: frozenset[str]
+    """Tool names the model cannot call directly."""
+
+    script_tools: list[str | BaseTool] | None
+    """Tool names scripts call as `tools.*`; `None` gives scripts none."""
+
+
+def _code_mode_routes(routing: CodeModeRouting, task_tools: list[str]) -> _Routes:
+    """Route the bare agent's tools for one code mode variant.
+
+    Every variant gives scripts the Node-style `fs` for file work.
+
+    - `mixed`: the model keeps every tool, and scripts get them too.
+    - `routed`: each tool goes one way. File tools move into `fs`; `execute`
+      and the task's tools stay direct only.
+    - `code_only`: the model sees only `eval`, and scripts get every tool.
+    """
+    script_tools = ["execute", *task_tools]
+    if routing == "mixed":
+        return _Routes(frozenset(), [*script_tools])
+    if routing == "routed":
+        return _Routes(_FILE_TOOLS, None)
+    return _Routes(_FILE_TOOLS | set(script_tools), [*script_tools])
+
+
+def _register_no_task_profile(configurable: dict[str, object], hidden: frozenset[str]) -> None:
+    """Drop the `task` subagent and hide `hidden` from the model, for this graph's model.
+
+    No code mode graph has `task`: hiding tools through a profile also hides them
+    from the subagent, which never gets `eval`, and `task()` in scripts turns a
+    run into subagent fan-out. `bare-no-task` is the baseline to compare against.
+    A harness profile is process-wide and keyed by model; Harbor's runner builds
+    only the selected graph, so one graph's profile never reaches another's run.
+    """
+    register_harness_profile(
+        _model_name(configurable),
+        HarnessProfile(
+            excluded_tools=hidden,
+            tool_description_overrides={"execute": _CODE_MODE_EXECUTE_DESCRIPTION}
+            if hidden
+            else {},
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+        ),
+    )
+
+
+async def _make_code_mode_graph(
+    config: dict[str, object] | None, routing: CodeModeRouting
+) -> object:
+    """Build the bare graph with `eval`, routing tools as `routing` names."""
+    configurable = _configurable(config)
+    model = _build_model(configurable)
+    tools = await _task_tools(configurable)
+    routes = _code_mode_routes(routing, [tool.name for tool in tools])
+    _register_no_task_profile(configurable, routes.hidden)
+    interpreter = CodeInterpreterMiddleware(
+        fs=True,
+        ptc=routes.script_tools,
+        max_result_chars=_CODE_MODE_MAX_RESULT_CHARS,
+    )
     return create_deep_agent(
         model=model,
-        backend=backend,
+        backend=_bare_backend(configurable),
         tools=tools or None,
         skills=_skills(configurable),
+        middleware=[interpreter],
     )
+
+
+async def make_bare_no_task_graph(config: dict[str, object] | None = None) -> object:
+    """Create the bare graph without the `task` tool, the code mode graphs' baseline.
+
+    Args:
+        config: LangGraph runtime config, as for `make_bare_graph`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+    """
+    _register_no_task_profile(_configurable(config), frozenset())
+    return await make_bare_graph(config)
+
+
+async def make_code_mixed_graph(config: dict[str, object] | None = None) -> object:
+    """Create the bare graph plus `eval`, with every tool both direct and in code.
+
+    Args:
+        config: LangGraph runtime config, as for `make_bare_graph`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+    """
+    return await _make_code_mode_graph(config, "mixed")
+
+
+async def make_code_routed_graph(config: dict[str, object] | None = None) -> object:
+    """Create the bare graph plus `eval`, with file work in code and the rest direct.
+
+    Args:
+        config: LangGraph runtime config, as for `make_bare_graph`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+    """
+    return await _make_code_mode_graph(config, "routed")
+
+
+async def make_code_only_graph(config: dict[str, object] | None = None) -> object:
+    """Create the bare graph with `eval` as the model's only tool.
+
+    Args:
+        config: LangGraph runtime config, as for `make_bare_graph`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+    """
+    return await _make_code_mode_graph(config, "code_only")
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

@@ -760,7 +760,8 @@ def _windows_git_bash() -> Path | None:
             exec_path = subprocess.run(  # noqa: S603  # fixed argv with resolved Git path
                 [git, "--exec-path"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=_GIT_EXEC_PATH_TIMEOUT,
                 check=True,
             ).stdout.strip()

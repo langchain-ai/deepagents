@@ -2,6 +2,15 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.14](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.13...deepagents-code==0.2.14) (2026-11-23)
+
+
+### Bug Fixes
+
+* **code:** attribute side-request spend in `/cost` breakdown ([#7912](https://github.com/langchain-ai/deepagents/issues/7912)) ([bf3dac2](https://github.com/langchain-ai/deepagents/commit/bf3dac2aaa0530c53713aea736b120eef2da60a9))
+* **code:** correct verbose settings flag hints ([#7946](https://github.com/langchain-ai/deepagents/issues/7946)) ([43fdf98](https://github.com/langchain-ai/deepagents/commit/43fdf98d0bfa83d17a697a85f8240b8499b7bbba))
+* **code:** detect local context on Windows ([#7938](https://github.com/langchain-ai/deepagents/issues/7938)) ([3f33b2b](https://github.com/langchain-ai/deepagents/commit/3f33b2b062be1a54bf2b1703eda9ebcc751ae2bd))
+
 ## [0.2.13](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.12...deepagents-code==0.2.13) (2026-11-20)
 
 ### Bug Fixes

@@ -68,7 +68,7 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
-Drafts use a fixed section order matching `release-please`: `⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`. Empty sections are omitted, entries are bullets, and references include pull request links only—not commit hashes or other links. A draft must link every pull request in the generated changelog section and no link outside it; if the model drops a pull request or adds a link, the draft fails and nothing is posted. Links to issues that a commit closes are optional.
+Drafts use a fixed section order matching `release-please`: `⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`. The generated `### Dependencies` list is not drafted: the bot hides it from the model and appends it to the draft verbatim, so a version range is never reworded. A later dependency change on `main` changes the list, which counts as a new generated entry and asks for a re-draft. Empty sections are omitted, entries are bullets, and references include pull request links only—not commit hashes or other links. A draft must link every pull request in the generated changelog section and no link outside it; if the model drops a pull request or adds a link, the draft fails and nothing is posted. Links to issues that a commit closes are optional.
 
 > [!NOTE]
 > When `@release-bot apply` adds a trusted commit that changes only the package's managed `CHANGELOG.md`, the main CI workflow intentionally skips its package lint and test jobs. The `✅ CI Success` gate reuses the result from the apply commit's parent, where the same release-PR contents already ran through normal CI. Skipped package jobs on the apply commit are therefore expected; inspect the parent's `✅ CI Success` check and linked workflow run to see the reused tests. If the parent did not pass CI, the apply commit does not pass the gate.
@@ -163,7 +163,7 @@ A few rules of thumb for picking a type that respects what *should* end up in us
 
 - A change is **release-note-worthy** if a downstream user could observe it: new API, changed behavior, fixed bug, perceptible perf delta. Use `feat`, `fix`, or `perf`.
 - Internal-only work (refactors, test-only changes, CI tweaks, dependency bumps with no behavior change, comment/docstring updates) belongs in a hidden type. These still trigger a release PR rebase if one is open, but never appear in the changelog.
-- For dependency changes, the type decides *when* the change ships, not *whether* it's listed. The GitHub release body gets a collapsible **Dependencies** block listing every `requires-python`, `[project.dependencies]`, and `[project.optional-dependencies]` change since the previous tag, diffed from `pyproject.toml`, whatever type the commit had. So ask one question: do users need this on PyPI now?
+- For dependency changes, the type decides *when* the change ships, not *whether* it's listed. On every release PR, the `Update lockfiles` job writes a `### Dependencies` subsection into the version's `CHANGELOG.md` entry, listing every `requires-python`, `[project.dependencies]`, and `[project.optional-dependencies]` change since the previous tag, diffed from `pyproject.toml`, whatever type the commit had. The GitHub release body is extracted from that entry, so the list appears in both. So ask one question: do users need this on PyPI now?
   - **Yes: use `fix(<pkg>)`.** Merging opens a release PR for that package. Examples: lifting a cap that blocks installing a new `langchain-core` major, raising a floor because the code now calls an API only the newer version has, or a security fix.
   - **No: use `chore`.** The change sits on `main` and ships with the package's next release, whenever someone merges a `feat` or `fix` there. Example: the routine floor raises `raise_langchain_minimums.yml` opens.
   - When a `fix` PR makes the dependency change itself, the change shows up twice, and each entry says something different: the **Bug Fixes** entry says why, and **Dependencies** shows the range.
@@ -310,7 +310,7 @@ The [release workflow (`.github/workflows/release.yml`)](https://github.com/lang
 
 1. **Setup** - Resolves package name to working directory
 2. **Build** - Creates distribution package
-3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts the changelog, lists runtime dependency range changes since the previous tag in a collapsible **Dependencies** block, appends a collapsible package-scoped Git log (newest commit first, up to 100 commits, truncated further if the log grows large), collects contributor shoutouts, and adds a **Special thanks** section crediting the users who filed the issues the release's PRs closed; pre-release checks run tests against the built package
+3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts the changelog, appends a collapsible package-scoped Git log (newest commit first, up to 100 commits, truncated further if the log grows large), collects contributor shoutouts, and adds a **Special thanks** section crediting the users who filed the issues the release's PRs closed; pre-release checks run tests against the built package
 4. **Test PyPI** - Publishes to test.pypi.org for validation (after pre-release checks pass)
 5. **Publish** - Publishes to PyPI (requires Test PyPI to succeed)
 6. **Mark Release** - Creates a published GitHub release with the built artifacts; updates PR labels. For the SDK (`libs/deepagents`), we set it as the repository's `latest` (unless it's a pre-release).
@@ -1013,7 +1013,7 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 **The actual PR commits** are only:
 
 - The release commit (e.g., `release(deepagents): 0.5.1` or `release(deepagents-code): 0.1.61`)
-- The lockfile update commit (e.g., `chore: update lockfiles`)
+- The lockfile update commit (e.g., `chore: update lockfiles`), which also writes the version's `### Dependencies` list into `CHANGELOG.md`
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
 

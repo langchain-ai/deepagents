@@ -1801,38 +1801,88 @@ def _read_pyproject_at(
         return None
 
 
-def build_dependency_section(
+DEPENDENCIES_HEADING = "### Dependencies"
+
+
+def dependency_change_lines(
     repo: Path,
     working_dir: str,
     prev_tag: str,
-    release_sha: str,
+    ref: str,
     warnings: list[str],
-) -> str:
-    """Summarize dependency range changes since *prev_tag*, or return "".
+) -> list[str]:
+    """List dependency range changes between *prev_tag* and *ref* as bullets.
 
     Routine floor raises land as hidden `chore` commits so they never cut a
-    release on their own. Diffing the manifest here still surfaces them, along
-    with any other range change, in the release that ships them. An initial
-    release (no *prev_tag*) has nothing to compare against and gets no section.
+    release on their own. Diffing the manifest still surfaces them, along with
+    any other range change, in the release that ships them. An initial release
+    (no *prev_tag*) has nothing to compare against and gets no lines.
     """
     if not prev_tag:
-        return ""
+        return []
     old = _read_pyproject_at(repo, working_dir, prev_tag, warnings)
-    new = _read_pyproject_at(repo, working_dir, release_sha, warnings)
+    new = _read_pyproject_at(repo, working_dir, ref, warnings)
     if old is None or new is None:
-        return ""
-    lines = _dependency_change_lines(old, new)
-    if not lines:
-        return ""
-    # Collapsed like the Git log: the list can run long on a release that
-    # carries several floor raises, and it is reference detail, not the notes.
-    noun = "change" if len(lines) == 1 else "changes"
-    return (
-        "<details>\n"
-        f"<summary>Dependencies ({len(lines)} {noun})</summary>\n\n"
-        + "\n".join(lines)
-        + "\n\n</details>"
-    )
+        return []
+    return _dependency_change_lines(old, new)
+
+
+def _version_section_bounds(lines: list[str], version: str) -> tuple[int, int] | None:
+    """Return the `[start, end)` line range of *version*'s entries, heading excluded."""
+    start = None
+    for index, line in enumerate(lines):
+        header = _CHANGELOG_HEADER_RE.match(line)
+        if not header:
+            continue
+        if start is not None:
+            return start, index
+        if header.group("version") == version:
+            start = index + 1
+    return (start, len(lines)) if start is not None else None
+
+
+def _without_dependencies(entries: list[str]) -> list[str]:
+    """Drop an existing Dependencies subsection, up to the next `###` heading."""
+    kept: list[str] = []
+    skipping = False
+    for line in entries:
+        if line.strip() == DEPENDENCIES_HEADING:
+            skipping = True
+            continue
+        if skipping and line.startswith("### "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    return kept
+
+
+def upsert_dependency_section(
+    changelog: str, version: str, change_lines: list[str]
+) -> str | None:
+    """Set *version*'s Dependencies subsection in *changelog* to *change_lines*.
+
+    The subsection always goes last in the version's entries, after the
+    release-please sections. Any existing one is replaced, and an empty
+    *change_lines* removes it, so rerunning on the same input is a no-op.
+
+    Returns:
+        The updated changelog, or None when it has no section for *version*.
+
+    """
+    lines = changelog.splitlines()
+    bounds = _version_section_bounds(lines, version)
+    if bounds is None:
+        return None
+    start, end = bounds
+    entries = _without_dependencies(lines[start:end])
+    while entries and not entries[-1].strip():
+        entries.pop()
+    if change_lines:
+        entries += ["", DEPENDENCIES_HEADING, "", *change_lines]
+    if end < len(lines):
+        entries.append("")
+    updated = "\n".join([*lines[:start], *entries, *lines[end:]])
+    return updated + "\n" if changelog.endswith("\n") else updated
 
 
 # ── Main entry point ────────────────────────────────────────────────────────
@@ -1987,14 +2037,6 @@ def build_release_notes(
     git_log_details = generate_git_log(
         repo_root, working_dir, prev_tag, release_sha, repository, warnings
     )
-
-    # Placed after the changelog section and before the full-changelog link,
-    # so it reads as part of this version's notes.
-    dependency_section = build_dependency_section(
-        repo_root, working_dir, prev_tag, release_sha, warnings
-    )
-    if dependency_section:
-        changelog_body = _with_section(changelog_body, dependency_section)
 
     if offline:
         warnings.append("Offline mode: skipping contributor and releaser lookups.")

@@ -17,6 +17,7 @@ SCRIPT_PATH = SCRIPT_DIR / "build_release_notes.py"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import build_release_notes as brn  # noqa: E402  # import requires the script path above
+import update_changelog_dependencies as ucd  # noqa: E402  # same reason
 
 PACKAGE_PATH = Path("libs/example")
 REPOSITORY = "langchain-ai/deepagents"
@@ -3860,82 +3861,209 @@ def _build(repo: Path, release_sha: str) -> tuple[str, list[str]]:
     )
 
 
-class TestDependencySection:
-    """The release body lists runtime dependency range changes since the last tag."""
+_EXPECTED_CHANGES = [
+    "- Python: `>=3.11` → `>=3.12`",
+    "- Added `added-dep[extra]` `>=0.5`",
+    "- `langchain_core`: `>=1.8.0,<2.0.0` → `>=1.8.3,<2.0.0`",
+    "- Removed `removed-dep`",
+    "- `tomli; python_version < '3.11'`: `>=2.0` → `>=2.2`",
+    (
+        "- `langchain-google-vertexai`: `>=3.2.0,<4.0.0` → `>=3.2.5,<4.0.0`"
+        " (`vertex` extra)"
+    ),
+]
+
+_GENERATED_CHANGELOG = """\
+# Changelog
+
+## [1.0.1](https://example.test/compare) (2026-11-20)
+
+### Bug Fixes
+
+* fix something ([#2](https://example.test/pull/2))
+
+## [1.0.0](https://example.test/compare) (2026-11-01)
+
+### Features
+
+* initial ([#1](https://example.test/pull/1))
+"""
+
+
+class TestDependencyChangeLines:
+    """The `pyproject.toml` diff that feeds the changelog's Dependencies list."""
 
     def test_lists_runtime_changes_only(self, tmp_path: Path) -> None:
         head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
-        body, _ = _build(tmp_path, head)
-
-        section = body.split("<summary>Dependencies (6 changes)</summary>\n\n", 1)[1]
-        section = section.split("\n\n</details>", 1)[0]
-        assert section.splitlines() == [
-            "- Python: `>=3.11` → `>=3.12`",
-            "- Added `added-dep[extra]` `>=0.5`",
-            "- `langchain_core`: `>=1.8.0,<2.0.0` → `>=1.8.3,<2.0.0`",
-            "- Removed `removed-dep`",
-            "- `tomli; python_version < '3.11'`: `>=2.0` → `>=2.2`",
-            (
-                "- `langchain-google-vertexai`: `>=3.2.0,<4.0.0` → `>=3.2.5,<4.0.0`"
-                " (`vertex` extra)"
-            ),
-        ]
+        warnings: list[str] = []
+        lines = brn.dependency_change_lines(
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", head, warnings
+        )
+        assert lines == _EXPECTED_CHANGES
         # A reordered or re-spaced specifier is not a change, and dev-only
         # dependency groups never ship, so neither is listed.
-        assert "langgraph" not in section
-        assert "pytest" not in section
+        assert not any("langgraph" in line or "pytest" in line for line in lines)
+        assert warnings == []
 
-    def test_sits_between_changelog_and_full_changelog_link(
+    def test_empty_for_initial_release(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
+        warnings: list[str] = []
+        assert (
+            brn.dependency_change_lines(tmp_path, str(PACKAGE_PATH), "", head, warnings)
+            == []
+        )
+        assert warnings == []
+
+    def test_unreadable_manifest_warns(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, None, _NEW_PYPROJECT)
+        warnings: list[str] = []
+        lines = brn.dependency_change_lines(
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", head, warnings
+        )
+        assert lines == []
+        assert any("pyproject.toml at example==1.0.0" in w for w in warnings), warnings
+
+    def test_invalid_toml_warns(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, "[project\n")
+        warnings: list[str] = []
+        lines = brn.dependency_change_lines(
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", head, warnings
+        )
+        assert lines == []
+        assert any("Could not parse" in w for w in warnings), warnings
+
+
+class TestUpsertDependencySection:
+    """Writing the Dependencies list into one version's changelog entries."""
+
+    def test_appends_after_generated_sections(self) -> None:
+        updated = brn.upsert_dependency_section(
+            _GENERATED_CHANGELOG, "1.0.1", ["- `a`: `>=1` → `>=2`"]
+        )
+        assert updated == _GENERATED_CHANGELOG.replace(
+            "([#2](https://example.test/pull/2))\n\n",
+            "([#2](https://example.test/pull/2))\n\n"
+            "### Dependencies\n\n- `a`: `>=1` → `>=2`\n\n",
+        )
+
+    def test_rerun_is_a_no_op_and_new_lines_replace_old(self) -> None:
+        once = brn.upsert_dependency_section(_GENERATED_CHANGELOG, "1.0.1", ["- old"])
+        assert once is not None
+        assert brn.upsert_dependency_section(once, "1.0.1", ["- old"]) == once
+        replaced = brn.upsert_dependency_section(once, "1.0.1", ["- new"])
+        assert replaced is not None
+        assert "- new" in replaced
+        assert "- old" not in replaced
+        assert replaced.count("### Dependencies") == 1
+
+    def test_empty_lines_remove_the_section(self) -> None:
+        once = brn.upsert_dependency_section(_GENERATED_CHANGELOG, "1.0.1", ["- a"])
+        assert once is not None
+        assert brn.upsert_dependency_section(once, "1.0.1", []) == _GENERATED_CHANGELOG
+
+    def test_replaces_a_section_that_is_not_last(self) -> None:
+        curated = _GENERATED_CHANGELOG.replace(
+            "### Bug Fixes", "### Dependencies\n\n- stale\n\n### Bug Fixes"
+        )
+        updated = brn.upsert_dependency_section(curated, "1.0.1", ["- fresh"])
+        assert updated is not None
+        section = brn.extract_changelog_section_text(updated, "1.0.1", "test")[0]
+        assert section == (
+            "### Bug Fixes\n\n* fix something ([#2](https://example.test/pull/2))"
+            "\n\n### Dependencies\n\n- fresh"
+        )
+
+    def test_leaves_other_versions_alone(self) -> None:
+        updated = brn.upsert_dependency_section(_GENERATED_CHANGELOG, "1.0.0", ["- a"])
+        assert updated is not None
+        assert updated.endswith(
+            "* initial ([#1](https://example.test/pull/1))\n\n"
+            "### Dependencies\n\n- a\n"
+        )
+        assert "## [1.0.1]" in updated
+
+    def test_missing_version_returns_none(self) -> None:
+        assert brn.upsert_dependency_section(_GENERATED_CHANGELOG, "9.9.9", ["- a"]) is None
+
+
+class TestUpdateChangelogDependencies:
+    """The release-PR step that writes the list into CHANGELOG.md."""
+
+    @pytest.fixture(autouse=True)
+    def _register_example(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(brn.PACKAGE_MAP, "example", str(PACKAGE_PATH))
+
+    def test_writes_the_list_into_the_release_section(self, tmp_path: Path) -> None:
+        _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=_GENERATED_CHANGELOG
+        )
+        warnings = ucd.update_changelog(tmp_path, "example", "1.0.1")
+
+        assert warnings == []
+        text = (tmp_path / PACKAGE_PATH / "CHANGELOG.md").read_text()
+        section = brn.extract_changelog_section_text(text, "1.0.1", "test")[0]
+        assert section.endswith(
+            "### Dependencies\n\n" + "\n".join(_EXPECTED_CHANGES)
+        ), section
+
+    def test_unknown_component_is_a_warning(self, tmp_path: Path) -> None:
+        _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
+        warnings = ucd.update_changelog(tmp_path, "nope", "1.0.1")
+        assert any("Unknown component 'nope'" in w for w in warnings), warnings
+
+    def test_missing_version_section_leaves_the_file_alone(
         self, tmp_path: Path
     ) -> None:
-        changelog = "## 1.0.1\n\n### Bug Fixes\n\n* fix something\n"
+        _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=_GENERATED_CHANGELOG
+        )
+        warnings = ucd.update_changelog(tmp_path, "example", "2.0.0")
+        assert any("No 2.0.0 section" in w for w in warnings), warnings
+        changelog = (tmp_path / PACKAGE_PATH / "CHANGELOG.md").read_text()
+        assert changelog == _GENERATED_CHANGELOG
+
+    def test_cli_fails_open(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_DIR / "update_changelog_dependencies.py"),
+                "--component",
+                "deepagents",
+                "--version",
+                "1.0.1",
+                "--repo-root",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "::warning::" in result.stdout
+
+
+class TestReleaseBodyDependencies:
+    """The release body carries only what CHANGELOG.md says about the package."""
+
+    def test_body_repeats_the_changelog_list_once(self, tmp_path: Path) -> None:
+        changelog = brn.upsert_dependency_section(
+            _GENERATED_CHANGELOG, "1.0.1", _EXPECTED_CHANGES
+        )
+        assert changelog is not None
         head = _release_with_manifests(
             tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=changelog
         )
         body, _ = _build(tmp_path, head)
+        assert body.count("### Dependencies") == 1
+        assert body.index("### Dependencies") < body.index("[Full changelog]")
 
-        assert (
-            body.index("* fix something")
-            < body.index("<summary>Dependencies")
-            < body.index("[Full changelog]")
-            < body.index("<summary>Git log")
+    def test_body_adds_nothing_the_changelog_lacks(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=_GENERATED_CHANGELOG
         )
-
-    def test_omitted_when_nothing_changed(self, tmp_path: Path) -> None:
-        unchanged = _OLD_PYPROJECT.replace('name = "example"', 'name = "example"\n')
-        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, unchanged)
-        body, warnings = _build(tmp_path, head)
-
-        assert "<summary>Dependencies" not in body
-        assert not any("pyproject.toml" in w for w in warnings), warnings
-
-    def test_omitted_for_initial_release(self, tmp_path: Path) -> None:
-        _init_repo(tmp_path)
-        head = _commit(
-            tmp_path, PACKAGE_PATH / "pyproject.toml", _NEW_PYPROJECT, "feat: init"
-        )
-        body, warnings = _build(tmp_path, head)
-
-        assert "<summary>Dependencies" not in body
-        assert not any("pyproject.toml" in w for w in warnings), warnings
-
-    def test_unreadable_manifest_warns_instead_of_failing(self, tmp_path: Path) -> None:
-        head = _release_with_manifests(tmp_path, None, _NEW_PYPROJECT)
-        body, warnings = _build(tmp_path, head)
-
-        assert "<summary>Dependencies" not in body
-        assert "<summary>Git log" in body
-        assert any(
-            "pyproject.toml at example==1.0.0" in w and "omitted" in w
-            for w in warnings
-        ), warnings
-
-    def test_invalid_toml_warns_instead_of_failing(self, tmp_path: Path) -> None:
-        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, "[project\n")
-        body, warnings = _build(tmp_path, head)
-
-        assert "<summary>Dependencies" not in body
-        assert any("Could not parse" in w for w in warnings), warnings
+        body, _ = _build(tmp_path, head)
+        assert "Dependencies" not in body
+        assert "langchain_core" not in body
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

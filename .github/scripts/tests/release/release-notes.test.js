@@ -650,6 +650,36 @@ test('prepares drafting input and state with sanitized maintainer instructions',
   assert.equal(JSON.parse(fs.readFileSync(raw.state, 'utf8')).instructions, 'keep it short');
 });
 
+test('drafting hides the generated Dependencies list from the model and appends it verbatim', async t => {
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-runner-'));
+  t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
+  const dependencies = '### Dependencies\n\n- `langchain-core`: `>=1.8.0,<2.0.0` → `>=1.8.3,<2.0.0`';
+  const generated = `${GENERATED_SECTION}\n${dependencies}\n`;
+  const { github, calls } = makeGithub({ files: new Map([[HEAD, changelog(generated)]]) });
+  const prepared = await releaseNotes.prepareDraft({
+    github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, runnerTemp,
+  });
+
+  const input = fs.readFileSync(prepared.input, 'utf8');
+  assert.match(input, /\* \*\*code:\*\* add useful feature/);
+  assert.ok(!input.includes('Dependencies'), input);
+  assert.ok(!input.includes('langchain-core'), input);
+  const state = JSON.parse(fs.readFileSync(prepared.state, 'utf8'));
+  assert.equal(state.dependencies, dependencies);
+  // The fingerprint still covers the full generated section, so a later change
+  // to the list goes stale exactly like a new generated entry.
+  assert.equal(state.fingerprint, releaseNotes.changelogFingerprint(generated));
+
+  // A model that invents its own list is overridden by the generated one.
+  fs.writeFileSync(prepared.output, '### Features\n\n* Add a useful feature.\n\n### Dependencies\n\n- made up\n');
+  await releaseNotes.postDraft({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile: prepared.state, outputFile: prepared.output, core: makeCore(), ...BOT_AUTH,
+  });
+  const body = calls.createComment[0].body;
+  assert.ok(body.includes(`${HEADING}\n\n### Features\n\n* Add a useful feature.\n\n${dependencies}\n`), body);
+  assert.ok(!body.includes('made up'), body);
+});
+
 test('posts a bot-authored draft and refuses stale agent output', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

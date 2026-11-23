@@ -496,9 +496,8 @@ jobs:
             exit 1
           fi
 
-  # Generate release notes from CHANGELOG.md, list dependency range changes
-  # diffed from pyproject.toml, append the package commit history, and collect
-  # contributor shoutouts.
+  # Generate release notes from CHANGELOG.md, append the package commit history,
+  # and collect contributor shoutouts.
   #
   # Intentionally fail-open: `publish` does not depend on this job, and
   # `mark-release` deliberately omits it from its `if:` condition, so a failure

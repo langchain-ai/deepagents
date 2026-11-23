@@ -37,9 +37,9 @@
 #   open a release PR for each (multi-component fan-out). A single-package run
 #   would release only that package (release-please ignores `uv.lock`); it
 #   stays `chore` so automated floor raises never cut a release on their own.
-#   They stay visible anyway: `build_release_notes.py` diffs each package's
-#   `pyproject.toml` and lists the raised floors under **Dependencies** in the
-#   GitHub release that ships them.
+#   They stay visible anyway: on each release PR, `release-please.yml` diffs
+#   the package's `pyproject.toml` and lists the raised floors under
+#   `### Dependencies` in that version's CHANGELOG.md entry.
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.

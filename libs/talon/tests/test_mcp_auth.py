@@ -1407,13 +1407,17 @@ def _confidential_oauth(method: str | None = None) -> MCPOAuthConfig:
 
 
 def _token_client_credentials(request: httpx.Request) -> tuple[str, str]:
+    """Return the client credentials, asserting they are sent exactly once."""
     authorization = request.headers.get("Authorization")
+    fields = parse_qs(request.content.decode())
     if authorization is not None:
         scheme, _, encoded = authorization.partition(" ")
         assert scheme == "Basic"
+        # RFC 6749 section 2.3.1: Basic carries the identity in the header alone.
+        assert "client_id" not in fields
+        assert "client_secret" not in fields
         client_id, _, secret = base64.b64decode(encoded).decode().partition(":")
         return unquote(client_id), unquote(secret)
-    fields = parse_qs(request.content.decode())
     return fields["client_id"][0], fields["client_secret"][0]
 
 

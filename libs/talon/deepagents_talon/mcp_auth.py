@@ -1022,7 +1022,31 @@ def build_oauth_provider(
         callback_handler=callback,
     )
     provider.configured_scopes = oauth.scopes
+    _strip_body_client_id_under_basic_auth(provider.context)
     return provider
+
+
+def _strip_body_client_id_under_basic_auth(context: OAuthContext) -> None:
+    """Send the client identity once when token requests use HTTP Basic.
+
+    The MCP SDK puts `client_id` in the token-request body on both the code
+    exchange and refresh, and for `client_secret_basic` also in the
+    `Authorization` header. RFC 6749 section 2.3.1 carries it in the header
+    alone, and some authorization servers reject the duplicate. Mirrors the
+    same workaround in `deepagents_code.mcp_auth`.
+    """
+    original = context.prepare_token_auth
+
+    def prepare_token_auth(
+        data: dict[str, str], headers: dict[str, str] | None = None
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        data, headers = original(data, headers)
+        # RFC 7617 makes the scheme token case-insensitive.
+        if headers.get("Authorization", "").lower().startswith("basic "):
+            data = {key: value for key, value in data.items() if key != "client_id"}
+        return data, headers
+
+    context.prepare_token_auth = prepare_token_auth  # ty: ignore[invalid-assignment]
 
 
 async def prepare_oauth_login(

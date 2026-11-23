@@ -707,6 +707,7 @@ def test_build_model_sets_kimi_context_window() -> None:
         }
     )
 
+    assert model.profile is not None
     assert model.profile["max_input_tokens"] == 1_048_576
 
 

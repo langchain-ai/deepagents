@@ -4045,7 +4045,7 @@ class TestUpdateChangelogDependencies:
 class TestReleaseBodyDependencies:
     """The release body carries only what CHANGELOG.md says about the package."""
 
-    def test_body_repeats_the_changelog_list_once(self, tmp_path: Path) -> None:
+    def test_body_collapses_the_changelog_list(self, tmp_path: Path) -> None:
         changelog = brn.upsert_dependency_section(
             _GENERATED_CHANGELOG, "1.0.1", _EXPECTED_CHANGES
         )
@@ -4054,8 +4054,33 @@ class TestReleaseBodyDependencies:
             tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=changelog
         )
         body, _ = _build(tmp_path, head)
-        assert body.count("### Dependencies") == 1
-        assert body.index("### Dependencies") < body.index("[Full changelog]")
+
+        toggle = (
+            "<details>\n<summary>Dependencies (6 changes)</summary>\n\n"
+            + "\n".join(_EXPECTED_CHANGES)
+            + "\n\n</details>"
+        )
+        assert toggle in body
+        assert "### Dependencies" not in body
+        assert (
+            body.index("* fix something")
+            < body.index(toggle)
+            < body.index("[Full changelog]")
+            < body.index("<summary>Git log")
+        )
+        # CHANGELOG.md itself keeps the plain heading.
+        assert "<details>" not in changelog
+
+    def test_collapse_keeps_later_sections(self) -> None:
+        body = "### Dependencies\n\n- `a`: `>=1` → `>=2`\n\n### Bug Fixes\n\n* fix"
+        assert brn.collapse_dependency_section(body) == (
+            "<details>\n<summary>Dependencies (1 change)</summary>\n\n"
+            "- `a`: `>=1` → `>=2`\n\n</details>\n\n### Bug Fixes\n\n* fix"
+        )
+
+    def test_collapse_ignores_bodies_without_the_section(self) -> None:
+        body = "### Bug Fixes\n\n* fix"
+        assert brn.collapse_dependency_section(body) == body
 
     def test_body_adds_nothing_the_changelog_lacks(self, tmp_path: Path) -> None:
         head = _release_with_manifests(

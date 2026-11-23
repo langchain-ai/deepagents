@@ -177,6 +177,27 @@ def _resolve_manifest_option(
 # --- Drift / coverage -------------------------------------------------------
 
 
+def test_manifest_cli_flags_are_registered() -> None:
+    """Every advertised settings flag exists in the CLI parser."""
+    from deepagents_code.main import build_parser
+
+    parsers = [build_parser()]
+    flags: set[str] = set()
+    while parsers:
+        for action in parsers.pop()._actions:
+            flags.update(action.option_strings)
+            if isinstance(action, argparse._SubParsersAction):
+                for subparser in action.choices.values():
+                    assert isinstance(subparser, argparse.ArgumentParser)
+                    parsers.append(subparser)
+    missing = {
+        option.key: option.cli_flag
+        for option in get_config_options()
+        if option.cli_flag and option.cli_flag not in flags
+    }
+    assert not missing, f"Settings advertise unregistered CLI flags: {missing}"
+
+
 def test_manifest_covers_every_provider_credential() -> None:
     """Every provider in `PROVIDER_API_KEY_ENV` must have a credential option."""
     manifest_env_vars = {opt.env_var for opt in get_config_options() if opt.env_var}

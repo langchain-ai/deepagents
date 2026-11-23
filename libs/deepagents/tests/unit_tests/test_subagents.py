@@ -11,7 +11,7 @@ import operator
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 from unittest.mock import MagicMock
 
 import pytest
@@ -3762,3 +3762,99 @@ class TestSubAgents:
             f"Got tracer metadatas: "
             f"{[p.get('extra', {}).get('metadata', {}) for p in posts]}"
         )
+
+
+class _SecretState(AgentState):
+    secret: NotRequired[Annotated[str, PrivateStateAttr]]
+
+
+class _SecretMiddleware(AgentMiddleware):
+    """Sets `secret` in the parent and records what each fork run starts with."""
+
+    state_schema = _SecretState
+
+    def __init__(self) -> None:
+        self.fork_secrets: list[str | None] = []
+
+    def before_agent(self, state: _SecretState, runtime: object) -> dict[str, str] | None:
+        del runtime
+        if state.get("_deepagents_forked_context"):
+            self.fork_secrets.append(state.get("secret"))
+            return None
+        return {"secret": "parent-value"}
+
+
+@tool
+def _guarded_action(target: str) -> str:
+    """Run a guarded action."""
+    return f"done {target}"
+
+
+def _task_call(call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": "task", "args": {"description": "go", "subagent_type": "worker"}, "id": call_id, "type": "tool_call"}],
+    )
+
+
+def _fork_agent(
+    worker_messages: list[AIMessage],
+    *,
+    interrupt: bool = False,
+) -> tuple[Any, _SecretMiddleware, GenericFakeChatModel]:
+    secret = _SecretMiddleware()
+    worker = GenericFakeChatModel(messages=iter(worker_messages))
+    spec: dict[str, Any] = {
+        "name": "worker",
+        "description": "Continues the conversation.",
+        "mode": "fork",
+        "model": worker,
+        "tools": [_guarded_action],
+    }
+    if interrupt:
+        spec["interrupt_on"] = {"_guarded_action": True}
+    agent = create_deep_agent(
+        model=GenericFakeChatModel(messages=iter([_task_call("call_worker"), AIMessage(content="PARENT_FINAL")])),
+        middleware=[secret],
+        subagents=[spec],
+        checkpointer=InMemorySaver(),
+    )
+    return agent, secret, worker
+
+
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_fork_receives_parent_private_state(use_async: bool) -> None:  # noqa: FBT001
+    """A declarative fork starts with the parent's `PrivateStateAttr` values."""
+    agent, secret, _worker = _fork_agent([AIMessage(content="FORK_DONE")])
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    inputs = {"messages": [HumanMessage(content="start")]}
+    if use_async:
+        await agent.ainvoke(inputs, config)
+    else:
+        agent.invoke(inputs, config)
+
+    assert secret.fork_secrets == ["parent-value"]
+
+
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+async def test_fork_resume_after_interrupt_keeps_history(use_async: bool) -> None:  # noqa: FBT001
+    """Resuming a fork after an interrupt does not re-add its initial messages."""
+    guarded_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "_guarded_action", "args": {"target": "x"}, "id": "call_guarded", "type": "tool_call"}],
+    )
+    agent, secret, worker = _fork_agent([guarded_call, AIMessage(content="FORK_DONE")], interrupt=True)
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    resume = Command(resume={"decisions": [{"type": "approve"}]})
+    if use_async:
+        interrupted = await agent.ainvoke({"messages": [HumanMessage(content="start")]}, config)
+        result = await agent.ainvoke(resume, config)
+    else:
+        interrupted = agent.invoke({"messages": [HumanMessage(content="start")]}, config)
+        result = agent.invoke(resume, config)
+
+    assert interrupted.get("__interrupt__")
+    assert secret.fork_secrets == ["parent-value"]
+    fork_messages = [message.type for message in worker.call_history[-1]["messages"] if message.type != "system"]
+    assert fork_messages == ["human", "human", "ai", "tool"]
+    assert result["messages"][-1].content == "PARENT_FINAL"

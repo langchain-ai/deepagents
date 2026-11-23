@@ -294,26 +294,14 @@ function withHeading(section, heading) {
   return `${heading}${text.slice(text.indexOf('\n'))}`;
 }
 
-// Replace *section*'s Dependencies subsection with *dependencies* (or drop it
-// when empty), keeping it last as the lockfile job writes it.
-function withDependencies(section, dependencies) {
-  const { entries } = splitDependencies(section);
-  return dependencies ? canonical(`${entries.trimEnd()}\n\n${dependencies}`) : entries;
-}
-
 // The single definition of "what the changelog and PR body must contain". Both
 // the writer (prepareApply) and the verifier (checkCuratedState) call it, so the
 // bytes one writes are by construction the bytes the other expects. A scoped
 // draft accepts release-please's current generated heading, since a branch
 // refresh for an unrelated main commit may restyle the date or comparison URL
-// without touching the curated prose. The Dependencies list always comes from
-// *currentSection*, the lockfile job's output, so an edit to it in the draft
-// comment is discarded rather than shipped.
-function curatedSectionFor(override, currentSection) {
-  const section = override.mainHead
-    ? withHeading(override.section, sectionHeading(currentSection))
-    : override.section;
-  return withDependencies(section, splitDependencies(currentSection).dependencies);
+// without touching the curated prose.
+function curatedSectionFor(override, currentHeading) {
+  return override.mainHead ? withHeading(override.section, currentHeading) : override.section;
 }
 
 // Names the cause behind a draftCoversCurrentPackage miss. The helper answers a
@@ -523,7 +511,7 @@ function overrideBody({ component, version, head, mainHead, headingHash, fingerp
     `changelog-fingerprint: ${fingerprint}`,
     'state: draft',
     '-->',
-    `Review and edit the release notes between the content markers below as needed. Keep the version heading intact. The \`### Dependencies\` list is generated from \`pyproject.toml\`; edits to it are discarded on apply. To regenerate with steering instead of editing by hand, run \`${COMMAND_MENTION} draft <instructions>\`.`,
+    `Review and edit the release notes between the content markers below as needed. Keep the version heading intact. The \`### Dependencies\` list is generated from \`pyproject.toml\`; don't edit it, or apply will fail. To regenerate with steering instead of editing by hand, run \`${COMMAND_MENTION} draft <instructions>\`.`,
     // Echo the maintainer's draft instructions so the prompt that produced this
     // draft is auditable on the PR, and so a later draft with different
     // instructions produces a visibly distinct comment. Escape HTML so the
@@ -1021,10 +1009,17 @@ async function prepareApply({ github, owner, repo, number, expectedHead, changel
     || (!override.mainHead && overrideHeading !== currentHeading)) {
     throw new Error('Keep the generated release version heading unchanged');
   }
-  const curatedSection = curatedSectionFor(override, currentSection);
+  const curatedSection = curatedSectionFor(override, currentHeading);
   const alreadyApplied = currentSection === curatedSection;
   if (!alreadyApplied && changelogFingerprint(currentSection) !== override.metadata['changelog-fingerprint']) {
     throw new Error(`New generated release entries appeared; run ${COMMAND_MENTION} draft before apply`);
+  }
+  // The Dependencies list is generated from pyproject.toml, so the draft must
+  // carry it unchanged. Refuse loudly rather than rewrite a maintainer's edit.
+  if (splitDependencies(override.section).dependencies !== splitDependencies(currentSection).dependencies) {
+    throw new Error(
+      `The \`### Dependencies\` list in the draft does not match the one generated from \`pyproject.toml\`. Restore the generated list in the draft comment, or run ${COMMAND_MENTION} draft to regenerate it`,
+    );
   }
 
   const updatedChangelog = alreadyApplied
@@ -1457,7 +1452,7 @@ async function checkCuratedState({
   const legacyHeadingChanged = !override.mainHead
     && currentSection !== override.section
     && overrideHeading !== currentHeading;
-  const expectedSection = curatedSectionFor(override, currentSection);
+  const expectedSection = curatedSectionFor(override, currentHeading);
   // The one definition of "a re-draft is required", shared by the unapplied and
   // applied branches below so they cannot prescribe different remedies for the
   // same state.

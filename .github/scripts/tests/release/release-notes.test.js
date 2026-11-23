@@ -699,7 +699,7 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   assert.match(calls.createComment[0].body, /```\n@release-bot draft\n```/);
   assert.match(calls.createComment[0].body, /only way to skip the curated-notes merge gate/);
   // The header advertises the steering form so maintainers learn it from the draft.
-  assert.match(calls.createComment[0].body, /Keep the version heading intact\. The `### Dependencies` list is generated from `pyproject\.toml`; edits to it are discarded on apply\. To regenerate with steering/);
+  assert.match(calls.createComment[0].body, /Keep the version heading intact\. The `### Dependencies` list is generated from `pyproject\.toml`; don't edit it, or apply will fail\. To regenerate with steering/);
   assert.match(calls.createComment[0].body, /@release-bot draft <instructions>/);
   // No instructions were recorded in state, so nothing is echoed.
   assert.ok(!calls.createComment[0].body.includes('<details>'));
@@ -773,13 +773,14 @@ test('prepare apply replaces only the changelog section and records immutable ha
   assert.match(state.body, /\* Add a useful feature/);
 });
 
-test('apply ships the generated Dependencies list, not an edited copy from the draft comment', async t => {
+const GENERATED_DEPS = '### Dependencies\n\n- `langsmith`: `>=0.15.1` → `>=0.16.0`';
+
+async function applyWithDependencies(t, { draftDeps, changelogDeps }) {
   const workspace = tempWorkspace();
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
-  const generatedDeps = '### Dependencies\n\n- `langsmith`: `>=0.15.1` → `>=0.16.0`';
-  const generated = `${GENERATED_SECTION}\n${generatedDeps}\n`;
-  const edited = `${CURATED_SECTION}\n### Dependencies\n\n- \`langsmith\`: \`>=0.15.1\` → \`>=9.9.9\`\n`;
-  const comments = [overrideComment({ section: edited, fingerprint: releaseNotes.changelogFingerprint(generated) })];
+  const generated = changelogDeps ? `${GENERATED_SECTION}\n${changelogDeps}\n` : GENERATED_SECTION;
+  const section = draftDeps ? `${CURATED_SECTION}\n${draftDeps}\n` : CURATED_SECTION;
+  const comments = [overrideComment({ section, fingerprint: releaseNotes.changelogFingerprint(generated) })];
   const { github } = makeGithub({ comments, files: new Map([[HEAD, changelog(generated)]]) });
   await releaseNotes.prepareApply({
     github,
@@ -791,28 +792,29 @@ test('apply ships the generated Dependencies list, not an edited copy from the d
     stateFile: path.join(workspace.root, 'apply.json'),
     ...BOT_AUTH,
   });
-  const written = releaseNotes.extractVersionSection(fs.readFileSync(workspace.file, 'utf8'), VERSION);
-  assert.equal(written, releaseNotes.canonical(`${CURATED_SECTION}\n${generatedDeps}\n`));
-  assert.ok(!written.includes('9.9.9'), written);
+  return releaseNotes.extractVersionSection(fs.readFileSync(workspace.file, 'utf8'), VERSION);
+}
+
+test('apply writes an untouched generated Dependencies list', async t => {
+  const written = await applyWithDependencies(t, { draftDeps: GENERATED_DEPS, changelogDeps: GENERATED_DEPS });
+  assert.equal(written, releaseNotes.canonical(`${CURATED_SECTION}\n${GENERATED_DEPS}\n`));
 });
 
-test('apply drops a Dependencies list the changelog does not have', async t => {
-  const workspace = tempWorkspace();
-  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
-  const edited = `${CURATED_SECTION}\n### Dependencies\n\n- made up\n`;
-  const { github } = makeGithub({ comments: [overrideComment({ section: edited })] });
-  await releaseNotes.prepareApply({
-    github,
-    owner: 'langchain-ai',
-    repo: 'deepagents',
-    number: 123,
-    expectedHead: HEAD,
-    changelogFile: workspace.file,
-    stateFile: path.join(workspace.root, 'apply.json'),
-    ...BOT_AUTH,
-  });
-  const written = releaseNotes.extractVersionSection(fs.readFileSync(workspace.file, 'utf8'), VERSION);
-  assert.equal(written, releaseNotes.canonical(CURATED_SECTION));
+test('apply refuses a draft whose Dependencies list was edited', async t => {
+  await assert.rejects(
+    applyWithDependencies(t, {
+      draftDeps: '### Dependencies\n\n- `langsmith`: `>=0.15.1` → `>=9.9.9`',
+      changelogDeps: GENERATED_DEPS,
+    }),
+    /`### Dependencies` list in the draft does not match the one generated from `pyproject\.toml`\. Restore the generated list in the draft comment, or run @release-bot draft/,
+  );
+});
+
+test('apply refuses a Dependencies list the changelog does not have', async t => {
+  await assert.rejects(
+    applyWithDependencies(t, { draftDeps: '### Dependencies\n\n- made up', changelogDeps: '' }),
+    /`### Dependencies` list in the draft does not match/,
+  );
 });
 
 test('apply rejects concurrent PR-body and override revisions', async t => {
@@ -1056,35 +1058,6 @@ test('required check passes only when applied metadata, changelog, body, and anc
   // so the result must carry them.
   assert.equal(result.component, COMPONENT);
   assert.equal(result.version, VERSION);
-});
-
-test('required check passes when apply replaced an edited Dependencies list with the generated one', async () => {
-  const generatedDeps = '### Dependencies\n\n- `langsmith`: `>=0.15.1` → `>=0.16.0`';
-  const generated = `${GENERATED_SECTION}\n${generatedDeps}\n`;
-  const edited = `${CURATED_SECTION}\n### Dependencies\n\n- \`langsmith\`: \`>=0.15.1\` → \`>=9.9.9\`\n`;
-  const shipped = `${CURATED_SECTION}\n${generatedDeps}\n`;
-  const fingerprint = releaseNotes.changelogFingerprint(generated);
-  const pr = releasePr({
-    head: { ...releasePr().head, sha: APPLIED_HEAD },
-    body: `Release notes preview\n\n${shipped}\n_End release notes preview._\n`,
-  });
-  const { github } = makeGithub({
-    pr,
-    comments: [
-      overrideComment({ section: edited, fingerprint }),
-      appliedComment({ fingerprint, contentHash: releaseNotes.sha256(edited) }),
-    ],
-    files: new Map([[APPLIED_HEAD, changelog(shipped)]]),
-  });
-  const core = makeCore();
-  const result = await releaseNotes.checkCuratedState({
-    github,
-    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
-    core,
-    number: 123,
-    ...BOT_AUTH,
-  });
-  assert.equal(result.status, 'passed', core.failed);
 });
 
 test('required check accepts apply after unrelated branch advancement', async () => {

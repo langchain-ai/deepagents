@@ -3,6 +3,9 @@ type: composite-action integration
 title: GitHub Action Integration
 description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the composite action contract, published CLI boundary, state lifecycle, safeguards, verification, and release safety.
 tags: [github-actions, dcode, deepagents-code, automation, memory, mcp, sandbox]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-21T08:04:00.255Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -24,10 +27,7 @@ sources:
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-20T08:04:05.944Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
 ---
 
 # GitHub Action Integration
@@ -132,7 +132,7 @@ The action ref and `cli_version` select independent artifacts: `uses: langchain-
 
 ### Installer-visible package contract
 
-The source currently declares `deepagents-code` `0.2.12`. A normal package installation must satisfy its Python constraint, `>=3.14,<3.15`, and receives the exact runtime dependency `deepagents==0.7.41`; these are the constraints that matter to `uvx` and therefore to action consumers. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change. Pin `cli_version` to a release compatible with the job environment and the flags supplied to the action.
+The source currently declares `deepagents-code` `0.2.13`. A normal package installation must satisfy its Python constraint, `>=3.14,<3.15`, and receives the exact runtime dependency `deepagents==0.7.41`; these are the constraints that matter to `uvx` and therefore to action consumers. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change. Pin `cli_version` to a release compatible with the job environment and the flags supplied to the action.
 
 ### Editable repository development is different
 

@@ -7,7 +7,7 @@ temp files, persistent store for memories).
 
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -27,6 +27,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     _apply_grep_max_count,
     _method_accepts_max_count,
+    execute_accepts_command_id,
     execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
@@ -816,6 +817,7 @@ class CompositeBackend(BackendProtocol):
         command: str,
         *,
         timeout: int | None = None,
+        command_id: str | None = None,
     ) -> ExecuteResponse:
         """Execute a shell command via the default backend.
 
@@ -827,6 +829,8 @@ class CompositeBackend(BackendProtocol):
             timeout: Maximum time in seconds to wait for the command to complete.
 
                 If `None`, uses the backend's default timeout.
+            command_id: A stable id for the command, passed to a default
+                backend that accepts one.
 
         Returns:
             `ExecuteResponse` with output, exit code, and truncation flag.
@@ -837,9 +841,12 @@ class CompositeBackend(BackendProtocol):
                 (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
+            kwargs: dict[str, Any] = {}
             if timeout is not None and execute_accepts_timeout(type(self.default)):
-                return self.default.execute(command, timeout=timeout)
-            return self.default.execute(command)
+                kwargs["timeout"] = timeout
+            if command_id is not None and execute_accepts_command_id(type(self.default), "execute"):
+                kwargs["command_id"] = command_id
+            return self.default.execute(command, **kwargs)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
@@ -856,15 +863,19 @@ class CompositeBackend(BackendProtocol):
         # ASYNC109 - timeout is a semantic parameter forwarded to the underlying
         # backend's implementation, not an asyncio.timeout() contract.
         timeout: int | None = None,  # noqa: ASYNC109
+        command_id: str | None = None,
     ) -> ExecuteResponse:
         """Async version of execute.
 
         See `execute()` for detailed documentation on parameters and behavior.
         """
         if isinstance(self.default, SandboxBackendProtocol):
+            kwargs: dict[str, Any] = {}
             if timeout is not None and execute_accepts_timeout(type(self.default)):
-                return await self.default.aexecute(command, timeout=timeout)
-            return await self.default.aexecute(command)
+                kwargs["timeout"] = timeout
+            if command_id is not None and execute_accepts_command_id(type(self.default), "aexecute"):
+                kwargs["command_id"] = command_id
+            return await self.default.aexecute(command, **kwargs)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.

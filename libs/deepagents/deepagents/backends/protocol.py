@@ -7,6 +7,7 @@ database, etc.) and provide a uniform interface for file operations.
 
 import abc
 import asyncio
+import hashlib
 import inspect
 import logging
 from dataclasses import dataclass
@@ -975,6 +976,47 @@ def _method_accepts_max_count(cls: type[BackendProtocol], method_name: Literal["
         )
         return False
     return "max_count" in sig.parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values())
+
+
+@lru_cache(maxsize=256)
+def execute_accepts_command_id(
+    cls: type,
+    method_name: Literal["execute", "aexecute", "execute_with_offload", "aexecute_with_offload"] = "execute",
+) -> bool:
+    """Check whether a backend class's execute method accepts a `command_id` kwarg.
+
+    `command_id` is an optional extension of `execute`, `aexecute` and the
+    offload variants: a stable id for the command, from `execute_command_id`. A
+    backend that can reattach to a command, such as one still running after the
+    run that started it was retried, accepts it and returns that command's
+    result instead of running it again. Callers pass it only where this returns
+    `True`. Results are cached per class and method.
+    """
+    try:
+        sig = inspect.signature(getattr(cls, method_name))
+    except (AttributeError, ValueError, TypeError):
+        return False
+    return "command_id" in sig.parameters
+
+
+def execute_command_id(*, thread_id: str, message_id: str | None, tool_call_id: str, command: str) -> str:
+    """The stable id of a command an agent's tool call runs.
+
+    A run retried from its last checkpoint replays the same model message,
+    tool call and command, so the id comes out the same on every attempt, and a
+    backend that can reattach picks up the first attempt's command instead of
+    running it again. The message id keeps apart tool calls whose ids a
+    provider reuses across turns, and the command keeps a changed command from
+    matching. The result is 43 characters from `[a-z0-9-]`.
+
+    Args:
+        thread_id: The thread the run belongs to.
+        message_id: The id of the AI message holding the tool call, if it has one.
+        tool_call_id: The tool call's id.
+        command: The command as the model wrote it, before any wrapping.
+    """
+    key = "\0".join([thread_id, message_id or "", tool_call_id, command])
+    return "da-" + hashlib.sha256(key.encode()).hexdigest()[:40]
 
 
 @lru_cache(maxsize=128)

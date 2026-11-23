@@ -580,6 +580,15 @@ async def test_aexecute_uses_async_client_not_sync_run() -> None:
     sb._sandbox.run.assert_not_called()
 
 
+async def test_aexecute_passes_command_id_to_run() -> None:
+    """Running the same id again attaches to the sandbox's existing command."""
+    sb, async_sdk, _ = _make_async_sandbox()
+
+    await sb.aexecute("make build", timeout=30, command_id="da-1")
+
+    async_sdk.run.assert_awaited_once_with("make build", timeout=30, command_id="da-1")
+
+
 async def test_aexecute_combines_stdout_and_stderr() -> None:
     sb, async_sdk, _ = _make_async_sandbox()
     async_sdk.run.return_value = SimpleNamespace(stdout="out", stderr="err", exit_code=1)

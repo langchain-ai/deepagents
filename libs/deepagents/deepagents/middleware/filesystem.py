@@ -65,7 +65,9 @@ from deepagents.backends.protocol import (
     _apply_grep_max_count,
     _method_accepts_max_count,
     _supports_delete,
+    execute_accepts_command_id,
     execute_accepts_timeout,
+    execute_command_id,
 )
 from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
@@ -194,6 +196,41 @@ _VIDEO_SAMPLING_RATE: Final = 0.5
 
 _MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
 """Content block types `read_file` may emit that require multimodal model support."""
+
+
+def _tool_call_command_id(runtime: "ToolRuntime[None, FilesystemState]", command: str) -> str | None:
+    """The stable id of the command this tool call runs, or `None` without a thread.
+
+    Outside a checkpointed thread a run is never retried from a checkpoint, so
+    there is nothing to reattach to.
+    """
+    thread_id = (runtime.config.get("configurable") or {}).get("thread_id")
+    if not thread_id or not runtime.tool_call_id:
+        return None
+    message_id = next(
+        (
+            message.id
+            for message in reversed((runtime.state or {}).get("messages") or [])
+            if isinstance(message, AIMessage) and any(call.get("id") == runtime.tool_call_id for call in message.tool_calls)
+        ),
+        None,
+    )
+    return execute_command_id(thread_id=str(thread_id), message_id=message_id, tool_call_id=runtime.tool_call_id, command=command)
+
+
+def _execute_keywords(
+    backend: object,
+    method_name: Literal["execute", "aexecute", "execute_with_offload", "aexecute_with_offload"],
+    timeout: int | None,
+    command_id: str | None,
+) -> dict[str, Any]:
+    """The `timeout` and `command_id` keywords to pass, leaving out what `backend` doesn't accept."""
+    keywords: dict[str, Any] = {}
+    if timeout is not None:
+        keywords["timeout"] = timeout
+    if command_id is not None and execute_accepts_command_id(type(backend), method_name):
+        keywords["command_id"] = command_id
+    return keywords
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -3323,12 +3360,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         command,
                         capture_path,
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
-                        timeout=timeout,
+                        **_execute_keywords(executor, "execute_with_offload", timeout, _tool_call_command_id(runtime, command)),
                     )
                     response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    response = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                    response = executable.execute(
+                        command, **_execute_keywords(executable, "execute", timeout, _tool_call_command_id(runtime, command))
+                    )
                     content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
@@ -3411,12 +3450,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         command,
                         capture_path,
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
-                        timeout=timeout,
+                        **_execute_keywords(executor, "aexecute_with_offload", timeout, _tool_call_command_id(runtime, command)),
                     )
                     response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    response = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                    response = await executable.aexecute(
+                        command, **_execute_keywords(executable, "aexecute", timeout, _tool_call_command_id(runtime, command))
+                    )
                     content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(

@@ -76,7 +76,7 @@ class LangSmithSandbox(BaseSandbox):
         """Return the LangSmith sandbox name."""
         return self._sandbox.name
 
-    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None, command_id: str | None = None) -> ExecuteResponse:
         """Execute a shell command inside the sandbox.
 
         Args:
@@ -87,12 +87,18 @@ class LangSmithSandbox(BaseSandbox):
 
                 A value of 0 disables the command timeout when the
                 `langsmith[sandbox]` extra is installed.
+            command_id: A stable id for the command. Running the same id
+                again in this sandbox attaches to the existing command, while
+                it runs or for a while after it exits, instead of starting
+                another one.
 
         Returns:
             `ExecuteResponse` containing output, exit code, and truncation flag.
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
-        return _execute_response(self._sandbox.run(command, timeout=effective_timeout))
+        if command_id is None:
+            return _execute_response(self._sandbox.run(command, timeout=effective_timeout))
+        return _execute_response(self._sandbox.run(command, timeout=effective_timeout, command_id=command_id))
 
     def _aget_sandbox(self) -> AsyncSandbox:
         """Return the cached `AsyncSandbox`, creating it on first async use.
@@ -110,7 +116,7 @@ class LangSmithSandbox(BaseSandbox):
             self._async_sandbox = self._sandbox.to_async(client=self._async_client)
         return self._async_sandbox
 
-    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+    async def aexecute(self, command: str, *, timeout: int | None = None, command_id: str | None = None) -> ExecuteResponse:  # noqa: ASYNC109
         """Execute a shell command inside the sandbox.
 
         Overrides the protocol default, which offloads the blocking `execute()`
@@ -123,13 +129,16 @@ class LangSmithSandbox(BaseSandbox):
             timeout: Maximum time in seconds to wait for the command to complete.
 
                 If `None`, uses the backend's default timeout.
+            command_id: A stable id for the command; see `execute`.
 
         Returns:
             `ExecuteResponse` containing output, exit code, and truncation flag.
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
         sandbox = self._aget_sandbox()
-        return _execute_response(await sandbox.run(command, timeout=effective_timeout))
+        if command_id is None:
+            return _execute_response(await sandbox.run(command, timeout=effective_timeout))
+        return _execute_response(await sandbox.run(command, timeout=effective_timeout, command_id=command_id))
 
     async def aclose(self) -> None:
         """Close the cached async client's connection pool, if one was created."""

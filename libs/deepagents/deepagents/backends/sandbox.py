@@ -43,6 +43,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    execute_accepts_command_id,
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
@@ -1637,6 +1638,9 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return `ExecuteResponse`.
 
+        A subclass that can reattach to a running command may also accept a
+        `command_id` keyword; see `SandboxBackendProtocol.execute`.
+
         Args:
             command: Full shell command string to execute.
             timeout: Maximum time in seconds to wait for the command to complete.
@@ -1655,6 +1659,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         max_inline_bytes: int,
         max_capture_bytes: int | None = None,
         timeout: int | None = None,
+        command_id: str | None = None,
     ) -> ExecuteOffloadResult:
         """Run `command`, offloading large output to a file in the sandbox.
 
@@ -1673,14 +1678,15 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
                 with `preview_has_truncation_marker` recording whether the
                 preview dropped middle lines behind a marker; `offloaded=False`
                 when `response.output` is the complete output.
+
+        `command_id` is passed to `execute` when it accepts one. It names the
+        command as given, whether or not it runs inside the capture wrapper.
         """
-        use_timeout = timeout is not None and execute_accepts_timeout(type(self))
+        kwargs = self._execute_kwargs("execute", timeout, command_id)
         if not self.enable_capture_offload:
-            result = self.execute(command, timeout=timeout) if use_timeout else self.execute(command)
-            return ExecuteOffloadResult(offloaded=False, response=result)
+            return ExecuteOffloadResult(offloaded=False, response=self.execute(command, **kwargs))
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
-        result = self.execute(wrapper, timeout=timeout) if use_timeout else self.execute(wrapper)
-        return _parse_capture_execute_output(result)
+        return _parse_capture_execute_output(self.execute(wrapper, **kwargs))
 
     async def aexecute_with_offload(
         self,
@@ -1690,15 +1696,23 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         max_inline_bytes: int,
         max_capture_bytes: int | None = None,
         timeout: int | None = None,  # noqa: ASYNC109  # forwarded to the backend, not an asyncio timeout
+        command_id: str | None = None,
     ) -> ExecuteOffloadResult:
         """Async version of `execute_with_offload`, delegating to `aexecute`."""
-        use_timeout = timeout is not None and execute_accepts_timeout(type(self))
+        kwargs = self._execute_kwargs("aexecute", timeout, command_id)
         if not self.enable_capture_offload:
-            result = await self.aexecute(command, timeout=timeout) if use_timeout else await self.aexecute(command)
-            return ExecuteOffloadResult(offloaded=False, response=result)
+            return ExecuteOffloadResult(offloaded=False, response=await self.aexecute(command, **kwargs))
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
-        result = await self.aexecute(wrapper, timeout=timeout) if use_timeout else await self.aexecute(wrapper)
-        return _parse_capture_execute_output(result)
+        return _parse_capture_execute_output(await self.aexecute(wrapper, **kwargs))
+
+    def _execute_kwargs(self, method_name: Literal["execute", "aexecute"], timeout: int | None, command_id: str | None) -> dict[str, Any]:
+        """The optional keywords this backend's `method_name` accepts."""
+        kwargs: dict[str, Any] = {}
+        if timeout is not None and execute_accepts_timeout(type(self)):
+            kwargs["timeout"] = timeout
+        if command_id is not None and execute_accepts_command_id(type(self), method_name):
+            kwargs["command_id"] = command_id
+        return kwargs
 
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""

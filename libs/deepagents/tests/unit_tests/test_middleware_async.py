@@ -4,12 +4,12 @@ import asyncio
 from unittest.mock import patch
 
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
+from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol, execute_command_id
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemPermission, FilesystemState
 
@@ -899,6 +899,94 @@ class TestFilesystemMiddlewareAsync:
 
         assert "async ok" in result.content
         assert captured_timeout["value"] == 0
+
+    async def test_aexecute_tool_passes_a_stable_command_id(self):
+        """A retried run replays the same tool call, so it must name the same command."""
+        captured: list[str | None] = []
+
+        class ReattachingSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None, command_id: str | None = None) -> ExecuteResponse:
+                raise NotImplementedError
+
+            async def aexecute(
+                self,
+                command: str,
+                *,
+                timeout: int | None = None,  # noqa: ASYNC109
+                command_id: str | None = None,
+            ) -> ExecuteResponse:
+                captured.append(command_id)
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "reattaching-sandbox"
+
+        def runtime(message_id: str) -> ToolRuntime:
+            message = AIMessage(content="", id=message_id, tool_calls=[{"id": "call_0", "name": "execute", "args": {"command": "make"}}])
+            return ToolRuntime(
+                state=FilesystemState(messages=[message], files={}),
+                context=None,
+                tool_call_id="call_0",
+                store=InMemoryStore(),
+                stream_writer=lambda _: None,
+                config={"configurable": {"thread_id": "thread-1"}},
+            )
+
+        execute_tool = next(tool for tool in FilesystemMiddleware(backend=ReattachingSandbox()).tools if tool.name == "execute")
+        await execute_tool.ainvoke({"command": "make", "runtime": runtime("ai-1")})
+        await execute_tool.ainvoke({"command": "make", "runtime": runtime("ai-1")})
+        # A provider reusing "call_0" in a later message names a different command.
+        await execute_tool.ainvoke({"command": "make", "runtime": runtime("ai-2")})
+
+        expected = execute_command_id(thread_id="thread-1", message_id="ai-1", tool_call_id="call_0", command="make")
+        assert captured[:2] == [expected, expected]
+        assert captured[2] not in {None, expected}
+
+    async def test_aexecute_tool_runs_without_a_command_id_outside_a_thread_or_backend_support(self):
+        """No thread means no retry to reattach for, and older backends never see the keyword."""
+        captured: list[str | None] = []
+
+        class ReattachingSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None, command_id: str | None = None) -> ExecuteResponse:
+                raise NotImplementedError
+
+            async def aexecute(self, command: str, *, timeout: int | None = None, command_id: str | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                captured.append(command_id)
+                return ExecuteResponse(output="ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "reattaching-sandbox"
+
+        class OlderSandbox(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                raise NotImplementedError
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                return ExecuteResponse(output="older ok", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "older-sandbox"
+
+        def runtime(config: dict) -> ToolRuntime:
+            return ToolRuntime(
+                state=FilesystemState(messages=[], files={}),
+                context=None,
+                tool_call_id="call_0",
+                store=InMemoryStore(),
+                stream_writer=lambda _: None,
+                config=config,
+            )
+
+        reattaching = next(tool for tool in FilesystemMiddleware(backend=ReattachingSandbox()).tools if tool.name == "execute")
+        await reattaching.ainvoke({"command": "make", "runtime": runtime({})})
+        assert captured == [None]
+
+        older = next(tool for tool in FilesystemMiddleware(backend=OlderSandbox()).tools if tool.name == "execute")
+        result = await older.ainvoke({"command": "make", "runtime": runtime({"configurable": {"thread_id": "thread-1"}})})
+        assert "older ok" in result.content
 
     async def test_aexecute_tool_output_formatting(self):
         """Test async execute tool formats output correctly."""

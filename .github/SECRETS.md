@@ -65,8 +65,9 @@ Provision dedicated inference keys for labeling, separate from the evals
 credentials, with model and spending limits where supported. Store them only in
 this environment; the workflows inject them only into their classification steps.
 Do not require reviewers, so automatic labeling can run unattended. Deployments
-are restricted to `main`: every job that selects this environment runs from the
-default branch (`issues`, `pull_request_target`, or `workflow_dispatch`).
+are restricted to `main` and the `v[0-9]*` maintenance branches. `issues` and
+`workflow_dispatch` jobs run from `main`; `pull_request_target` jobs run against
+the PR's base branch.
 
 ### `evals`
 
@@ -127,7 +128,7 @@ managed package.
 | `RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
 | `RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
 
-Deployments are restricted to `main`; the drafting jobs run on `pull_request_target` and `issue_comment`.
+Deployments are restricted to `main` and the `v[0-9]*` maintenance branches, since `pull_request_target` jobs run against the PR's base branch.
 
 Of the model-provider credentials, only the credential for the configured provider is required. Prefer a provider project or service-account key limited to model inference, with model allowlists and spend limits where supported. The workflow also uses the repository GitHub App credentials for repository mutations.
 

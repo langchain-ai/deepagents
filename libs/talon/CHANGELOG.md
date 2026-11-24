@@ -2,35 +2,28 @@
 
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.1...deepagents-talon==0.1.2) (2026-11-24)
 
-
 ### Features
 
-* **talon:** discover MCP tools on demand ([#7977](https://github.com/langchain-ai/deepagents/issues/7977)) ([96b5a46](https://github.com/langchain-ai/deepagents/commit/96b5a46540b1ed8e287a97c53f3e9555da359db6))
-* **talon:** message local Claude Code sessions over their inbox sockets ([#7685](https://github.com/langchain-ai/deepagents/issues/7685)) ([9ab8cfe](https://github.com/langchain-ai/deepagents/commit/9ab8cfe1214af8719102010ac171cddd78d71766))
-* **talon:** message local Codex sessions ([#7686](https://github.com/langchain-ai/deepagents/issues/7686)) ([9708aed](https://github.com/langchain-ai/deepagents/commit/9708aedef17278f79f3539d47d315b8fb2f468d1))
-* **talon:** message local dcode sessions over their event sockets ([#7956](https://github.com/langchain-ai/deepagents/issues/7956)) ([f7740da](https://github.com/langchain-ai/deepagents/commit/f7740da28ee27a1c027cf7c9407d19b7d6edd99c))
-* **talon:** support confidential OAuth clients for MCP servers ([#7958](https://github.com/langchain-ai/deepagents/issues/7958)) ([1cc0f96](https://github.com/langchain-ai/deepagents/commit/1cc0f967c203ade8a57ac6ca582a309ef7811084))
-
+- Discover MCP tools on demand. ([#7977](https://github.com/langchain-ai/deepagents/pull/7977))
+- Send messages to local Claude Code sessions through inbox sockets, Codex sessions, and dcode sessions through event sockets. ([#7685](https://github.com/langchain-ai/deepagents/pull/7685), [#7686](https://github.com/langchain-ai/deepagents/pull/7686), [#7956](https://github.com/langchain-ai/deepagents/pull/7956))
+- Support confidential OAuth clients for MCP servers. ([#7958](https://github.com/langchain-ai/deepagents/pull/7958))
 
 ### Bug Fixes
 
-* **talon:** account for deferred MCP tools in `/context-doctor` ([#7986](https://github.com/langchain-ai/deepagents/issues/7986)) ([3e66dea](https://github.com/langchain-ai/deepagents/commit/3e66deac39195ddefbb0c694e1e12337bd2db1aa))
-* **talon:** apply MCP tool search after tool filtering ([#7980](https://github.com/langchain-ai/deepagents/issues/7980)) ([b04f2ef](https://github.com/langchain-ai/deepagents/commit/b04f2ef7353a4de15ae9b51dc6f3c1da24b54552))
-* **talon:** evict oversized tool results from fresh subagents ([#7969](https://github.com/langchain-ai/deepagents/issues/7969)) ([66a5579](https://github.com/langchain-ai/deepagents/commit/66a5579fc504b0dc890d08d6aaacc2ee3a9395d3))
-* **talon:** explain unavailable model failures with recovery guidance ([#7690](https://github.com/langchain-ai/deepagents/issues/7690)) ([6231ae4](https://github.com/langchain-ai/deepagents/commit/6231ae4781537ac953acc610ecb61723f0661042))
-* **talon:** extend Anthropic prompt caching to one hour ([#7881](https://github.com/langchain-ai/deepagents/issues/7881)) ([846d418](https://github.com/langchain-ai/deepagents/commit/846d418bc96506f67e5e58960eaf9266d0abf558))
-* **talon:** group retry attempts under one turn trace ([#7880](https://github.com/langchain-ai/deepagents/issues/7880)) ([0880e5c](https://github.com/langchain-ai/deepagents/commit/0880e5c0345d7e89b6e92e3e23e4ae0a90b921ea))
-* **talon:** honor approval settings for local session messages ([#7975](https://github.com/langchain-ai/deepagents/issues/7975)) ([47be3c6](https://github.com/langchain-ai/deepagents/commit/47be3c68bd0b68a827b265eed58b8cb028c6d09b))
-* **talon:** honor scoped authorization for local CLI retrieval ([#7887](https://github.com/langchain-ai/deepagents/issues/7887)) ([4a8ef7b](https://github.com/langchain-ai/deepagents/commit/4a8ef7b5c817c5f2cfe193f08869fb9286ec4267))
-* **talon:** keep confirmed write batches on main ([#7882](https://github.com/langchain-ai/deepagents/issues/7882)) ([44d483f](https://github.com/langchain-ai/deepagents/commit/44d483ff37233a9209e8b5054491f587dbde2c3d))
-* **talon:** preserve safe provider status in subagent failures ([#7884](https://github.com/langchain-ai/deepagents/issues/7884)) ([d419402](https://github.com/langchain-ai/deepagents/commit/d4194025238da9445458f401e249dd86ac7c0947))
-* **talon:** preserve user messages across turn retries ([#7883](https://github.com/langchain-ai/deepagents/issues/7883)) ([4c66d93](https://github.com/langchain-ai/deepagents/commit/4c66d93fd81d3ea4c786a68a4504a063284b128b))
-* **talon:** refresh memory on every conversation turn ([#7885](https://github.com/langchain-ai/deepagents/issues/7885)) ([c0d403c](https://github.com/langchain-ai/deepagents/commit/c0d403c8ed9e028360779a2e113d875dbd477cbb))
-
+- Honor approval settings when messaging local sessions and scoped authorization when retrieving local CLI data. ([#7975](https://github.com/langchain-ai/deepagents/pull/7975), [#7887](https://github.com/langchain-ai/deepagents/pull/7887))
+- Preserve user messages across turn retries. ([#7883](https://github.com/langchain-ai/deepagents/pull/7883))
+- Keep confirmed write batches on the main agent. ([#7882](https://github.com/langchain-ai/deepagents/pull/7882))
+- Evict oversized tool results from fresh subagents. ([#7969](https://github.com/langchain-ai/deepagents/pull/7969))
+- Refresh memory on every conversation turn. ([#7885](https://github.com/langchain-ai/deepagents/pull/7885))
+- Apply MCP tool search after tool filtering and account for deferred MCP tools in `/context-doctor`. ([#7980](https://github.com/langchain-ai/deepagents/pull/7980), [#7986](https://github.com/langchain-ai/deepagents/pull/7986))
+- Explain unavailable-model failures with recovery guidance. ([#7690](https://github.com/langchain-ai/deepagents/pull/7690))
+- Preserve safe provider status information in subagent failures. ([#7884](https://github.com/langchain-ai/deepagents/pull/7884))
+- Extend Anthropic prompt caching to one hour. ([#7881](https://github.com/langchain-ai/deepagents/pull/7881))
+- Group retry attempts under a single turn trace. ([#7880](https://github.com/langchain-ai/deepagents/pull/7880))
 
 ### Performance Improvements
 
-* **talon:** shorten scheduled job tool descriptions ([#7979](https://github.com/langchain-ai/deepagents/issues/7979)) ([810e2dd](https://github.com/langchain-ai/deepagents/commit/810e2ddb77fcb31e2097a2a4f8e8ba6024f45a29))
+- Shorten scheduled-job tool descriptions. ([#7979](https://github.com/langchain-ai/deepagents/pull/7979))
 
 ### Dependencies
 

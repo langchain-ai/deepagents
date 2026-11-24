@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -769,9 +770,13 @@ class TalonHost:
         else:
             try:
                 async with asyncio.timeout(10):
-                    report = await self.agent.context_doctor(
-                        self._agent_conversation_id(conversation_root)
-                    )
+                    audit = self.agent.context_doctor
+                    thread = self._agent_conversation_id(conversation_root)
+                    model = self._model_selections.get(_GLOBAL_MODEL_KEY)
+                    if model and "model" in inspect.signature(audit).parameters:
+                        report = await audit(thread, model=model)
+                    else:
+                        report = await audit(thread)
             except Exception:  # noqa: BLE001  # Diagnostics must not disclose runtime errors.
                 logger.debug("Context diagnostics failed", exc_info=True)
                 report = "Could not build context diagnostics. Please try again."

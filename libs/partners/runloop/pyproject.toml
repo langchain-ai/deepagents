@@ -45,7 +45,7 @@ test = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.20,<0.16.0",
     "ty>=0.0.54,<1.0.0",
-    "langchain-tests>=1.1.9",
+    "langchain-tests>=1.2.0",
 ]
 
 [tool.uv.sources]

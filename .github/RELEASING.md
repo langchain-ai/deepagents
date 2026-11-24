@@ -250,6 +250,8 @@ User story: you are adding a first-party integration package, such as a new sand
 
 Do **not** add a new managed package to the manifest at `0.0.1` unless `0.0.1` has already been released outside release-please. If the new manifest baseline is `0.0.1`, release-please treats that as already released and opens the initial release PR for `0.0.2`. The `Release-please initial baseline check` workflow blocks PRs that add a new `0.0.1` managed package baseline.
 
+Register a trusted publisher for the package on both PyPI and TestPyPI with owner `langchain-ai`, repository `deepagents`, workflow `release.yml`, and environment `release`. The `test-pypi-publish` and `publish` jobs run in the `release` environment, which only allows deployments from `main` and `v[0-9]*` branches; a publisher without the environment would accept tokens from any branch.
+
 ## Release Workflow
 
 ### Detection Mechanism

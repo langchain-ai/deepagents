@@ -1758,9 +1758,9 @@ _FIRST_PARTY_PREFIXES = ("deepagents", "langchain", "langgraph", "langsmith")
 
 _LOWER_BOUND_OPERATORS = (">=", "~=", ">")
 
-# Opens the closing line that counts hidden third-party changes. Shared with
-# `collapse_dependency_section`, which leaves it out of the toggle's count.
-_ROUTINE_PREFIX = "- Plus "
+# Opens the closing line that names the remaining third-party floor raises.
+# Shared with `collapse_dependency_section`, which counts that line's packages.
+_ROUTINE_PREFIX = "- Other minimum version"
 
 
 class DependencyChange(NamedTuple):
@@ -1852,9 +1852,10 @@ def _dependency_change_lines(
 ) -> list[str]:
     """List the dependency changes worth a reader's attention, alphabetically.
 
-    A `requires-python` change comes first. First-party packages are always
-    listed; third-party ones only when `_is_notable`. The rest are counted in
-    a closing line, so the list never claims to be complete when it is not.
+    Only packages whose range changed appear. A `requires-python` change comes
+    first. Every first-party change gets its own line; a third-party one only
+    when `_is_notable`. The remaining third-party floor raises are named with
+    their old and new minimums in one closing line, so nothing is left out.
     """
     lines: list[str] = []
     old_python, new_python = _requires_python(old), _requires_python(new)
@@ -1862,18 +1863,34 @@ def _dependency_change_lines(
         lines.append(f"- Python: `{old_python or 'any'}` → `{new_python or 'any'}`")
 
     changes = _merged_changes(_runtime_requirements(old), _runtime_requirements(new))
-    hidden: set[str] = set()
+    routine: dict[str, str] = {}
     for change in changes:
         normalized = re.sub(r"[-_.]+", "-", change.name.split(";")[0]).lower()
         if normalized.startswith(_FIRST_PARTY_PREFIXES) or _is_notable(change):
             lines.append(_describe_change(change))
         else:
-            hidden.add(normalized)
-    if hidden:
-        noun = "raise" if len(hidden) == 1 else "raises"
-        count = len(hidden)
-        lines.append(f"{_ROUTINE_PREFIX}{count} routine third-party floor {noun}.")
+            was, now = _floor_version(change.old), _floor_version(change.new)
+            routine.setdefault(normalized, f"`{change.name}` {was} → {now}")
+    if routine:
+        lines.append(_routine_line(list(routine.values())))
     return lines
+
+
+def _floor_version(spec: str | None) -> str:
+    """Return the version in *spec*'s lower bound; routine raises always have one."""
+    clauses = (spec or "").split(",")
+    floors = [c for c in clauses if c.startswith(_LOWER_BOUND_OPERATORS)]
+    return floors[0].lstrip(">=~") if floors else spec or ""
+
+
+def _routine_line(items: list[str]) -> str:
+    """Name the remaining floor raises in one sentence, e.g. "`a` 1.0 → 1.1"."""
+    plural = "s" if len(items) > 1 else ""
+    if len(items) > 2:
+        joined = ", ".join(items[:-1]) + f", and {items[-1]}"
+    else:
+        joined = " and ".join(items)
+    return f"{_ROUTINE_PREFIX}{plural} raised: {joined}."
 
 
 def _read_pyproject_at(
@@ -1974,11 +1991,14 @@ def collapse_dependency_section(changelog_body: str) -> str:
     entries = [line for line in lines[start + 1 : end] if line.strip()]
     if not entries:
         return changelog_body
+    # Each bullet is one change, except the closing line, which names several
+    # packages, each as one backticked name.
     count = sum(
-        1
+        len(re.findall(r"`[^`]+`", line))
+        if line.startswith(_ROUTINE_PREFIX)
+        else 1
         for line in entries
         if line.lstrip().startswith(("- ", "* "))
-        and not line.startswith(_ROUTINE_PREFIX)
     )
     noun = "change" if count == 1 else "changes"
     toggle = [

@@ -27,7 +27,7 @@ MAX_SUMMARY_CHARS = 100
 _HELP_PREAMBLE = (
     "Talon is your personal agent in chat. Send a message to ask for help or get work done; "
     "ask for reminders or recurring tasks to schedule them. "
-    "Give Talon an ongoing goal to start now and keep working on in this chat."
+    "Schedule a routine or give Talon an objective to pursue."
 )
 _HELP_TRAILER = (
     "MCP: Ask to view, add, update, or remove a server (Linux/macOS), "

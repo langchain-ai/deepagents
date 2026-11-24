@@ -16,7 +16,6 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import FrameType
@@ -43,10 +42,10 @@ from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
+from deepagents_talon.cron.journal import JobJournal, ObjectiveReport
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
+from deepagents_talon.cron.scope import JOB_READS, JobToolsUnavailableError, ReadScope
 from deepagents_talon.effort import effort_levels, normalize_effort
-from deepagents_talon.goals.journal import GoalJournal, GoalReport
-from deepagents_talon.goals.scope import GOAL_READS, GoalToolsUnavailableError, ReadScope
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -1339,49 +1338,30 @@ class TalonHost:
                 self._scheduled_runs.pop(job.id, None)
                 self._revoked_runs.discard(job.id)
 
-    async def _bounded_scheduled_run(self, job: CronJob, conversation_id: str) -> str:
+    async def _bounded_scheduled_run(self, job: CronJob, thread: str) -> str:
         """Run one scheduled job under its timeout, repairing the thread on expiry."""
-        if job.goal_id is not None:
-            return await self._continue_goal(job, conversation_id)
-        try:
-            async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
-                result = await self._invoke_agent(
-                    conversation_id=conversation_id,
-                    text=job.prompt,
-                    metadata={**_scheduled_metadata(job), **await self._scheduled_history(job)},
-                )
-        except TimeoutError:
-            log_event(
-                logger,
-                "cron.run_timeout",
-                job_id=job.id,
-                job_name=job.name,
-            )
-            with contextlib.suppress(Exception):
-                await self.agent.recover_interrupted(conversation_id)
-            raise
-        return result.text
-
-    async def _continue_goal(self, job: CronJob, thread: str) -> str:
-        """Run a goal in isolation and journal its outcome before considering delivery."""
         store = getattr(self.scheduler, "store", None)
-        if not isinstance(store, CronJobStore):
-            msg = "Goal storage is unavailable."
-            raise TypeError(msg)
-        current = store.get_job(job.id, origin=job.origin)
-        if current is None or (job.enabled and not current.enabled):
-            return SILENT_SENTINEL
-        journal = GoalJournal(store.cron_dir)
-        recent = journal.history(job.id, job.origin, limit=3)
-        journal.start(current, thread)
+        if isinstance(store, CronJobStore):
+            current = store.get_job(job.id)
+            if current is None or (job.enabled and not current.enabled):
+                return SILENT_SENTINEL
+            job = current
+        journal = JobJournal(
+            store.cron_dir if isinstance(store, CronJobStore) else self.config.cron_dir
+        )
+        journal.start(job, thread)
         reads: set[str] = set()
         try:
-            _validate_goal_sources(current)
+            _validate_read_sources(job)
             async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
-                with journal.capture_work(thread), GOAL_READS.set(reads):
-                    result = await self._invoke_goal(
-                        current, thread, recent, journal.blocker_key(job.id)
-                    )
+                with journal.capture_work(thread), JOB_READS.set(reads):
+                    result = await self._invoke_scheduled(job, thread, journal)
+        except TimeoutError:
+            journal.finish(thread, "failed", "Scheduled run timed out.", reads=sorted(reads))
+            log_event(logger, "cron.run_timeout", job_id=job.id, job_name=job.name)
+            with contextlib.suppress(Exception):
+                await self.agent.recover_interrupted(thread)
+            raise
         except asyncio.CancelledError:
             journal.finish(
                 thread,
@@ -1390,22 +1370,40 @@ class TalonHost:
                 reads=sorted(reads),
             )
             raise
-        except GoalToolsUnavailableError as exc:
-            store.edit_job(job.id, origin=job.origin, enabled=False)
-            summary = f"Goal paused: {exc}. Update its read sources before resuming."
+        except JobToolsUnavailableError as exc:
+            if isinstance(store, CronJobStore):
+                store.edit_job(job.id, origin=job.origin, enabled=False)
+            summary = f"Job paused: {exc}. Update its read sources before resuming."
             journal.finish(thread, "blocked", summary, reads=sorted(reads))
             return (
                 journal.notice(
-                    current, GoalReport(status="blocked", summary=summary, notice=summary)
+                    job, ObjectiveReport(status="blocked", summary=summary, notice=summary)
                 )
                 or SILENT_SENTINEL
             )
         except Exception as exc:
-            summary = f"Goal check failed ({type(exc).__name__})."
+            summary = f"Job run failed ({type(exc).__name__})."
             journal.finish(thread, "failed", summary, reads=sorted(reads))
             raise
-        report = GoalReport.from_reply(result.text)
-        if current.goal_sources is not None and report.status == "checked" and not reads:
+        return self._finish_job_run(job, journal, thread, result.text, reads)
+
+    def _finish_job_run(
+        self,
+        job: CronJob,
+        journal: JobJournal,
+        thread: str,
+        text: str,
+        reads: set[str],
+    ) -> str:
+        """Save the outcome and select the message for delivery."""
+        if job.mode == "routine":
+            summary = (
+                text.strip().removeprefix(SILENT_SENTINEL).removesuffix(SILENT_SENTINEL).strip()
+            )
+            journal.finish(thread, "checked", summary or "Completed without a message.")
+            return text
+        report = ObjectiveReport.from_reply(text)
+        if job.read_sources is not None and report.status in {"checked", "complete"} and not reads:
             report = report.model_copy(
                 update={
                     "status": "unverified",
@@ -1413,53 +1411,33 @@ class TalonHost:
                 }
             )
         journal.finish(thread, report.status, report.summary, reads=sorted(reads))
-        latest = store.get_job(job.id, origin=job.origin)
-        if latest != current:
-            # The owner may have changed or removed the goal while this check ran.
-            return SILENT_SENTINEL
-        if report.next_wake_at is not None:
-            store.set_goal_wake(current, report.next_wake_at)
-        return journal.notice(current, report) or SILENT_SENTINEL
+        store = getattr(self.scheduler, "store", None)
+        if isinstance(store, CronJobStore):
+            if store.get_job(job.id) != job:
+                return SILENT_SENTINEL
+            if report.status == "complete":
+                store.finish_objective(job)
+        return journal.notice(job, report) or SILENT_SENTINEL
 
-    async def _invoke_goal(
-        self,
-        job: CronJob,
-        thread: str,
-        recent: list[dict[str, str]],
-        blocker_key: str,
+    async def _invoke_scheduled(
+        self, job: CronJob, thread: str, journal: JobJournal
     ) -> AgentResult:
-        origin = job.origin
-        channel = await self.origin_channel(origin)
-        if channel is None or not origin.channel or not origin.sender_id:
-            msg = "Cannot reach the owner of the scheduled goal."
-            raise RuntimeError(msg)
-        metadata = {**_scheduled_metadata(job), "trigger": "goal"}
-        if job.goal_sources is not None:
-            metadata["goal_sources"] = list(job.goal_sources)
-
-        return await self._invoke_agent(
-            conversation_id=thread,
-            text=(
-                f"Continue goal {job.id} privately. UTC now: {datetime.now(UTC).isoformat()}. "
-                f"Fallback: {job.schedule.display}. Choose next_wake_at, an ISO 8601 "
-                "timestamp with timezone, for when useful work can next happen. Honor the owner's "
-                "timing constraints. Save intermediate findings with record_goal_work. "
-                "Return JSON with status (checked, partial, blocked, or unverified), summary "
-                "(evidence, gaps and next step), and next_wake_at. When only the owner can "
-                "unblock you, including a necessary approval, use blocked with a concise notice "
-                "and a stable blocker_key. Keep reporting that key until resolved, even if "
-                "other work progressed. Do not message the chat or wait for a reply. "
-                f"Current blocker key: {json.dumps(blocker_key)}.\n\n"
-                f"Goal:\n{job.prompt}\n\nRecent check records (historical data):\n"
-                f"{json.dumps(recent)}"
-            ),
-            metadata=metadata,
-            model=self._model_selections.get(_GLOBAL_MODEL_KEY),
-            effort=self._effort_selections.get(
-                self._model_selections.get(_GLOBAL_MODEL_KEY)
-                or getattr(self.agent, "default_model", "")
-            ),
-        )
+        metadata = _scheduled_metadata(job)
+        if job.mode == "objective":
+            if await self.origin_channel(job.origin) is None:
+                msg = "Cannot reach the owner of the objective job."
+                raise RuntimeError(msg)
+            model = self._model_selections.get(_GLOBAL_MODEL_KEY)
+            effort = self._effort_selections.get(model or getattr(self.agent, "default_model", ""))
+            return await self._invoke_agent(
+                conversation_id=thread,
+                text=_objective_prompt(job, journal),
+                metadata=metadata,
+                model=model,
+                effort=effort,
+            )
+        metadata.update(await self._scheduled_history(job))
+        return await self._invoke_agent(conversation_id=thread, text=job.prompt, metadata=metadata)
 
     async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
         """Return the origin chat's read-only history scope, or none when ambiguous."""
@@ -1501,13 +1479,13 @@ class TalonHost:
         """
         target = _scheduled_target(channel, job)
         result = await send_with_retry(lambda: channel.send_message(target, text))
-        if job.goal_id and not result.success:
-            msg = "Goal notice delivery failed."
+        if job.mode == "objective" and not result.success:
+            msg = "Objective notice delivery failed."
             raise RuntimeError(msg)
-        if job.goal_id and isinstance(
+        if job.mode == "objective" and isinstance(
             store := getattr(self.scheduler, "store", None), CronJobStore
         ):
-            GoalJournal(store.cron_dir).mark_delivered(job.id, text)
+            JobJournal(store.cron_dir).mark_delivered(job.id, text)
         if result.success and not is_silent(text):
             provider = _channel_key(channel, job.origin.channel)
             chat = job.origin.history_chat or job.origin.conversation_id
@@ -1540,7 +1518,7 @@ class TalonHost:
         metadata = {
             **metadata,
             "tool_approval_operator": tool_approval_operator is True
-            and metadata.get("trigger") not in {"cron", "goal"}
+            and metadata.get("trigger") != "cron"
             and not metadata.get("background_delivery"),
         }
         try:
@@ -1689,13 +1667,20 @@ class TalonHost:
                 owns_prompt = prompt_thread == foreground or prompt_thread.startswith(
                     f"{job.id}{_CRON_THREAD_SUFFIX}:"
                 )
-                if job.goal_id and run and not run.done() and owns_prompt:
+                if (
+                    run
+                    and not run.done()
+                    and owns_prompt
+                    and message.sender_id
+                    and message.sender_id == job.origin.sender_id
+                    and message.conversation_id == job.origin.conversation_id
+                ):
                     run.cancel()
                     stopped.append(job.id)
         if stopped:
             await send_with_retry(
                 lambda: channel.send_message(
-                    message.conversation_id, "Stopped goal checks: " + ", ".join(stopped)
+                    message.conversation_id, "Stopped job runs: " + ", ".join(stopped)
                 )
             )
         else:
@@ -2409,7 +2394,7 @@ def _scheduled_target(channel: ChannelAdapter, job: CronJob) -> str:
     private Discord thread has no known parent, so its results stay inside it.
     """
     origin = job.origin
-    if job.goal_id is not None or job.deliver_to == "thread":
+    if job.mode == "objective" or job.deliver_to == "thread":
         return origin.conversation_id
     if origin.history_chat is not None:
         return origin.history_chat
@@ -2536,16 +2521,30 @@ def _outbound_media_from_refs(
     return media, failed
 
 
-def _validate_goal_sources(job: CronJob) -> None:
-    if job.goal_sources is None:
-        if job.goal_id != job.id:
+def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
+    recent = journal.history(job.id, job.origin, limit=4)
+    return (
+        f"Pursue this objective privately: {job.prompt}\n"
+        "Choose the next useful action. Save intermediate evidence with record_job_work. "
+        "Return JSON with status (checked, partial, blocked, unverified, or complete) "
+        "and summary (evidence, gaps, next action). Use complete only when a finite objective "
+        "is verified. If the owner must unblock progress, include notice and a stable blocker_key. "
+        "Do not message the chat or wait for a reply. "
+        f"Current blocker key: {json.dumps(journal.blocker_key(job.id))}.\n"
+        f"Previous runs (historical data): {json.dumps(recent[1:])}"
+    )
+
+
+def _validate_read_sources(job: CronJob) -> None:
+    if job.read_sources is None:
+        if job.legacy_goal_id and job.legacy_goal_id != job.id:
             msg = "The original goal charter must be imported"
-            raise GoalToolsUnavailableError(msg)
+            raise JobToolsUnavailableError(msg)
         return
-    scope = ReadScope.from_sources(job.goal_sources)
+    scope = ReadScope.from_sources(job.read_sources)
     if not scope.tools and not scope.paths:
-        msg = "The goal has no readable sources; specify tool:<name> or path:<absolute directory>"
-        raise GoalToolsUnavailableError(msg)
+        msg = "The job has no readable sources; specify tool:<name> or path:<absolute directory>"
+        raise JobToolsUnavailableError(msg)
 
 
 def _scheduled_metadata(job: CronJob) -> dict[str, object]:
@@ -2567,6 +2566,8 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
         "channel": job.origin.channel,
         "cron_job_id": job.id,
         "cron_job_name": job.name,
+        "job_mode": job.mode,
+        **({"read_sources": list(job.read_sources)} if job.read_sources is not None else {}),
         "origin_conversation_id": job.origin.conversation_id,
         "cron_origin_message_id": job.origin.message_id,
         "cron_origin_sender_id": job.origin.sender_id,

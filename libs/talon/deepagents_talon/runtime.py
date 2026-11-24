@@ -88,7 +88,11 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
-from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY, mcp_tool_search
+from deepagents_talon.mcp_middleware import (
+    MCP_SKILL_ONLY_METADATA_KEY,
+    TalonMCPMiddleware,
+    mcp_tool_search,
+)
 from deepagents_talon.memory import TalonMemoryMiddleware
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
@@ -528,8 +532,6 @@ class DeepAgentRuntime:
                 self.backend,
             ),
             ModelSelectionMiddleware(),
-            mcp_tool_search(tools),
-            AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
             ProgressMessages(),
         ]
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
@@ -571,7 +573,17 @@ class DeepAgentRuntime:
             else []
         )
         middleware.extend(_skill_middleware(self.backend, diagnostics.skills, skill_tools))
-        middleware.extend(self.middleware)
+        # Filter tools before adding provider search, then convert the remaining MCP schemas.
+        middleware.extend(
+            sorted(
+                [
+                    *self.middleware,
+                    mcp_tool_search(tools),
+                    AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
+                ],
+                key=lambda layer: isinstance(layer, TalonMCPMiddleware),
+            )
+        )
         graph = create_deep_agent(
             model=model,
             tools=tools,

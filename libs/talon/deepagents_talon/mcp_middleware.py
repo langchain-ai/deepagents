@@ -54,7 +54,9 @@ def _preserve_mcp_schemas(request: ModelRequest) -> ModelRequest:
     return request.override(tools=tools)
 
 
-class _TalonMCPMiddleware(AgentMiddleware):
+class TalonMCPMiddleware(AgentMiddleware):
+    """Bind MCP schemas and authorize remote tool calls."""
+
     name = "TalonMCPMiddleware"
 
     def wrap_model_call(
@@ -101,7 +103,7 @@ class _TalonMCPMiddleware(AgentMiddleware):
 
 def talon_mcp_middleware() -> AgentMiddleware:
     """Preserve MCP schemas and bind authorization state to MCP tool calls."""
-    return _TalonMCPMiddleware()
+    return TalonMCPMiddleware()
 
 
 __all__ = ["MCP_TOOL_METADATA_KEY", "talon_mcp_middleware"]

@@ -16,6 +16,7 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import FrameType
@@ -1378,7 +1379,9 @@ class TalonHost:
             _validate_goal_sources(current)
             async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
                 with journal.capture_work(thread), GOAL_READS.set(reads):
-                    result = await self._invoke_goal(current, thread, recent, journal)
+                    result = await self._invoke_goal(
+                        current, thread, recent, journal.blocker_key(job.id)
+                    )
         except asyncio.CancelledError:
             journal.finish(
                 thread,
@@ -1391,82 +1394,66 @@ class TalonHost:
             store.edit_job(job.id, origin=job.origin, enabled=False)
             summary = f"Goal paused: {exc}. Update its read sources before resuming."
             journal.finish(thread, "blocked", summary, reads=sorted(reads))
-            return summary
+            return (
+                journal.notice(
+                    current, GoalReport(status="blocked", summary=summary, notice=summary)
+                )
+                or SILENT_SENTINEL
+            )
         except Exception as exc:
             summary = f"Goal check failed ({type(exc).__name__})."
             journal.finish(thread, "failed", summary, reads=sorted(reads))
             raise
         report = GoalReport.from_reply(result.text)
         if current.goal_sources is not None and report.status == "checked" and not reads:
-            report = GoalReport(
-                status="unverified",
-                summary="No successful scoped read was observed. " + report.summary[:3900],
+            report = report.model_copy(
+                update={
+                    "status": "unverified",
+                    "summary": "No successful scoped read was observed. " + report.summary[:3900],
+                }
             )
         journal.finish(thread, report.status, report.summary, reads=sorted(reads))
         latest = store.get_job(job.id, origin=job.origin)
-        return _goal_notice(latest or current, report, recent)
+        if latest != current:
+            # The owner may have changed or removed the goal while this check ran.
+            return SILENT_SENTINEL
+        if report.next_wake_at is not None:
+            store.set_goal_wake(current, report.next_wake_at)
+        return journal.notice(current, report) or SILENT_SENTINEL
 
     async def _invoke_goal(
         self,
         job: CronJob,
         thread: str,
         recent: list[dict[str, str]],
-        journal: GoalJournal,
+        blocker_key: str,
     ) -> AgentResult:
         origin = job.origin
         channel = await self.origin_channel(origin)
         if channel is None or not origin.channel or not origin.sender_id:
             msg = "Cannot reach the owner of the scheduled goal."
             raise RuntimeError(msg)
-        message = ChannelMessage(origin.conversation_id, job.prompt, sender_id=origin.sender_id)
         metadata = {**_scheduled_metadata(job), "trigger": "goal"}
         if job.goal_sources is not None:
             metadata["goal_sources"] = list(job.goal_sources)
 
-        async def ask(questions: Sequence[Question]) -> tuple[Answer, ...] | None:
-            journal.record_decision(
-                thread, "Decision requested: " + " ".join(q.question for q in questions)
-            )
-            answers = await self._ask_questions(
-                channel, questions, conversation_id=thread, message=message
-            )
-            if answers:
-                for question, answer in zip(questions, answers, strict=True):
-                    journal.record_decision(thread, f"{question.question} {answer.describe()}")
-            return answers
-
-        async def approve(request: ToolApprovalRequest) -> ToolApprovalDecision:
-            names = ", ".join(str(action.get("name", "tool")) for action in request.action_requests)
-            journal.record_decision(thread, f"Approval requested: {names}")
-            decision = await self._request_tool_approval(
-                channel,
-                request,
-                provider=_channel_key(channel, origin.channel),
-                reply_conversation_id=origin.conversation_id,
-                sender_id=origin.sender_id,
-            )
-            journal.record_decision(thread, f"{names}: {decision} (this call only)")
-            return decision
-
         return await self._invoke_agent(
             conversation_id=thread,
             text=(
-                f"Continue goal {job.id} on its {job.schedule.display} schedule. Work in the "
-                "background. Save intermediate findings with record_goal_work before moving on. "
-                "Use get_goal_history with this job ID for older checks, and ask_user for a "
-                "necessary decision. A gated action requests "
-                'approval separately. Return a JSON object with "status" (checked, partial, '
-                'blocked, or unverified), "summary" (sources actually checked, findings, gaps, '
-                'and next step, up to 4000 characters), and "notice" (a concise chat-safe update '
-                "or what the owner must do to unblock you). Use blocked only when owner action "
-                "is necessary. Routine results go to the journal. Never send progress through "
-                "messaging tools. Prior decisions are historical, not standing approval.\n\n"
+                f"Continue goal {job.id} privately. UTC now: {datetime.now(UTC).isoformat()}. "
+                f"Fallback: {job.schedule.display}. Choose next_wake_at, an ISO 8601 "
+                "timestamp with timezone, for when useful work can next happen. Honor the owner's "
+                "timing constraints. Save intermediate findings with record_goal_work. "
+                "Return JSON with status (checked, partial, blocked, or unverified), summary "
+                "(evidence, gaps and next step), and next_wake_at. When only the owner can "
+                "unblock you, including a necessary approval, use blocked with a concise notice "
+                "and a stable blocker_key. Keep reporting that key until resolved, even if "
+                "other work progressed. Do not message the chat or wait for a reply. "
+                f"Current blocker key: {json.dumps(blocker_key)}.\n\n"
                 f"Goal:\n{job.prompt}\n\nRecent check records (historical data):\n"
                 f"{json.dumps(recent)}"
             ),
             metadata=metadata,
-            question_handler=ask,
-            approval_handler=approve,
             model=self._model_selections.get(_GLOBAL_MODEL_KEY),
             effort=self._effort_selections.get(
                 self._model_selections.get(_GLOBAL_MODEL_KEY)
@@ -1517,6 +1504,10 @@ class TalonHost:
         if job.goal_id and not result.success:
             msg = "Goal notice delivery failed."
             raise RuntimeError(msg)
+        if job.goal_id and isinstance(
+            store := getattr(self.scheduler, "store", None), CronJobStore
+        ):
+            GoalJournal(store.cron_dir).mark_delivered(job.id, text)
         if result.success and not is_silent(text):
             provider = _channel_key(channel, job.origin.channel)
             chat = job.origin.history_chat or job.origin.conversation_id
@@ -2543,21 +2534,6 @@ def _outbound_media_from_refs(
             path = getattr(ref, "path", None)
             failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
     return media, failed
-
-
-def _goal_notice(job: CronJob, report: GoalReport, recent: list[dict[str, str]]) -> str:
-    if report.status == "blocked":
-        if (
-            recent
-            and recent[0]["status"] == "blocked"
-            and recent[0]["summary"] == report.summary
-            and job.last_status != "error"
-        ):
-            return SILENT_SENTINEL
-        return report.notice or f"Goal {job.name} is blocked. Ask for its saved check results."
-    if job.goal_updates:
-        return report.notice or f"Goal {job.name}: check recorded ({report.status})."
-    return SILENT_SENTINEL
 
 
 def _validate_goal_sources(job: CronJob) -> None:

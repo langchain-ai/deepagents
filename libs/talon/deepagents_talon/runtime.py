@@ -1404,11 +1404,11 @@ class DeepAgentRuntime:
                 "When the user gives you a continuing goal, check list_jobs for an existing goal. "
                 "Save the objective, constraints, known findings and next step with create_goal. "
                 "Keep setup brief and do the investigation in scheduled background checks. "
-                "Honor the owner's cadence, otherwise choose a schedule suited to the task. "
+                "Choose the first check and fallback cadence. Each check picks its next wake time. "
                 "Routine findings belong in the private goal history. Use get_goal_history "
-                "when the owner asks for progress. Enable goal_updates only when the owner "
-                "explicitly asks for recurring updates. Use edit_job to pause or revise a goal "
-                "and remove_job when done. Use ask_user when you need a decision. "
+                "when the owner asks for progress. Only new blockers reach chat. When the owner "
+                "answers a blocker, save the decision in the goal prompt with edit_job. "
+                "Use edit_job to pause and remove_job when done. "
                 "A gated tool will request its own approval. Handle one-off requests directly."
             )
         if self.sandbox_working_dir is not None:

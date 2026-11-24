@@ -5,10 +5,11 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -36,6 +37,22 @@ class GoalReport(BaseModel):
     status: Literal["checked", "partial", "blocked", "unverified"]
     summary: str = Field(min_length=1, max_length=4000)
     notice: str = Field(default="", max_length=2000)
+
+    blocker_key: str = Field(default="", max_length=200)
+    next_wake_at: datetime | None = None
+
+    @field_validator("next_wake_at", mode="before")
+    @classmethod
+    def _parse_wake(cls, value: object) -> datetime | None:
+        """Ignore unusable wake times without losing the check's findings."""
+        if isinstance(value, str):
+            try:
+                wake = datetime.fromisoformat(value)
+                if wake.tzinfo is not None:
+                    return wake.astimezone(UTC)
+            except ValueError, OverflowError:
+                return None
+        return None
 
     @classmethod
     def from_reply(cls, text: str) -> GoalReport:
@@ -72,6 +89,45 @@ class GoalJournal:
                 "CREATE INDEX IF NOT EXISTS goal_checks ON checks(channel, chat, owner, job)"
             )
 
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS blockers (job TEXT PRIMARY KEY, "
+                "key TEXT NOT NULL, notice TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)"
+            )
+
+    def blocker_key(self, job: str) -> str:
+        """Return the current blocker identity for the next isolated check."""
+        with closing(sqlite3.connect(self.path)) as db:
+            row = db.execute("SELECT key FROM blockers WHERE job=?", (job,)).fetchone()
+            return row[0] if row else ""
+
+    def notice(self, job: CronJob, report: GoalReport) -> str:
+        """Keep one notice pending until delivered, or until progress clears the blocker."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            if report.status != "blocked":
+                if report.status in {"checked", "partial"}:
+                    db.execute("DELETE FROM blockers WHERE job=?", (job.id,))
+                return ""
+            notice = (
+                report.notice.strip()
+                or f"Goal {job.name} is blocked. Ask for its saved check results."
+            )
+            key = (report.blocker_key.strip() or report.notice.strip() or report.summary).casefold()
+            db.execute(
+                "INSERT INTO blockers(job,key,notice) VALUES(?,?,?) ON CONFLICT(job) "
+                "DO UPDATE SET key=excluded.key,notice=excluded.notice,delivered=0 "
+                "WHERE blockers.key != excluded.key",
+                (job.id, key, notice),
+            )
+            row = db.execute(
+                "SELECT notice FROM blockers WHERE job=? AND delivered=0", (job.id,)
+            ).fetchone()
+            return row[0] if row else ""
+
+    def mark_delivered(self, job: str, notice: str) -> None:
+        """Acknowledge a blocker only after the channel accepted its message."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("UPDATE blockers SET delivered=1 WHERE job=? AND notice=?", (job, notice))
+
     def start(self, job: CronJob, run: str) -> None:
         """Record the start before doing work, including when the host subsequently exits."""
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -105,14 +161,6 @@ class GoalJournal:
             yield
         finally:
             _SAVE_WORK.reset(token)
-
-    def record_decision(self, run: str, text: str) -> None:
-        """Keep owner decisions on the run even if the following work is interrupted."""
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute(
-                "UPDATE checks SET decisions=substr(decisions || ?,-4000) WHERE run=?",
-                ("\n" + text[:2000], run),
-            )
 
     def finish(self, run: str, status: str, summary: str, *, reads: Sequence[str] = ()) -> None:
         """Persist the last known outcome for this host-generated run ID."""

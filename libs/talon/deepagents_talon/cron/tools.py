@@ -92,7 +92,7 @@ Args:
     prompt: Optional replacement prompt.
     schedule: Optional replacement. {SCHEDULE_HELP}
     goal_sources: Replace read grants with tool:<read-only name> or path:<absolute directory>.
-    goal_updates: Enable routine goal messages only on explicit request.
+    goal_updates: Legacy flag. Routine goal updates are available in goal history only.
     enabled: Optional enabled flag. Use `False` to pause, `True` to resume.
     repeat_times: Optional replacement repeat cap for recurring schedules.
     until: Optional replacement end time. {UNTIL_HELP}
@@ -203,7 +203,7 @@ class CronTools:
             schedule: Optional replacement schedule text, in any form
                 `SCHEDULE_HELP` lists.
             goal_sources: Optional replacement read grants.
-            goal_updates: Owner preference for routine goal updates.
+            goal_updates: Legacy setting. Only blocker notices are delivered.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement end time, in the form `UNTIL_HELP`
@@ -230,7 +230,7 @@ class CronTools:
             prompt=prompt,
             schedule=parsed,
             enabled=enabled,
-            goal_updates=goal_updates,
+            goal_updates=False if goal_updates is not None else None,
             goal_sources=goal_sources,
             repeat_times=repeat_times,
             until=parse_until(until) if until else None,
@@ -266,15 +266,14 @@ def _goal_tool(cron: CronTools) -> BaseTool:
         """Save a continuing goal for background work.
 
         Args:
-            goal_updates: Enable routine messages only on the owner's explicit request.
+            goal_updates: Deprecated and ignored. Only blocker notices are delivered.
             outcome: Desired result, user constraints (including any requested timing),
                 relevant findings, and the next step.
-            schedule: Recurring check-in schedule based on the user's timing or when
+            schedule: First check and fallback cadence based on the user's timing or when
                 progress is next possible, e.g. `every 10m` for a build due in ten minutes.
         """
+        del goal_updates  # Accepted for callers using the previous tool schema.
         try:
-            if goal_updates and _SCHEDULED_TURN.get():
-                return {"error": "Only the owner in chat may enable routine goal updates."}
             if not outcome.strip():
                 return {"error": "A goal needs an outcome."}
             job = cron.store.create_job(
@@ -284,7 +283,6 @@ def _goal_tool(cron: CronTools) -> BaseTool:
                 origin=cron.origin(),
                 deliver_to="thread",
                 continuing=True,
-                goal_updates=goal_updates,
             )
             return _tool_job(job, upcoming=True)
         except Exception as exc:  # noqa: BLE001
@@ -423,9 +421,11 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "goal_id": data["goal_id"],
     }
     if job.goal_id is not None:
-        payload["goal_updates"] = job.goal_updates
+        payload["goal_updates"] = False
     if upcoming:
-        payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]
+        payload["upcoming"] = [
+            run.isoformat() for run in job.upcoming(1 if job.goal_id else _UPCOMING_COUNT)
+        ]
     return payload
 
 

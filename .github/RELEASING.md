@@ -250,7 +250,7 @@ User story: you are adding a first-party integration package, such as a new sand
 
 Do **not** add a new managed package to the manifest at `0.0.1` unless `0.0.1` has already been released outside release-please. If the new manifest baseline is `0.0.1`, release-please treats that as already released and opens the initial release PR for `0.0.2`. The `Release-please initial baseline check` workflow blocks PRs that add a new `0.0.1` managed package baseline.
 
-Register a trusted publisher for the package on both PyPI and TestPyPI with owner `langchain-ai`, repository `deepagents`, workflow `release.yml`, and environment `release`. The `test-pypi-publish` and `publish` jobs run in the `release` environment, which only allows deployments from `main` and `v[0-9]*` branches; a publisher without the environment would accept tokens from any branch.
+Register a trusted publisher for the package on both PyPI and TestPyPI with owner `langchain-ai`, repository `deepagents`, workflow `release.yml`, and environment `release`. The `test-pypi-publish` and `publish` jobs run in the `release` environment, which only allows deployments from `main`, `v[0-9]*`, and the admin-only pre-release branches (see [Manual Release](#manual-release)); a publisher without the environment would accept tokens from any branch.
 
 ## Release Workflow
 
@@ -348,7 +348,10 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 3. Select the package to release
 4. **Provide `version`**: the version you want to publish (e.g. `0.0.35`). The workflow checks that the code you selected has the same version.
 5. **Provide `release-sha`**: the commit to publish. Usually this is the release-please PR's merge commit. Find it with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The commit must be reachable from `main`, or with `dangerous-nonmain-release` enabled, from the branch the workflow was dispatched from. If a release failed before anything reached PyPI, you can also use the hotfix commit you merged afterward. See [Hotfix Protocol > Case A](#case-a--release-failed-before-pypi-publish) for that recovery flow.
-6. (Optionally enable `dangerous-nonmain-release` for hotfix branches that are not `main`. When enabled, `release-sha` may be left empty and the workflow uses the branch's current commit.)
+6. (Optionally enable `dangerous-nonmain-release` to release from a branch that is not `main`. When enabled, `release-sha` may be left empty and the workflow uses the branch's current commit.)
+
+> [!IMPORTANT]
+> The `release` environment only accepts runs from `main`, `v[0-9]*` maintenance branches, and the `alpha/*`, `beta/*`, `rc/*`, and `dev/*` [pre-release branches](#how-to-publish-a-pre-release). PyPI and TestPyPI trusted publishers require that environment, so a run from any other branch cannot publish. Admin bypass is disabled. To release a hotfix from some other branch, cherry-pick it onto `main` or a `vX.Y` branch, or have an admin add the branch to the `release` environment's deployment branches for the duration of the release.
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the normal release-please flow whenever possible. Use this workflow mainly for recovery, such as when the release workflow failed after the release PR was already merged!
@@ -380,6 +383,7 @@ Because nothing was published, you still get to decide what eventually goes out 
 1. **Figure out why the release failed.** Look at the workflow run logs.
 2. **Open a PR with the fix.** Use a `hotfix(<scope>): <description>` title so it doesn't trigger another release PR update. Merge it to `main`.
    - Important: leave `pyproject.toml`'s version exactly as the release-please PR set it. The hotfix should only fix the problem that broke the release.
+   - If `main` has picked up other unreleased commits since the release PR merged, releasing from `main` would ship them too. To ship only the release plus the fix, cut a `vX.Y` branch from the release-please merge commit, cherry-pick the fix onto it, and release from that branch with `dangerous-nonmain-release` instead (see [Maintenance branch](#maintenance-branch-patching-the-old-line-after-cutover)).
 3. **Manually re-dispatch the release workflow** ([Manual Release](#manual-release)). Pass `release-sha` = the SHA of your hotfix commit — the one that fixed the release *and* still declares the target version. Right after you merge it, that's the tip of `main`, but pin the explicit SHA rather than relying on `HEAD` (e.g. `gh pr view <hotfix-pr-number> --json mergeCommit --jq .mergeCommit.oid`), since `main` can advance if another PR lands first. The workflow checks out, builds, publishes, and tags that exact commit.
 4. **Confirm the label swap.** The `mark-release` job swaps the original release-please PR's `auto:release-pending` label to `auto:release-tagged` — it finds the right PR via a fallback label search, even though `release-sha` points at the hotfix commit, not the release-please commit. Double-check the original release-please PR in GitHub after the workflow succeeds. If the label didn't swap, fix it by hand — see [Release PR Stuck with "auto:release-pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
@@ -425,6 +429,9 @@ For that reason, never commit PEP 440 pre-release version bumps to `main` or a l
 ### How to publish a pre-release
 
 Every pre-release stage uses a **throwaway branch** + [manual release](#manual-release). This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
+
+> [!NOTE]
+> Only repository admins can create, push, or delete `alpha/*`, `beta/*`, `rc/*`, and `dev/*` branches (the `pre-release branches` ruleset). Those prefixes are allowed to deploy to the `release` environment and can publish without the normal version checks, so the ruleset keeps pre-release publishing limited to admins.
 
 Choose these values before starting:
 
@@ -510,7 +517,7 @@ Use the exact `<VERSION>` everywhere except the branch name. For example, beta `
 
 6. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, a collapsible package-scoped Git log, contributor shoutouts (but no changelog), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
-7. **Clean up** — delete the throwaway branch only after the workflow succeeds and the published release is verified:
+7. **Clean up** (admins only, like creating the branch) — delete the throwaway branch only after the workflow succeeds and the published release is verified:
 
    ```bash
    git checkout <BASE_BRANCH>

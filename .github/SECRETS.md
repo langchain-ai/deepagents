@@ -134,7 +134,7 @@ Of the model-provider credentials, only the credential for the configured provid
 
 ### `release`
 
-The environment is retained for release protections and possible future release-time integration coverage. It intentionally has no provider credentials while the `Run integration tests` step in `.github/workflows/release.yml` is disabled with `if: false`.
+The environment is retained for release protections and possible future release-time integration coverage. Deployments are restricted to `main` and the `v[0-9]*` maintenance branches. `publish` needs `pre-release-checks`, which selects this environment, so PyPI publishing is limited to those branches too, even with `dangerous-nonmain-release`. Admins can still bypass the restriction (`can_admins_bypass`). It intentionally has no provider credentials while the `Run integration tests` step in `.github/workflows/release.yml` is disabled with `if: false`.
 
 The disabled step preserves package-scoped wiring so a future re-enablement has an explicit credential contract:
 

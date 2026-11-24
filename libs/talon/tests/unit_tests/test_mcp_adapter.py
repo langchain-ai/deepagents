@@ -76,6 +76,87 @@ def _graph(tools: list[BaseTool]) -> CompiledStateGraph:
     return builder.compile(checkpointer=InMemorySaver())
 
 
+@pytest.mark.parametrize("description", ["In Slack timestamp format", "In SLACK TS FORMAT"])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1795514364", "1795514364.000000"),
+        ("1795514364.5", "1795514364.500000"),
+        ("1795514364.12345", "1795514364.123450"),
+        ("1795514364.123456", "1795514364.123456"),
+        ("1795514364.1234567", "1795514364.1234567"),
+        ("12345678", "12345678"),
+        ("1795514364.", "1795514364."),
+        (" 1795514364", " 1795514364"),
+        ("invalid", "invalid"),
+        (1795514364, 1795514364),
+        (None, None),
+    ],
+)
+def test_normalize_slack_timestamp_arguments(description, value, expected) -> None:
+    schema = {
+        "properties": {
+            "cursor": {"type": "string", "description": description},
+            "oldest": {"type": "string", "description": "Unix timestamp"},
+            "ts": {"type": "string"},
+            "limit": {"type": "string"},
+            "count": {"type": "integer", "description": description},
+            "required": {"type": "string"},
+        },
+        "required": ["required"],
+    }
+    arguments = dict.fromkeys(["oldest", "ts", "limit", "count"], "1795514364")
+    arguments.update(cursor=value, optional="", required="")
+    original = copy.deepcopy(arguments)
+    original_schema = copy.deepcopy(schema)
+
+    assert mcp._normalize_mcp_arguments(arguments, schema) == {
+        **{key: original[key] for key in ["oldest", "ts", "limit", "count"]},
+        "cursor": expected,
+        "required": "",
+    }
+    assert arguments == original
+    assert schema == original_schema
+
+
+async def test_slack_thread_delta_uses_normalized_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = FastMCP("slack")
+    received: list[str] = []
+
+    async def read_thread(oldest: str) -> list[str]:
+        received.append(oldest)
+        return ["new reply"] if oldest == "1795514364.000000" else ["old reply", "new reply"]
+
+    remote = FunctionTool.from_function(read_thread)
+    remote.parameters["properties"]["oldest"]["description"] = "In Slack ts format"
+    server.add_tool(remote)
+    loaded = await _load_tools(server, tmp_path, monkeypatch)
+    result = await _graph(list(loaded.tools)).ainvoke(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "delta",
+                            "name": "remote_read_thread",
+                            "args": {"oldest": "1795514364"},
+                        }
+                    ],
+                )
+            ]
+        },
+        {"configurable": {"thread_id": "delta"}},
+    )
+    message = result["messages"][-1]
+    assert received == ["1795514364.000000"]
+    assert message.status == "success"
+    assert "new reply" in str(message.content)
+    assert "old reply" not in str(message.content)
+
+
 @pytest.mark.parametrize("fail", [False, True])
 async def test_real_adapter_invokes_prefixed_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fail: bool

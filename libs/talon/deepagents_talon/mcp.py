@@ -602,7 +602,7 @@ async def _open_authenticated_session(
 def _normalize_mcp_arguments(
     arguments: Mapping[str, object], input_schema: object
 ) -> dict[str, object]:
-    """Omit empty strings for optional string-like MCP arguments."""
+    """Omit optional empty strings and normalize schema-identified Slack timestamps."""
     if not isinstance(input_schema, dict):
         return dict(arguments)
     raw_required = input_schema.get("required")
@@ -614,10 +614,28 @@ def _normalize_mcp_arguments(
     raw_properties = input_schema.get("properties")
     properties = raw_properties if isinstance(raw_properties, dict) else {}
     return {
-        name: value
+        name: _normalize_slack_timestamp(value, properties.get(name))
         for name, value in arguments.items()
         if value != "" or name in required or _is_explicitly_non_string(properties.get(name))
     }
+
+
+def _normalize_slack_timestamp(value: object, property_schema: object) -> object:
+    if not isinstance(value, str) or not isinstance(property_schema, dict):
+        return value
+    description = property_schema.get("description")
+    if (
+        _is_explicitly_non_string(property_schema)
+        or not isinstance(description, str)
+        or not re.search(r"\bslack\s+(?:timestamp|ts)\s+format\b", description, re.IGNORECASE)
+    ):
+        return value
+    if re.fullmatch(r"\d{9,}", value):
+        return value + ".000000"
+    if re.fullmatch(r"\d{9,}\.\d{1,5}", value):
+        seconds, fraction = value.split(".")
+        return seconds + "." + fraction.ljust(6, "0")
+    return value
 
 
 def _is_explicitly_non_string(property_schema: object) -> bool:

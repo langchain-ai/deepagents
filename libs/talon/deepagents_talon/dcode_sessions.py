@@ -15,7 +15,7 @@ directories, and checks the peer's user ID after connecting. As with the Claude 
 bridge, the operating-system user is the trust boundary. Each message is a normal
 queued prompt wrapped in a `<talon-relayed-message>` envelope: Talon never sends slash
 commands, signals, or queue-bypass requests, and dcode does not enforce the envelope,
-so Talon's own approval prompt is the gate before a message reaches the session.
+so Talon prompts before sending by default.
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ ENABLE_ENV = "DEEPAGENTS_TALON_DCODE_SESSIONS"
 """Set to `1` to give the operator's agent the dcode session tools."""
 
 SEND_TOOL = "message_dcode_session"
-"""Tool that always requires operator approval, whatever `tools.json` says."""
 
 _MAX_MESSAGE_BYTES = 8_000
 _MAX_ACK_BYTES = 64 * 1024
@@ -142,7 +141,7 @@ def prompt_line(message: str, correlation_id: str) -> bytes:
     """Build the one queued-prompt event Talon ever sends.
 
     Args:
-        message: Plain text approved by the operator.
+        message: Plain text to relay.
         correlation_id: ID dcode echoes in its acknowledgement.
     """
     payload = relay(message, f"{_MARKER}{correlation_id}")
@@ -197,7 +196,7 @@ class DcodeSessions:
         return discover(self._dirs)
 
     async def send(self, target: DcodeSession, message: str) -> dict[str, str]:
-        """Queue one approved message as a prompt in a dcode session.
+        """Queue one message as a prompt in a dcode session.
 
         Args:
             target: Session returned by `sessions`.
@@ -264,7 +263,7 @@ class DcodeSessions:
 
         @tool(SEND_TOOL)
         async def message_dcode_session(session: str, message: str) -> dict[str, str] | str:
-            """Send an approved message to a running dcode session as a queued prompt.
+            """Send a message to a running dcode session as a queued prompt.
 
             dcode confirms delivery but sends no reply back; the operator reads the
             answer in that session. Do not poll or wait for a reply.

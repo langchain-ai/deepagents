@@ -383,12 +383,14 @@ def _send_runtime(
     return runtime, sent
 
 
-async def test_send_requires_approval_even_when_policy_disables_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("approval", [None, True, False])
+async def test_send_honors_approval_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, approval: bool | None
 ) -> None:
     runtime, sent = _send_runtime(tmp_path, monkeypatch, enabled=True)
-    snapshot = runtime.approval_store.ensure()
-    runtime.approval_store.update({"message_claude_session": False}, snapshot.revision)
+    if approval is not None:
+        snapshot = runtime.approval_store.ensure()
+        runtime.approval_store.update({"message_claude_session": approval}, snapshot.revision)
     seen: list[ToolApprovalRequest] = []
 
     async def reject(request: ToolApprovalRequest) -> str:
@@ -405,8 +407,10 @@ async def test_send_requires_approval_even_when_policy_disables_it(
     finally:
         await runtime.stop()
 
-    assert [r.action_requests[0]["name"] for r in seen] == ["message_claude_session"]
-    assert sent == []
+    assert [r.action_requests[0]["name"] for r in seen] == (
+        [] if approval is False else ["message_claude_session"]
+    )
+    assert sent == (["w"] if approval is False else [])
 
 
 async def test_session_tools_are_off_by_default(

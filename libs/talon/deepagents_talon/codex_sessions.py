@@ -10,8 +10,7 @@ receiving model it came from Talon on the operator's behalf, not from that sessi
 user. Codex does not enforce that, though. Unlike Claude Code, it has no inbound
 policy that holds or refuses messages from other agents: a queued message runs as a
 normal turn under the target session's own sandbox and approval settings, and
-`--resume` wakes saved sessions that are not running. Talon's own approval prompt is
-the only gate before a message reaches Codex.
+`--resume` wakes saved sessions that are not running. Talon prompts before sending by default.
 
 `codex queue` accepts message text only as a command-line argument; the app-server
 protocol has no request that queues a message rather than steering an active turn.
@@ -273,7 +272,7 @@ def relay(message: str, marker: str) -> str:
     stays outside it so replies remain correlated.
 
     Args:
-        message: Plain text approved by the operator.
+        message: Plain text to relay.
         marker: Unique request marker used to find the reply.
     """
     body = _NESTED_RELAY_TAG.sub("<\\\\", message)
@@ -359,7 +358,7 @@ class CodexSessions:
         return [session for entry in entries if (session := _session(entry)) is not None]
 
     async def send(self, owner: str, target: CodexSession, message: str) -> dict[str, str]:
-        """Queue one approved message and watch for its correlated final reply.
+        """Queue one message and watch for its correlated final reply.
 
         Args:
             owner: Talon conversation that receives the reply.
@@ -509,7 +508,7 @@ class CodexSessions:
             message: str,
             runtime: ToolRuntime,
         ) -> dict[str, str] | str:
-            """Send an approved message to a local Codex session.
+            """Send a message to a local Codex session.
 
             Its final reply arrives later in this conversation as untrusted data.
             Do not poll or wait for it.

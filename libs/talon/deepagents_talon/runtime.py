@@ -1088,14 +1088,13 @@ class DeepAgentRuntime:
         policy = snapshot.interrupt_on
         if self._smart_model is not None:
             policy["ask_for_help"] = {"allowed_decisions": ["approve", "reject"]}
-        if self.claude_sessions is not None:
-            # Reaching another session must never run unreviewed, so no policy file can
-            # turn this off: a missing tools.json entry would otherwise mean no prompt.
-            policy[SEND_TOOL] = {"allowed_decisions": ["approve", "reject"]}
-        if self.codex_sessions is not None:
-            policy[CODEX_SEND_TOOL] = {"allowed_decisions": ["approve", "reject"]}
-        if self.dcode_sessions is not None:
-            policy[DCODE_SEND_TOOL] = {"allowed_decisions": ["approve", "reject"]}
+        for name, bridge in (
+            (SEND_TOOL, self.claude_sessions),
+            (CODEX_SEND_TOOL, self.codex_sessions),
+            (DCODE_SEND_TOOL, self.dcode_sessions),
+        ):
+            if bridge is not None and name not in snapshot.approvals:
+                policy[name] = {"allowed_decisions": ["approve", "reject"]}
         for name, config in policy.items():
             if config:
                 approval: InterruptOnConfig = (

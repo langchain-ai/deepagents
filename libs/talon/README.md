@@ -279,8 +279,10 @@ Native and container startup create these defaults when the file is missing and
 preserve existing configuration. `send_message` prompts before an agent progress
 update, including one with Slack mentions. It does not gate the final reply or
 host-generated messages. Existing policy files retain their settings; add
-`"send_message": true` to an existing `tools.json` to opt in. Unspecified tools
-default to `false`; listing, searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
+`"send_message": true` to an existing `tools.json` to opt in. Local session sends (`message_claude_session`,
+`message_codex_session`, and `message_dcode_session`) prompt by default, including
+with existing policy files. Set an individual send tool to `false` to skip its
+prompt. Other unspecified tools default to `false`; listing, searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
 availability or authorization. There is no migration from the old approval settings.
 
 Read `get_tool_approvals` before editing:

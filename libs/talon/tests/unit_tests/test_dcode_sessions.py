@@ -138,9 +138,12 @@ async def test_tools_deny_nonoperators_subagents_and_unlisted_targets(sock_dir: 
         APPROVAL_OPERATOR.reset(token)
 
 
-async def test_send_requires_approval_even_when_policy_disables_it(
+@pytest.mark.parametrize("approval", [None, True, False])
+async def test_send_honors_approval_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    approval: bool | None,
 ) -> None:
     model = ToolModel(
         responses=[
@@ -161,8 +164,16 @@ async def test_send_requires_approval_even_when_policy_disables_it(
         include_web_tools=False,
         max_retries=1,
     )
-    snapshot = runtime.approval_store.ensure()
-    runtime.approval_store.update({"message_dcode_session": False}, snapshot.revision)
+    resolved: list[str] = []
+
+    def resolve(_self: DcodeSessions, session: str) -> str:
+        resolved.append(session)
+        return "Unknown session."
+
+    monkeypatch.setattr(DcodeSessions, "_resolve", resolve)
+    if approval is not None:
+        snapshot = runtime.approval_store.ensure()
+        runtime.approval_store.update({"message_dcode_session": approval}, snapshot.revision)
     seen: list[ToolApprovalRequest] = []
 
     async def reject(request: ToolApprovalRequest) -> str:
@@ -182,7 +193,10 @@ async def test_send_requires_approval_even_when_policy_disables_it(
     finally:
         await runtime.stop()
 
-    assert [request.action_requests[0]["name"] for request in seen] == ["message_dcode_session"]
+    assert [r.action_requests[0]["name"] for r in seen] == (
+        [] if approval is False else ["message_dcode_session"]
+    )
+    assert resolved == (["1"] if approval is False else [])
 
 
 def test_dcode_tools_are_off_by_default(tmp_path: Path) -> None:

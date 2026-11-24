@@ -599,6 +599,10 @@ jobs:
 
   test-pypi-publish:
     name: 🧪 Publish to TestPyPI
+    # Trusted publishers on (Test)PyPI are bound to this environment, so an OIDC
+    # token minted outside it cannot publish. The environment only allows `main`
+    # and `v[0-9]*` maintenance branches.
+    environment: release
     needs:
       - build
       - pre-release-checks
@@ -895,6 +899,10 @@ jobs:
   publish:
     name: 🚀 Publish to PyPI
     # Publishes the package to PyPI
+    # Trusted publishers on (Test)PyPI are bound to this environment, so an OIDC
+    # token minted outside it cannot publish. The environment only allows `main`
+    # and `v[0-9]*` maintenance branches.
+    environment: release
     needs:
       - build
       - test-pypi-publish

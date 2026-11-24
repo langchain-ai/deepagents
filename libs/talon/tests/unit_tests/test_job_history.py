@@ -10,8 +10,8 @@ import pytest
 from pydantic import ValidationError
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
+from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, record_job_work
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
-from deepagents_talon.goals.journal import GoalJournal, GoalReport, record_goal_work
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
 from deepagents_talon.questions import ask_user, question_scope
@@ -37,9 +37,11 @@ def test_goals_are_managed_with_job_tools_and_are_private_to_the_owner_and_threa
     }
     outcome = "Keep the release on track. The build should finish in ten minutes."
     with pytest.raises(ValidationError, match="schedule"):
-        tools["create_goal"].invoke({"outcome": outcome})
-    job = tools["create_goal"].invoke({"outcome": outcome, "schedule": "every 10m"})
-    assert len(job["upcoming"]) == 1
+        tools["create_job"].invoke({"mode": "objective", "prompt": outcome})
+    job = tools["create_job"].invoke(
+        {"mode": "objective", "prompt": outcome, "schedule": "every 10m"}
+    )
+    assert job["mode"] == "objective"
     for other in (replace(ORIGIN, sender_id="bob"), replace(ORIGIN, conversation_id="C1:sibling")):
         origin = other
         assert tools["list_jobs"].invoke({}) == []
@@ -50,10 +52,8 @@ def test_goals_are_managed_with_job_tools_and_are_private_to_the_owner_and_threa
 
 
 class _GoalAgent(BlockingAgent):
-    wake: datetime
-
     async def invoke(self, request: AgentRequest) -> AgentResult:
-        if request.metadata.get("trigger") != "goal":
+        if request.metadata.get("job_mode") != "objective":
             return await super().invoke(request)
         self.requests.append(request)
         assert request.metadata["tool_approval_operator"] is False
@@ -71,25 +71,23 @@ class _GoalAgent(BlockingAgent):
                     "summary": "Publishing needs approval.",
                     "notice": "Please review the pending publication.",
                     "blocker_key": "publish",
-                    "next_wake_at": self.wake.isoformat(),
                 }
             )
         )
 
 
-async def test_goal_plans_its_next_wake_without_claiming_chat_replies(tmp_path: Path) -> None:
+async def test_objective_keeps_cadence_and_does_not_claim_chat_replies(tmp_path: Path) -> None:
     now = datetime.now(UTC).replace(microsecond=0)
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
     goal = store.create_job(
         prompt="Prepare the release",
         origin=ORIGIN,
-        continuing=True,
+        mode="objective",
         schedule=CronSchedule.parse("every 1h"),
         now=now,
     )
     channel = RecordingChannel("slack")
     agent = _GoalAgent()
-    agent.wake = now + timedelta(minutes=65)
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
     scheduler = PersistentCronScheduler(
         store=store,
@@ -101,17 +99,17 @@ async def test_goal_plans_its_next_wake_without_claiming_chat_replies(tmp_path: 
     await host.start()
     try:
         now += timedelta(hours=1)
-        await scheduler.tick_once()
-        await asyncio.wait_for(scheduler._goals[goal.id], 2)
+        await scheduler.tick_once(wait=False)
+        await asyncio.wait_for(scheduler._running[goal.id], 2)
         assert channel.sent == [(ORIGIN.conversation_id, "Please review the pending publication.")]
         reopened = CronJobStore(assistant_id="test", cron_dir=store.cron_dir)
-        assert reopened.get_job(goal.id).next_run_at == agent.wake
-        assert reopened.due_jobs(now=agent.wake - timedelta(seconds=1)) == []
-        now = agent.wake
-        agent.wake += timedelta(hours=3)
-        await scheduler.tick_once()
-        await asyncio.wait_for(scheduler._goals[goal.id], 2)
-        assert reopened.get_job(goal.id).next_run_at == agent.wake
+        next_run = now + timedelta(hours=1)
+        assert reopened.get_job(goal.id).next_run_at == next_run
+        CronTools(store=store, origin=lambda: ORIGIN).edit_job(goal.id, run_now=True)
+        await scheduler.tick_once(wait=False)
+        await asyncio.wait_for(scheduler._running[goal.id], 2)
+        assert reopened.get_job(goal.id).next_run_at == next_run
+        assert not reopened.due_jobs(now=now)
         await host.receive_message(
             channel, ChannelMessage(ORIGIN.conversation_id, "unrelated", sender_id="alice")
         )
@@ -125,10 +123,14 @@ def test_upgrade_keeps_confirmed_scope_progress_and_paused_drafts(tmp_path: Path
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
     job = store.create_job(
         prompt="old placeholder",
-        goal_id="old",
         origin=ORIGIN,
         schedule=CronSchedule.parse("every 6h"),
     )
+    data = json.loads(store.path.read_text())
+    record = data["jobs"][0]
+    del record["mode"]
+    record["goal_id"] = "old"
+    store.path.write_text(json.dumps(data))
     charter = {"outcome": "Resolve blockers", "sources": ["path:/release"]}
     goal = {
         "id": "old",
@@ -165,7 +167,7 @@ def test_upgrade_keeps_confirmed_scope_progress_and_paused_drafts(tmp_path: Path
     assert active.enabled
     assert (active.id, active.next_run_at) == (job.id, job.next_run_at)
     assert "ticket-27" in active.prompt
-    assert active.goal_sources == ("path:/release",)
+    assert active.read_sources == ("path:/release",)
     assert not paused.enabled
     assert (tmp_path / "ledger.imported.json").read_text() == raw
     upgraded.remove_job(active.id, origin=ORIGIN)
@@ -184,10 +186,10 @@ class _WorkingGoalAgent(BlockingAgent):
         }
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
-        if request.metadata.get("trigger") != "goal":
+        if request.metadata.get("job_mode") != "objective":
             return await super().invoke(request)
         self.requests.append(request)
-        record_goal_work.invoke({"note": "Inspected build 29."})
+        record_job_work.invoke({"note": "Inspected build 29."})
         self.check_started.set()
         assert request.message_handler is None
         await self.released.wait()
@@ -201,7 +203,7 @@ async def test_background_goal_isolation_history_and_notification_policy(tmp_pat
     goal = store.create_job(
         prompt="Check builds",
         origin=ORIGIN,
-        continuing=True,
+        mode="objective",
         schedule=CronSchedule.parse("every 1h"),
     )
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
@@ -220,7 +222,7 @@ async def test_background_goal_isolation_history_and_notification_policy(tmp_pat
         await _wait_for_sent_count(channel, 1)
         assert not check.done()
         assert (
-            "Inspected build 29" in GoalJournal(store.cron_dir).history(goal.id, ORIGIN)[0]["work"]
+            "Inspected build 29" in JobJournal(store.cron_dir).history(goal.id, ORIGIN)[0]["work"]
         )
         agent.released.set()
         assert await asyncio.wait_for(check, 2) == "[SILENT]"
@@ -232,8 +234,6 @@ async def test_background_goal_isolation_history_and_notification_policy(tmp_pat
             tool.name: tool
             for tool in CronTools(store=store, origin=lambda: ORIGIN).as_langchain_tools()
         }
-        # An existing opt-in predating blocker-only delivery cannot leak routine findings.
-        store.edit_job(goal.id, origin=ORIGIN, goal_updates=True)
         assert await host.run_scheduled_job(goal) == "[SILENT]"
         assert "Checked build 29" in agent.requests[-1].text
         assert "unrelated chat" not in agent.requests[-1].text
@@ -251,13 +251,13 @@ async def test_background_goal_isolation_history_and_notification_policy(tmp_pat
         agent.report.update(summary="Still missing a signer.", notice="Who owns signing?")
         assert await host.run_scheduled_job(goal) == "[SILENT]"
         tools["remove_job"].invoke({"job_id": goal.id})
-        assert [row["status"] for row in tools["get_goal_history"].invoke({})] == [
+        assert [row["status"] for row in tools["get_job_history"].invoke({})] == [
             "blocked",
             "blocked",
             "partial",
             "partial",
         ]
-        journal = GoalJournal(store.cron_dir)
+        journal = JobJournal(store.cron_dir)
         for other in (replace(ORIGIN, sender_id="bob"), replace(ORIGIN, conversation_id="sibling")):
             assert journal.history(goal.id, other) == []
     finally:
@@ -271,25 +271,25 @@ async def test_blind_import_pauses_until_owner_repairs_scope(tmp_path: Path) -> 
     channel = RecordingChannel("slack")
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
     job = store.create_job(
-        prompt="Audit", goal_id="legacy", origin=ORIGIN, schedule=CronSchedule.parse("every 1h")
+        prompt="Audit", mode="objective", origin=ORIGIN, schedule=CronSchedule.parse("every 1h")
     )
-    store.edit_job(job.id, origin=ORIGIN, goal_sources=["the audit directory"])
+    store.edit_job(job.id, origin=ORIGIN, read_sources=["the audit directory"])
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
     host.scheduler = PersistentCronScheduler(
         store=store,
         run_job=host.run_scheduled_job,
         deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
     )
-    assert "Goal paused" in await host.run_scheduled_job(job)
+    assert "Job paused" in await host.run_scheduled_job(job)
     assert not store.get_job(job.id).enabled
     assert not agent.requests
-    assert GoalJournal(store.cron_dir).history(job.id, ORIGIN)[0]["status"] == "blocked"
+    assert JobJournal(store.cron_dir).history(job.id, ORIGIN)[0]["status"] == "blocked"
     tools = CronTools(store=store, origin=lambda: ORIGIN)
     agent.report = {"status": "checked", "summary": "Claimed a check without a read."}
-    tools.edit_job(job.id, goal_sources=["path:/audit"], enabled=True)
+    tools.edit_job(job.id, read_sources=["path:/audit"], enabled=True)
     assert await host.run_scheduled_job(job) == "[SILENT]"
-    assert agent.requests[-1].metadata["goal_sources"] == ["path:/audit"]
-    assert tools.list_jobs()[0]["last_check"]["status"] == "unverified"
+    assert agent.requests[-1].metadata["read_sources"] == ["path:/audit"]
+    assert tools.list_jobs()[0]["last_result"]["status"] == "unverified"
 
 
 async def test_pausing_an_active_goal_preserves_work_and_stops_the_check(tmp_path: Path) -> None:
@@ -300,7 +300,7 @@ async def test_pausing_an_active_goal_preserves_work_and_stops_the_check(tmp_pat
     goal = store.create_job(
         prompt="Check builds",
         origin=ORIGIN,
-        continuing=True,
+        mode="objective",
         schedule=CronSchedule.parse("every 1m"),
         now=now,
     )
@@ -315,14 +315,14 @@ async def test_pausing_an_active_goal_preserves_work_and_stops_the_check(tmp_pat
     host.scheduler = scheduler
     await host.start()
     try:
-        await scheduler.tick_once()
+        await scheduler.tick_once(wait=False)
         await asyncio.wait_for(agent.check_started.wait(), 2)
-        run = scheduler._goals[goal.id]
+        run = scheduler._running[goal.id]
         store.edit_job(goal.id, origin=ORIGIN, enabled=False)
-        await scheduler.tick_once()
+        await scheduler.tick_once(wait=False)
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(run, 2)
-        latest = GoalJournal(store.cron_dir).history(goal.id, ORIGIN)[0]
+        latest = JobJournal(store.cron_dir).history(goal.id, ORIGIN)[0]
         assert latest["status"] == "interrupted"
         assert "Inspected build 29" in latest["work"]
         assert channel.sent == []
@@ -330,34 +330,19 @@ async def test_pausing_an_active_goal_preserves_work_and_stops_the_check(tmp_pat
         await host.stop()
 
 
-def test_unusable_or_stale_wake_keeps_fallback(tmp_path: Path) -> None:
+def test_stale_completion_preserves_revised_objective(tmp_path: Path) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
-    goal = store.create_job(
+    job = store.create_job(
         prompt="Check builds",
         origin=ORIGIN,
-        continuing=True,
+        mode="objective",
         schedule=CronSchedule.parse("every 1h"),
     )
-    for wake in ("noon", "2026-01-01T10:00:00", 12):
-        report = GoalReport.from_reply(
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "summary": "Owner needed.",
-                    "next_wake_at": wake,
-                }
-            )
-        )
-        assert report.status == "blocked"
-        assert report.next_wake_at is None
-    store.set_goal_wake(goal, goal.created_at)
-    assert store.get_job(goal.id) == goal
-    revised = store.edit_job(goal.id, origin=ORIGIN, schedule=CronSchedule.parse("every 3h"))
-    store.set_goal_wake(goal, goal.created_at + timedelta(days=1))
-    assert store.get_job(goal.id) == revised
-    store.remove_job(goal.id, origin=ORIGIN)
-    store.set_goal_wake(revised, goal.created_at + timedelta(days=1))
-    assert store.get_job(goal.id) is None
+    revised = store.edit_job(job.id, origin=ORIGIN, prompt="Check all builds")
+    store.finish_objective(job)
+    assert store.get_job(job.id) == revised
+    store.finish_objective(revised)
+    assert store.get_job(job.id).next_run_at is None
 
 
 def test_unacknowledged_and_changed_blockers_are_deliverable(tmp_path: Path) -> None:
@@ -365,20 +350,76 @@ def test_unacknowledged_and_changed_blockers_are_deliverable(tmp_path: Path) -> 
     goal = store.create_job(
         prompt="Ship",
         origin=ORIGIN,
-        continuing=True,
+        mode="objective",
         schedule=CronSchedule.parse("every 1h"),
     )
-    journal = GoalJournal(tmp_path)
-    report = GoalReport(
+    journal = JobJournal(tmp_path)
+    report = ObjectiveReport(
         status="blocked", summary="Signing pending.", blocker_key="sign", notice="Who signs?"
     )
     assert journal.notice(goal, report) == report.notice
-    journal = GoalJournal(tmp_path)
+    journal = JobJournal(tmp_path)
     assert journal.notice(goal, report) == report.notice
     journal.mark_delivered(goal.id, report.notice)
     assert journal.notice(goal, report) == ""
     changed = report.model_copy(update={"blocker_key": "publish", "notice": "Where to publish?"})
     assert journal.notice(goal, changed) == changed.notice
     journal.mark_delivered(goal.id, changed.notice)
-    assert journal.notice(goal, GoalReport(status="checked", summary="Published.")) == ""
+    assert journal.notice(goal, ObjectiveReport(status="checked", summary="Published.")) == ""
     assert journal.notice(goal, changed) == changed.notice
+
+
+async def test_both_modes_share_listing_and_routine_history_survives_removal(
+    tmp_path: Path,
+) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    tools = {
+        tool.name: tool
+        for tool in CronTools(store=store, origin=lambda: ORIGIN).as_langchain_tools()
+    }
+    for mode in ("routine", "objective"):
+        tools["create_job"].invoke({"prompt": "check status", "schedule": "every 5m", "mode": mode})
+    routine, objective = tools["list_jobs"].invoke({})
+    assert [routine["mode"], objective["mode"]] == ["routine", "objective"]
+    host = TalonHost(
+        config=_config(tmp_path), channels=[RecordingChannel("slack")], agent=BlockingAgent()
+    )
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=host.run_scheduled_job,
+        deliver_result=lambda job, text: host.deliver_scheduled_result(host.channels[0], job, text),
+    )
+    host.scheduler = scheduler
+    assert tools["edit_job"].invoke({"job_id": routine["id"], "run_now": True})["run_requested"]
+    await scheduler.tick_once()
+    routine, objective = tools["list_jobs"].invoke({})
+    assert routine["last_result"]["summary"] == "reply:check status"
+    assert objective["last_result"] is None
+    tools["remove_job"].invoke({"job_id": routine["id"]})
+    assert tools["get_job_history"].invoke({"job_id": routine["id"]})[0]["status"] == "checked"
+
+
+def test_upgrade_reads_previous_job_modes_grants_and_journal(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    schedule = CronSchedule.parse("every 1h")
+    routine, objective = (
+        store.create_job(prompt=name, origin=ORIGIN, schedule=schedule)
+        for name in ("report", "track release")
+    )
+    data = json.loads(store.path.read_text())
+    for record in data["jobs"]:
+        del record["mode"]
+    data["jobs"][1].update(goal_id=objective.id, goal_sources=["path:/builds"])
+    store.path.write_text(json.dumps(data))
+    journal = JobJournal(tmp_path)
+    journal.start(objective, "previous-run")
+    journal.finish("previous-run", "partial", "Build 29 is ready.")
+    journal.path.rename(tmp_path / "goal-history.sqlite3")
+    reopened = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    jobs = CronTools(store=reopened, origin=lambda: ORIGIN).list_jobs()
+    assert [(job["id"], job["mode"]) for job in jobs] == [
+        (routine.id, "routine"),
+        (objective.id, "objective"),
+    ]
+    assert jobs[1]["last_result"]["summary"] == "Build 29 is ready."
+    assert reopened.get_job(objective.id).read_sources == ("path:/builds",)

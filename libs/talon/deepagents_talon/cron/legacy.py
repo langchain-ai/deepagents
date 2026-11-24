@@ -55,7 +55,9 @@ def import_goals(raw: bytes, jobs: list[CronJob], assistant_id: str) -> list[Cro
     by_id = {job.id: job for job in jobs}
     # An orphaned or removed legacy job has no authorized work to perform.
     converted = {
-        key: job for key, job in by_id.items() if job.goal_id is None or job.goal_id == job.id
+        key: job
+        for key, job in by_id.items()
+        if job.legacy_goal_id is None or job.legacy_goal_id == job.id
     }
     for goal in ledger.goals:
         if goal.state == "removed":
@@ -68,7 +70,7 @@ def import_goals(raw: bytes, jobs: list[CronJob], assistant_id: str) -> list[Cro
             sender_id=goal.scope.owner_id,
         )
         if existing is not None and (
-            existing.goal_id != goal.id
+            existing.legacy_goal_id != goal.id
             or existing.origin.channel != origin.channel
             or existing.origin.conversation_id != origin.conversation_id
             or existing.origin.sender_id != origin.sender_id
@@ -79,7 +81,7 @@ def import_goals(raw: bytes, jobs: list[CronJob], assistant_id: str) -> list[Cro
         job = existing or CronJob(
             id=goal.id,
             assistant_id=assistant_id,
-            goal_id=goal.id,
+            mode="objective",
             origin=origin,
             schedule=schedule,
             repeat=CronRepeat(),
@@ -114,6 +116,7 @@ def import_goals(raw: bytes, jobs: list[CronJob], assistant_id: str) -> list[Cro
             "in chat. Summarize progress without quoting private evidence in shared chats.\n"
             + json.dumps(history, ensure_ascii=False),
             enabled=job.enabled and goal.state == "active" and goal.confirmed_charter is not None,
-            goal_sources=charter.sources,
+            read_sources=charter.sources,
+            legacy_goal_id=None,
         )
     return list(converted.values())

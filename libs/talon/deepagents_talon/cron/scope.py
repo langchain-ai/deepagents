@@ -1,8 +1,8 @@
-"""Read-only tool scope for unattended goal turns.
+"""Read-only tool scope for scoped scheduled runs.
 
 Talon is an experimental runtime and is subject to change or removal at any time.
 
-A goal turn may read only what the owner named in the confirmed charter. The
+A job with read grants can access the sources its owner specified. The
 scope is enforced at the tool boundary, not in the prompt: tools outside it are
 hidden from the model, and any call that still names one is refused.
 """
@@ -34,17 +34,17 @@ FILE_READ_TOOLS: Mapping[str, str] = {
 }
 """Filesystem read tools and the argument that names the path they read."""
 
-ALWAYS_ALLOWED = frozenset({"current_time", "ask_user", "record_goal_work"})
+ALWAYS_ALLOWED = frozenset({"current_time", "ask_user", "record_job_work"})
 
 
 @dataclass(frozen=True, slots=True)
 class ReadScope:
-    """Tools and paths an unattended goal turn may read.
+    """Tools and paths an unattended job run may read.
 
     Args:
         tools: Tool names the owner named; each must also have a known read-only contract.
         paths: Absolute directories the filesystem read tools may address.
-        job_id: Job this goal may update or finish.
+        job_id: Job this job may update or finish.
     """
 
     tools: frozenset[str] = frozenset()
@@ -60,7 +60,7 @@ class ReadScope:
 
         Args:
             sources: Confirmed charter sources.
-            job_id: The goal job whose progress this turn may update.
+            job_id: The job whose progress this turn may update.
 
         Returns:
             The read scope.
@@ -76,11 +76,11 @@ class ReadScope:
         )
 
     def allows_tool(self, tool: object) -> bool:
-        """Whether a tool may be offered to and called by the goal turn."""
+        """Whether a tool may be offered to and called by the job run."""
         name = getattr(tool, "name", None)
         if not isinstance(tool, BaseTool) or not isinstance(name, str):
             return False
-        if name in {"edit_job", "remove_job", "get_goal_history"}:
+        if name in {"edit_job", "remove_job", "get_job_history"}:
             return self.job_id is not None
         if name in ALWAYS_ALLOWED or (name in FILE_READ_TOOLS and self.paths):
             return True
@@ -91,7 +91,7 @@ class ReadScope:
         if not self.allows_tool(tool):
             return False
         name = getattr(tool, "name", "")
-        if name in {"edit_job", "remove_job", "get_goal_history"}:
+        if name in {"edit_job", "remove_job", "get_job_history"}:
             return args.get("job_id") == self.job_id
         argument = FILE_READ_TOOLS.get(name)
         if argument is None:
@@ -109,10 +109,10 @@ class ReadScope:
         )
 
 
-GOAL_READ_SCOPE: contextvars.ContextVar[ReadScope | None] = contextvars.ContextVar(
-    "talon_goal_read_scope", default=None
+JOB_READ_SCOPE: contextvars.ContextVar[ReadScope | None] = contextvars.ContextVar(
+    "talon_job_read_scope", default=None
 )
-"""Scope of the goal turn in progress, or `None` outside goal turns."""
+"""Scope of the job run in progress, or `None` outside job runs."""
 
 
 def is_read_only(tool: BaseTool) -> bool:
@@ -138,17 +138,17 @@ def is_read_only(tool: BaseTool) -> bool:
 
 
 # Shared across tool tasks in a single isolated check.
-GOAL_READS: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
-    "talon_goal_reads", default=None
+JOB_READS: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
+    "talon_job_reads", default=None
 )
 
 
-class GoalToolsUnavailableError(RuntimeError):
+class JobToolsUnavailableError(RuntimeError):
     """A scheduled check cannot access its confirmed tool sources."""
 
 
-class GoalScopeMiddleware(AgentMiddleware):
-    """Restrict tools during goal turns; a no-op for every other turn."""
+class JobScopeMiddleware(AgentMiddleware):
+    """Restrict tools during job runs; a no-op for every other turn."""
 
     name = "TalonGoalScope"
 
@@ -173,7 +173,7 @@ class GoalScopeMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage],
     ) -> ToolMessage:
-        """Refuse a tool call outside the goal's read scope."""
+        """Refuse a tool call outside the job's read scope."""
         return _refusal(request) or _observe_read(request, handler(request))
 
     async def awrap_tool_call(
@@ -181,12 +181,12 @@ class GoalScopeMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
-        """Refuse a tool call outside the goal's read scope."""
+        """Refuse a tool call outside the job's read scope."""
         return _refusal(request) or _observe_read(request, await handler(request))
 
 
 def _scoped_request(request: ModelRequest) -> ModelRequest:
-    scope = GOAL_READ_SCOPE.get()
+    scope = JOB_READ_SCOPE.get()
     if scope is None:
         return request
     allowed = [
@@ -195,13 +195,13 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
     missing = scope.tools.difference(tool.name for tool in allowed)
     if missing:
         msg = f"Goal check blocked by unavailable read tools: {', '.join(sorted(missing))}"
-        raise GoalToolsUnavailableError(msg)
+        raise JobToolsUnavailableError(msg)
     return request.override(tools=[*allowed])
 
 
 def _observe_read(request: ToolCallRequest, result: ToolMessage) -> ToolMessage:
-    reads = GOAL_READS.get()
-    scope = GOAL_READ_SCOPE.get()
+    reads = JOB_READS.get()
+    scope = JOB_READ_SCOPE.get()
     if reads is None or scope is None:
         return result
     name = request.tool_call["name"]
@@ -209,19 +209,19 @@ def _observe_read(request: ToolCallRequest, result: ToolMessage) -> ToolMessage:
         isinstance(result, ToolMessage)
         and result.status == "success"
         and (name in scope.tools or name in FILE_READ_TOOLS)
-        and name not in ALWAYS_ALLOWED | {"edit_job", "remove_job", "get_goal_history"}
+        and name not in ALWAYS_ALLOWED | {"edit_job", "remove_job", "get_job_history"}
     ):
         reads.add(name)
     return result
 
 
 def _refusal(request: ToolCallRequest) -> ToolMessage | None:
-    scope = GOAL_READ_SCOPE.get()
+    scope = JOB_READ_SCOPE.get()
     call = request.tool_call
     if scope is None or scope.allows_call(request.tool, call.get("args") or {}):
         return None
     return ToolMessage(
-        content="Refused: this goal turn may only read the sources its owner confirmed.",
+        content="Refused: this job run may only read the sources its owner confirmed.",
         name=call["name"],
         tool_call_id=call["id"],
         status="error",

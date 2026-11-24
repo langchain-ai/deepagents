@@ -1,15 +1,14 @@
-"""Durable, owner-scoped history of scheduled goal checks."""
+"""Durable, owner-scoped history of scheduled job runs."""
 
 from __future__ import annotations
 
 import sqlite3
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -18,44 +17,30 @@ if TYPE_CHECKING:
     from deepagents_talon.cron.jobs import CronJob, CronOrigin
 
 
-_SAVE_WORK: ContextVar[Callable[[str], None] | None] = ContextVar("goal_save_work", default=None)
+_SAVE_WORK: ContextVar[Callable[[str], None] | None] = ContextVar("job_save_work", default=None)
 
 
 @tool
-def record_goal_work(note: str) -> str:
-    """Checkpoint verified work, evidence references, and the next step during a goal check."""
+def record_job_work(note: str) -> str:
+    """Checkpoint verified work, evidence references, and the next step during a job run."""
     save = _SAVE_WORK.get()
     if save is None:
-        return "Available only during a scheduled goal check."
+        return "Available only during a scheduled job run."
     save(note)
-    return "Work saved to goal history."
+    return "Work saved to job history."
 
 
-class GoalReport(BaseModel):
+class ObjectiveReport(BaseModel):
     """One check's private work summary and optional owner-facing message."""
 
-    status: Literal["checked", "partial", "blocked", "unverified"]
+    status: Literal["checked", "partial", "blocked", "unverified", "complete"]
     summary: str = Field(min_length=1, max_length=4000)
     notice: str = Field(default="", max_length=2000)
 
     blocker_key: str = Field(default="", max_length=200)
-    next_wake_at: datetime | None = None
-
-    @field_validator("next_wake_at", mode="before")
-    @classmethod
-    def _parse_wake(cls, value: object) -> datetime | None:
-        """Ignore unusable wake times without losing the check's findings."""
-        if isinstance(value, str):
-            try:
-                wake = datetime.fromisoformat(value)
-                if wake.tzinfo is not None:
-                    return wake.astimezone(UTC)
-            except ValueError, OverflowError:
-                return None
-        return None
 
     @classmethod
-    def from_reply(cls, text: str) -> GoalReport:
+    def from_reply(cls, text: str) -> ObjectiveReport:
         """Keep an unstructured result as an unverified note for later inspection."""
         payload = text.strip()
         if payload.startswith(("```json\n", "```\n")) and payload.endswith("```"):
@@ -68,13 +53,15 @@ class GoalReport(BaseModel):
             )
 
 
-class GoalJournal:
+class JobJournal:
     """Store bounded check summaries independently of the scheduler's job list."""
 
     def __init__(self, directory: Path) -> None:
         """Open the assistant's local journal, creating it on first use."""
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.path = directory / "goal-history.sqlite3"
+        # Keep existing history and blocker acknowledgments when upgrading.
+        previous = directory / "goal-history.sqlite3"
+        self.path = previous if previous.exists() else directory / "job-history.sqlite3"
         self.path.touch(mode=0o600, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
@@ -100,16 +87,16 @@ class GoalJournal:
             row = db.execute("SELECT key FROM blockers WHERE job=?", (job,)).fetchone()
             return row[0] if row else ""
 
-    def notice(self, job: CronJob, report: GoalReport) -> str:
+    def notice(self, job: CronJob, report: ObjectiveReport) -> str:
         """Keep one notice pending until delivered, or until progress clears the blocker."""
         with closing(sqlite3.connect(self.path)) as db, db:
             if report.status != "blocked":
-                if report.status in {"checked", "partial"}:
+                if report.status in {"checked", "partial", "complete"}:
                     db.execute("DELETE FROM blockers WHERE job=?", (job.id,))
                 return ""
             notice = (
                 report.notice.strip()
-                or f"Goal {job.name} is blocked. Ask for its saved check results."
+                or f"Job {job.name} is blocked. Ask for its saved check results."
             )
             key = (report.blocker_key.strip() or report.notice.strip() or report.summary).casefold()
             db.execute(
@@ -138,15 +125,15 @@ class GoalJournal:
                     run,
                     job.id,
                     job.name,
-                    job.origin.channel,
+                    job.origin.channel or "",
                     job.origin.conversation_id,
-                    job.origin.sender_id,
+                    job.origin.sender_id or "",
                 ),
             )
 
     @contextmanager
     def capture_work(self, run: str) -> Iterator[None]:
-        """Bind checkpoints to the executing check without exposing a writable goal ID."""
+        """Bind checkpoints to the executing check without exposing a writable job ID."""
 
         def save(note: str) -> None:
             with closing(sqlite3.connect(self.path)) as db, db:
@@ -182,9 +169,9 @@ class GoalJournal:
                 "AND chat=? AND owner=? AND (? IS NULL OR job=?) ORDER BY rowid DESC "
                 "LIMIT ? OFFSET ?",
                 (
-                    origin.channel,
+                    origin.channel or "",
                     origin.conversation_id,
-                    origin.sender_id,
+                    origin.sender_id or "",
                     job,
                     job,
                     limit,

@@ -72,13 +72,13 @@ from deepagents_talon.codex_sessions import (
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
+from deepagents_talon.cron.scope import JOB_READ_SCOPE, JobScopeMiddleware, ReadScope
 from deepagents_talon.dcode_sessions import (
     SEND_TOOL as DCODE_SEND_TOOL,
     DcodeSessions,
     enabled as dcode_sessions_enabled,
 )
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
-from deepagents_talon.goals.scope import GOAL_READ_SCOPE, GoalScopeMiddleware, ReadScope
 from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -588,7 +588,7 @@ class DeepAgentRuntime:
             sorted(
                 [
                     *self.middleware,
-                    GoalScopeMiddleware(),
+                    JobScopeMiddleware(),
                     diagnostics.tool_search,
                     AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
                 ],
@@ -862,7 +862,7 @@ class DeepAgentRuntime:
             policy_token = ACTIVE_APPROVALS.set(snapshot)
         operator_token = APPROVAL_OPERATOR.set(
             request.metadata.get("tool_approval_operator") is True
-            and request.metadata.get("trigger") not in {"cron", "goal"}
+            and request.metadata.get("trigger") != "cron"
             and request.metadata.get("background_delivery") is not True
         )
         pending = self.background.results(request.conversation_id)
@@ -874,7 +874,7 @@ class DeepAgentRuntime:
         # Covers a job's own run and any later turn on its thread, both of which carry the
         # same scheduled metadata. A chat delivery turn is excluded: it has a user waiting,
         # so its delegations keep detaching.
-        scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") in {"cron", "goal"})
+        scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         authorization_token = set_authorization_handler(request.authorization_handler)
         breakout_token = BREAKOUT_HANDLER.set(request.breakout_handler)
         hooks_token = self._hooks.set(None)
@@ -892,7 +892,7 @@ class DeepAgentRuntime:
                 progress_messages(request.message_handler, self.verbosity),
                 question_scope(_question_handler_from_request(request)),
                 _history_context(request),
-                _goal_scope(request),
+                _job_scope(request),
             ):
                 async with (
                     self.checkpointer.protect_session(request.conversation_id)
@@ -1134,7 +1134,7 @@ class DeepAgentRuntime:
             request,
             activity,
             source="internal"
-            if request.metadata.get("trigger") in {"cron", "goal"}
+            if request.metadata.get("trigger") == "cron"
             or request.metadata.get("background_delivery")
             else "user",
             pinned_skills=_request_pinned_skills(request),
@@ -1411,15 +1411,12 @@ class DeepAgentRuntime:
         parts = [prompt, progress]
         if self.cron_store is not None:
             parts.append(
-                "When the user gives you a continuing goal, check list_jobs for an existing goal. "
-                "Save the objective, constraints, known findings and next step with create_goal. "
-                "Keep setup brief and do the investigation in scheduled background checks. "
-                "Choose the first check and fallback cadence. Each check picks its next wake time. "
-                "Routine findings belong in the private goal history. Use get_goal_history "
-                "when the owner asks for progress. Only new blockers reach chat. When the owner "
-                "answers a blocker, save the decision in the goal prompt with edit_job. "
-                "Use edit_job to pause and remove_job when done. "
-                "A gated tool will request its own approval. Handle one-off requests directly."
+                "Use create_job for scheduled work. A routine repeats the specified procedure. "
+                "An objective pursues a goal, choosing the next action from its job journal. "
+                "Use list_jobs to show all jobs with mode, latest result and next run. "
+                "Use get_job_history for evidence and progress. Save changes to standing "
+                "instructions with edit_job. To run an existing job now, set run_now on edit_job. "
+                "Keep the requested cadence. Handle unscheduled one-off requests directly."
             )
         if self.sandbox_working_dir is not None:
             parts.append(_SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir))
@@ -1857,11 +1854,11 @@ def _current_cron_origin() -> CronOrigin:
 
 
 @contextlib.contextmanager
-def _goal_scope(request: AgentRequest) -> Generator[None]:
-    """Scope a scheduled goal turn's tools; any other turn keeps its full tool set."""
+def _job_scope(request: AgentRequest) -> Generator[None]:
+    """Apply the scheduled job's saved read grants during its run."""
     scope = None
-    if request.metadata.get("trigger") == "goal":
-        sources = request.metadata.get("goal_sources")
+    if request.metadata.get("trigger") == "cron":
+        sources = request.metadata.get("read_sources")
         job_id = request.metadata.get("cron_job_id")
         if sources is not None:
             scope = ReadScope.from_sources(
@@ -1870,11 +1867,11 @@ def _goal_scope(request: AgentRequest) -> Generator[None]:
                 else (),
                 job_id=job_id if isinstance(job_id, str) else None,
             )
-    token = GOAL_READ_SCOPE.set(scope)
+    token = JOB_READ_SCOPE.set(scope)
     try:
         yield
     finally:
-        GOAL_READ_SCOPE.reset(token)
+        JOB_READ_SCOPE.reset(token)
 
 
 def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
@@ -1903,7 +1900,7 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
 
 def _request_pinned_skills(request: AgentRequest) -> tuple[str, ...]:
     """Skills a scheduled job pins; channel turns cannot pin through metadata."""
-    if request.metadata.get("trigger") not in {"cron", "goal"}:
+    if request.metadata.get("trigger") != "cron":
         return ()
     names = request.metadata.get("pinned_skills")
     if not isinstance(names, list):
@@ -2198,9 +2195,7 @@ def _history_context(request: AgentRequest) -> Generator[None]:
     """Expose the host's history scope, archiving into it only on unscheduled turns."""
     scope = _history_scope(request)
     history = _HISTORY_SCOPE.set(scope)
-    archive = _ARCHIVE_SCOPE.set(
-        None if request.metadata.get("trigger") in {"cron", "goal"} else scope
-    )
+    archive = _ARCHIVE_SCOPE.set(None if request.metadata.get("trigger") == "cron" else scope)
     session = _HISTORY_SESSION.set(request.conversation_id)
     try:
         yield

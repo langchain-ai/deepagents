@@ -54,7 +54,7 @@ class PersistentCronScheduler:
         self.tick_seconds = tick_seconds
         self.now = now or (lambda: datetime.now(UTC))
         self._task: asyncio.Task[None] | None = None
-        self._goals: dict[str, asyncio.Task[None]] = {}
+        self._running: dict[str, asyncio.Task[None]] = {}
         self._stopped = asyncio.Event()
 
     async def start(self) -> None:
@@ -72,24 +72,25 @@ class PersistentCronScheduler:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
         self._task = None
-        goals = list(self._goals.values())
-        for task in goals:
+        runs = list(self._running.values())
+        for task in runs:
             task.cancel()
-        await asyncio.gather(*goals, return_exceptions=True)
-        self._goals.clear()
+        await asyncio.gather(*runs, return_exceptions=True)
+        self._running.clear()
 
-    async def tick_once(self) -> None:
+    async def tick_once(self, *, wait: bool = True) -> None:
         """Remove finished jobs, then run all jobs due at the current clock value once.
 
-        A goal check can span several ticks. Coalesce its subsequent
-        wakeups while that turn is running and keep dispatching other jobs.
+        Args:
+            wait: Wait for runs dispatched by this tick. The ticker keeps scanning
+                while they run and coalesces overlapping runs of the same job.
         """
         current = self.now()
         self._discard_finished(current)
-        for job_id, task in list(self._goals.items()):
+        for job_id, task in list(self._running.items()):
             if task.done():
                 # Cancellation before the coroutine starts skips its finally block.
-                self._goals.pop(job_id)
+                self._running.pop(job_id)
                 continue
             current_job = self.store.get_job(job_id)
             # A final claimed fire can be disabled with no next run by design.
@@ -99,19 +100,22 @@ class PersistentCronScheduler:
                 task.cancel()
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
+        started = []
         for job in jobs:
-            if job.goal_id is None:
-                await self._run_due_job(job, current)
-            elif job.id not in self._goals:
-                self._goals[job.id] = asyncio.create_task(self._run_goal(job, current))
+            if job.id not in self._running:
+                task = asyncio.create_task(self._dispatch(job, current))
+                self._running[job.id] = task
+                started.append(task)
+        if wait:
+            await asyncio.gather(*started)
 
-    async def _run_goal(self, job: CronJob, now: datetime) -> None:
+    async def _dispatch(self, job: CronJob, now: datetime) -> None:
         try:
             await self._run_due_job(job, now)
         except Exception:
-            logger.exception("Failed to dispatch goal %s", job.id)
+            logger.exception("Failed to dispatch job %s", job.id)
         finally:
-            self._goals.pop(job.id, None)
+            self._running.pop(job.id, None)
 
     async def _ticker(self) -> None:
         """Scan for due jobs until stopped, surviving a failed scan.
@@ -130,7 +134,7 @@ class PersistentCronScheduler:
         """
         while not self._stopped.is_set():
             try:
-                await self.tick_once()
+                await self.tick_once(wait=False)
             except Exception as exc:
                 logger.exception("Cron tick failed")
                 # `log_event` JSON-encodes and redacts its fields, so untrusted

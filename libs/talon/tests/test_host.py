@@ -1082,7 +1082,7 @@ async def test_goal_wake_preserves_the_chat_route_for_background_delivery(tmp_pa
         prompt="Check the release",
         schedule=CronSchedule.parse("every 1h"),
         origin=CronOrigin(channel="test", conversation_id="chat", sender_id="bob"),
-        continuing=True,
+        mode="objective",
     )
     await host.start()
     try:
@@ -1090,7 +1090,7 @@ async def test_goal_wake_preserves_the_chat_route_for_background_delivery(tmp_pa
         await host.receive_message(channel, ChannelMessage("chat", "research", sender_id="alice"))
         await asyncio.wait_for(host._tasks["test:chat"], 2)
         await host.run_scheduled_job(goal)
-        assert agent.requests[-1].metadata["trigger"] == "goal"
+        assert agent.requests[-1].metadata["job_mode"] == "objective"
 
         await host._dispatch_background_results()
         await asyncio.wait_for(host._tasks["test:chat"], 2)

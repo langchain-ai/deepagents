@@ -36,7 +36,7 @@ from mcp.types import (
 from deepagents_talon import mcp
 from deepagents_talon.authorization import current_authorization_invocation
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.goals.scope import is_read_only
+from deepagents_talon.cron.scope import is_read_only
 from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
 from deepagents_talon.runtime import DeepAgentRuntime

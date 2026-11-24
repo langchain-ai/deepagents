@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from langchain_quickjs import middleware
-from langchain_quickjs._repl import _Registry, _Slot, _SlotConfig
+from langchain_quickjs._repl import SlotConfig, _Registry, _Slot
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -27,7 +27,7 @@ def make_repl() -> Iterator[Callable[..., _Slot]]:
     slots: list[_Slot] = []
 
     def _make(**config: Any) -> _Slot:
-        slots.append(_Slot("quickjs-test", _SlotConfig(**config)))
+        slots.append(_Slot("quickjs-test", SlotConfig(**config)))
         return slots[-1]
 
     yield _make

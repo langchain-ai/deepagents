@@ -6,7 +6,6 @@ import asyncio
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
-from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryState
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -19,12 +18,13 @@ from deepagents_code.context_doctor import (
     render_context_doctor_report,
 )
 from deepagents_code.tool_catalog import collect_tools_from_agent
-from deepagents_talon.memory import TalonMemoryMiddleware
+from deepagents_talon.memory import TALON_MEMORY_SYSTEM_PROMPT, TalonMemoryMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.memory import MemoryState
 
     from deepagents_code.skills.load import ExtendedSkillMetadata
 
@@ -69,7 +69,7 @@ class ContextDoctor:
         conversation, provider = await asyncio.to_thread(_usage, values)
         report = build_context_doctor_report(
             system_prompt=self.system_prompt or "",
-            memory_prompt=format_memory_prompt(list(memory.items()), MEMORY_SYSTEM_PROMPT)
+            memory_prompt=format_memory_prompt(list(memory.items()), TALON_MEMORY_SYSTEM_PROMPT)
             if self.memory
             else "",
             memory_files=len(memory),

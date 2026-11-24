@@ -90,7 +90,7 @@ from deepagents_talon.interfaces import (
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY
-from deepagents_talon.memory import TalonMemoryMiddleware
+from deepagents_talon.memory import TALON_MEMORY_SYSTEM_PROMPT, TalonMemoryMiddleware
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
     ACTIVE_MODEL,
@@ -578,7 +578,10 @@ class DeepAgentRuntime:
         middleware.extend(
             [
                 TalonMemoryMiddleware(
-                    backend=self.backend, sources=list(diagnostics.memory), add_cache_control=True
+                    backend=self.backend,
+                    sources=list(diagnostics.memory),
+                    system_prompt=TALON_MEMORY_SYSTEM_PROMPT,
+                    add_cache_control=True,
                 )
             ]
             if diagnostics.memory

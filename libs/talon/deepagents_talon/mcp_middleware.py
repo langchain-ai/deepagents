@@ -11,10 +11,11 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from mcp.shared.exceptions import MCPError
 
+from deepagents_code.provider_tool_search import MCPProviderToolSearchMiddleware
 from deepagents_talon.mcp import _normalize_mcp_arguments, _run_authorized
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from langchain.agents.middleware.types import ToolCallRequest
 
@@ -22,15 +23,34 @@ MCP_TOOL_METADATA_KEY = "_deepagents_talon_mcp"
 MCP_SKILL_ONLY_METADATA_KEY = "_deepagents_talon_skill_only"
 
 
+def mcp_tool_search(tools: Iterable[object]) -> MCPProviderToolSearchMiddleware:
+    """Defer ordinary MCP tools while skills control their own tool disclosure."""
+    return MCPProviderToolSearchMiddleware(
+        [
+            tool
+            for tool in tools
+            if isinstance(tool, BaseTool)
+            and (metadata := tool.metadata or {}).get(MCP_TOOL_METADATA_KEY)
+            and not metadata.get(MCP_SKILL_ONLY_METADATA_KEY)
+        ]
+    )
+
+
 def _preserve_mcp_schemas(request: ModelRequest) -> ModelRequest:
-    if not isinstance(request.model, BaseChatOpenAI) or not request.model.use_responses_api:
+    if not isinstance(request.model, BaseChatOpenAI):
         return request
-    tools = [
-        convert_to_openai_tool(tool, strict=False)
-        if isinstance(tool, BaseTool) and (tool.metadata or {}).get(MCP_TOOL_METADATA_KEY)
-        else tool
-        for tool in request.tools
-    ]
+    # Native search also selects Responses when the model uses automatic routing.
+    if not request.model.use_responses_api and {"type": "tool_search"} not in request.tools:
+        return request
+    tools = []
+    for tool in request.tools:
+        if isinstance(tool, BaseTool) and (tool.metadata or {}).get(MCP_TOOL_METADATA_KEY):
+            definition = convert_to_openai_tool(tool, strict=False)
+            if (tool.extras or {}).get("defer_loading"):
+                definition["defer_loading"] = True
+            tools.append(definition)
+        else:
+            tools.append(tool)
     return request.override(tools=tools)
 
 

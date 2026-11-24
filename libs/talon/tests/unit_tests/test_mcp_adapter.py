@@ -15,7 +15,9 @@ from fastmcp.client.transports import FastMCPTransport
 from fastmcp.exceptions import ToolError
 from fastmcp.tools.function_tool import FunctionTool
 from langchain.agents.middleware.types import ModelRequest
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import StructuredTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai import ChatOpenAI
@@ -40,8 +42,11 @@ from deepagents_talon.runtime import DeepAgentRuntime
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from langchain_core.messages import BaseMessage
     from langchain_core.tools import BaseTool
     from langgraph.graph.state import CompiledStateGraph
+
+    from deepagents_talon.interfaces import ToolApprovalRequest
 
 
 async def _load_tools(
@@ -251,6 +256,92 @@ async def test_mcp_binding_preserves_optional_nested_schema(
         )
         assert result["messages"][-1].status == "success"
         assert forwarded[-1] == arguments
+
+
+@pytest.mark.parametrize(
+    ("provider", "responses"),
+    [("openai", None), ("openai", True), ("openai", False), ("anthropic", None)],
+)
+async def test_runtime_discovers_and_executes_mcp_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, *, responses: bool | None
+) -> None:
+    server = FastMCP("records")
+    events: list[str] = []
+
+    @server.tool
+    async def search(query: str = "default") -> str:
+        assert current_authorization_invocation() is not None
+        events.append(query)
+        return "found"
+
+    loaded = await _load_tools(server, tmp_path, monkeypatch)
+    if provider == "openai":
+        model = ChatOpenAI(
+            model="gpt-5.4",
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            use_responses_api=responses,
+        )
+    else:
+        model = ChatAnthropic(
+            model="claude-sonnet-4-6", api_key="test", base_url="https://api.anthropic.com"
+        )
+
+    async def generate(
+        self: ChatOpenAI | ChatAnthropic, messages: list[BaseMessage], **kwargs: object
+    ) -> ChatResult:
+        payload = self._get_request_payload(messages, tools=kwargs["tools"])
+        definitions = payload["tools"]
+        deferred = responses is not False
+        assert (
+            any(item["type"].startswith("tool_search") for item in definitions if "type" in item)
+            is deferred
+        )
+        functions = {
+            fn["name"]: fn for item in definitions if (fn := item.get("function", item)).get("name")
+        }
+        assert not functions["read_file"].get("defer_loading")
+        remote = functions["remote_search"]
+        assert bool(remote.get("defer_loading")) is deferred
+        if deferred and provider == "openai":
+            assert remote["strict"] is False
+        message = (
+            AIMessage(content="done")
+            if events
+            else AIMessage(
+                content="", tool_calls=[{"id": "lookup", "name": "remote_search", "args": {}}]
+            )
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    monkeypatch.setattr(type(model), "_agenerate", generate)
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_kw: model
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=tmp_path,
+        tools=loaded.tools,
+        middleware=(talon_mcp_middleware(),),
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime.approval_store.update({"remote_search": True}, runtime.approval_store.ensure().revision)
+
+    async def approve(request: ToolApprovalRequest) -> str:
+        events.extend(action["name"] for action in request.action_requests)
+        return "approve"
+
+    await runtime.start()
+    try:
+        result = await runtime.invoke(
+            AgentRequest("chat", "find records", approval_handler=approve)
+        )
+        assert result.text == "done"
+        assert events == ["remote_search", "default"]
+    finally:
+        await runtime.stop()
 
 
 async def test_reload_keeps_inflight_tools_callable(

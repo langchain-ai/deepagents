@@ -5,9 +5,9 @@ When `SummarizationMiddleware`'s `wrap_model_call` catches a
 `_clip_overflow_tail` (or its async variant) to shrink the trailing
 ToolMessage batch in the preserved suffix. Two per-TM paths:
 
-- `read_file` tool result: head-slice the content and append a notice
-    pointing back to the original `file_path` argument. No new backend write
-    is needed because the original file already lives at that path.
+- `read_file` tool result: head-slice text, or omit media that exceeds the
+    budget, and append a notice pointing back to the original `file_path`.
+    No new backend write is needed because the original file is already there.
 - Any other tool result: full offload to `/large_tool_results/{tool_call_id}`
     via the shared eviction helper, then replace the message with a
     large-tool-result stub.
@@ -74,15 +74,17 @@ def _build_tool_call_index(messages: list[AnyMessage]) -> dict[str, dict[str, An
 
 
 def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
-    """Slice a `read_file` ToolMessage's content to ~4k head chars and append a path-pointer notice.
-
-    `read_file` results don't need a fresh `/large_tool_results/{tcid}` write -- the
-    full file is already on the backend at `original_path`, and the agent can
-    recover with `read_file(file_path=original_path, offset=N, limit=K)`. The
-    truncation notice mirrors `READ_FILE_TRUNCATION_MSG` in shape so the
-    agent encounters a consistent format whether the tool truncated itself
-    or the middleware did.
-    """
+    """Clip a `read_file` result with a recovery notice appropriate to its content."""
+    media = [block for block in msg.content_blocks if block["type"] != "text"]
+    media_type = msg.additional_kwargs.get("read_file_media_type")
+    if media or media_type:
+        media_type = media_type or ", ".join(str(block.get("mime_type") or block["type"]) for block in media)
+        notice = (
+            f"[Media from {original_path} ({media_type}) was omitted because it exceeded the model input budget. "
+            "The original file remains available at that path. "
+            "Use a smaller version or extract relevant text with a suitable tool before retrying.]"
+        )
+        return msg.model_copy(update={"content": notice})
     content = _extract_text_from_message(msg)
     notice = (
         f"\n\n[Output was truncated due to context window size limits. "

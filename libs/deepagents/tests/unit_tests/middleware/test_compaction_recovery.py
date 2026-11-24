@@ -1,5 +1,6 @@
 """Context recovery must fit requests, preserve tool pairs, and stop making no progress."""
 
+import base64
 from collections.abc import Callable
 from typing import cast
 
@@ -250,3 +251,69 @@ async def test_output_reservation_clips_an_otherwise_fitting_summary(*, asynchro
     await _invoke(_middleware(request, MockBackend()), request, handler, asynchronous=asynchronous)
     assert len(sent) == 1
     assert len(sent[0].messages[-1].content) < 6000
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("media_type", ["application/pdf", "image/png", None])
+@pytest.mark.parametrize("metadata_only", [False, True])
+async def test_oversized_media_read_reports_budget_limit(*, asynchronous: bool, media_type: str | None, metadata_only: bool) -> None:
+    request = _request(limit=10000)
+    path = "/document.pdf" if media_type != "image/png" else "/image.png"
+    request.messages[-2].tool_calls = [{"id": "call", "name": "read_file", "args": {"file_path": path}}]
+    payload = base64.b64encode(b"binary content" * 40000).decode()
+    block = {"type": "image" if media_type == "image/png" else "file", "base64": payload}
+    if media_type:
+        block["mime_type"] = media_type
+    message = ToolMessage(
+        content="rendered media" * 2000 if metadata_only else [{"type": "text", "text": "attachment"}, block],
+        tool_call_id="call",
+        id="result",
+        additional_kwargs={"read_file_media_type": media_type or "application/octet-stream"} if metadata_only else {},
+    )
+    request.messages[-1] = message
+    backend = MockBackend()
+    sent: list[ModelRequest] = []
+
+    def handler(current: ModelRequest) -> ModelResponse:
+        sent.append(current)
+        assert _count(current.messages) <= 9500
+        return ModelResponse(result=[AIMessage(content="Please provide a smaller document.")])
+
+    result = await _invoke(_middleware(request, backend), request, handler, asynchronous=asynchronous)
+    assert isinstance(result, ExtendedModelResponse)
+    replacement = result.command.update["messages"][-1]
+    assert replacement == sent[0].messages[-1]
+    assert replacement.id == message.id
+    assert replacement.tool_call_id == message.tool_call_id
+    assert path in replacement.content
+    assert (media_type or ("application/octet-stream" if metadata_only else "file")) in replacement.content
+    assert "exceeded the model input budget" in replacement.content
+    assert "offset" not in replacement.content
+    assert "limit=" not in replacement.content
+    assert payload not in replacement.content
+    assert request.messages[-1] == message
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("text_blocks", [False, True])
+async def test_oversized_text_read_keeps_head_and_paging(*, asynchronous: bool, text_blocks: bool) -> None:
+    request = _request(limit=10000)
+    request.messages[-2].tool_calls = [{"id": "call", "name": "read_file", "args": {"file_path": "/notes.txt"}}]
+    text = "a" * 4000 + "b" * 16000
+    request.messages[-1] = ToolMessage(content=[{"type": "text", "text": text}] if text_blocks else text, tool_call_id="call", id="result")
+    sent: list[ModelRequest] = []
+
+    def handler(current: ModelRequest) -> ModelResponse:
+        sent.append(current)
+        assert _count(current.messages) <= 9500
+        return ModelResponse(result=[AIMessage(content="done")])
+
+    result = await _invoke(_middleware(request, MockBackend()), request, handler, asynchronous=asynchronous)
+    assert isinstance(result, ExtendedModelResponse)
+    replacement = result.command.update["messages"][-1]
+    assert replacement == sent[0].messages[-1]
+    assert replacement.id == "result"
+    assert replacement.content.startswith("a" * 4000 + "\n\n[")
+    assert "b" * 100 not in replacement.content
+    assert "/notes.txt" in replacement.content
+    assert "offset=0, limit=100" in replacement.content

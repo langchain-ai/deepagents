@@ -6,8 +6,9 @@ subagent, and summarization middleware.
 """
 
 import logging
+import types
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Annotated, Any, Required, cast
+from typing import TYPE_CHECKING, Annotated, Any, Required, cast, get_type_hints
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, ModelRefusalMiddleware
@@ -78,6 +79,22 @@ class DeepAgentState(AgentState):
     """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
+
+def _with_delta_messages(state_schema: type[DeepAgentState]) -> type[DeepAgentState]:
+    """Return `state_schema` with `DeepAgentState`'s `messages` if it inherits `AgentState`'s default one."""
+    try:
+        messages = get_type_hints(state_schema, include_extras=True).get("messages")
+    except (NameError, TypeError, AttributeError):
+        return state_schema
+    if messages != get_type_hints(AgentState, include_extras=True)["messages"]:
+        return state_schema
+    namespace = {
+        "__annotations__": {"messages": get_type_hints(DeepAgentState, include_extras=True)["messages"]},
+        "__module__": state_schema.__module__,
+        "__qualname__": state_schema.__qualname__,
+    }
+    return cast("type[DeepAgentState]", types.new_class(state_schema.__name__, (state_schema,), exec_body=lambda ns: ns.update(namespace)))
 
 
 _LEGACY_BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
@@ -558,10 +575,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
         response_format: A structured output response format to use for the agent.
-        state_schema: Custom state schema for the agent graph. Must be a
+        state_schema: Custom state schema for the agent graph. Should be a
             `TypedDict` subclass of
-            [`DeepAgentState`][deepagents.graph.DeepAgentState] so the
-            built-in `DeltaChannel` reducer on `messages` is preserved.
+            [`DeepAgentState`][deepagents.graph.DeepAgentState]. Schemas that
+            inherit `AgentState`'s default `messages` field get
+            `DeepAgentState`'s `DeltaChannel` reducer applied; a custom
+            `messages` annotation is kept as-is.
 
             Generally, prefer defining state extensions with middleware so
             the extra fields stay scoped to the hooks and tools that use
@@ -634,11 +653,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             distinct middleware classes, or matches no entry in the assembled
             stack.
     """
-    # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
-    # subclass constraint on `state_schema` is enforced by typing alone and not
-    # validated at runtime.
-    if state_schema is None:
-        state_schema = DeepAgentState
+    state_schema = DeepAgentState if state_schema is None else _with_delta_messages(state_schema)
 
     _model_spec: str | None = model if isinstance(model, str) else None
 

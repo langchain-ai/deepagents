@@ -3871,7 +3871,7 @@ _EXPECTED_CHANGES = [
     ),
     "- Removed `removed-dep`",
     # `tomli` 2.0 → 2.2 is a routine third-party floor raise.
-    "- Plus 1 routine third-party floor raise.",
+    "- Routine minimum raise: `tomli; python_version < '3.11'` `>=2.2`.",
 ]
 
 _GENERATED_CHANGELOG = """\
@@ -3979,18 +3979,37 @@ class TestDependencyListNoise:
         lines = _changes(_manifest([old]), _manifest([new]))
         if shown:
             assert len(lines) == 1
-            assert not lines[0].startswith("- Plus")
+            assert not lines[0].startswith("- Routine")
         else:
-            assert lines == ["- Plus 1 routine third-party floor raise."]
+            floor = new.split(">=")[1]
+            name = new.split(">=")[0]
+            assert lines == [f"- Routine minimum raise: `{name}` `>={floor}`."]
 
-    def test_sorted_alphabetically_with_hidden_count_last(self) -> None:
+    def test_routine_line_names_each_package_and_new_minimum(self) -> None:
+        old = _manifest(["numpy>=2.5.4", "pydantic>=2.14.2,<3", "slack-sdk>=3.46.0"])
+        new = _manifest(["numpy>=2.5.5", "pydantic>=2.14.4,<3", "slack-sdk>=3.48.0"])
+        assert _changes(old, new) == [
+            "- Routine minimum raises: `numpy` `>=2.5.5`, `pydantic` `>=2.14.4`,"
+            " and `slack-sdk` `>=3.48.0`."
+        ]
+
+    def test_toggle_counts_each_routine_package(self) -> None:
+        body = (
+            "### Dependencies\n\n- `a`: `>=1` → `>=2`\n"
+            "- Routine minimum raises: `b` `>=1.1` and `c` `>=2.1`."
+        )
+        assert "<summary>Dependencies (3 changes)</summary>" in (
+            brn.collapse_dependency_section(body)
+        )
+
+    def test_sorted_alphabetically_with_routine_line_last(self) -> None:
         old = _manifest(["zeta>=0.1", "numpy>=2.5.4", "alpha>=1.0", "langsmith>=0.15"])
         new = _manifest(["zeta>=0.2", "numpy>=2.5.5", "alpha>=2.0", "langsmith>=0.16"])
         assert _changes(old, new) == [
             "- `alpha`: `>=1.0` → `>=2.0`",
             "- `langsmith`: `>=0.15` → `>=0.16`",
             "- `zeta`: `>=0.1` → `>=0.2`",
-            "- Plus 1 routine third-party floor raise.",
+            "- Routine minimum raise: `numpy` `>=2.5.5`.",
         ]
 
 
@@ -4117,7 +4136,7 @@ class TestReleaseBodyDependencies:
         body, _ = _build(tmp_path, head)
 
         toggle = (
-            "<details>\n<summary>Dependencies (5 changes)</summary>\n\n"
+            "<details>\n<summary>Dependencies (6 changes)</summary>\n\n"
             + "\n".join(_EXPECTED_CHANGES)
             + "\n\n</details>"
         )

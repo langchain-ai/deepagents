@@ -95,7 +95,6 @@ _DELEGATION_TOOLS = frozenset(
         "cancel_subagent",
         "inspect_subagent",
         "message_subagent",
-        "ask_for_help",
     }
 )
 

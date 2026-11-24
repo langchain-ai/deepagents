@@ -55,7 +55,6 @@ ENABLE_ENV = "DEEPAGENTS_TALON_CLAUDE_SESSIONS"
 """Set to `1` to give the operator's agent the Claude Code session tools."""
 
 SEND_TOOL = "message_claude_session"
-"""Tool that always requires operator approval, whatever `tools.json` says."""
 
 VERIFIED_CLAUDE_CODE_VERSIONS = frozenset({"2.1.322"})
 """Claude Code versions whose inbox protocol this module was checked against."""

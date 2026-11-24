@@ -24,7 +24,9 @@ _PAIRED_QUOTE_LENGTH = 2
 _UPCOMING_COUNT = 3
 
 SCHEDULE_HELP = """Use `in 30m`, `every 6h`, `at YYYY-MM-DD HH:MM TZ`, `daily at HH:MM TZ`,
-or `cron <five fields or @macro> TZ`. Use an IANA timezone such as America/New_York for TZ."""
+or `cron <five fields or @macro> TZ`. Use an IANA timezone such as America/New_York for TZ.
+When cron restricts both day-of-month and day-of-week, either can match.
+For first Tuesday or last Friday, use `*` for day-of-month and `2#1` or `5L` for day-of-week."""
 
 UNTIL_HELP = """For recurring jobs, repeat_times caps runs and until sets an inclusive deadline
 (`YYYY-MM-DD HH:MM TZ`). After the deadline the job expires and missed runs are dropped."""
@@ -38,7 +40,7 @@ _JOB_HELP = f"""{SCHEDULE_HELP}
 {UNTIL_HELP}
 {DELIVER_TO_HELP}
 {SKILLS_HELP}
-Check the returned upcoming run times against the request."""
+Check the returned `upcoming` run times and fix the schedule if they disagree with the request."""
 
 _CREATE_DESCRIPTION = f"""Schedule a self-contained prompt to run later in this conversation.
 {_JOB_HELP}"""

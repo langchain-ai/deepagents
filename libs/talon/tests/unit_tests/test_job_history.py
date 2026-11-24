@@ -7,16 +7,21 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import StructuredTool
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, record_job_work
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
+from deepagents_talon.cron.scope import JobScopeMiddleware
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
+from deepagents_talon.mcp_auth import _no_authorization_channel_error
 from deepagents_talon.questions import ask_user, question_scope
 from deepagents_talon.runtime import _approval_decision, _question_handler_from_request
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config, _wait_for_sent_count
+from tests.unit_tests.test_background import _request
 from tests.unit_tests.test_questions import DATABASE
 
 if TYPE_CHECKING:
@@ -362,3 +367,140 @@ async def test_both_modes_share_listing_and_routine_history_survives_removal(
     assert objective["last_result"] is None
     tools["remove_job"].invoke({"job_id": routine["id"]})
     assert tools["get_job_history"].invoke({"job_id": routine["id"]})[0]["status"] == "checked"
+
+
+class _VerificationAgent(_WorkingGoalAgent):
+    paths: tuple[str, ...] = ()
+    needs_login = False
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        if self.needs_login:
+            # The MCP transport can replace the original error.
+            msg = "Client failed to connect"
+            raise RuntimeError(msg) from _no_authorization_channel_error("records")
+        for path in self.paths:
+            tool = StructuredTool.from_function(
+                lambda file_path: file_path, name="read_file", description="Read"
+            )
+            await JobScopeMiddleware().awrap_tool_call(
+                _request("owner", tool, file_path=path),
+                _file_response,
+            )
+        return await super().invoke(request)
+
+
+async def _file_response(request):
+    text = (
+        "Error: permission denied"
+        if request.tool_call["args"]["file_path"].endswith("denied")
+        else "contents"
+    )
+    return ToolMessage(content=text, tool_call_id="call")
+
+
+async def test_required_reads_and_evidence_survive_separate_checks(tmp_path: Path) -> None:
+    agent = _VerificationAgent()
+    agent.released.set()
+    channel = RecordingChannel("slack")
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    tools = {t.name: t for t in CronTools(store=store, origin=lambda: ORIGIN).as_langchain_tools()}
+    created = tools["create_job"].invoke(
+        {
+            "prompt": "Verify release",
+            "mode": "objective",
+            "required_sources": ["path:/audit", "path:/logs"],
+            "completion_criteria": ["publish", "rescan"],
+        }
+    )
+    job = store.get_job(created["id"])
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    host.scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=host.run_scheduled_job,
+        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
+    )
+    journal = JobJournal(tmp_path)
+    agent.paths = ("/audit/image", "/logs-neighbor/file", "/logs/denied")
+    agent.report = {"status": "partial", "summary": "Inspected image."}
+    await host.run_scheduled_job(job)
+    row = journal.history(job.id, ORIGIN)[0]
+    assert row["status"] == "unverified"
+    assert "Missing required reads: path:/logs" in row["summary"]
+    assert row["read_tools"] == "path:/audit"
+    agent.paths = ("/audit/image", "/logs/release")
+    agent.report.update(status="complete", evidence={"publish": "registry digest abcd"})
+    await host.run_scheduled_job(job)
+    assert store.get_job(job.id).enabled
+    assert "Missing evidence for: rescan" in journal.history(job.id, ORIGIN)[0]["summary"]
+    soon = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=1)
+    agent.report = {"status": "checked", "summary": "No change", "next_wake_at": soon.isoformat()}
+    for _ in range(4):
+        await host.run_scheduled_job(job)
+    assert store.get_job(job.id).next_run_at >= soon + timedelta(minutes=9)
+    agent.report.update(wake_reason="owner_timing")
+    await host.run_scheduled_job(job)
+    assert store.get_job(job.id).next_run_at == soon
+    agent.report.update(status="complete", evidence={"rescan": "scan 123"})
+    await host.run_scheduled_job(job)
+    assert "registry digest abcd" in agent.requests[-1].text
+    assert not store.get_job(job.id).enabled
+    assert journal.history(job.id, ORIGIN)[0]["status"] == "complete"
+
+
+async def test_background_login_notice_is_deduplicated(tmp_path: Path) -> None:
+    agent = _VerificationAgent()
+    agent.needs_login = True
+    channel = RecordingChannel("slack")
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(mode="objective", origin=ORIGIN, prompt="Check records")
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    host.scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=host.run_scheduled_job,
+        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
+    )
+    notice = await host.run_scheduled_job(job)
+    assert "Authorize" in notice
+    assert "records" in notice
+    await host.deliver_scheduled_result(channel, job, notice)
+    assert await host.run_scheduled_job(job) == "[SILENT]"
+    assert JobJournal(tmp_path).history(job.id, ORIGIN)[0]["status"] == "blocked"
+
+
+def test_unchanged_polls_back_off_until_progress_or_timed_event() -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    proposed = now + timedelta(minutes=15)
+    previous = {"status": "checked", "started": (now - timedelta(minutes=20)).isoformat()}
+    report = ObjectiveReport(
+        status="checked", summary="Same head", next_wake_at=proposed.isoformat()
+    )
+    assert report.next_wake(previous, now, None) == now + timedelta(minutes=40)
+    deadline = now + timedelta(minutes=30)
+    assert report.next_wake(previous, now, deadline) == deadline
+    for reason in ("owner_timing", "expected_event"):
+        assert (
+            report.model_copy(update={"wake_reason": reason}).next_wake(previous, now, None)
+            == proposed
+        )
+    assert (
+        report.model_copy(update={"status": "partial"}).next_wake(previous, now, None) == proposed
+    )
+    assert report.next_wake(dict(previous, status="partial"), now, None) == proposed
+
+
+def test_ongoing_milestones_and_legacy_criteria_are_durable(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(mode="objective", origin=ORIGIN, prompt="Maintain detections")
+    journal = JobJournal(tmp_path)
+    for run, criteria in [("first", []), ("second", ["build"])]:
+        journal.start(job, run)
+        report = ObjectiveReport(
+            status="complete",
+            summary="Passed",
+            completion_criteria=criteria,
+            evidence={"build": "build 27"},
+        )
+        assert journal.finish_check(job, run, report, set()).status == "partial"
+    assert JobJournal(tmp_path).verification(job) == ((), {"build": "build 27"})
+    edited = store.edit_job(job.id, origin=ORIGIN, completion_criteria=["ship"])
+    assert journal.verification(edited) == (("ship",), {})

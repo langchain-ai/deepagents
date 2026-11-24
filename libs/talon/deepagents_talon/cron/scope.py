@@ -96,11 +96,12 @@ class ReadScope:
         argument = FILE_READ_TOOLS.get(name)
         if argument is None:
             return True
-        return self._covers(args.get(argument)) and (
+        return self.covers_path(args.get(argument)) and (
             name != "glob" or _safe_pattern(args.get("pattern"))
         )
 
-    def _covers(self, path: object) -> bool:
+    def covers_path(self, path: object) -> bool:
+        """Return whether a path is within the owner's read grants."""
         if not isinstance(path, str) or not path.startswith("/"):
             return False
         target = posixpath.normpath(path)
@@ -140,6 +141,11 @@ def is_read_only(tool: BaseTool) -> bool:
 # Shared across tool tasks in a single isolated check.
 JOB_READS: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
     "talon_job_reads", default=None
+)
+
+
+REQUIRED_READS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "talon_required_reads", default=()
 )
 
 
@@ -186,6 +192,13 @@ class JobScopeMiddleware(AgentMiddleware):
 def _scoped_request(request: ModelRequest) -> ModelRequest:
     scope = JOB_READ_SCOPE.get()
     if scope is None:
+        if not REQUIRED_READS.get():
+            return request
+        required = ReadScope.from_sources(REQUIRED_READS.get())
+        available = {tool.name for tool in request.tools if isinstance(tool, BaseTool)}
+        if missing := required.tools - available:
+            msg = f"Required tools are unavailable: {', '.join(sorted(missing))}"
+            raise JobToolsUnavailableError(msg)
         return request
     allowed = [
         tool for tool in request.tools if isinstance(tool, BaseTool) and scope.allows_tool(tool)
@@ -200,16 +213,29 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
 def _observe_read(request: ToolCallRequest, result: ToolMessage) -> ToolMessage:
     reads = JOB_READS.get()
     scope = JOB_READ_SCOPE.get()
-    if reads is None or scope is None:
+    if reads is None or not isinstance(result, ToolMessage) or result.status != "success":
         return result
-    name = request.tool_call["name"]
-    if (
-        isinstance(result, ToolMessage)
-        and result.status == "success"
-        and (name in scope.tools or name in FILE_READ_TOOLS)
-        and name not in ALWAYS_ALLOWED | {"edit_job", "remove_job", "get_job_history"}
-    ):
+    if isinstance(result.content, str) and result.content.startswith("Error:"):
+        return result
+    call = request.tool_call
+    name = call["name"]
+    if name in ALWAYS_ALLOWED | {"edit_job", "remove_job", "get_job_history"}:
+        return result
+    if scope and (name in scope.tools or name in FILE_READ_TOOLS):
         reads.add(name)
+    path = call["args"].get(FILE_READ_TOOLS.get(name, ""))
+    for source in REQUIRED_READS.get():
+        if source == f"tool:{name}":
+            reads.add(source)
+        elif (
+            source.startswith(PATH_PREFIX)
+            and name in {"read_file", "grep"}
+            and isinstance(path, str)
+        ):
+            root = posixpath.normpath(source.removeprefix(PATH_PREFIX))
+            target = posixpath.normpath(path)
+            if target == root or target.startswith(root.rstrip("/") + "/"):
+                reads.add(source)
     return result
 
 

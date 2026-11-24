@@ -198,6 +198,8 @@ async def test_mcp_binding_preserves_optional_nested_schema(
     server.add_tool(remote)
     loaded = await _load_tools(server, tmp_path, monkeypatch)
     tool = loaded.tools[0]
+    if responses:
+        tool = tool.model_copy(update={"extras": {"defer_loading": True}})
     local = StructuredTool(name="local", description="Local", args_schema=original)
     model = ChatOpenAI(model="gpt-4.1", api_key="test", use_responses_api=responses)
     request = ModelRequest(
@@ -211,6 +213,7 @@ async def test_mcp_binding_preserves_optional_nested_schema(
         definitions = payload["tools"]
         remote_definition = definitions[0] if responses else definitions[0]["function"]
         local_definition = definitions[1] if responses else definitions[1]["function"]
+        assert "defer_loading" not in remote_definition
         assert remote_definition.get("strict") is (False if responses else None)
         assert "strict" not in local_definition
         assert remote_definition["parameters"] == original

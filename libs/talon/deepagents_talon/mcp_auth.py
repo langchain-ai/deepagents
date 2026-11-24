@@ -10,6 +10,7 @@ import math
 import os
 import tempfile
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -86,6 +87,12 @@ _SERVER_ERROR_STATUS = 500
 _UNSAFE_ENDPOINT_MESSAGE = "OAuth endpoint is not a safe public HTTPS URL."
 
 
+# An MCP transport can wrap or serialize the original exception.
+BACKGROUND_LOGIN_REQUIRED: ContextVar[set[str] | None] = ContextVar(
+    "talon_background_login_required", default=None
+)
+
+
 def _no_authorization_channel_error(server_name: str) -> MCPAuthorizationError:
     """Return the failure for a run with nowhere to send an authorization prompt.
 
@@ -99,6 +106,8 @@ def _no_authorization_channel_error(server_name: str) -> MCPAuthorizationError:
     Returns:
         The error to raise.
     """
+    if (servers := BACKGROUND_LOGIN_REQUIRED.get()) is not None:
+        servers.add(server_name)
     msg = (
         "MCP authorization has no conversation to prompt in: this run was not "
         "started by a channel message (a scheduled job or a background subagent). "

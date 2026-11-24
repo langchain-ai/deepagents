@@ -49,6 +49,9 @@ Check the returned `upcoming` run times and fix the schedule if they disagree wi
 _CREATE_DESCRIPTION = f"""Schedule a self-contained prompt to run later in this conversation.
 Use routine for a procedure or objective when Talon should choose the next action.
 Routines require a schedule. For objectives, omit it to start now or specify the first check.
+For objectives, copy each verifiable finish condition into completion_criteria; use [] for
+ongoing work. List explicitly required reads as required_sources (tool:<name> or path:<absolute
+path>). These track coverage without granting access. Preserve timing constraints in the prompt.
 Objective blocker notices always return to their original thread.
 {_JOB_HELP}"""
 
@@ -85,10 +88,14 @@ class CronTools:
         deliver_to: DeliverTo = "channel",
         skills: list[str] | None = None,
         mode: JobMode = "routine",
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a scheduled job in the current conversation.
 
         Args:
+            required_sources: Sources whose use must be verified.
+            completion_criteria: Finish criteria, or an empty list for ongoing work.
             mode: Run a procedure or pursue an objective.
             prompt: Prompt to run when the job fires.
             schedule: Routine schedule or optional first check for an objective.
@@ -110,6 +117,8 @@ class CronTools:
             until=parse_until(until) if until else None,
             deliver_to=deliver_to,
             skills=skills or (),
+            required_sources=required_sources,
+            completion_criteria=completion_criteria,
             mode=mode,
         )
         return _tool_job(job, upcoming=True)
@@ -144,6 +153,8 @@ class CronTools:
         schedule: str | None = None,
         enabled: bool | None = None,
         run_now: bool = False,
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
         read_sources: list[str] | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
@@ -158,6 +169,8 @@ class CronTools:
             prompt: Optional replacement prompt.
             schedule: Optional replacement schedule text, in any form
                 `SCHEDULE_HELP` lists.
+            required_sources: Replacement sources to verify.
+            completion_criteria: Replacement finish criteria.
             read_sources: Optional replacement read grants.
             run_now: Queue a run at the next tick.
             enabled: Optional enabled flag.
@@ -170,6 +183,11 @@ class CronTools:
         Returns:
             Updated job as a JSON-compatible dictionary, with `upcoming` runs.
         """
+        if _SCHEDULED_TURN.get() and (
+            required_sources is not None or completion_criteria is not None
+        ):
+            msg = "Only the owner in chat may change verification requirements."
+            raise ValueError(msg)
         if read_sources is not None and _SCHEDULED_TURN.get():
             msg = "Only the owner in chat may change read grants."
             raise ValueError(msg)
@@ -187,6 +205,8 @@ class CronTools:
             schedule=parsed,
             enabled=enabled,
             run_now=run_now,
+            required_sources=required_sources,
+            completion_criteria=completion_criteria,
             read_sources=read_sources,
             repeat_times=repeat_times,
             until=parse_until(until) if until else None,
@@ -240,6 +260,8 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         skills: list[str] | None = None,
         *,
         mode: JobMode = "routine",
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.create_job(
@@ -250,6 +272,8 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 until=_strip_optional_quotes(until),
                 deliver_to=deliver_to,
                 skills=skills,
+                required_sources=required_sources,
+                completion_criteria=completion_criteria,
                 mode=mode,
             )
         except Exception as exc:  # noqa: BLE001
@@ -276,6 +300,8 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         *,
         enabled: bool | None = None,
         run_now: bool = False,
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
         read_sources: list[str] | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
@@ -290,6 +316,8 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 schedule=_strip_optional_quotes(schedule),
                 enabled=enabled,
                 run_now=run_now,
+                required_sources=required_sources,
+                completion_criteria=completion_criteria,
                 read_sources=read_sources,
                 repeat_times=repeat_times,
                 until=_strip_optional_quotes(until),
@@ -348,6 +376,10 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "mode": data["mode"],
         "run_requested": job.run_requested,
     }
+    if job.required_sources:
+        payload["required_sources"] = list(job.required_sources)
+    if job.completion_criteria is not None:
+        payload["completion_criteria"] = list(job.completion_criteria)
     if upcoming:
         payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]
     return payload

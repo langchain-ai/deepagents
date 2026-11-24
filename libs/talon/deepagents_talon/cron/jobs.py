@@ -180,6 +180,8 @@ class CronJobDict(TypedDict):
     skills: NotRequired[list[str]]
     mode: NotRequired[JobMode]
     run_requested: NotRequired[bool]
+    required_sources: NotRequired[list[str]]
+    completion_criteria: NotRequired[list[str]]
     read_sources: NotRequired[list[str]]
 
 
@@ -710,6 +712,8 @@ class CronJob:
     skills: tuple[str, ...] = ()
     mode: JobMode = field(default="routine", kw_only=True)
     run_requested: bool = field(default=False, kw_only=True)
+    required_sources: tuple[str, ...] = field(default=(), kw_only=True)
+    completion_criteria: tuple[str, ...] | None = field(default=None, kw_only=True)
     read_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
 
     def upcoming(self, count: int = 3) -> list[datetime]:
@@ -764,6 +768,12 @@ class CronJob:
             "skills": list(self.skills),
             "mode": self.mode,
             **({"run_requested": True} if self.run_requested else {}),
+            **({"required_sources": list(self.required_sources)} if self.required_sources else {}),
+            **(
+                {"completion_criteria": list(self.completion_criteria)}
+                if self.completion_criteria is not None
+                else {}
+            ),
             **({"read_sources": list(self.read_sources)} if self.read_sources is not None else {}),
         }
 
@@ -845,6 +855,10 @@ class CronJob:
             run_requested=_bool_field(record, "run_requested")
             if "run_requested" in record
             else False,
+            required_sources=tuple(_string_list(record, "required_sources")),
+            completion_criteria=tuple(_string_list(record, "completion_criteria"))
+            if "completion_criteria" in record
+            else None,
             read_sources=tuple(_string_list(record, "read_sources"))
             if "read_sources" in record
             else None,
@@ -901,6 +915,8 @@ class CronJobStore:
         deliver_to: DeliverTo = "channel",
         skills: Sequence[str] = (),
         mode: JobMode = "routine",
+        required_sources: Sequence[str] | None = None,
+        completion_criteria: Sequence[str] | None = None,
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -914,6 +930,8 @@ class CronJobStore:
             until: Optional last instant a recurring job may run, inclusive.
             deliver_to: Whether a thread origin's results post to its channel or thread.
             skills: Skill names to pin to each run; see `pinned_skills`.
+            required_sources: Sources whose use must be observed, without granting access.
+            completion_criteria: Finite verification criteria, or an empty list for ongoing work.
             mode: Repeat a procedure or choose the next action toward an objective.
             now: Creation time override for deterministic tests.
 
@@ -947,6 +965,7 @@ class CronJobStore:
             if mode == "objective" and (not origin.sender_id or not origin.channel):
                 msg = "Objective jobs need a channel and identified sender."
                 raise CronJobError(msg)
+            _validate_objective_requirements(mode, required_sources, completion_criteria)
             job = CronJob(
                 id=job_id,
                 assistant_id=self.assistant_id,
@@ -965,6 +984,10 @@ class CronJobStore:
                 deliver_to=deliver_to,
                 skills=pinned,
                 mode=mode,
+                required_sources=tuple(required_sources or ()),
+                completion_criteria=None
+                if completion_criteria is None
+                else tuple(completion_criteria),
             )
             jobs = [*self.list_jobs(), job]
             self._write_jobs(jobs)
@@ -1027,6 +1050,8 @@ class CronJobStore:
         schedule: CronSchedule | None = None,
         enabled: bool | None = None,
         run_now: bool = False,
+        required_sources: Sequence[str] | None = None,
+        completion_criteria: Sequence[str] | None = None,
         read_sources: Sequence[str] | None = None,
         repeat_times: int | None = None,
         until: datetime | None = None,
@@ -1043,6 +1068,8 @@ class CronJobStore:
             name: Optional replacement label.
             prompt: Optional replacement prompt.
             schedule: Optional replacement schedule.
+            required_sources: Replacement sources to verify.
+            completion_criteria: Replacement finish criteria, or an empty list for ongoing work.
             read_sources: Replace the read boundaries for scheduled goal checks.
             run_now: Queue an extra run at the next scheduler tick.
             enabled: Optional enabled flag.
@@ -1094,8 +1121,15 @@ class CronJobStore:
                 new_until = _edited_until(job.until, until, clear=clear_until)
                 if next_run_at is not None:
                     _check_until(new_schedule, next_run_at, new_until)
+                _validate_objective_requirements(job.mode, required_sources, completion_criteria)
                 updated = replace(
                     job,
+                    required_sources=job.required_sources
+                    if required_sources is None
+                    else tuple(required_sources),
+                    completion_criteria=job.completion_criteria
+                    if completion_criteria is None
+                    else tuple(completion_criteria),
                     read_sources=job.read_sources if read_sources is None else tuple(read_sources),
                     run_requested=(run_now or job.run_requested) and enabled is not False,
                     name=job.name if name is None else name,
@@ -1207,6 +1241,14 @@ class CronJobStore:
             if snapshot in jobs:
                 jobs[jobs.index(snapshot)] = replace(snapshot, next_run_at=wake)
                 self._write_jobs(jobs)
+
+    def pause_objective(self, snapshot: CronJob) -> bool:
+        """Pause an inaccessible objective only while the failing instructions are current."""
+        with self._lock:
+            if snapshot.mode != "objective" or self.get_job(snapshot.id) != snapshot:
+                return False
+            self.edit_job(snapshot.id, origin=snapshot.origin, enabled=False)
+            return True
 
     def finish_objective(self, snapshot: CronJob) -> None:
         """Stop a completed objective unless its instructions changed during the run."""
@@ -1743,6 +1785,21 @@ def _in_scope(job: CronJob, origin: CronOrigin) -> bool:
             and job.origin.conversation_id == origin.conversation_id
         )
     return _origin_scope(job.origin) == _origin_scope(origin)
+
+
+def _validate_objective_requirements(
+    mode: JobMode, sources: Sequence[str] | None, criteria: Sequence[str] | None
+) -> None:
+    if mode != "objective" and (sources is not None or criteria is not None):
+        msg = "Only objectives accept required sources and completion criteria."
+        raise CronJobError(msg)
+    for source in sources or ():
+        if not (source.startswith("path:/") or (source.startswith("tool:") and source[5:].strip())):
+            msg = "Use tool:<name> or path:<absolute path> for each required source."
+            raise CronJobError(msg)
+    if any(not criterion.strip() for criterion in criteria or ()):
+        msg = "Completion criteria must be nonempty."
+        raise CronJobError(msg)
 
 
 def _string_list(record: _Record, key: str) -> list[str]:

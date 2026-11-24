@@ -46,7 +46,13 @@ from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
-from deepagents_talon.cron.scope import JOB_READS, JobToolsUnavailableError, ReadScope
+from deepagents_talon.cron.scope import (
+    FILE_READ_TOOLS,
+    JOB_READS,
+    REQUIRED_READS,
+    JobToolsUnavailableError,
+    ReadScope,
+)
 from deepagents_talon.effort import effort_levels, normalize_effort
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -72,6 +78,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp_auth import (
+    BACKGROUND_LOGIN_REQUIRED,
     extract_loopback_oauth_callback_url,
     extract_oauth_callback_url,
 )
@@ -1355,10 +1362,16 @@ class TalonHost:
         )
         journal.start(job, thread)
         reads: set[str] = set()
+        logins: set[str] = set()
         try:
             _validate_read_sources(job)
             async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
-                with journal.capture_work(thread), JOB_READS.set(reads):
+                with (
+                    journal.capture_work(thread),
+                    JOB_READS.set(reads),
+                    REQUIRED_READS.set(job.required_sources),
+                    BACKGROUND_LOGIN_REQUIRED.set(logins if job.mode == "objective" else None),
+                ):
                     result = await self._invoke_scheduled(job, thread, journal)
         except TimeoutError:
             journal.finish(thread, "failed", "Scheduled run timed out.", reads=sorted(reads))
@@ -1375,8 +1388,9 @@ class TalonHost:
             )
             raise
         except JobToolsUnavailableError as exc:
-            if isinstance(store, CronJobStore):
-                store.edit_job(job.id, origin=job.origin, enabled=False)
+            if isinstance(store, CronJobStore) and not store.pause_objective(job):
+                journal.finish(thread, "interrupted", "Objective changed during the check.")
+                return SILENT_SENTINEL
             summary = f"Job paused: {exc}. Update its read sources before resuming."
             journal.finish(thread, "blocked", summary, reads=sorted(reads))
             return (
@@ -1386,43 +1400,51 @@ class TalonHost:
                 or SILENT_SENTINEL
             )
         except Exception as exc:
-            summary = f"Job run failed ({type(exc).__name__})."
-            journal.finish(thread, "failed", summary, reads=sorted(reads))
-            raise
-        return self._finish_job_run(job, journal, thread, result.text, reads)
-
-    def _finish_job_run(
-        self,
-        job: CronJob,
-        journal: JobJournal,
-        thread: str,
-        text: str,
-        reads: set[str],
-    ) -> str:
-        """Save the outcome and select the message for delivery."""
+            if not logins:
+                summary = f"Job run failed ({type(exc).__name__})."
+                journal.finish(thread, "failed", summary, reads=sorted(reads))
+                raise
+            result = AgentResult(text="")
         if job.mode == "routine":
+            text = result.text
             summary = (
                 text.strip().removeprefix(SILENT_SENTINEL).removesuffix(SILENT_SENTINEL).strip()
             )
             journal.finish(thread, "checked", summary or "Completed without a message.")
             return text
-        report = ObjectiveReport.from_reply(text)
-        if job.read_sources is not None and report.status in {"checked", "complete"} and not reads:
-            report = report.model_copy(
-                update={
-                    "status": "unverified",
-                    "summary": "No successful scoped read was observed. " + report.summary[:3900],
-                }
-            )
-        journal.finish(thread, report.status, report.summary, reads=sorted(reads))
+        report = _objective_report(result.text, set(job.required_sources) - reads, logins)
+        return self._finish_objective(job, journal, thread, report, reads)
+
+    def _finish_objective(
+        self,
+        job: CronJob,
+        journal: JobJournal,
+        thread: str,
+        report: ObjectiveReport,
+        reads: set[str],
+    ) -> str:
+        """Save the effective outcome, schedule the next check and select a notice."""
+        report = journal.finish_check(job, thread, report, reads)
+        log_event(
+            logger,
+            "cron.objective_result",
+            job_id=job.id,
+            status=report.status,
+            missing_source_count=len(set(job.required_sources) - reads),
+        )
         store = getattr(self.scheduler, "store", None)
         if isinstance(store, CronJobStore):
             if store.get_job(job.id) != job:
                 return SILENT_SENTINEL
             if report.status == "complete":
                 store.finish_objective(job)
-            elif report.next_wake_at is not None:
-                store.set_objective_wake(job, report.next_wake_at)
+            else:
+                history = journal.history(job.id, job.origin, offset=1, limit=1)
+                wake = report.next_wake(
+                    history[0] if history else None, datetime.now(UTC), job.until
+                )
+                if wake is not None:
+                    store.set_objective_wake(job, wake)
         return journal.notice(job, report) or SILENT_SENTINEL
 
     async def _invoke_scheduled(
@@ -2505,16 +2527,43 @@ def _outbound_media_from_refs(
     return media, failed
 
 
+def _objective_report(text: str, missing_sources: set[str], logins: set[str]) -> ObjectiveReport:
+    report = ObjectiveReport.from_reply(text)
+    if logins and (missing_sources or report.status in {"blocked", "unverified"}):
+        names = ", ".join(sorted(logins))
+        notice = f"Authorize {names} from chat, then retry this objective."
+        report = report.model_copy(
+            update={
+                "status": "blocked",
+                "notice": notice,
+                "blocker_key": f"login:{names}",
+                "summary": f"{notice} {report.summary}" if text else notice,
+            }
+        )
+    return report
+
+
 def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
     recent = journal.history(job.id, job.origin, limit=4)
+    criteria, evidence = journal.verification(job)
     return (
         f"Pursue this objective privately: {job.prompt}\n"
         f"UTC now: {datetime.now(UTC).isoformat()}. For each unfinished objective, include "
         "next_wake_at, an ISO 8601 timestamp with timezone for the next useful check. "
+        "Set wake_reason to owner_timing for an explicit owner cadence, expected_event for a "
+        "specific upcoming event (identify it in the summary), otherwise poll. "
         "Honor the owner's timing constraints. Choose the next useful action. "
         "Save intermediate evidence with record_job_work. "
         "Return JSON with status (checked, partial, blocked, unverified, or complete) "
-        "and summary (evidence, gaps, next action). Use complete only when a finite objective "
+        "and summary. Use checked for an inspected source with no material change; partial for "
+        "new evidence or completed work (name the change); unverified for an inconclusive check. "
+        "Return evidence as a JSON object mapping the exact criterion or ongoing milestone to "
+        "its verified reference; use null to retract outdated evidence. Omit unchanged entries. "
+        f"Standing criteria: {json.dumps(criteria)}. If null, return completion_criteria once "
+        "from the owner's standing prompt, listing each finish condition or [] for ongoing work. "
+        f"Saved evidence: {json.dumps(evidence)}. "
+        f"Required reads for this check: {json.dumps(job.required_sources)}. "
+        "Use complete only when a finite objective "
         "is verified. If the owner must unblock progress, include notice and a stable blocker_key. "
         "Do not message the chat or wait for a reply. "
         f"Current blocker key: {json.dumps(journal.blocker_key(job.id))}.\n"
@@ -2526,6 +2575,11 @@ def _validate_read_sources(job: CronJob) -> None:
     if job.read_sources is None:
         return
     scope = ReadScope.from_sources(job.read_sources)
+    required = ReadScope.from_sources(job.required_sources)
+    available = scope.tools.union(FILE_READ_TOOLS if scope.paths else ())
+    if required.tools - available or any(not scope.covers_path(path) for path in required.paths):
+        msg = "Required sources are outside this job's read grants"
+        raise JobToolsUnavailableError(msg)
     if not scope.tools and not scope.paths:
         msg = "The job has no readable sources; specify tool:<name> or path:<absolute directory>"
         raise JobToolsUnavailableError(msg)

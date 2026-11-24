@@ -348,7 +348,10 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 3. Select the package to release
 4. **Provide `version`**: the version you want to publish (e.g. `0.0.35`). The workflow checks that the code you selected has the same version.
 5. **Provide `release-sha`**: the commit to publish. Usually this is the release-please PR's merge commit. Find it with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The commit must be reachable from `main`, or with `dangerous-nonmain-release` enabled, from the branch the workflow was dispatched from. If a release failed before anything reached PyPI, you can also use the hotfix commit you merged afterward. See [Hotfix Protocol > Case A](#case-a--release-failed-before-pypi-publish) for that recovery flow.
-6. (Optionally enable `dangerous-nonmain-release` for hotfix branches that are not `main`. When enabled, `release-sha` may be left empty and the workflow uses the branch's current commit.)
+6. (Optionally enable `dangerous-nonmain-release` to release from a branch that is not `main`. When enabled, `release-sha` may be left empty and the workflow uses the branch's current commit.)
+
+> [!IMPORTANT]
+> The `release` environment only accepts runs from `main`, `v[0-9]*` maintenance branches, and the `alpha/*`, `beta/*`, `rc/*`, and `dev/*` [pre-release branches](#how-to-publish-a-pre-release). PyPI and TestPyPI trusted publishers require that environment, so a run from any other branch cannot publish, and admin bypass is disabled. To release a hotfix from some other branch, cherry-pick it onto `main` or a `vX.Y` branch, or have an admin add the branch to the `release` environment's deployment branches for the duration of the release.
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the normal release-please flow whenever possible. Use this workflow mainly for recovery, such as when the release workflow failed after the release PR was already merged!
@@ -425,6 +428,9 @@ For that reason, never commit PEP 440 pre-release version bumps to `main` or a l
 ### How to publish a pre-release
 
 Every pre-release stage uses a **throwaway branch** + [manual release](#manual-release). This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
+
+> [!NOTE]
+> Only repository admins can create, push, or delete `alpha/*`, `beta/*`, `rc/*`, and `dev/*` branches (the `pre-release branches` ruleset). Those prefixes are allowed to deploy to the `release` environment and can publish without the normal version checks, so the ruleset keeps pre-release publishing limited to admins.
 
 Choose these values before starting:
 

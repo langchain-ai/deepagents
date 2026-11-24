@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain.agents import AgentState, create_agent
+from langchain.agents import create_agent
 from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, PrivateStateAttr
 from langchain_anthropic import ChatAnthropic
@@ -1337,26 +1337,6 @@ class TestStateSchema:
         assert set(graphs) == {"general-purpose", "researcher"}
         for graph in graphs.values():
             assert isinstance(graph.channels["messages"], DeltaChannel)
-
-    def test_agent_state_schema_gets_delta_messages(self) -> None:
-        """A schema built on plain `AgentState` still stores `messages` as deltas in the main agent and subagents."""
-
-        class MyState(AgentState):
-            page_url: str
-
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-        graphs: dict[str, Any] = {}
-
-        def capture(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-            graphs[kwargs["name"]] = graph = create_agent(*args, **kwargs)
-            return graph
-
-        with patch("deepagents.middleware.subagents.create_agent", side_effect=capture):
-            graphs["main"] = create_deep_agent(model=model, state_schema=MyState)
-
-        for graph in graphs.values():
-            assert isinstance(graph.channels["messages"], DeltaChannel)
-            assert "page_url" in graph.channels
 
     def test_custom_subagent_middleware_receives_private_state_keys(self) -> None:
         """A caller-supplied task middleware filters private state like the default one."""

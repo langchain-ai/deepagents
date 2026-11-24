@@ -51,11 +51,10 @@ Guidelines:
 - Be concise in your responses.
 - Show file paths clearly when working with files."""
 
-_BARE_SYSTEM_PROMPTS: dict[str, str] = {"accounts/fireworks/models/kimi-k3p1-pro": _PI_STYLE_PROMPT}
+_BARE_SYSTEM_PROMPTS: dict[str, str] = {}
 """Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
 
-Kimi K3.1 Pro gets the same Pi-style prompt the Nov 13 GLM 5.3 run used, so the
-full Kimi run matches that setup. Models without an entry get no system prompt.
+Empty so Kimi K3.1 Pro runs with no system prompt, like the Opus and Sol runs.
 """
 
 _MODEL_RETRY_ATTEMPTS = 3

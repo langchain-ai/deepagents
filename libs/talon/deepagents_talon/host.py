@@ -16,6 +16,7 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import FrameType
@@ -355,7 +356,6 @@ class TalonHost:
         self._background_loop: asyncio.Task[None] | None = None
         self._background_routes: dict[str, _BackgroundRoute] = {}
         self._background_retries: dict[str, _BackgroundRetry] = {}
-        self._prompt_threads: dict[str, str] = {}
         self._scheduled_runs: dict[str, asyncio.Task[str]] = {}
         self._revoked_runs: set[str] = set()
         # Everyone who started a turn in a conversation since it was last idle.
@@ -567,7 +567,7 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
-        questions = self._pending_questions.get(self._reply_thread(conversation_root))
+        questions = self._pending_questions.get(self._agent_conversation_id(conversation_root))
         if (
             questions is not None
             and message.sender_id == questions.sender_id
@@ -582,9 +582,8 @@ class TalonHost:
             self._history_roots[conversation_root] = scope
             async with self._conversation_lock(conversation_root):
                 agent_conversation_id = self._agent_conversation_id(conversation_root)
-                reply_thread = self._reply_thread(conversation_root)
                 if questions is not None and (
-                    self._pending_questions.get(reply_thread) is not questions
+                    self._pending_questions.get(agent_conversation_id) is not questions
                     or questions.future.done()
                 ):
                     await send_with_retry(
@@ -604,7 +603,7 @@ class TalonHost:
                 ):
                     return
 
-                pending = self._pending_tool_approvals.get(reply_thread)
+                pending = self._pending_tool_approvals.get(agent_conversation_id)
                 if pending is not None:
                     await self._handle_tool_approval_reply(channel, message, pending)
                     return
@@ -617,7 +616,7 @@ class TalonHost:
                 ):
                     return
 
-                questions = self._pending_questions.get(reply_thread)
+                questions = self._pending_questions.get(agent_conversation_id)
                 if questions is not None and not questions.future.done():
                     await self._handle_question_reply(channel, message, questions)
                     return
@@ -885,7 +884,7 @@ class TalonHost:
         provider = await _channel_provider(channel)
         provider_key = _channel_key(channel, provider)
         conversation_root = self._conversation_root(provider_key, reaction.conversation_id)
-        agent_conversation_id = self._reply_thread(conversation_root)
+        agent_conversation_id = self._agent_conversation_id(conversation_root)
         pending = self._pending_tool_approvals.get(agent_conversation_id)
         if pending is None:
             _log_tool_approval_reaction(
@@ -929,7 +928,7 @@ class TalonHost:
                 )
                 return
             recovery_degraded = outcome is _CancelOutcome.DEGRADED
-        if isinstance(self.agent, BackgroundRuntime) and route.metadata.get("trigger") != "goal":
+        if isinstance(self.agent, BackgroundRuntime):
             self._background_routes[conversation_id] = route
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation
@@ -1417,6 +1416,8 @@ class TalonHost:
                 return SILENT_SENTINEL
             if report.status == "complete":
                 store.finish_objective(job)
+            elif report.next_wake_at is not None:
+                store.set_objective_wake(job, report.next_wake_at)
         return journal.notice(job, report) or SILENT_SENTINEL
 
     async def _invoke_scheduled(
@@ -1651,12 +1652,9 @@ class TalonHost:
     ) -> None:
         foreground = self._agent_conversation_id(root)
         task = self._tasks.get(foreground)
-        prompt_thread = self._reply_thread(root)
         store = getattr(self.scheduler, "store", None)
         stopped = []
-        if (not task or task.done() or prompt_thread != foreground) and isinstance(
-            store, CronJobStore
-        ):
+        if (not task or task.done()) and isinstance(store, CronJobStore):
             origin = CronOrigin(
                 conversation_id=message.conversation_id,
                 channel=provider,
@@ -1664,13 +1662,9 @@ class TalonHost:
             )
             for job in store.list_jobs(origin=origin):
                 run = self._scheduled_runs.get(job.id)
-                owns_prompt = prompt_thread == foreground or prompt_thread.startswith(
-                    f"{job.id}{_CRON_THREAD_SUFFIX}:"
-                )
                 if (
                     run
                     and not run.done()
-                    and owns_prompt
                     and message.sender_id
                     and message.sender_id == job.origin.sender_id
                     and message.conversation_id == job.origin.conversation_id
@@ -2111,20 +2105,6 @@ class TalonHost:
         self._authorization_flows.pop(agent_conversation_id, None)
         self._terminal_authorizations.discard(agent_conversation_id)
 
-    def _reply_thread(self, root: str) -> str:
-        return self._prompt_threads.get(root, self._agent_conversation_id(root))
-
-    @asynccontextmanager
-    async def _owner_prompt(self, provider: str, chat: str, thread: str) -> AsyncGenerator[None]:
-        """Allow a single outstanding question or approval per reply destination."""
-        root = self._conversation_root(provider, chat)
-        async with self._conversation_lock(f"owner-prompt:{root}"):
-            self._prompt_threads[root] = thread
-            try:
-                yield
-            finally:
-                self._prompt_threads.pop(root, None)
-
     async def _request_tool_approval(
         self,
         channel: ChannelAdapter,
@@ -2148,7 +2128,7 @@ class TalonHost:
             prompt_message_id=None,
             sender_id=sender_id,
         )
-        async with self._owner_prompt(provider, reply_conversation_id, approval.conversation_id):
+        async with self._conversation_lock(f"owner-prompt:{approval.conversation_id}"):
             self._pending_tool_approvals[approval.conversation_id] = pending
             try:
                 await self._send_tool_approval_prompt(channel, pending)
@@ -2229,8 +2209,7 @@ class TalonHost:
             session=QuestionSession(questions),
             sender_id=message.sender_id,
         )
-        provider = _channel_key(channel, await _channel_provider(channel))
-        async with self._owner_prompt(provider, message.conversation_id, conversation_id):
+        async with self._conversation_lock(f"owner-prompt:{conversation_id}"):
             self._pending_questions[conversation_id] = pending
             try:
                 result = await _send_question_message(channel, message, pending.session.prompt())
@@ -2525,7 +2504,10 @@ def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
     recent = journal.history(job.id, job.origin, limit=4)
     return (
         f"Pursue this objective privately: {job.prompt}\n"
-        "Choose the next useful action. Save intermediate evidence with record_job_work. "
+        f"UTC now: {datetime.now(UTC).isoformat()}. For each unfinished objective, include "
+        "next_wake_at, an ISO 8601 timestamp with timezone for the next useful check. "
+        "Honor the owner's timing constraints. Choose the next useful action. "
+        "Save intermediate evidence with record_job_work. "
         "Return JSON with status (checked, partial, blocked, unverified, or complete) "
         "and summary (evidence, gaps, next action). Use complete only when a finite objective "
         "is verified. If the owner must unblock progress, include notice and a stable blocker_key. "
@@ -2537,9 +2519,6 @@ def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
 
 def _validate_read_sources(job: CronJob) -> None:
     if job.read_sources is None:
-        if job.legacy_goal_id and job.legacy_goal_id != job.id:
-            msg = "The original goal charter must be imported"
-            raise JobToolsUnavailableError(msg)
         return
     scope = ReadScope.from_sources(job.read_sources)
     if not scope.tools and not scope.paths:

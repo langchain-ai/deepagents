@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from deepagents.backends import StateBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemState
+from deepagents.middleware.filesystem import FilesystemState
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents import create_agent
@@ -24,6 +24,7 @@ from deepagents_talon.background import _IN_SUBAGENT, _result_text
 from deepagents_talon.hooks import ACTIVE_HOOKS
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
 from deepagents_talon.model_selection import _summary_trim_limit
+from deepagents_talon.result_paging import ToolResultPaging
 from deepagents_talon.subagent_control import SubagentControlMiddleware
 
 if TYPE_CHECKING:
@@ -261,21 +262,6 @@ def _task_only(state: dict[str, object]) -> dict[str, object]:
     return {"messages": state["messages"]}
 
 
-class _ToolResultEvictionMiddleware(AgentMiddleware):
-    """Reuse filesystem result eviction without attaching filesystem tools or prompts."""
-
-    def __init__(self, backend: BackendProtocol) -> None:
-        self._filesystem = FilesystemMiddleware(backend=backend)
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
-    ) -> ToolMessage | Command:
-        """Offload oversized results using the SDK threshold and excluded tools."""
-        return await self._filesystem.awrap_tool_call(request, handler)
-
-
 def _compile_fresh(
     spec: LocalSubAgent,
     model: str | BaseChatModel,
@@ -314,16 +300,18 @@ def _compile_fresh(
             storage,
             trim_tokens_to_summarize=_summary_trim_limit(effective_model),
         )
+        fresh_middleware: list[AgentMiddleware[Any, Any, Any]] = [summarization]
+        if (
+            available
+            and not isinstance(storage, StateBackend)
+            and ToolResultPaging.reader_name not in available
+        ):
+            fresh_middleware.append(ToolResultPaging(storage))
         graph = create_agent(
             model=effective_model,
             tools=spec.get("tools", []),
             system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
-            middleware=[
-                summarization,
-                _ToolResultEvictionMiddleware(storage),
-                *middleware,
-                *hook_middleware,
-            ],
+            middleware=[*fresh_middleware, *middleware, *hook_middleware],
             state_schema=FilesystemState,
             checkpointer=InMemorySaver() if hooks else False,
         )
@@ -372,7 +360,7 @@ def prepare_subagents(
         specs: Loaded local, compiled, or remote definitions.
         model: Default model for fresh agents.
         interrupt_on: Operator approval policy retained by fresh agents.
-        backend: Storage for history evicted by fresh agents' summarization.
+        backend: Storage for summarized history and oversized tool results.
 
     Returns:
         SDK definitions and a safe inventory; opaque agents have unknown tools.

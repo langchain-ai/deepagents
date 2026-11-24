@@ -7,7 +7,7 @@ from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents.backends import FilesystemBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -1021,69 +1021,142 @@ async def test_transcript_reads_compact_fresh_subagent_history(
         await runtime.stop()
 
 
-@pytest.mark.parametrize("storage", ["fallback", "state", "filesystem"])
-async def test_fresh_subagent_offloads_large_tool_results(tmp_path, storage) -> None:
-    backend = (
-        FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
-        if storage == "filesystem"
-        else StateBackend()
+class ResultReaderModel(ToolModel):
+    """Use only the result path actually delivered to the worker."""
+
+    def _generate(self, messages, *args: object, **kwargs: object):
+        reply = super()._generate(messages, *args, **kwargs)
+        last = messages[-1]
+        if isinstance(last, ToolMessage) and last.name == "lookup":
+            path = last.text.splitlines()[0].removeprefix("Full result: ")
+            reply.generations[0].message = AIMessage(
+                content="",
+                tool_calls=[
+                    {**_call("read_tool_result", path=path, offset=1, column=45_000), "id": "own"},
+                    {
+                        **_call("read_tool_result", path="/large_tool_results/another-task"),
+                        "id": "other",
+                    },
+                ],
+            )
+        if isinstance(last, ToolMessage) and last.name == "read_tool_result":
+            path = next(
+                m.text.splitlines()[0].removeprefix("Full result: ")
+                for m in messages
+                if isinstance(m, ToolMessage) and m.name == "lookup"
+            )
+            reply.generations[0].message = AIMessage(content=path)
+        return reply
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+async def test_task_can_page_and_hand_off_its_own_result(
+    tmp_path, monkeypatch, dynamic, background
+):
+    _write_agent(tmp_path, "[]" if dynamic else "[lookup]")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    backend.write("/large_tool_results/another-task", "private result")
+    content = "head\n" + "x" * 45_000 + "MIDDLE" + "y" * 45_000 + "\ntail"
+
+    @tool
+    def lookup() -> str:
+        """Look up evidence."""
+        return content
+
+    child = ResultReaderModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("lookup")]),
+            AIMessage(content="page"),
+            AIMessage(content="finish"),
+        ],
+        profile={"max_input_tokens": 1_000_000},
     )
-    content = "first line\n" + "evidence\n" * 11_110 + "last line"
-    recovered = []
+    launch = {"tools": ["lookup"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Find evidence", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child, tools=[lookup], backend=backend)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        path = (
+            next(iter(runtime.background.results("chat").values()))
+            if background
+            else next(
+                m.text for m in parent._seen[-1] if isinstance(m, ToolMessage) and m.name == "task"
+            )
+        )
+        path = next(line for line in path.splitlines() if line.startswith("/large_tool_results/"))
+        assert backend.download_files([path])[0].content == content.encode()
+        assert child._tools == [
+            ["lookup"],
+            ["lookup", "read_tool_result"],
+            ["lookup", "read_tool_result"],
+        ]
+        assert "MIDDLE" not in str(child._seen[1])
+        replies = {m.tool_call_id: m.text for m in child._seen[-1] if isinstance(m, ToolMessage)}
+        assert replies["own"].startswith("MIDDLE")
+        assert "column=53000" in replies["own"]
+        assert replies["other"] == "Unknown result for this task."
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("storage", ["fallback", "state", "routed-state", "write-error"])
+async def test_fresh_result_stays_inline_without_a_durable_archive(tmp_path, storage):
+    backend = None
+    if storage == "state":
+        backend = StateBackend()
+    elif storage == "routed-state":
+        backend = CompositeBackend(
+            default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+            routes={"/large_tool_results/": StateBackend()},
+        )
+    elif storage == "write-error":
+        (tmp_path / "large_tool_results").touch()
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    content = "x" * 85_000
 
     @tool
     def lookup() -> str:
         """Retrieve research evidence."""
         return content
 
-    @tool
-    def verify_saved() -> str:
-        """Read the archived research evidence."""
-        listing = backend.ls("/large_tool_results/")
-        assert listing.entries
-        path = listing.entries[0]["path"]
-        downloaded = backend.download_files([path])[0]
-        recovered.append((path, downloaded.content.decode()))
-        return "Archive verified"
-
     model = ToolModel(
         responses=[
             AIMessage(content="", tool_calls=[_call("lookup")]),
-            AIMessage(content="", tool_calls=[_call("verify_saved")]),
             AIMessage(content="Reviewed"),
         ],
         profile={"max_input_tokens": 1_000_000},
     )
     prepared, _ = prepare_subagents(
-        [{"name": "researcher", "description": "Research", "tools": [lookup, verify_saved]}],
+        [{"name": "researcher", "description": "Research", "tools": [lookup]}],
         model,
         None,
-        backend=None if storage == "fallback" else backend,
+        backend=backend,
     )
     result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
-    assert result["messages"][-1].content == "Reviewed"
-    path, saved = recovered[0]
-    assert saved == content
-    for messages in model._seen[1:]:
-        preview = next(
-            message.content
-            for message in messages
-            if isinstance(message, ToolMessage) and message.name == "lookup"
-        )
-        assert path in preview
-        assert "first line" in preview
-        assert "last line" in preview
-        assert "offset" in preview
-        assert "limit" in preview
-        assert len(preview) < 10_000
-        assert content not in str(messages)
-    assert all(names == ["lookup", "verify_saved"] for names in model._tools)
+    assert next(m.text for m in model._seen[-1] if isinstance(m, ToolMessage)) == content
+    assert not result.get("files")
+    assert model._tools[-1] == ["lookup"]
 
 
 @pytest.mark.parametrize(
     ("name", "size"), [("lookup", 79_999), ("lookup", 80_000), ("read_file", 100_000)]
 )
-async def test_fresh_subagent_retains_small_and_excluded_results(name, size) -> None:
+async def test_fresh_subagent_retains_small_and_excluded_results(tmp_path, name, size) -> None:
     content = "x" * size
     lookup = StructuredTool.from_function(lambda: content, name=name, description="Read evidence")
     model = ToolModel(
@@ -1094,7 +1167,10 @@ async def test_fresh_subagent_retains_small_and_excluded_results(name, size) -> 
         profile={"max_input_tokens": 1_000_000},
     )
     prepared, _ = prepare_subagents(
-        [{"name": "researcher", "description": "Research", "tools": [lookup]}], model, None
+        [{"name": "researcher", "description": "Research", "tools": [lookup]}],
+        model,
+        None,
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
     )
     result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
     message = next(item for item in model._seen[-1] if isinstance(item, ToolMessage))

@@ -134,7 +134,7 @@ Of the model-provider credentials, only the credential for the configured provid
 
 ### `release`
 
-The environment is retained for release protections and possible future release-time integration coverage. Deployments are restricted to `main` and the `v[0-9]*` maintenance branches. `publish` needs `pre-release-checks`, which selects this environment, so PyPI publishing is limited to those branches too, even with `dangerous-nonmain-release`. Admins can still bypass the restriction (`can_admins_bypass`). It intentionally has no provider credentials while the `Run integration tests` step in `.github/workflows/release.yml` is disabled with `if: false`.
+The environment is retained for release protections and possible future release-time integration coverage. Deployments are restricted to `main` and the `v[0-9]*` maintenance branches. `test-pypi-publish` and `publish` run in this environment (PR #7984), and every package's PyPI and TestPyPI trusted publisher requires environment `release`. OIDC tokens minted on any other branch therefore cannot publish, even with `dangerous-nonmain-release`. Admins can still bypass the branch restriction (`can_admins_bypass`). When adding a package, register its publishers with environment `release` (see [RELEASING.md](RELEASING.md)). It intentionally has no provider credentials while the `Run integration tests` step in `.github/workflows/release.yml` is disabled with `if: false`.
 
 The disabled step preserves package-scoped wiring so a future re-enablement has an explicit credential contract:
 
@@ -201,4 +201,3 @@ These credentials exist in GitHub settings but no workflow on `main` reads them.
 | Scope | Name | Requested for |
 | --- | --- | --- |
 | `evals` environment | `LC_GATEWAY_KEY` | Routed-model Harbor benchmarks on `danielgshea/evals/model-routing-benchmarks`. |
-| `evals` environment | `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` | SemIf tool-selector Harbor comparisons (PRs #6437 and #6537, both closed). |

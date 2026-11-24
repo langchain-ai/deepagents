@@ -10,6 +10,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
+from deepagents_talon.background import _SCHEDULED_TURN
 from deepagents_talon.cron.jobs import (
     CronJob,
     CronJobStore,
@@ -18,6 +19,8 @@ from deepagents_talon.cron.jobs import (
     DeliverTo,
     parse_until,
 )
+from deepagents_talon.goals.journal import GoalJournal, record_goal_work
+from deepagents_talon.goals.scope import ReadScope
 
 OriginFactory = Callable[[], CronOrigin]
 _PAIRED_QUOTE_LENGTH = 2
@@ -88,6 +91,8 @@ Args:
     name: Optional replacement label.
     prompt: Optional replacement prompt.
     schedule: Optional replacement. {SCHEDULE_HELP}
+    goal_sources: Replace read grants with tool:<read-only name> or path:<absolute directory>.
+    goal_updates: Enable routine goal messages only on explicit request.
     enabled: Optional enabled flag. Use `False` to pause, `True` to resume.
     repeat_times: Optional replacement repeat cap for recurring schedules.
     until: Optional replacement end time. {UNTIL_HELP}
@@ -158,7 +163,21 @@ class CronTools:
         Returns:
             Scoped jobs as JSON-compatible dictionaries.
         """
-        return [_tool_job(job) for job in self.store.list_jobs(origin=self.origin())]
+        origin = self.origin()
+        jobs = self.store.list_jobs(origin=origin)
+        journal = GoalJournal(self.store.cron_dir) if any(job.goal_id for job in jobs) else None
+        result = []
+        for job in jobs:
+            payload = _tool_job(job)
+            if journal and job.goal_id:
+                checks = journal.history(job.id, origin, limit=1)
+                payload["last_check"] = (
+                    {"status": checks[0]["status"], "summary": checks[0]["summary"][:500]}
+                    if checks
+                    else None
+                )
+            result.append(payload)
+        return result
 
     def edit_job(  # noqa: PLR0913  # agent tool exposes optional editable fields
         self,
@@ -168,6 +187,8 @@ class CronTools:
         prompt: str | None = None,
         schedule: str | None = None,
         enabled: bool | None = None,
+        goal_updates: bool | None = None,
+        goal_sources: list[str] | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
@@ -181,6 +202,8 @@ class CronTools:
             prompt: Optional replacement prompt.
             schedule: Optional replacement schedule text, in any form
                 `SCHEDULE_HELP` lists.
+            goal_sources: Optional replacement read grants.
+            goal_updates: Owner preference for routine goal updates.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement end time, in the form `UNTIL_HELP`
@@ -191,6 +214,14 @@ class CronTools:
         Returns:
             Updated job as a JSON-compatible dictionary, with `upcoming` runs.
         """
+        if (goal_sources is not None or goal_updates is not None) and _SCHEDULED_TURN.get():
+            msg = "Only the owner in chat may change goal read grants or notification settings."
+            raise ValueError(msg)
+        if goal_sources is not None:
+            scope = ReadScope.from_sources(goal_sources)
+            if not scope.tools and not scope.paths:
+                msg = "Specify at least one tool:<name> or path:<absolute directory>."
+                raise ValueError(msg)
         parsed = None if schedule is None else CronSchedule.parse(schedule)
         job = self.store.edit_job(
             job_id,
@@ -199,6 +230,8 @@ class CronTools:
             prompt=prompt,
             schedule=parsed,
             enabled=enabled,
+            goal_updates=goal_updates,
+            goal_sources=goal_sources,
             repeat_times=repeat_times,
             until=parse_until(until) if until else None,
             clear_until=until == "",
@@ -229,16 +262,19 @@ class CronTools:
 
 def _goal_tool(cron: CronTools) -> BaseTool:
     @tool
-    def create_goal(outcome: str, schedule: str) -> dict[str, Any]:
-        """Save a continuing goal after initial discovery in this chat.
+    def create_goal(outcome: str, schedule: str, *, goal_updates: bool = False) -> dict[str, Any]:
+        """Save a continuing goal for background work.
 
         Args:
+            goal_updates: Enable routine messages only on the owner's explicit request.
             outcome: Desired result, user constraints (including any requested timing),
                 relevant findings, and the next step.
             schedule: Recurring check-in schedule based on the user's timing or when
                 progress is next possible, e.g. `every 10m` for a build due in ten minutes.
         """
         try:
+            if goal_updates and _SCHEDULED_TURN.get():
+                return {"error": "Only the owner in chat may enable routine goal updates."}
             if not outcome.strip():
                 return {"error": "A goal needs an outcome."}
             job = cron.store.create_job(
@@ -248,6 +284,7 @@ def _goal_tool(cron: CronTools) -> BaseTool:
                 origin=cron.origin(),
                 deliver_to="thread",
                 continuing=True,
+                goal_updates=goal_updates,
             )
             return _tool_job(job, upcoming=True)
         except Exception as exc:  # noqa: BLE001
@@ -312,6 +349,8 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         schedule: str | None = None,
         *,
         enabled: bool | None = None,
+        goal_updates: bool | None = None,
+        goal_sources: list[str] | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
@@ -324,6 +363,8 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 prompt=_strip_optional_quotes(prompt),
                 schedule=_strip_optional_quotes(schedule),
                 enabled=enabled,
+                goal_updates=goal_updates,
+                goal_sources=goal_sources,
                 repeat_times=repeat_times,
                 until=_strip_optional_quotes(until),
                 deliver_to=deliver_to,
@@ -347,7 +388,20 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
 
-    return [create_job, list_jobs, edit_job, remove_job, _goal_tool(cron)]
+    @tool
+    def get_goal_history(job_id: str | None = None, offset: int = 0) -> list[dict[str, str]]:
+        """Read ten saved checks for this owner and chat, optionally filtered by job ID."""
+        return GoalJournal(cron.store.cron_dir).history(job_id, cron.origin(), offset=offset)
+
+    return [
+        create_job,
+        list_jobs,
+        edit_job,
+        remove_job,
+        _goal_tool(cron),
+        get_goal_history,
+        record_goal_work,
+    ]
 
 
 def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
@@ -368,6 +422,8 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "skills": data["skills"],
         "goal_id": data["goal_id"],
     }
+    if job.goal_id is not None:
+        payload["goal_updates"] = job.goal_updates
     if upcoming:
         payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]
     return payload

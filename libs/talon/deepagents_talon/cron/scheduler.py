@@ -86,6 +86,17 @@ class PersistentCronScheduler:
         """
         current = self.now()
         self._discard_finished(current)
+        for job_id, task in list(self._goals.items()):
+            if task.done():
+                # Cancellation before the coroutine starts skips its finally block.
+                self._goals.pop(job_id)
+                continue
+            current_job = self.store.get_job(job_id)
+            # A final claimed fire can be disabled with no next run by design.
+            if current_job is None or (
+                not current_job.enabled and current_job.next_run_at is not None
+            ):
+                task.cancel()
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
         for job in jobs:

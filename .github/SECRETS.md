@@ -11,7 +11,7 @@ GitHub automatically provides `GITHUB_TOKEN` to each workflow run. It is not a c
 
 - Use non-human service accounts or project credentials for CI when possible. Do not bind CI to a maintainer's personal API key.
 - **LangSmith:** Prefer a single-workspace service key over an organization-scoped key.
-  - Only the `labeling` workflows select a workspace explicitly, with the `LANGSMITH_WORKSPACE_ID` Actions variable.
+  - Only the `labeling` workflows select a workspace explicitly, with `LANGSMITH_WORKSPACE_ID`.
 - Store credentials in the narrowest GitHub environment that needs them.
 - Inject a provider credential only into the runtime step and package job that consumes it.
 - Track any temporary exception to these rules explicitly and remove it when its blocker is resolved.
@@ -65,9 +65,8 @@ Provision dedicated inference keys for labeling, separate from the evals
 credentials, with model and spending limits where supported. Store them only in
 this environment; the workflows inject them only into their classification steps.
 Do not require reviewers, so automatic labeling can run unattended. Deployments
-are restricted to `main` and the `v[0-9]*` maintenance branches. `issues` and
-`workflow_dispatch` jobs run from `main`; `pull_request_target` jobs run against
-the PR's base branch.
+are restricted to `main` and the `v[0-9]*` maintenance branches, since
+`pull_request_target` jobs run against the PR's base branch.
 
 ### `evals`
 
@@ -75,8 +74,8 @@ This environment is used by standard evals, Harbor evals, unified evals, and clb
 
 | Secret | Purpose |
 | --- | --- |
-| `LANGSMITH_API_KEY` | Eval datasets, examples, experiments, traces, and feedback. Harbor also passes it to the evaluated agent for tracing. |
-| `LANGSMITH_SANDBOX_API_KEY` | LangSmith sandbox and snapshot lifecycle for Harbor runs with `sandbox_env: langsmith`. Sandboxes run on the AWS US deployment (`LANGSMITH_SANDBOX_API_URL`), so this is a key for that deployment. |
+| `LANGSMITH_API_KEY` | Eval datasets, examples, experiments, traces, and feedback. |
+| `LANGSMITH_SANDBOX_API_KEY` | LangSmith sandbox and snapshot lifecycle for Harbor runs with `sandbox_env: langsmith`. Must be a key for the AWS US deployment (`LANGSMITH_SANDBOX_API_URL`). |
 | `ANTHROPIC_API_KEY` | Anthropic models selected by an eval matrix. |
 | `BASETEN_API_KEY` | Baseten-hosted models selected by an eval matrix. |
 | `FIREWORKS_API_KEY` | Fireworks-hosted models selected by an eval matrix. |
@@ -134,7 +133,7 @@ Of the model-provider credentials, only the credential for the configured provid
 
 ### `release`
 
-The environment is retained for release protections and possible future release-time integration coverage. Deployments are restricted to `main`, the `v[0-9]*` maintenance branches, and the `alpha/*`, `beta/*`, `rc/*`, and `dev/*` pre-release branches. Only repository admins can create or push pre-release branches (the `pre-release branches` ruleset). `test-pypi-publish` and `publish` run in this environment (PR #7984), and every package's PyPI and TestPyPI trusted publisher requires environment `release`. OIDC tokens minted on any other branch therefore cannot publish, even with `dangerous-nonmain-release`. Admin bypass is disabled, so the restriction applies to admins too; to release from another branch, add it to the environment's deployment branches first. When adding a package, register its publishers with environment `release` (see [RELEASING.md](RELEASING.md)). It intentionally has no provider credentials while the `Run integration tests` step in `.github/workflows/release.yml` is disabled with `if: false`.
+The environment is retained for release protections and possible future release-time integration coverage. `test-pypi-publish` and `publish` run in it (PR #7984), and every package's PyPI and TestPyPI trusted publisher requires it. Only its deployment branches can publish: `main`, the `v[0-9]*` maintenance branches, and the admin-only `alpha/*`, `beta/*`, `rc/*`, and `dev/*` pre-release branches (`pre-release branches` ruleset). This holds even with `dangerous-nonmain-release`. Admin bypass is disabled. See [RELEASING.md](RELEASING.md) for releasing from another branch and registering a new package's publishers. It intentionally has no provider credentials while the `Run integration tests` step in `.github/workflows/release.yml` is disabled with `if: false`.
 
 The disabled step preserves package-scoped wiring so a future re-enablement has an explicit credential contract:
 
@@ -180,19 +179,16 @@ Several current `actions/create-github-app-token` calls omit explicit `permissio
 
 ## Harbor sandbox credential isolation
 
-Harbor evals use two LangSmith keys (PR #7854):
-
-- `LANGSMITH_API_KEY` for datasets, examples, experiment projects, traces, and feedback.
-- `LANGSMITH_SANDBOX_API_KEY` for LangSmith snapshot and sandbox lifecycle, sent to the AWS US sandbox endpoint. `_harbor_run.yml` fails fast when a `langsmith` sandbox run is missing it.
+Harbor evals split LangSmith access across the two [`evals`](#evals) keys (PR #7854): `LANGSMITH_API_KEY` for eval tracking and `LANGSMITH_SANDBOX_API_KEY` for sandbox lifecycle. `_harbor_run.yml` fails fast when a `langsmith` sandbox run is missing the sandbox key.
 
 Harbor reads `LANGSMITH_SANDBOX_API_KEY` starting with the 0.26.1 dev builds pinned by PR #7852. Older Harbor releases fall back to `LANGSMITH_API_KEY`, so do not lower the Harbor pin without restoring the sandbox permissions on the tracking key.
 
-Keep `LANGSMITH_SANDBOX_API_KEY` out of the agent and verifier environments. It is set only in the env of the host-side steps that prewarm snapshots and run Harbor, and it is never passed with `--agent-env`.
+Set `LANGSMITH_SANDBOX_API_KEY` only on the host-side steps that prewarm snapshots and run Harbor. Never pass it with `--agent-env` or into verifier environments.
 
 Remaining follow-ups:
 
 1. Remove `sandboxes:*` from the eval-tracking `LANGSMITH_API_KEY`. It was granted while one key handled both jobs, and no current workflow needs it there.
-2. Introduce a trace-ingestion-only key with `runs:create` for the evaluated agent. Until then the agent receives the full eval-tracking permission union (see the Harbor security exception under [`evals`](#evals)).
+2. Introduce a trace-ingestion-only key with `runs:create` for the evaluated agent (see the Harbor security exception under [`evals`](#evals)).
 
 ## Configured but not consumed on `main`
 

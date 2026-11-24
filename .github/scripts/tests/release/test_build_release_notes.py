@@ -3863,14 +3863,15 @@ def _build(repo: Path, release_sha: str) -> tuple[str, list[str]]:
 
 _EXPECTED_CHANGES = [
     "- Python: `>=3.11` → `>=3.12`",
-    "- Added `added-dep[extra]` `>=0.5`",
+    "- Added `added-dep` `>=0.5`",
     "- `langchain_core`: `>=1.8.0,<2.0.0` → `>=1.8.3,<2.0.0`",
-    "- Removed `removed-dep`",
-    "- `tomli; python_version < '3.11'`: `>=2.0` → `>=2.2`",
     (
         "- `langchain-google-vertexai`: `>=3.2.0,<4.0.0` → `>=3.2.5,<4.0.0`"
         " (`vertex` extra)"
     ),
+    "- Removed `removed-dep`",
+    # `tomli` 2.0 → 2.2 is a routine third-party floor raise.
+    "- Plus 1 routine third-party floor raise.",
 ]
 
 _GENERATED_CHANGELOG = """\
@@ -3931,6 +3932,66 @@ class TestDependencyChangeLines:
         )
         assert lines == []
         assert any("Could not parse" in w for w in warnings), warnings
+
+
+def _manifest(core: list[str], **extras: list[str]) -> dict[str, object]:
+    return {"project": {"dependencies": core, "optional-dependencies": extras}}
+
+
+def _changes(old: dict[str, object], new: dict[str, object]) -> list[str]:
+    return brn._dependency_change_lines(old, new)
+
+
+class TestDependencyListNoise:
+    """Which changes the list shows, and how they are grouped and ordered."""
+
+    def test_one_line_per_package_across_extras(self) -> None:
+        old = _manifest(
+            ["deepagents-code>=0.2.11"],
+            media=["deepagents-code[media]>=0.2.11", "voyageai>=0.5.0"],
+            voyage=["voyageai>=0.5.0"],
+        )
+        new = _manifest(
+            ["deepagents-code>=0.2.14"],
+            media=["deepagents-code[media]>=0.2.14", "voyageai>=0.6.0"],
+            voyage=["voyageai>=0.6.0"],
+        )
+        assert _changes(old, new) == [
+            # A core dependency needs no extras note.
+            "- `deepagents-code`: `>=0.2.11` → `>=0.2.14`",
+            "- `voyageai`: `>=0.5.0` → `>=0.6.0` (`media`, `voyage` extras)",
+        ]
+
+    @pytest.mark.parametrize(
+        ("old", "new", "shown"),
+        [
+            ("pydantic>=2.14.2", "pydantic>=2.14.4", False),  # patch
+            ("slack-sdk>=3.46.0", "slack-sdk>=3.48.0", False),  # minor on 1.x+
+            ("voyageai>=0.5.0", "voyageai>=0.6.0", True),  # minor on 0.x
+            ("acp>=0.10.1", "acp>=1.0.0", True),  # new major
+            ("numpy>=2.5.4", "numpy>=2.5.4,<3", True),  # new cap
+            ("langchain-core>=1.8.3", "langchain-core>=1.8.4", True),  # first-party
+        ],
+    )
+    def test_third_party_needs_a_notable_change(
+        self, old: str, new: str, shown: bool
+    ) -> None:
+        lines = _changes(_manifest([old]), _manifest([new]))
+        if shown:
+            assert len(lines) == 1
+            assert not lines[0].startswith("- Plus")
+        else:
+            assert lines == ["- Plus 1 routine third-party floor raise."]
+
+    def test_sorted_alphabetically_with_hidden_count_last(self) -> None:
+        old = _manifest(["zeta>=0.1", "numpy>=2.5.4", "alpha>=1.0", "langsmith>=0.15"])
+        new = _manifest(["zeta>=0.2", "numpy>=2.5.5", "alpha>=2.0", "langsmith>=0.16"])
+        assert _changes(old, new) == [
+            "- `alpha`: `>=1.0` → `>=2.0`",
+            "- `langsmith`: `>=0.15` → `>=0.16`",
+            "- `zeta`: `>=0.1` → `>=0.2`",
+            "- Plus 1 routine third-party floor raise.",
+        ]
 
 
 class TestUpsertDependencySection:
@@ -4056,7 +4117,7 @@ class TestReleaseBodyDependencies:
         body, _ = _build(tmp_path, head)
 
         toggle = (
-            "<details>\n<summary>Dependencies (6 changes)</summary>\n\n"
+            "<details>\n<summary>Dependencies (5 changes)</summary>\n\n"
             + "\n".join(_EXPECTED_CHANGES)
             + "\n\n</details>"
         )

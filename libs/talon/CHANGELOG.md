@@ -32,6 +32,18 @@
 
 * **talon:** shorten scheduled job tool descriptions ([#7979](https://github.com/langchain-ai/deepagents/issues/7979)) ([810e2dd](https://github.com/langchain-ai/deepagents/commit/810e2ddb77fcb31e2097a2a4f8e8ba6024f45a29))
 
+### Dependencies
+
+- `deepagents`: `>=0.7.40` → `>=0.7.41`
+- `deepagents-code`: `>=0.2.11,<1.0.0` → `>=0.2.14,<1.0.0`
+- `langchain-core`: `>=1.8.3,<2.0.0` → `>=1.8.4,<2.0.0`
+- `langchain-openai`: `>=1.8.3,<2.0.0` → `>=1.8.5,<2.0.0` (`history-openai` extra)
+- `langgraph`: `>=1.2.22,<2.0.0` → `>=1.2.24,<2.0.0`
+- `langgraph-prebuilt`: `>=1.1.2,<2.0.0` → `>=1.1.3,<2.0.0`
+- `langsmith`: `>=0.15.0` → `>=0.16.1`
+- `voyageai`: `>=0.5.0` → `>=0.6.0` (`history-voyage` extra)
+- Plus 9 routine third-party floor raises.
+
 ## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.0...deepagents-talon==0.1.1) (2026-11-19)
 
 ### Features

@@ -1685,8 +1685,8 @@ _REQUIREMENT_RE = re.compile(
 class Requirement(NamedTuple):
     """One runtime requirement, keyed for comparison across releases."""
 
-    label: str
-    """Display name: the requirement name plus any extras and marker."""
+    name: str
+    """Display name: the requirement name as written, plus any marker."""
 
     spec: str
     """Whitespace-free version specifier as written; empty when unconstrained."""
@@ -1706,16 +1706,18 @@ def _parse_requirement(text: str, extra: str) -> tuple[tuple[str, ...], Requirem
     """Parse *text* into a comparison key and a displayable requirement.
 
     The key holds the extra, the PEP 503-normalized name, and the marker, so a
-    package listed under several markers is compared marker by marker.
+    package listed under several markers is compared marker by marker. The
+    requirement's own extras (`pkg[extra]`) are dropped from the display name,
+    so one package reads the same wherever it is listed.
     """
     match = _REQUIREMENT_RE.match(text)
     if not match:
         return (extra, text.strip(), ""), Requirement(text.strip(), "")
     name = match["name"]
     marker = re.sub(r"\s+", " ", match["marker"] or "")
-    label = name + (match["extras"] or "") + (f"; {marker}" if marker else "")
+    display = name + (f"; {marker}" if marker else "")
     key = (extra, re.sub(r"[-_.]+", "-", name).lower(), marker)
-    return key, Requirement(label, _normalize_spec(match["spec"]))
+    return key, Requirement(display, _normalize_spec(match["spec"]))
 
 
 def _project_table(pyproject: dict[str, object]) -> dict[str, object]:
@@ -1750,30 +1752,127 @@ def _requires_python(pyproject: dict[str, object]) -> str:
     return _normalize_spec(str(_project_table(pyproject).get("requires-python", "")))
 
 
+# Packages this repo or its sister repos publish. Their changes are always
+# listed: raising these floors is what `raise_langchain_minimums.yml` does.
+_FIRST_PARTY_PREFIXES = ("deepagents", "langchain", "langgraph", "langsmith")
+
+_LOWER_BOUND_OPERATORS = (">=", "~=", ">")
+
+# Opens the closing line that counts hidden third-party changes. Shared with
+# `collapse_dependency_section`, which leaves it out of the toggle's count.
+_ROUTINE_PREFIX = "- Plus "
+
+
+class DependencyChange(NamedTuple):
+    """One package's change, merged across every extra that lists it."""
+
+    name: str
+    old: str | None
+    """Old specifier; None when the package was added."""
+
+    new: str | None
+    """New specifier; None when the package was removed."""
+
+    extras: frozenset[str]
+    """Extras listing the package; contains "" when it is a core dependency."""
+
+
+def _floor_release(spec: str) -> tuple[int, int] | None:
+    """Return `(major, minor)` of *spec*'s single lower bound, or None."""
+    floors = [c for c in spec.split(",") if c.startswith(_LOWER_BOUND_OPERATORS)]
+    if len(floors) != 1:
+        return None
+    match = re.match(r"(\d+)(?:\.(\d+))?", floors[0].lstrip(">=~"))
+    return (int(match[1]), int(match[2] or 0)) if match else None
+
+
+def _non_floor_clauses(spec: str) -> list[str]:
+    """Return every clause of *spec* except lower bounds, sorted."""
+    clauses = spec.split(",")
+    return sorted(c for c in clauses if not c.startswith(_LOWER_BOUND_OPERATORS))
+
+
+def _is_notable(change: DependencyChange) -> bool:
+    """Whether a third-party change could plausibly affect an install.
+
+    Additions, removals, and any change besides the lower bound (a new cap, a
+    pin, an exclusion) always qualify. A floor raise qualifies when it crosses
+    a breaking boundary: a new major version, or a new minor version on 0.x.
+    Anything this cannot parse counts as notable rather than being hidden.
+    """
+    if change.old is None or change.new is None:
+        return True
+    if _non_floor_clauses(change.old) != _non_floor_clauses(change.new):
+        return True
+    old, new = _floor_release(change.old), _floor_release(change.new)
+    if old is None or new is None:
+        return True
+    return old[0] != new[0] or (new[0] == 0 and old[1] != new[1])
+
+
+def _merged_changes(
+    before: dict[tuple[str, ...], Requirement],
+    after: dict[tuple[str, ...], Requirement],
+) -> list[DependencyChange]:
+    """Merge per-extra changes into one entry per package, sorted by name.
+
+    Entries merge when they name the same package and marker and change it the
+    same way, so a package listed in several extras reads as one line.
+    """
+    merged: dict[tuple[str, str, str | None, str | None], DependencyChange] = {}
+    for key in before.keys() | after.keys():
+        extra, normalized, marker = key
+        old, new = before.get(key), after.get(key)
+        if old and new and _same_spec(old.spec, new.spec):
+            continue
+        old_spec, new_spec = (old.spec if old else None), (new.spec if new else None)
+        group = (normalized, marker, old_spec, new_spec)
+        name = new.name if new else old.name if old else normalized
+        prior = merged.get(group)
+        extras = (prior.extras if prior else frozenset()) | {extra}
+        merged[group] = DependencyChange(name, old_spec, new_spec, extras)
+    return [merged[group] for group in sorted(merged, key=lambda g: tuple(map(str, g)))]
+
+
+def _describe_change(change: DependencyChange) -> str:
+    """Render one bullet. A core dependency needs no extras note."""
+    extras = sorted(change.extras - {""}) if "" not in change.extras else []
+    names = ", ".join(f"`{extra}`" for extra in extras)
+    suffix = f" ({names} extra{'s' if len(extras) > 1 else ''})" if extras else ""
+    if change.old is None:
+        return f"- Added `{change.name}` `{change.new or 'any version'}`{suffix}"
+    if change.new is None:
+        return f"- Removed `{change.name}`{suffix}"
+    was, now = change.old or "any version", change.new or "any version"
+    return f"- `{change.name}`: `{was}` → `{now}`{suffix}"
+
+
 def _dependency_change_lines(
     old: dict[str, object], new: dict[str, object]
 ) -> list[str]:
-    """List `requires-python` and runtime requirement changes, core deps first.
+    """List the dependency changes worth a reader's attention, alphabetically.
 
-    Requirements sort by extra (core deps have the empty extra) and then name.
+    A `requires-python` change comes first. First-party packages are always
+    listed; third-party ones only when `_is_notable`. The rest are counted in
+    a closing line, so the list never claims to be complete when it is not.
     """
     lines: list[str] = []
     old_python, new_python = _requires_python(old), _requires_python(new)
     if not _same_spec(old_python, new_python):
         lines.append(f"- Python: `{old_python or 'any'}` → `{new_python or 'any'}`")
 
-    before, after = _runtime_requirements(old), _runtime_requirements(new)
-    for key in sorted(before.keys() | after.keys()):
-        old_req, new_req = before.get(key), after.get(key)
-        suffix = f" (`{key[0]}` extra)" if key[0] else ""
-        if old_req is None and new_req is not None:
-            spec = new_req.spec or "any version"
-            lines.append(f"- Added `{new_req.label}` `{spec}`{suffix}")
-        elif new_req is None and old_req is not None:
-            lines.append(f"- Removed `{old_req.label}`{suffix}")
-        elif old_req and new_req and not _same_spec(old_req.spec, new_req.spec):
-            was, now = old_req.spec or "any version", new_req.spec or "any version"
-            lines.append(f"- `{new_req.label}`: `{was}` → `{now}`{suffix}")
+    changes = _merged_changes(_runtime_requirements(old), _runtime_requirements(new))
+    hidden: set[str] = set()
+    for change in changes:
+        normalized = re.sub(r"[-_.]+", "-", change.name.split(";")[0]).lower()
+        if normalized.startswith(_FIRST_PARTY_PREFIXES) or _is_notable(change):
+            lines.append(_describe_change(change))
+        else:
+            hidden.add(normalized)
+    if hidden:
+        noun = "raise" if len(hidden) == 1 else "raises"
+        count = len(hidden)
+        lines.append(f"{_ROUTINE_PREFIX}{count} routine third-party floor {noun}.")
     return lines
 
 
@@ -1875,7 +1974,12 @@ def collapse_dependency_section(changelog_body: str) -> str:
     entries = [line for line in lines[start + 1 : end] if line.strip()]
     if not entries:
         return changelog_body
-    count = sum(1 for line in entries if line.lstrip().startswith(("- ", "* ")))
+    count = sum(
+        1
+        for line in entries
+        if line.lstrip().startswith(("- ", "* "))
+        and not line.startswith(_ROUTINE_PREFIX)
+    )
     noun = "change" if count == 1 else "changes"
     toggle = [
         "<details>",

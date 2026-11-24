@@ -1758,9 +1758,9 @@ _FIRST_PARTY_PREFIXES = ("deepagents", "langchain", "langgraph", "langsmith")
 
 _LOWER_BOUND_OPERATORS = (">=", "~=", ">")
 
-# Opens the closing line that names routine third-party floor raises. Shared
-# with `collapse_dependency_section`, which counts that line's packages.
-_ROUTINE_PREFIX = "- Routine minimum raise"
+# Opens the closing line that names the remaining third-party floor raises.
+# Shared with `collapse_dependency_section`, which counts that line's packages.
+_ROUTINE_PREFIX = "- Other minimum version"
 
 
 class DependencyChange(NamedTuple):
@@ -1855,7 +1855,7 @@ def _dependency_change_lines(
     Only packages whose range changed appear. A `requires-python` change comes
     first. Every first-party change gets its own line; a third-party one only
     when `_is_notable`. The remaining third-party floor raises are named with
-    their new minimums in one closing line, so nothing is left out.
+    their old and new minimums in one closing line, so nothing is left out.
     """
     lines: list[str] = []
     old_python, new_python = _requires_python(old), _requires_python(new)
@@ -1869,27 +1869,28 @@ def _dependency_change_lines(
         if normalized.startswith(_FIRST_PARTY_PREFIXES) or _is_notable(change):
             lines.append(_describe_change(change))
         else:
-            routine.setdefault(normalized, f"`{change.name}` `{_floor(change.new)}`")
+            was, now = _floor_version(change.old), _floor_version(change.new)
+            routine.setdefault(normalized, f"`{change.name}` {was} → {now}")
     if routine:
         lines.append(_routine_line(list(routine.values())))
     return lines
 
 
-def _floor(spec: str | None) -> str:
-    """Return *spec*'s lower-bound clause; routine raises always have one."""
+def _floor_version(spec: str | None) -> str:
+    """Return the version in *spec*'s lower bound; routine raises always have one."""
     clauses = (spec or "").split(",")
     floors = [c for c in clauses if c.startswith(_LOWER_BOUND_OPERATORS)]
-    return floors[0] if floors else spec or ""
+    return floors[0].lstrip(">=~") if floors else spec or ""
 
 
 def _routine_line(items: list[str]) -> str:
-    """Name routine floor raises in one sentence, e.g. "`a` `>=1`, and `b` `>=2`"."""
+    """Name the remaining floor raises in one sentence, e.g. "`a` 1.0 → 1.1"."""
     plural = "s" if len(items) > 1 else ""
     if len(items) > 2:
         joined = ", ".join(items[:-1]) + f", and {items[-1]}"
     else:
         joined = " and ".join(items)
-    return f"{_ROUTINE_PREFIX}{plural}: {joined}."
+    return f"{_ROUTINE_PREFIX}{plural} raised: {joined}."
 
 
 def _read_pyproject_at(
@@ -1990,10 +1991,10 @@ def collapse_dependency_section(changelog_body: str) -> str:
     entries = [line for line in lines[start + 1 : end] if line.strip()]
     if not entries:
         return changelog_body
-    # Each bullet is one change, except the routine line, which names several:
-    # one "`name` `>=x`" pair per package.
+    # Each bullet is one change, except the closing line, which names several
+    # packages, each as one backticked name.
     count = sum(
-        len(re.findall(r"`[^`]+` `[^`]+`", line))
+        len(re.findall(r"`[^`]+`", line))
         if line.startswith(_ROUTINE_PREFIX)
         else 1
         for line in entries

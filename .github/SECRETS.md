@@ -64,9 +64,9 @@ This environment is selected by `auto-label-by-package.yml`, `sync_topic_labels.
 Provision dedicated inference keys for labeling, separate from the evals
 credentials, with model and spending limits where supported. Store them only in
 this environment; the workflows inject them only into their classification steps.
-Do not require reviewers, so automatic labeling can run unattended. Restrict
-deployments to the default branch: every job that selects this environment runs
-from `main` (`issues`, `pull_request_target`, or `workflow_dispatch`).
+Do not require reviewers, so automatic labeling can run unattended. Deployments
+are restricted to `main`: every job that selects this environment runs from the
+default branch (`issues`, `pull_request_target`, or `workflow_dispatch`).
 
 ### `evals`
 
@@ -126,6 +126,8 @@ managed package.
 | `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation (`provider:model`). Must support JSON Schema structured output and a 32,768-token output ceiling. For `openai:…`, use a Chat Completions model. See [RELEASING.md](RELEASING.md) for the exact list. |
 | `RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
 | `RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
+
+Deployments are restricted to `main`; the drafting jobs run on `pull_request_target` and `issue_comment`.
 
 Of the model-provider credentials, only the credential for the configured provider is required. Prefer a provider project or service-account key limited to model inference, with model allowlists and spend limits where supported. The workflow also uses the repository GitHub App credentials for repository mutations.
 
@@ -193,11 +195,9 @@ Remaining follow-ups:
 
 ## Configured but not consumed on `main`
 
-These credentials exist in GitHub settings but no workflow on `main` reads them. Each one is for work on an unmerged branch. When that work merges, document the credential in its environment section. When it is abandoned, delete the credential.
+These credentials exist in GitHub settings but no workflow on `main` reads them. Each one is for work on an unmerged branch. Do not add credentials at repository scope for branch work; request them in the narrowest environment instead. When that work merges, document the credential in its environment section. When it is abandoned, delete the credential.
 
 | Scope | Name | Requested for |
 | --- | --- | --- |
-| `oss` environment | `ANTHROPIC_API_KEY`, `LANGSMITH_API_KEY`, `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browser-agent benchmark workflows on the `evals/browser-*-run` and `evals/webtail-run` branches. |
 | `evals` environment | `LC_GATEWAY_KEY` | Routed-model Harbor benchmarks on `danielgshea/evals/model-routing-benchmarks`. |
 | `evals` environment | `TYPESAFE_API_KEY`, `TYPESAFE_BASE_URL` | SemIf tool-selector Harbor comparisons (PRs #6437 and #6537, both closed). |
-| Repository | `EVALS_LANGSMITH_API_KEY`, `EVALS_LC_GATEWAY_KEY` | Routed-model Harbor benchmarks on `danielgshea/evals/model-routing-benchmarks`. These belong in the `evals` environment, not at repository scope. |

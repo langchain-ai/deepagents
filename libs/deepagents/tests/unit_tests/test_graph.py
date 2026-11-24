@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, PrivateStateAttr
 from langchain_anthropic import ChatAnthropic
@@ -19,6 +20,7 @@ from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.channels.delta import DeltaChannel
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
@@ -1316,6 +1318,25 @@ class TestStateSchema:
         mw_stack = mock_create.call_args.kwargs["middleware"]
         sub_mw = next(m for m in mw_stack if isinstance(m, SubAgentMiddleware))
         assert sub_mw._state_schema is MyState
+
+    def test_default_subagents_store_messages_as_deltas(self) -> None:
+        """Declarative subagents use a `DeltaChannel` for `messages` like the main agent."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        graphs: dict[str, Any] = {}
+
+        def capture(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            graphs[kwargs["name"]] = graph = create_agent(*args, **kwargs)
+            return graph
+
+        with patch("deepagents.middleware.subagents.create_agent", side_effect=capture):
+            create_deep_agent(
+                model=model,
+                subagents=[{"name": "researcher", "description": "Research", "system_prompt": "Research.", "model": model, "tools": []}],
+            )
+
+        assert set(graphs) == {"general-purpose", "researcher"}
+        for graph in graphs.values():
+            assert isinstance(graph.channels["messages"], DeltaChannel)
 
     def test_custom_subagent_middleware_receives_private_state_keys(self) -> None:
         """A caller-supplied task middleware filters private state like the default one."""

@@ -60,6 +60,7 @@ class PersistentCronScheduler:
         """Start the scheduler ticker."""
         if self._task is not None and not self._task.done():
             return
+        self.store.recover_interrupted_jobs(now=self.now())
         self._stopped.clear()
         self._task = asyncio.create_task(self._ticker(), name="talon:cron")
 

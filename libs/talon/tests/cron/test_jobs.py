@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -754,3 +755,102 @@ def test_job_saved_without_skills_loads_with_none_pinned(tmp_path) -> None:
     store.path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert [job.skills for job in _store(tmp_path).list_jobs()] == [()]
+
+
+@pytest.mark.parametrize("previous_outcome", [False, True])
+def test_recovery_after_process_exit_is_durable_and_idempotent(
+    tmp_path, *, previous_outcome: bool
+) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("every 2h"),
+        origin=CronOrigin(conversation_id="chat"),
+        repeat_times=3,
+        now=now,
+    )
+    if previous_outcome:
+        store.advance_next_run(job.id, now=now + timedelta(hours=2))
+        store.mark_job_run(job.id, status="ok", now=now + timedelta(hours=2))
+    claim_time = now + timedelta(hours=4 if previous_outcome else 2)
+    store.advance_next_run(job.id, now=claim_time)
+    restarted = _store(tmp_path)
+    recovery_time = claim_time + timedelta(minutes=1)
+    restarted.recover_interrupted_jobs(now=recovery_time)
+    restarted = _store(tmp_path)
+    restarted.recover_interrupted_jobs(now=recovery_time)
+    assert [due.id for due in restarted.due_jobs(now=recovery_time)] == [job.id]
+    claimed = restarted.advance_next_run(job.id, now=recovery_time)
+    assert claimed is not None
+    assert claimed.repeat.completed == (2 if previous_outcome else 1)
+    restarted.mark_job_run(job.id, status="ok", now=recovery_time)
+    restarted = _store(tmp_path)
+    restarted.recover_interrupted_jobs(now=recovery_time)
+    assert restarted.due_jobs(now=recovery_time) == []
+
+
+@pytest.mark.parametrize("case", ["one_shot", "disabled", "ok", "error", "expired", "unclaimed"])
+def test_recovery_leaves_ineligible_jobs_unchanged(tmp_path, case: str) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    origin = CronOrigin(conversation_id="chat")
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("in 2h" if case == "one_shot" else "every 2h"),
+        origin=origin,
+        until=now + timedelta(hours=5) if case == "expired" else None,
+        now=now,
+    )
+    if case != "unclaimed":
+        store.advance_next_run(job.id, now=now + timedelta(hours=2))
+    if case == "disabled":
+        store.edit_job(job.id, origin=origin, enabled=False)
+    if case in {"ok", "error"}:
+        store.mark_job_run(job.id, status=case, now=now + timedelta(hours=2))
+    before = store.list_jobs()
+    restarted = _store(tmp_path)
+    restarted.recover_interrupted_jobs(now=now + timedelta(hours=6))
+    assert restarted.list_jobs() == before
+
+
+def test_recovery_respects_until_grace(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("every 2h"),
+        origin=CronOrigin(conversation_id="chat"),
+        until=now + timedelta(hours=4),
+        now=now,
+    )
+    store.advance_next_run(job.id, now=now + timedelta(hours=2))
+    recovery_time = now + timedelta(hours=4, minutes=3)
+    store.recover_interrupted_jobs(now=recovery_time)
+    assert [due.id for due in store.due_jobs(now=recovery_time)] == [job.id]
+    claimed = store.advance_next_run(job.id, now=recovery_time)
+    assert claimed is not None
+    assert claimed.repeat.completed == 1
+
+
+@pytest.mark.parametrize("offset", [0, 1])
+def test_recovery_does_not_replay_claims_with_recorded_outcomes(tmp_path, offset: int) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("every 2h"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+    claimed_at = now + timedelta(hours=2)
+    claimed = store.advance_next_run(job.id, now=claimed_at)
+    assert claimed is not None
+    recorded = replace(
+        claimed, last_run_at=claimed_at + timedelta(seconds=offset), last_status="ok"
+    )
+    store.path.write_text(json.dumps({"version": CRON_STORE_VERSION, "jobs": [recorded.to_dict()]}))
+    restarted = _store(tmp_path)
+    restarted.recover_interrupted_jobs(now=claimed_at + timedelta(minutes=1))
+    assert restarted.get_job(job.id) == recorded
+    assert restarted.due_jobs(now=claimed_at + timedelta(minutes=1)) == []

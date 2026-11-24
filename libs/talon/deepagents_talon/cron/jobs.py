@@ -1124,6 +1124,35 @@ class CronJobStore:
                 self._write_jobs(result)
             return claimed
 
+    def recover_interrupted_jobs(self, *, now: datetime | None = None) -> None:
+        """Requeue enabled recurring claims without an outcome before scheduler startup."""
+        with self._lock:
+            current = _coerce_utc(now)
+            jobs = self.list_jobs()
+            recovered: list[CronJob] = []
+            for job in jobs:
+                if (
+                    job.enabled
+                    and job.schedule.kind == "recurring"
+                    and job.claimed_at is not None
+                    and (job.last_run_at is None or job.last_run_at < job.claimed_at)
+                    and not _is_expired(job, current)
+                ):
+                    recovered.append(
+                        replace(
+                            job,
+                            next_run_at=min(current, job.until)
+                            if job.until is not None
+                            else current,
+                            claimed_at=None,
+                            repeat=replace(job.repeat, completed=max(0, job.repeat.completed - 1)),
+                        )
+                    )
+                else:
+                    recovered.append(job)
+            if recovered != jobs:
+                self._write_jobs(recovered)
+
     def mark_job_run(
         self,
         job_id: str,

@@ -323,3 +323,66 @@ async def test_a_stalled_job_does_not_silence_the_others(tmp_path) -> None:
     assert healthy_after is not None
     assert stalled_after.last_status == "error"
     assert healthy_after.last_status == "ok"
+
+
+async def test_restart_recovers_cancelled_recurring_run(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("every 2h"),
+        origin=CronOrigin(conversation_id="chat"),
+        repeat_times=3,
+        now=now,
+    )
+    started = asyncio.Event()
+
+    async def interrupted_run(_: CronJob) -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=interrupted_run,
+        deliver_result=_deliver_returned_text,
+        now=lambda: now + timedelta(hours=2),
+    )
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+    finally:
+        await scheduler.stop()
+
+    delivered: list[str] = []
+    completed = asyncio.Event()
+    restarted_store = _store(tmp_path)
+
+    async def deliver_result(_: CronJob, text: str) -> None:
+        delivered.append(text)
+        completed.set()
+
+    restarted = PersistentCronScheduler(
+        store=restarted_store,
+        run_job=lambda _: _return("recovered"),
+        deliver_result=deliver_result,
+        now=lambda: now + timedelta(hours=2, minutes=1),
+    )
+    await restarted.start()
+    try:
+        await asyncio.wait_for(completed.wait(), 1)
+    finally:
+        await restarted.stop()
+
+    recovered = restarted_store.get_job(job.id)
+    assert recovered is not None
+    assert recovered.repeat.completed == 1
+    assert recovered.last_status == "ok"
+    assert recovered.claimed_at is None
+    assert recovered.next_run_at > now + timedelta(hours=2, minutes=1)
+    await restarted.start()
+    try:
+        await asyncio.sleep(0)
+    finally:
+        await restarted.stop()
+    assert delivered == ["recovered"]

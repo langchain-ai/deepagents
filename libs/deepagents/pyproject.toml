@@ -25,7 +25,7 @@ dependencies = [
     "langchain-anthropic>=1.7.12,<2.0.0",
     "langchain-google-genai>=4.4.3,<5.0.0",
     "langgraph>=1.2.24,<2.0.0",
-    "langsmith>=0.16.0",
+    "langsmith>=0.16.1",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]
@@ -58,7 +58,7 @@ test = [
   "ruff>=0.15.22,<0.16.0",
   "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
-  "langchain-tests>=1.1.9",
+  "langchain-tests>=1.2.0",
   "langchain-openai>=1.8.5,<2.0.0",
   # The `aws` extra, so payload tests can drive real langchain-aws chat models.
   "langchain-aws>=1.10.0,<2.0.0",

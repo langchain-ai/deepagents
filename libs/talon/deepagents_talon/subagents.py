@@ -22,7 +22,7 @@ from langgraph.types import Command  # tool schemas resolve return annotations
 from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_talon.background import _IN_SUBAGENT, _result_text
 from deepagents_talon.hooks import ACTIVE_HOOKS
-from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.mcp_middleware import mcp_tool_search, talon_mcp_middleware
 from deepagents_talon.model_selection import _summary_trim_limit
 from deepagents_talon.result_paging import ToolResultPaging
 from deepagents_talon.subagent_control import SubagentControlMiddleware
@@ -272,6 +272,7 @@ def _compile_fresh(
         key: value for key, value in (interrupt_on or {}).items() if value and key in available
     }
     middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        mcp_tool_search(available.values()),
         talon_mcp_middleware(),
         SubagentControlMiddleware(),
     ]

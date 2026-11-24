@@ -88,7 +88,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
-from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY
+from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY, mcp_tool_search
 from deepagents_talon.memory import TalonMemoryMiddleware
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
@@ -528,6 +528,7 @@ class DeepAgentRuntime:
                 self.backend,
             ),
             ModelSelectionMiddleware(),
+            mcp_tool_search(tools),
             AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
             ProgressMessages(),
         ]

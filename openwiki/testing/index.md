@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, hermetic validation routes for dcode configuration, MCP and JavaScript cost behavior; SDK messages and subagents; ACP; Talon; QuickJS; and Harbor adapters. It distinguishes network-restricted unit checks from credentialed evaluation workflows.
+- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for dcode configuration and local context, Talon subagents and MCP/OAuth, release-note automation, and the Harbor LangGraph adapter. Use package-owned Make targets and assert observable behavior while treating warnings as failures.

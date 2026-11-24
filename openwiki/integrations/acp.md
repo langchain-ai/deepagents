@@ -24,10 +24,10 @@ sources:
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
   - id: openwiki-source-e0e6f6b6ce0dbf7a671d682f
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-21T08:04:00.255Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
+    at: 2026-11-24T08:04:12.461Z
 ---
 
 # Agent Client Protocol Integration
@@ -36,7 +36,7 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
 
 ## Compatibility and embedding boundary
 
-`deepagents-acp` 0.1.0 is an alpha package for Python `>=3.11,<4.0`; it depends on `deepagents`, `agent-client-protocol>=1.0.0,<2.0.0`, and `python-dotenv>=1.2.2`. The `deepagents-code` 0.2.13 release line pins `deepagents==0.7.41`, requires Python `>=3.14,<3.15`, and accepts `deepagents-acp>=0.0.13,<1.0.0`. Consequently, a dcode ACP deployment follows dcode's narrower Python range and its selected Deep Agents release, while the installed ACP adapter must fall within dcode's adapter range.
+`deepagents-acp` 0.1.0 is an alpha package for Python `>=3.11,<4.0`; it depends on `deepagents`, `agent-client-protocol>=1.0.0,<2.0.0`, and `python-dotenv>=1.2.2`. The `deepagents-code` 0.2.14 release line pins `deepagents==0.7.41`, requires Python `>=3.14,<3.15`, and accepts `deepagents-acp>=0.1.0,<1.0.0`. Consequently, a dcode ACP deployment follows dcode's narrower Python range and its selected Deep Agents release, while the installed ACP adapter must fall within dcode's adapter range.
 
 The server is served by `acp.run_agent` over dcode's stdin/stdout. Generic embedding accepts either a compiled graph or a factory accepting `AgentSessionContext(cwd, mode, model)`. Mode and model selectors are only meaningful with a factory and are rejected with a directly supplied compiled graph. The adapter dynamically resolves ACP's removed `SessionConfigOption` wrapper, so it can build config options under both ACP SDK 0.8.x and 0.9+ APIs; the package dependency itself now targets ACP 1.x.
 

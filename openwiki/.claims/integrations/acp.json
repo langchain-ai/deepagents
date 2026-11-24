@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:dffc5b0105a1c8dd9bdfeb65fa4497191292c0effa37d7118819b2fad8b2a181",
+  "pageVersion": "sha256:f4350aac0f37b30fe6e652161b0eaacdc4a5540fa7c912d76bac8f3100bc2e1a",
   "claims": [
     {
       "id": "claim_c99866f7307a4171a2332376a9dd8ed4",
-      "statement": "deepagents-code 0.2.13 pins deepagents to 0.7.41, requires Python 3.14 (below 3.15), and depends on deepagents-acp version 0.0.13 or later below 1.0.0, so dcode ACP deployments follow dcode's stricter Python requirement and selected SDK release rather than deepagents-acp's standalone Python 3.11 floor.",
+      "statement": "deepagents-code 0.2.14 pins deepagents to 0.7.41, requires Python 3.14 (below 3.15), and depends on deepagents-acp version 0.1.0 or later below 1.0.0, so dcode ACP deployments follow dcode's stricter Python requirement and selected SDK release rather than deepagents-acp's standalone Python 3.11 floor.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml",
@@ -12,7 +12,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:30ea0bbc420511c28c99c4b548fc0b41830fa9750ec2444b8a512e889ee94237"
+          "version": "repo-file-v1:sha256:3e2ea88dce400aa97d6804b8d49dbbcbb7d009a8e3e372136c568b4b34c7affe"
         }
       ]
     },
@@ -193,6 +193,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-21T08:04:00.255Z"
+    "at": "2026-11-24T08:04:12.461Z"
   }
 }

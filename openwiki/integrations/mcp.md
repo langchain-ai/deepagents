@@ -3,12 +3,13 @@ type: integration
 title: MCP Integration
 description: Configure, trust, load, authenticate, and operate MCP servers in dcode and Talon. Covers configuration provenance, remote and stdio safety, OAuth credential lifecycle, call deadlines, and reload behavior.
 tags: [mcp, dcode, talon, oauth, configuration, security]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-21T08:04:00.255Z
 sources:
+  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
+    resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
+  - id: openwiki-source-8896ee5af2462c92e51bfb6e
+    resource: repo://libs/code/deepagents_code/local_context.py
   - id: openwiki-source-a97cce048cd7efd394ae7dca
     resource: repo://libs/code/deepagents_code/mcp_auth.py
   - id: openwiki-source-216ca680d81dc35eb4d3e76e
@@ -25,12 +26,17 @@ sources:
     resource: repo://libs/talon/deepagents_talon/mcp_config.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-24T08:04:12.461Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 ---
 
 # MCP Integration
 
 MCP configuration is security-sensitive: it can launch a local program, make remote requests, and attach credentials. dcode and Talon both turn configured servers into LangChain tools, but their configuration ownership and interaction models differ. dcode layers user, project, plugin, and explicit configuration behind project-trust controls; Talon loads one operator-selected configuration and offers narrow management tools for it.
+
+Treat configuration, server names and errors, and every MCP tool response as untrusted integration input. Trust gates decide which definitions are activated, and redaction or prompt sanitization limits particular disclosure or injection paths; neither makes a server response trustworthy or confines a process that can execute commands or read a secret.
 
 > Discovery, provenance, project trust, environment interpolation, redaction, workspace placement, and sandbox choice are **not OS-level authorization boundaries**. They decide what the application will load or reveal; they do not prevent a process that can read a secret or execute a command from using it. Use OS-level isolation, a separate identity, a keyring, or a sandbox whose process cannot read the secret when that protection is required.
 
@@ -70,13 +76,15 @@ Both runtimes enforce a construction-time invariant: an `ok` row has no error; e
 
 `awaiting_reconnect` is a dcode UI status used after successful OAuth login while the LangGraph server has not reloaded tools. Separately, `pending_reconnect` is a Boolean flag valid **only** on a `disabled` entry: it preserves reconnect guidance when a TUI toggle has re-enabled a server but a reconnect is still required. Do not attach tools or clear the explanatory error before a new load creates an `ok` entry.
 
+When dcode includes status in local model context, an unapproved project's entry is omitted entirely. Error text is treated as untrusted: hidden or control characters are flattened, whitespace and length are bounded, and the result is isolated in an `<error>` delimiter. This is a prompt-injection and log-forging mitigation for displayed diagnostics, not a reason to trust MCP output or grant a definition access.
+
 Remote activation prefers a static `Authorization` header over OAuth. Otherwise explicit OAuth configuration or a stored token is used. An explicitly OAuth-configured server with no stored token becomes `unauthenticated` without attempting a connection. Routine loading is non-interactive; OAuth challenges and unusable refresh credentials likewise produce an actionable unauthenticated outcome.
 
 Exported dcode names are deterministic and provider-safe, while metadata retains the original tool identity. A definition may use exactly one `allowedTools` or `disabledTools` filter. Literal and glob entries match original or exported names; unmatched entries warn but do not block startup.
 
 ## dcode invocation and lifetime boundaries
 
-Production agent stacks install `mcp_tool_middleware()` for MCP calls. It omits empty strings only for optional string-like arguments, preserving required and explicitly non-string values. It applies the bounded `mcp.tool_timeout` wall-clock budget. On timeout it cancels the local await and returns an error `ToolMessage` warning that server-side work may continue, so retry can duplicate work. The wrapper remains inside server hooks, allowing timeout failure policy to observe the failure; `ToolException` is left intact so tool-local actionable errors are not hidden.
+Production agent stacks install `mcp_tool_middleware()` for MCP calls. It omits empty strings only for optional string-like arguments, preserving required and explicitly non-string values. It applies the bounded `mcp.tool_timeout` wall-clock budget. This setting accepts finite floating-point seconds from 1 through 900; an invalid higher-precedence value is ignored and resolution falls through to the next configuration source. On timeout it cancels the local await and returns an error `ToolMessage` warning that server-side work may continue, so retry can duplicate work. The wrapper remains inside server hooks, allowing timeout failure policy to observe the failure; `ToolException` is left intact so tool-local actionable errors are not hidden.
 
 `MCPSessionManager` retains FastMCP router and backend resources across reloads so in-flight tools retain their resources, then uses bounded best-effort cleanup. A genuinely stateless load closes discovery resources and reconnects the owning server per tool call; an externally supplied manager wins over that conversion. The LangGraph server preloads metadata for the TUI, then uses stateless discovery with a process-wide, event-loop-bound manager to create backend sessions lazily on invocation.
 

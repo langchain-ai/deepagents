@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:37f330a8bd5b34d8b1f200cba4228a5fffd09d7b3988633070439fb2480eac05",
+  "pageVersion": "sha256:06fb15114707bc780f504734ead679aa48baaa641cb194536a63a551f95a8786",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -78,15 +78,15 @@
     },
     {
       "id": "claim_7f00ab756ebf4225ac9f05bfb43bb47e",
-      "statement": "dcode 0.2.13 requires Python >=3.14,<3.15 and pins deepagents==0.7.41, while the deepagents 0.7.41 manifest supports Python >=3.11,<4.0; the SDK range does not widen dcode's released Python contract.",
+      "statement": "dcode 0.2.14 requires Python >=3.14,<3.15 and pins deepagents==0.7.41, while the deepagents 0.7.41 manifest supports Python >=3.11,<4.0; the SDK range does not widen dcode's released Python contract.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L44",
-          "version": "repo-lines-v1:sha256:a8582f4273c21b4b0362b081a9be7ac9d3864da7f86f20b3ca6bb0e22ab51a31:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNDRmMDI5ZWRjOGNjZGFjYWFjYTIxZWU1NzI3ZGE4YmQ4ZTVkYWFmN2ZiY2UzMjRlMzQzOTY2ZjVkOWY5NjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQyMTBkODc0MjE0ZmZmYWJkYmM4ZGRiYTRkMTY5NTllMmY0YmM0MDNmZDY1YmFmNWQ2YzA3NTQ5MzU5M2U1M2IifQ"
+          "version": "repo-lines-v1:sha256:24e4a18259991ada3972d5b6ac2e6c051a0b6d2ff3e653a28e25b662937aa9e7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNDRmMDI5ZWRjOGNjZGFjYWFjYTIxZWU1NzI3ZGE4YmQ4ZTVkYWFmN2ZiY2UzMjRlMzQzOTY2ZjVkOWY5NjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQyMTBkODc0MjE0ZmZmYWJkYmM4ZGRiYTRkMTY5NTllMmY0YmM0MDNmZDY1YmFmNWQ2YzA3NTQ5MzU5M2U1M2IifQ"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L30",
-          "version": "repo-lines-v1:sha256:eae1948ce9f3b562145b927382607d4aa9fae42407d79d68904c7b9f6a6877fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNzk1MDgwY2Q1NjgxNTY3NTBlMTNiYzc4NzJmNjQxNWI3Nzc5ODZlN2QwMDc0Yzg0NjMzM2Y0MTc5YTZlMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0MzRkYWViMjJjOGNhNTNiZjk5ZmYyZDZkZDIwMTJjYzYwM2FkMjcwYzg5NzhjM2JiMGNjNGNhY2QyMGViYWQifQ"
+          "version": "repo-lines-v1:sha256:ce613029d1eca676edc37fb349aa3a87e67495d29e2d5afc6cdd888813ff39fb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNzk1MDgwY2Q1NjgxNTY3NTBlMTNiYzc4NzJmNjQxNWI3Nzc5ODZlN2QwMDc0Yzg0NjMzM2Y0MTc5YTZlMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0MzRkYWViMjJjOGNhNTNiZjk5ZmYyZDZkZDIwMTJjYzYwM2FkMjcwYzg5NzhjM2JiMGNjNGNhY2QyMGViYWQifQ"
         }
       ]
     },
@@ -96,7 +96,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L30",
-          "version": "repo-lines-v1:sha256:eae1948ce9f3b562145b927382607d4aa9fae42407d79d68904c7b9f6a6877fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNzk1MDgwY2Q1NjgxNTY3NTBlMTNiYzc4NzJmNjQxNWI3Nzc5ODZlN2QwMDc0Yzg0NjMzM2Y0MTc5YTZlMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0MzRkYWViMjJjOGNhNTNiZjk5ZmYyZDZkZDIwMTJjYzYwM2FkMjcwYzg5NzhjM2JiMGNjNGNhY2QyMGViYWQifQ"
+          "version": "repo-lines-v1:sha256:ce613029d1eca676edc37fb349aa3a87e67495d29e2d5afc6cdd888813ff39fb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNzk1MDgwY2Q1NjgxNTY3NTBlMTNiYzc4NzJmNjQxNWI3Nzc5ODZlN2QwMDc0Yzg0NjMzM2Y0MTc5YTZlMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0MzRkYWViMjJjOGNhNTNiZjk5ZmYyZDZkZDIwMTJjYzYwM2FkMjcwYzg5NzhjM2JiMGNjNGNhY2QyMGViYWQifQ"
         }
       ]
     },
@@ -110,7 +110,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/config_manifest.py",
-          "version": "repo-file-v1:sha256:5ae263ca4b875774e54d576435ef87950b468af964dbabdf0ce7c11a9dd6979f"
+          "version": "repo-file-v1:sha256:052c68288839f6e69419dc90c0103e88d608672d233e20db22868f35c30c87aa"
         }
       ]
     },
@@ -253,10 +253,96 @@
           "version": "repo-lines-v1:sha256:b4befa39916a5986a9cd66840ac7ece91725e70cc9668f90180c1f7c13490369:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjMjBjYzdlZjNlNTc4ZWVhM2EwY2YzY2JkOTJjNmQ0NzQxODU2N2M1ZWRjNWUzNTQ5ZDdhOTk2NzRjNzExMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOGU4MDVkN2EzMDQwMDJmYmU5NzY4YzAxYzBlMjc4MWJkMTIyZTdkMjFmODNhMDA0ODE5MjU2MjFmY2FmZjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzMWM1YjVkNGQ1Yzk1NTUyYmNmMjQyNTFjOTM3YjZjYzZhNTcwYWZjZGYxZGZkYTdiNjQ3Nzc3YjI3OTBiYTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzNWRhNGI3NmVjOGY1ZDUxYTIxYTdmNmM0NzhhYzc4NTA5MzI4NGU0N2QzZWY2NjEzN2UzODI4MzAwNTExNGUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_10a5416a337c4c57b5ba8fbb067cc363",
+      "statement": "dcode's manifest is the canonical definition of user-tunable scalar configuration: it declares typed defaults, environment and TOML locations, CLI metadata, redaction, and merge behavior, while structured configuration remains in dedicated loaders.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L1-L31",
+          "version": "repo-lines-v1:sha256:f7750d5a50ebea3c3c8e898b0a9f20cf6ee5222d9b401cf3fe6fc399095a4bce:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwODhjNTFmMGQ0MDU5YmY3MTZiMmFkZDBjYmFlNDNiZmNjOTA1ODQyMjNhMWM3ZGMzYWRkM2QyODVmNDUxMDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NDIzMjYyYmFlYzVhZWU1MTBiZWUzMmQ0MzQwYmI4MWZkYjVmNzk1ZGY1MTU2MTg4ZmU2MmUxNjNkZTNkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L488-L593",
+          "version": "repo-lines-v1:sha256:b1a2db32dd52efbc2b9f52b0c236ef366c92c753562adae3cab61b56676b4ac1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNjlhMTM5NzVjMjU2ZWM4MzIwZTIwMTYwODNjOTZkZjYzN2NhM2QzNWJlYmRlMjMxNGJlZTNhNDcxMWI1NmNhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyMTM3OGZiNzIwNmYzZTUxNzIwNjYxNzY4MTNhYjY5MzJkMjg1YzE0OTdhOWRkMjEyNDVkNDVhNzQxMjgzODIxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlYThjOTkzNTlkNDM2MGU5OTdjYjA0NDM3ZTU3NGI1NWE2MjE2YzcwMTBhMTEwMWI5ZjJiYjU3NjIzMmRlNWMyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiNmZmZmExMmEwNDhhZmUwY2IzMTE2MjNjOTMxZTQyYmU1M2YzNTI5NjE2NDY3MmU4ODJmZGZiNTkxMzkxODc3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_7612f75c38154a3dab4d61c6a606e7a6",
+      "statement": "The dcode resolver orders standard sources as managed policy, CLI, reload retention, environment, user config.toml, and manifest default; it returns typed values with provenance, tier health, masking, and diagnostics from one locked provider generation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L133-L255",
+          "version": "repo-lines-v1:sha256:ffc19f32a19e129397cc114d10df29db990b93c9661bc140e9e4166285765834:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3NGQwN2EwMzcxMmExNTdkZjVkZDM4M2JhN2ViNWMzYWRjNzdiYTNhODllZjNiZTQyNjQ3M2UxNjYyZmI3ZGQxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5YTE4YWJjMTBhNDkzYjc3MjQ3MjhlZTc4M2NlYzhlMzQ1YzJjYTU3M2E0ZjJlNzQ3Yzk4ZTg1Y2IwYzE4YTYxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkZjUwZTA0MDRmOTkyMWVjNTliMGE3MzMxYmY4MzEyNjhhOWU0OTgwMGViYmVhMjgxZmMxOGFlMjU1MTJmMWI4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0NzM2ZGJmNGEyOTlmMTc4ZjA1ZDg5MTU5MDc5NjRlMzc4YTMyYzllYmEyODBiOWRiZGZjOWYyZTUyZTQ5NTM5In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L32-L48",
+          "version": "repo-lines-v1:sha256:fbe0a4008adf5b430f6db49a2f9ad20dae78ac8bcdbbd30bdfd3090bec33562e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExOTVhNTc1NDVlMWVjYThmYWEwNDdjNzcxMzdjZjgyY2FlOWNmNjU0MDQ2MDI0NDBhMDFkODZiYWJlOTk2NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmNzViMmYxNmU1M2Q1ZWY0ZGY2ZGJjNTU4NzFlZTUwNTRjOTY3NWNjNzhkNDk4YzRkMjczODljODlkMTE5MzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyNzYxMjhjZmY1YTNlZjMwMWMwMzMxZmZkNDE3NmJkMzk4MjM0ZDBlZTdhOTExZWJhN2Y2NTc1NGI3MDk0MDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOGI5Y2MwZmJmZGU2Y2ZlMGRiNjFlMTBjOGFmYTkzNzg4NDkxZTY5ZWViZGRhMjJkNWZjOWUzODkxODNlMzYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L514-L617",
+          "version": "repo-lines-v1:sha256:dc8213273330ebbdf205de43e5cdd539b739f8c2931641eabb7bf0e6d164b2ed:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMTE5ZjdhYjVlZjg3YTRhMGQ3ZmQwNjZmOTFiOGZiMGRhOWNkMGJmNzg0MzE0OTU0MzE5NjJlMWJhNmQ5YzQ5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyOWE1OGQxYjRjZjRjMWJkNDE0NjQzYTU2MWQ5ZTBhYTUzOGQ4YWNmYTVmNTQxYjUzZGIyOWQ0ZmEyZGZlNTFiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjOTM2OWJhZTI5M2MzYjBmNmFmMzgxOGMyZDM4ZDE2MDc3OTUyZjdiNmFkNDA0YWQ0NWQxZTM1OTc0NWJiNWM5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmYzhmMDQyODk1ZDRlODQ5YWZmYjQwMzNkNGY5NmIwZjAyYWNiYzU1ZWVhNDMxMDFkOWZkOTZiYjhjN2E0M2FhIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L63-L126",
+          "version": "repo-lines-v1:sha256:d30c24c0beb5ca5d695e3deefec6ff4f4530be15ab2e61dde754239575ca5ba9:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlM2ZiMWU1OGZiYzkwNDc5NGQ1MDczMTRmYTkxYzlmMmYxOThjODhkM2ZmMzk1ZTAwODI4OTAxYzM3ZGM5MWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkZWRlZmIzYTc5NTRmOTc2NjZlNDQ4ZGYzMDNjZGQzMzdjNDAwNTdlNmY1ZWI1MTVjNDYxY2YyZTRjNjgyYTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjNWFkYTE2Y2FkZmYwYTYyNTg4MjVmMDBjN2MwMjc0YmU1MjM0ZmY4YWJhYWNjM2Y2MTczOWRhODNjMTgxODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcxYWU1MzMxYjFlNjBhNzE2MjA4YjBhOGZiMWUxNWQ0YjA3MWNiY2YyMWE2NmExY2RjNTJmMzFmNmQzNTU2ODAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2d7cb9afed534d87b6768cb9d911ffd0",
+      "statement": "For scalar replacement options, invalid values fall through to lower-precedence sources and ultimately the typed default; the manifest owns bounded timeout and recursion options so invalid or out-of-range values cannot remove their finite safeguards.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L107-L114",
+          "version": "repo-lines-v1:sha256:efb87af349a4d40060954d096e78de90b74cd964ec93fe5500b08c54be095548:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmZmOWJjMzY5NTY5NDdlZDJjNzZkYTljYjAwOTZiNjUwYmJlZDAwY2I5ZDA0OGJhZDMzOTAwYjA3OGJmNTllOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWJlMzE0MGI3YmFlMWE0ZjgyZGI2Y2U3ZmJjNzg4MmQzNGRhNzYyMzAwNzRjZTVmYjFjNWIwMDkwZjY2M2UzYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjg4MThmZGU0OWU3YjA4NmZkNzMyMWUzOTdiMDM3MGE2ZjViMTEwODZlYzFhYTcyYzExZDAwYmRlN2YxYjNhNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmYyM2QwYzg1ZWQxOWM4NzYxYzgzYjZmN2VlODU3ZDZlMGM0YmUzNTlhMDM3YjYxY2VlZWE1MDkzYjE3MzM1MSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L13-L18",
+          "version": "repo-lines-v1:sha256:6ac04423b7fbbb66fd25ee17af44de98966bfcc40bb4db6df4973ad52320e7a8:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2YzMWQ4ZWY2NzUzODYyMmFkZjYyNzVmZmJjNzRlNWUzZjZhNGM4NmFjMmQ1NTdkMDZhODBhYTAwNzJiMmM4YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGI2MjMxZmI4NmI4YzU3YmUwY2E4YmVmYzI2YzY0YmQ5NGUwNjlmODBhZDliMjYxZTA5YTJkZWFlNjBmNmZjMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDFlZTJkMDAyMzI0NGFhYzZlZWYxYmI5YTAzMTYxZTdjNTFhZGVkMzg5ZGM1MDU4MDFlODA3NDNiYTRjZDA3NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTFjNDMzZWNkYjM0NWRkMjhkNzc3NDExOTU0MDA1MDA0MTM0NzllZWE5M2NjMWU2NTAxYWYzYzFkNTUwNjYxZiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L82-L129",
+          "version": "repo-lines-v1:sha256:ef993f56e724854d2fba2f084ce8f46252cb3c8c6c753159b40fe991e4ceaf11:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzZDcxMGRjOTUxNTZhNmYxMTI0NDcyNjNiYWI3N2ZjM2ZhMzc2N2Q2ZGRiMWY3MGU5NTRmNGI4ZmNiYTUyOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNiYzc2ZmQ4MWFhZjQwMmNmNDA1N2JiYjI3YWY2Zjg5ZWQ1MWUyMDU3MTc3OTlmMDQ4ZjhiZjNjZGY3N2IxNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmMGJkMTRmNWE2NWE1Zjk1MjU4NTEzYTZkNTcyNmVlNGYyMzM3NDZmY2M4NTg1ZjEwYzJiOTBjMTU0ODRhNTYifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_config_manifest.py#L52-L158",
+          "version": "repo-lines-v1:sha256:7d9d2d35ddd17e9a3ec1a56f1e3c16494cefe5575418eb3eb26ded442ddf4b2a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmMDZhMTA4OGViMDgwNWI4NTRhYmNkOWEwMDg3Yzg1YzlkZDVkNzdiYzliNzk0ODE3ZDc1YjYzYmFjNTgyYjIzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkNjVhMTNkOGNmMWYyOWU0ZDIzMGY3MDBmMjQ0NDY4MThiMzVlZDg5YzkxZDQ5NTA4Y2Y4OTY5YzNhYTUzNDAxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyOTE3ZjY0Y2E3NGE1ZDA1NGIzODMzMWUyODhkNWQ2NzIwMjRlZjIzYmNhOGE3MmExNTRlZjA4NWM4ODRhODgyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyOGRjOGZjZDU3ZGM2NDRlMjc5Njg2NDY2YmVlMTYzOTUzZWRjYzg5YmQ3OTRlYzJlZTFiMWUzOTJmZmYzZDc5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_396904aa619a43c58c1b27f5f7481222",
+      "statement": "The resolver preserves managed-policy safety during refresh by refusing unusable replacement providers and retaining the previously served usable snapshot when a managed refresh fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L273-L326",
+          "version": "repo-lines-v1:sha256:b691e9c886d6bf95dc0f925dabad3209ca6b92aa4d31519432a1f6ec0d61341a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2NGIzM2UyY2Q3ODIyMTEzZjgzNzc1MTg4MGNjMGZjMzI4NzJkMWRhYmFhZGY5NjFjZjYzZWM0M2Q3MTRmMDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzMjM0MzAzYTAzNDcyZjFjNWYwNzdlZjE1NGVkYjRhNzk3MDEyMWY1YzBkYTU1NTEyMDA1NzRjZDAxZmVmYWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhM2Y4ODI0OGQ4Nzc2ZTU5MDE1YjlhZDA2Y2Q0ZGE2Y2U5ZjZmNWUyNWIzMzRiNGE0YWVmNWFhYTUyMmRmMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliODcyZmJkYjU1YmNiYzIzNjdmM2Y2OTc0NGNkMWVmMDk2YmYyNmQzYTQwMDJlZGIxYTkxYjk5NzBhMjYwYmUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L620-L681",
+          "version": "repo-lines-v1:sha256:ca7d81184b58d2392f797f21494b26a65adcae6c9431cee3ae5098c7398957c6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0ZmY1YmE3N2NiZWM0OTIyMzc4YWE5NzA1NGQ2MWQ5NTBkZTI5MDU4MzkzMWYxNmFiYTY5NjVlN2YxZjA4Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmZTM1YzM2YTAzNjM0NjQyN2M5OWNmYjA0NWNhNzcyZDZkZWE2OGJmMTMxMWI5NWFmZDNlMjJkM2NhNzU4ZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjOWUwNTAyMzFhYWY4NzMwYTBiNTQyNWM3ZGIyZTcyMmI5YWI2MTIwYTUwMjY0YTI1YzE2OWIyMjRhYjNlMzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBhM2QyZWZkYzBkYTM4ZjY3ODcwNzZiM2UyY2U3NDA3YzliNDFhYWU2NTgzMTRkMDhlNGE2OGI2MmRjZjE4MWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_52a2cf40e0f345dcb66a9dc972a8acbf",
+      "statement": "Accumulating structured configuration uses union or deep merge across valid tiers and records provenance; if a contributing value cannot safely be accumulated, resolution uses the strongest valid replacement rather than allowing a weaker source to override policy.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L732-L810",
+          "version": "repo-lines-v1:sha256:2bf8c3303bc5154a9ab47ec5b9e2b08cf8cf3cc349fc8318adc8495dcb9a2769:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhOTc4ZGFkZTA4OGI2MWYzMjkwYjM0NjY3ZWMzNTNmNjMxMjY5YTEzZDg4OWMzZmI5YWIwYTk2MWZhNzBmYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyNTQ3NTdiNGFhYTNlNDlhMjQ5ODU0NDAxZTlkNTU2NGZkMmEzNDExZjJjYTliNTI3NmU5MGI3Y2U1NDIyMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM1MmM5NjIwZjY4YmVjNTZhM2I5MmNkODM4NDA1MDM2ZDM5NzZhYTcyMjBmYzQ3YWZkMGFhYjIwMmZmMDE4ODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/resolver.py#L840-L923",
+          "version": "repo-lines-v1:sha256:5d3ec59345b7dc58cc7c2f4392c1daa1fb094a51c4367888491b3c1a55a21510:eyJzZWxlY3RlZExpbmVDb3VudCI6ODQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwNDgzNWQ2ZWJlODE5NTEzZWUwMDNmMDRlOTAzMmFiMjlkYzFlYTVmNWFmZjUxZDk0OTA5M2EzM2VkZjc2ZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYmU0YWE3MGZkOWRiYmMzMTVmYzJmZjVlNmQzZDBhM2QyMGZiYmVkYmIwMDc0NDNhZTc0OTMxYmExYjQ2YTYifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-21T08:04:00.255Z"
+    "at": "2026-11-24T08:04:12.461Z"
   }
 }

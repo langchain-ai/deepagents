@@ -51,12 +51,16 @@ Guidelines:
 - Be concise in your responses.
 - Show file paths clearly when working with files."""
 
-_BARE_SYSTEM_PROMPTS: dict[str, str] = {"accounts/fireworks/models/kimi-k3p1-pro": _PI_STYLE_PROMPT}
+_BARE_SYSTEM_PROMPTS: dict[str, str] = {}
 """Eval-only system prompts for the bare graph, keyed by the chat model's `model` name.
 
-Kimi K3.1 Pro gets the same Pi-style prompt the Nov 13 GLM 5.3 run used, so the
-full Kimi run matches that setup. Models without an entry get no system prompt.
+Empty so every model runs on the SDK default, matching the Opus and Sol APEX runs.
 """
+
+_MODEL_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
+    "accounts/fireworks/models/kimi-k3p1-pro": {"max_input_tokens": 1_048_576},
+}
+"""Profile fields for eval models LangChain ships no profile for (as on main, #7957)."""
 
 _MODEL_RETRY_ATTEMPTS = 3
 """Retries for a model call that fails mid-request (e.g. a dropped stream)."""
@@ -214,7 +218,11 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
         kwargs["use_responses_api"] = True
     _apply_glm_5_2_reasoning_default(name, kwargs)
     _apply_fireworks_defaults(name, kwargs)
-    return init_chat_model(name, **kwargs)
+    model = init_chat_model(name, **kwargs)
+    override = _MODEL_PROFILE_OVERRIDES.get(getattr(model, "model", ""))
+    if override:
+        model.profile = {**(model.profile or {}), **override}
+    return model
 
 
 def _skills(configurable: dict[str, object]) -> list[str] | None:

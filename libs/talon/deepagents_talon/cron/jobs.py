@@ -687,7 +687,7 @@ class CronJob:
         skills: Skill names whose full instructions load into each run.
         goal_id: Continuing goal run in its owner's chat, or `None` for an ordinary job.
         goal_sources: Owner-confirmed read boundaries for scheduled checks.
-        goal_updates: Whether the owner requested routine goal updates.
+        goal_updates: Legacy preference retained for reading older jobs.
     """
 
     id: str
@@ -912,7 +912,7 @@ class CronJobStore:
             deliver_to: Whether a thread origin's results post to its channel or thread.
             skills: Skill names to pin to each run; see `pinned_skills`.
             goal_id: Goal that owns the job, if any.
-            goal_updates: Deliver routine updates when the owner explicitly requests them.
+            goal_updates: Legacy preference, ignored by blocker-only delivery.
             continuing: Create a recurring goal owned by the sender of the originating message.
             now: Creation time override for deterministic tests.
 
@@ -1052,7 +1052,7 @@ class CronJobStore:
             prompt: Optional replacement prompt.
             schedule: Optional replacement schedule.
             goal_sources: Replace the read boundaries for scheduled goal checks.
-            goal_updates: Optional owner preference for routine goal updates.
+            goal_updates: Legacy preference, ignored by blocker-only delivery.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement for the job's last allowed run instant.
@@ -1183,6 +1183,24 @@ class CronJobStore:
             if claimed is not None or expired:
                 self._write_jobs(result)
             return claimed
+
+    def set_goal_wake(self, snapshot: CronJob, wake: datetime) -> None:
+        """Persist one future wake if the owner and scheduler still have the same goal state."""
+        with self._lock:
+            jobs = self.list_jobs()
+            if (
+                not snapshot.goal_id
+                or not snapshot.enabled
+                or snapshot.next_run_at is None
+                or wake <= _coerce_utc()
+                or (snapshot.until is not None and wake > snapshot.until)
+            ):
+                return
+            for index, job in enumerate(jobs):
+                if job == snapshot:
+                    jobs[index] = replace(job, next_run_at=wake)
+                    self._write_jobs(jobs)
+                    return
 
     def mark_job_run(
         self,

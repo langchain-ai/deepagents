@@ -81,7 +81,7 @@ class PersistentCronScheduler:
     async def tick_once(self) -> None:
         """Remove finished jobs, then run all jobs due at the current clock value once.
 
-        A goal can wait for a chat reply across ticks. Coalesce its subsequent
+        A goal check can span several ticks. Coalesce its subsequent
         wakeups while that turn is running and keep dispatching other jobs.
         """
         current = self.now()

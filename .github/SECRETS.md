@@ -49,7 +49,7 @@ The workflow sets `LANGSMITH_TRACING: "false"`, so the environment holds no trac
 
 ### `labeling`
 
-This environment is selected by `auto-label-by-package.yml`, `sync_topic_labels.yml` (classifier dry runs), and `pr_labeler.yml` (with `deployment: false`; that job reads no environment credentials today).
+This environment is selected by `auto-label-by-package.yml`, `sync_topic_labels.yml` (classifier dry runs), and `pr_labeler.yml` (with `deployment: false`; its "Apply PR labels" step reads the classifier credentials below on `pull_request_target`, which checks out only the base branch).
 
 | Secret | Purpose | Minimum permissions |
 | --- | --- | --- |

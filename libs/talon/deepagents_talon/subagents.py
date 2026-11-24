@@ -24,6 +24,7 @@ from deepagents_talon.background import _IN_SUBAGENT, _result_text
 from deepagents_talon.hooks import ACTIVE_HOOKS
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
 from deepagents_talon.model_selection import _summary_trim_limit
+from deepagents_talon.result_paging import ToolResultPaging
 from deepagents_talon.subagent_control import SubagentControlMiddleware
 
 if TYPE_CHECKING:
@@ -293,16 +294,20 @@ def _compile_fresh(
         effective_model = spec.get("model", model)
         if isinstance(effective_model, str):
             effective_model = init_chat_model(effective_model)
+        storage = backend if backend is not None else StateBackend()
         summarization = create_summarization_middleware(
             effective_model,
-            backend if backend is not None else StateBackend(),
+            storage,
             trim_tokens_to_summarize=_summary_trim_limit(effective_model),
         )
+        fresh_middleware: list[AgentMiddleware[Any, Any, Any]] = [summarization]
+        if available and not isinstance(storage, StateBackend):
+            fresh_middleware.append(ToolResultPaging(storage, has_reader="read_file" in available))
         graph = create_agent(
             model=effective_model,
             tools=spec.get("tools", []),
             system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
-            middleware=[summarization, *middleware, *hook_middleware],
+            middleware=[*fresh_middleware, *middleware, *hook_middleware],
             state_schema=FilesystemState,
             checkpointer=InMemorySaver() if hooks else False,
         )
@@ -351,7 +356,7 @@ def prepare_subagents(
         specs: Loaded local, compiled, or remote definitions.
         model: Default model for fresh agents.
         interrupt_on: Operator approval policy retained by fresh agents.
-        backend: Storage for history evicted by fresh agents' summarization.
+        backend: Storage for summarized history and oversized tool results.
 
     Returns:
         SDK definitions and a safe inventory; opaque agents have unknown tools.

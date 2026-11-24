@@ -5,9 +5,10 @@ import json
 import shlex
 from itertools import pairwise
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
-from deepagents.backends import StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -1019,3 +1020,146 @@ async def test_transcript_reads_compact_fresh_subagent_history(
         assert list((tmp_path / "artifacts").rglob("*.md"))
     finally:
         await runtime.stop()
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+async def test_task_can_page_and_hand_off_its_own_result(
+    tmp_path, monkeypatch, dynamic, background
+):
+    _write_agent(tmp_path, "[]" if dynamic else "[lookup]")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    backend.write("/large_tool_results/another-task", "private result")
+    content = "evidence\n" * 6000 + "MIDDLE\n" + "evidence\n" * 6000
+
+    @tool
+    def lookup() -> str:
+        """Look up evidence."""
+        return content
+
+    archive_id = UUID(int=1)
+    monkeypatch.setattr("deepagents_talon.result_paging.uuid4", lambda: archive_id)
+    path = f"/large_tool_results/{archive_id.hex}"
+    child = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("lookup")]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {**_call("read_file", file_path=path, offset=6000, limit=1), "id": "own"},
+                    {
+                        **_call("read_file", file_path="/large_tool_results/another-task"),
+                        "id": "other",
+                    },
+                ],
+            ),
+            AIMessage(content=path),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    launch = {"tools": ["lookup"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Find evidence", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child, tools=[lookup], backend=backend)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        answer = (
+            next(iter(runtime.background.results("chat").values()))
+            if background
+            else next(
+                m.text for m in parent._seen[-1] if isinstance(m, ToolMessage) and m.name == "task"
+            )
+        )
+        assert path in answer
+        assert path in child._seen[1][-1].text
+        assert backend.download_files([path])[0].content == content.encode()
+        assert child._tools == [
+            ["lookup"],
+            ["lookup", "read_file"],
+            ["lookup", "read_file"],
+        ]
+        assert "MIDDLE" not in str(child._seen[1])
+        replies = {m.tool_call_id: m for m in child._seen[-1] if isinstance(m, ToolMessage)}
+        assert "MIDDLE" in replies["own"].text
+        assert replies["other"].status == "error"
+        assert "private result" not in replies["other"].text
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("storage", ["fallback", "state", "routed-state", "write-error"])
+async def test_fresh_result_stays_inline_without_a_durable_archive(tmp_path, storage):
+    backend = None
+    if storage == "state":
+        backend = StateBackend()
+    elif storage == "routed-state":
+        backend = CompositeBackend(
+            default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+            routes={"/large_tool_results/": StateBackend()},
+        )
+    elif storage == "write-error":
+        (tmp_path / "large_tool_results").touch()
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    content = "x" * 85_000
+
+    @tool
+    def lookup() -> str:
+        """Retrieve research evidence."""
+        return content
+
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("lookup")]),
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [lookup]}],
+        model,
+        None,
+        backend=backend,
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    assert next(m.text for m in model._seen[-1] if isinstance(m, ToolMessage)) == content
+    assert not result.get("files")
+    assert model._tools[-1] == ["lookup"]
+
+
+@pytest.mark.parametrize(
+    ("name", "size"), [("lookup", 79_999), ("lookup", 80_000), ("read_file", 100_000)]
+)
+async def test_fresh_subagent_retains_small_and_excluded_results(tmp_path, name, size) -> None:
+    content = "x" * size
+    lookup = StructuredTool.from_function(lambda: content, name=name, description="Read evidence")
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call(name)]),
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [lookup]}],
+        model,
+        None,
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    message = next(item for item in model._seen[-1] if isinstance(item, ToolMessage))
+    assert message.content == content
+    assert not result.get("files")
+    assert all(names == [name] for names in model._tools)

@@ -53,13 +53,13 @@ class ReadScope:
 
     @classmethod
     def from_sources(cls, sources: Iterable[str], *, job_id: str | None = None) -> ReadScope:
-        """Derive the enforceable scope from charter source entries.
+        """Derive the job's read scope from its source entries.
 
         `tool:<name>` names a tool and `path:<absolute dir>` names a directory.
-        Other entries guide the model but grant no tool access.
+        Other entries grant no tool access.
 
         Args:
-            sources: Confirmed charter sources.
+            sources: Read sources confirmed by the owner.
             job_id: The job whose progress this turn may update.
 
         Returns:
@@ -150,8 +150,6 @@ class JobToolsUnavailableError(RuntimeError):
 class JobScopeMiddleware(AgentMiddleware):
     """Restrict tools during job runs; a no-op for every other turn."""
 
-    name = "TalonGoalScope"
-
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -194,7 +192,7 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
     ]
     missing = scope.tools.difference(tool.name for tool in allowed)
     if missing:
-        msg = f"Goal check blocked by unavailable read tools: {', '.join(sorted(missing))}"
+        msg = f"Objective check blocked by unavailable read tools: {', '.join(sorted(missing))}"
         raise JobToolsUnavailableError(msg)
     return request.override(tools=[*allowed])
 

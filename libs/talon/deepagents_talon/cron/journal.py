@@ -5,10 +5,11 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -39,6 +40,21 @@ class ObjectiveReport(BaseModel):
 
     blocker_key: str = Field(default="", max_length=200)
 
+    next_wake_at: datetime | None = None
+
+    @field_validator("next_wake_at", mode="before")
+    @classmethod
+    def _parse_wake(cls, value: object) -> datetime | None:
+        """Preserve findings even if the proposed wake is unusable."""
+        if isinstance(value, str):
+            try:
+                wake = datetime.fromisoformat(value)
+                if wake.tzinfo is not None:
+                    return wake.astimezone(UTC)
+            except ValueError, OverflowError:
+                pass
+        return None
+
     @classmethod
     def from_reply(cls, text: str) -> ObjectiveReport:
         """Keep an unstructured result as an unverified note for later inspection."""
@@ -59,9 +75,7 @@ class JobJournal:
     def __init__(self, directory: Path) -> None:
         """Open the assistant's local journal, creating it on first use."""
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Keep existing history and blocker acknowledgments when upgrading.
-        previous = directory / "goal-history.sqlite3"
-        self.path = previous if previous.exists() else directory / "job-history.sqlite3"
+        self.path = directory / "job-history.sqlite3"
         self.path.touch(mode=0o600, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
@@ -69,12 +83,10 @@ class JobJournal:
                 "run TEXT PRIMARY KEY, job TEXT NOT NULL, name TEXT NOT NULL, "
                 "channel TEXT NOT NULL, "
                 "chat TEXT NOT NULL, owner TEXT NOT NULL, started TEXT DEFAULT CURRENT_TIMESTAMP, "
-                "status TEXT NOT NULL, summary TEXT NOT NULL, decisions TEXT NOT NULL DEFAULT '', "
+                "status TEXT NOT NULL, summary TEXT NOT NULL, "
                 "work TEXT NOT NULL DEFAULT '', read_tools TEXT NOT NULL DEFAULT '')"
             )
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS goal_checks ON checks(channel, chat, owner, job)"
-            )
+            db.execute("CREATE INDEX IF NOT EXISTS job_checks ON checks(channel, chat, owner, job)")
 
             db.execute(
                 "CREATE TABLE IF NOT EXISTS blockers (job TEXT PRIMARY KEY, "
@@ -164,7 +176,7 @@ class JobJournal:
         with closing(sqlite3.connect(self.path)) as db:
             db.row_factory = sqlite3.Row
             rows = db.execute(
-                "SELECT job, name, started, status, summary, decisions, work, read_tools "
+                "SELECT job, name, started, status, summary, work, read_tools "
                 "FROM checks WHERE channel=? "
                 "AND chat=? AND owner=? AND (? IS NULL OR job=?) ORDER BY rowid DESC "
                 "LIMIT ? OFFSET ?",

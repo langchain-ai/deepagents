@@ -386,7 +386,6 @@ async def _agent_runtime(
         assistant_dir=config.manifest_dir,
         load_subagents=load_async_subagents,
         cron_store=cron_store,
-        goal_dir=config.goal_dir if cron_store is not None else None,
         checkpointer=checkpointer,
         middleware=(talon_mcp_middleware(),),
         env=env,

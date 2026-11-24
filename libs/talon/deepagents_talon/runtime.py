@@ -336,7 +336,6 @@ class DeepAgentRuntime:
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
             are scoped to the current request origin and exposed to the agent.
-        goal_dir: Directory of a previous goal ledger to import into the cron store.
         backend: Filesystem/execution backend. Defaults to local shell execution.
         skills: Optional explicit skill source paths. When omitted, sources are
             loaded from `assistant_dir/skills` and skill directory environment vars.
@@ -374,7 +373,6 @@ class DeepAgentRuntime:
         | None = None,
         assistant_dir: Path | None = None,
         cron_store: CronJobStore | None = None,
-        goal_dir: Path | None = None,
         backend: BackendProtocol | None = None,
         skills: Sequence[str] | None = None,
         middleware: Sequence[AgentMiddleware[Any, Any, Any]] = (),
@@ -412,7 +410,6 @@ class DeepAgentRuntime:
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
-        self._legacy_goal_dir = goal_dir
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
         self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
@@ -465,11 +462,6 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        if self.cron_store is not None and self._legacy_goal_dir is not None:
-            try:
-                await asyncio.to_thread(self.cron_store.import_goal_ledger, self._legacy_goal_dir)
-            except OSError, ValueError:
-                logger.exception("Could not import legacy goals at startup")
         self._resolved_subagents = self._resolve_subagents()
         snapshot = self.approval_store.ensure()
         self._graph = self._create_graph(approvals=snapshot)
@@ -1412,11 +1404,12 @@ class DeepAgentRuntime:
         if self.cron_store is not None:
             parts.append(
                 "Use create_job for scheduled work. A routine repeats the specified procedure. "
-                "An objective pursues a goal, choosing the next action from its job journal. "
+                "An objective chooses its next action and wake time after each run. "
                 "Use list_jobs to show all jobs with mode, latest result and next run. "
                 "Use get_job_history for evidence and progress. Save changes to standing "
                 "instructions with edit_job. To run an existing job now, set run_now on edit_job. "
-                "Keep the requested cadence. Handle unscheduled one-off requests directly."
+                "Omit the schedule for objectives unless the owner specifies a start time. "
+                "Handle one-off requests directly."
             )
         if self.sandbox_working_dir is not None:
             parts.append(_SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir))

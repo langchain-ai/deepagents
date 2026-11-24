@@ -48,10 +48,12 @@ Check the returned `upcoming` run times and fix the schedule if they disagree wi
 
 _CREATE_DESCRIPTION = f"""Schedule a self-contained prompt to run later in this conversation.
 Use routine for a procedure or objective when Talon should choose the next action.
+Routines require a schedule. For objectives, omit it to start now or specify the first check.
 Objective blocker notices always return to their original thread.
 {_JOB_HELP}"""
 
 _EDIT_DESCRIPTION = f"""Edit a job in this conversation by ID from create_job or list_jobs.
+Set schedule to replace the routine schedule or the next objective check.
 Supply only changes. Set enabled to false to pause or true to resume.
 Clear until with an empty string and unpin all skills with an empty list.
 Use read_sources to replace read grants with tool:<read-only name> or path:<absolute directory>.
@@ -76,7 +78,7 @@ class CronTools:
         self,
         *,
         prompt: str,
-        schedule: str,
+        schedule: str | None = None,
         name: str = "",
         repeat_times: int | None = None,
         until: str | None = None,
@@ -89,7 +91,7 @@ class CronTools:
         Args:
             mode: Run a procedure or pursue an objective.
             prompt: Prompt to run when the job fires.
-            schedule: Schedule text, in any form `SCHEDULE_HELP` lists.
+            schedule: Routine schedule or optional first check for an objective.
             name: Optional human-readable label.
             repeat_times: Optional cap for recurring schedules.
             until: Optional end time, in the form `UNTIL_HELP` describes.
@@ -101,7 +103,7 @@ class CronTools:
         """
         job = self.store.create_job(
             prompt=prompt,
-            schedule=CronSchedule.parse(schedule),
+            schedule=CronSchedule.parse(schedule) if schedule is not None else None,
             origin=self.origin(),
             name=name,
             repeat_times=repeat_times,
@@ -230,7 +232,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
     @tool(description=_CREATE_DESCRIPTION)
     def create_job(  # noqa: PLR0913  # agent tool exposes optional job fields
         prompt: str,
-        schedule: str,
+        schedule: str | None = None,
         name: str = "",
         repeat_times: int | None = None,
         until: str | None = None,
@@ -333,7 +335,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "id": data["id"],
         "name": data["name"],
         "prompt": data["prompt"],
-        "schedule": data["schedule"],
+        "schedule": data["schedule"] if job.mode == "routine" else None,
         "repeat": data["repeat"],
         "enabled": data["enabled"],
         "next_run_at": data["next_run_at"],

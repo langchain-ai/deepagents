@@ -178,7 +178,6 @@ class CronJobDict(TypedDict):
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
-    goal_id: NotRequired[str | None]
     mode: NotRequired[JobMode]
     run_requested: NotRequired[bool]
     read_sources: NotRequired[list[str]]
@@ -689,7 +688,6 @@ class CronJob:
         skills: Skill names whose full instructions load into each run.
         mode: Repeat a procedure or pursue an objective.
         run_requested: Run once at the next tick, preserving the recurring schedule.
-        legacy_goal_id: Previous ledger identifier retained until its charter is imported.
         read_sources: Owner-confirmed read boundaries for scheduled checks.
     """
 
@@ -712,7 +710,6 @@ class CronJob:
     skills: tuple[str, ...] = ()
     mode: JobMode = field(default="routine", kw_only=True)
     run_requested: bool = field(default=False, kw_only=True)
-    legacy_goal_id: str | None = field(default=None, kw_only=True)
     read_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
 
     def upcoming(self, count: int = 3) -> list[datetime]:
@@ -736,7 +733,7 @@ class CronJob:
             if self.until is not None and current > self.until:
                 break
             runs.append(current)
-            if self.schedule.kind == "one_shot":
+            if self.mode == "objective" or self.schedule.kind == "one_shot":
                 break
             current = self.schedule.next_after(current, previous=current)
         return runs
@@ -766,7 +763,6 @@ class CronJob:
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
             "mode": self.mode,
-            **({"goal_id": self.legacy_goal_id} if self.legacy_goal_id else {}),
             **({"run_requested": True} if self.run_requested else {}),
             **({"read_sources": list(self.read_sources)} if self.read_sources is not None else {}),
         }
@@ -844,17 +840,13 @@ class CronJob:
             skills=pinned_skills(_list_field(record, "skills")),
             mode=cast(
                 "JobMode",
-                _optional_literal_field(record, "mode", ("routine", "objective"))
-                or ("objective" if record.get("goal_id") else "routine"),
+                _optional_literal_field(record, "mode", ("routine", "objective")) or "routine",
             ),
-            legacy_goal_id=_optional_str_field(record, "goal_id"),
             run_requested=_bool_field(record, "run_requested")
             if "run_requested" in record
             else False,
             read_sources=tuple(_string_list(record, "read_sources"))
             if "read_sources" in record
-            else tuple(_string_list(record, "goal_sources"))
-            if "goal_sources" in record
             else None,
         )
 
@@ -901,7 +893,7 @@ class CronJobStore:
         self,
         *,
         prompt: str,
-        schedule: CronSchedule,
+        schedule: CronSchedule | None = None,
         origin: CronOrigin,
         name: str = "",
         repeat_times: int | None = None,
@@ -915,7 +907,7 @@ class CronJobStore:
 
         Args:
             prompt: Prompt passed to the agent when the job fires.
-            schedule: Job schedule.
+            schedule: Routine schedule or optional first wake for an objective.
             origin: Conversation that receives results.
             name: Human-readable label.
             repeat_times: Optional cap for recurring jobs.
@@ -935,12 +927,18 @@ class CronJobStore:
         pinned = pinned_skills(skills)
         with self._lock:
             current = _coerce_utc(now)
+            if schedule is None and mode != "objective":
+                msg = "A routine needs a schedule."
+                raise CronJobError(msg)
+            next_run_at = _first_run_at(schedule, current) if schedule else current
+            if schedule is None or mode == "objective":
+                # Persist a retry before dispatch in case the run never returns a valid wake.
+                schedule = CronSchedule.parse("every 1h")
             repeat = CronRepeat(times=repeat_times)
             if schedule.kind == "one_shot" and repeat_times is not None:
                 msg = "repeat cap is only valid for recurring jobs"
                 raise CronJobError(msg)
             until = None if until is None else _coerce_utc(until)
-            next_run_at = _first_run_at(schedule, current)
             _check_until(schedule, next_run_at, until)
             job_id = uuid.uuid4().hex[:12]
             if mode == "objective" and not prompt.strip():
@@ -971,23 +969,6 @@ class CronJobStore:
             jobs = [*self.list_jobs(), job]
             self._write_jobs(jobs)
             return job
-
-    def import_goal_ledger(self, directory: Path) -> None:
-        """Archive the old ledger only after all converted jobs have been saved."""
-        path = directory / "ledger.json"
-        with self._lock:
-            if not path.exists():
-                return
-            from deepagents_talon.cron.legacy import import_goals  # noqa: PLC0415  # Upgrade only.
-
-            jobs = (
-                _decode_store(self.path.read_bytes(), path=self.path) if self.path.exists() else []
-            )
-            if jobs is None:
-                msg = "Cannot import goals into an unreadable job store."
-                raise CronJobError(msg)
-            self._write_jobs(import_goals(path.read_bytes(), jobs, self.assistant_id))
-            path.replace(directory / "ledger.imported.json")
 
     def list_jobs(self, *, origin: CronOrigin | None = None) -> list[CronJob]:
         """List jobs, optionally scoped to an origin conversation.
@@ -1103,7 +1084,7 @@ class CronJobStore:
                 next_run_at = (
                     _first_run_at(schedule, current) if schedule is not None else job.next_run_at
                 )
-                new_schedule = schedule or job.schedule
+                new_schedule = job.schedule if job.mode == "objective" else schedule or job.schedule
                 new_repeat = job.repeat
                 if repeat_times is not None:
                     if new_schedule.kind != "recurring":
@@ -1210,6 +1191,22 @@ class CronJobStore:
             if claimed is not None or expired:
                 self._write_jobs(result)
             return claimed
+
+    def set_objective_wake(self, snapshot: CronJob, wake: datetime) -> None:
+        """Save a future check unless the job was edited, paused, or finished."""
+        wake = _coerce_utc(wake)
+        if (
+            snapshot.mode != "objective"
+            or not snapshot.enabled
+            or wake <= _coerce_utc()
+            or (snapshot.until is not None and wake > snapshot.until)
+        ):
+            return
+        with self._lock:
+            jobs = self.list_jobs()
+            if snapshot in jobs:
+                jobs[jobs.index(snapshot)] = replace(snapshot, next_run_at=wake)
+                self._write_jobs(jobs)
 
     def finish_objective(self, snapshot: CronJob) -> None:
         """Stop a completed objective unless its instructions changed during the run."""
@@ -1437,6 +1434,8 @@ def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:
         return replace(job, repeat=repeat, enabled=False, next_run_at=None)
 
     next_run_at = job.schedule.next_after(now, previous=job.next_run_at)
+    if job.mode == "objective" and job.until is not None and now < job.until:
+        next_run_at = min(next_run_at, job.until)
     if job.until is not None and next_run_at > job.until:
         return replace(job, repeat=repeat, enabled=False, next_run_at=None)
     return replace(job, repeat=repeat, next_run_at=next_run_at)

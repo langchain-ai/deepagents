@@ -351,7 +351,7 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 6. (Optionally enable `dangerous-nonmain-release` to release from a branch that is not `main`. When enabled, `release-sha` may be left empty and the workflow uses the branch's current commit.)
 
 > [!IMPORTANT]
-> The `release` environment only accepts runs from `main`, `v[0-9]*` maintenance branches, and the `alpha/*`, `beta/*`, `rc/*`, and `dev/*` [pre-release branches](#how-to-publish-a-pre-release). PyPI and TestPyPI trusted publishers require that environment, so a run from any other branch cannot publish, and admin bypass is disabled. To release a hotfix from some other branch, cherry-pick it onto `main` or a `vX.Y` branch, or have an admin add the branch to the `release` environment's deployment branches for the duration of the release.
+> The `release` environment only accepts runs from `main`, `v[0-9]*` maintenance branches, and the `alpha/*`, `beta/*`, `rc/*`, and `dev/*` [pre-release branches](#how-to-publish-a-pre-release). PyPI and TestPyPI trusted publishers require that environment, so a run from any other branch cannot publish. Admin bypass is disabled. To release a hotfix from some other branch, cherry-pick it onto `main` or a `vX.Y` branch, or have an admin add the branch to the `release` environment's deployment branches for the duration of the release.
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the normal release-please flow whenever possible. Use this workflow mainly for recovery, such as when the release workflow failed after the release PR was already merged!

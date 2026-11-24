@@ -23,83 +23,30 @@ OriginFactory = Callable[[], CronOrigin]
 _PAIRED_QUOTE_LENGTH = 2
 _UPCOMING_COUNT = 3
 
-SCHEDULE_HELP = """Schedule text. One of:
-        `in 30m` / `in 2h` (one-shot, relative),
-        `every 15m` / `every 6h` (recurring, relative),
-        `at 2026-09-04 13:30 America/New_York` (one-shot, wall clock),
-        `daily at 08:00 America/New_York` (recurring, same local time each day),
-        `cron <minute> <hour> <day-of-month> <month> <day-of-week> <timezone>`
-        (recurring, standard five-field cron evaluated in local time).
-        Wall-clock and cron forms require an explicit IANA timezone name and
-        keep firing at that local time across daylight-saving changes.
-        Cron fields accept `*`, `5`, `1-5`, `*/15`, `9-17/2`, and comma lists;
-        months `jan`-`dec` and weekdays `sun`-`sat` (0 or 7 is Sunday) work as
-        names. Day-of-month also accepts `L` (last day), `LW` (last weekday),
-        and `15W` (weekday nearest the 15th); day-of-week accepts `5L` (last
-        Friday) and `2#1` (first Tuesday). Macros: `cron @hourly <timezone>`,
-        and likewise `@daily`, `@weekly`, `@monthly`, `@yearly`. When both day
-        fields are restricted (neither starts with `*`), a day matches if
-        EITHER does, as in standard cron.
-        Examples: every 15 minutes on June weekdays is
-        `cron */15 * * jun mon-fri America/New_York`; weekends at noon is
-        `cron 0 12 * * sat,sun America/New_York`; the last Friday of each
-        month at 17:00 is `cron 0 17 * * 5L America/New_York`."""
+SCHEDULE_HELP = """Use `in 30m`, `every 6h`, `at YYYY-MM-DD HH:MM TZ`, `daily at HH:MM TZ`,
+or `cron <five fields or @macro> TZ`. Use an IANA timezone such as America/New_York for TZ."""
 
-UNTIL_HELP = """Optional last local time a recurring job may run, inclusive,
-        as `YYYY-MM-DD HH:MM <timezone>`. The job deletes itself once it
-        passes, whether or not it ran; a run missed while the host was down is
-        dropped rather than delivered after it. For "the next three months",
-        compute the date from `current_time`."""
+UNTIL_HELP = """For recurring jobs, repeat_times caps runs and until sets an inclusive deadline
+(`YYYY-MM-DD HH:MM TZ`). After the deadline the job expires and missed runs are dropped."""
 
-DELIVER_TO_HELP = """Where results post when this conversation is a channel
-        thread: `channel` posts to the channel itself, `thread` replies in this
-        thread. Prefer `channel` for anything that fires later than today, and
-        `thread` for short follow-ups on the discussion at hand. Only Slack
-        channel threads and public Discord threads distinguish the two."""
+DELIVER_TO_HELP = """In Slack channel threads and public Discord threads, prefer channel delivery
+for later days and thread delivery for short follow-ups."""
 
-SKILLS_HELP = """Optional skill names whose full instructions load into every
-    run of this job, up to 8. Use names from your skills list; a name that is not
-    installed when the job runs is skipped."""
+SKILLS_HELP = "Pin up to 8 installed skills by name."
 
-_RESULT_HELP = """The job's `upcoming` field lists its next few run times; check them
-    against what the user asked for and fix the schedule if they disagree."""
+_JOB_HELP = f"""{SCHEDULE_HELP}
+{UNTIL_HELP}
+{DELIVER_TO_HELP}
+{SKILLS_HELP}
+Check the returned upcoming run times against the request."""
 
-_CREATE_DESCRIPTION = f"""Schedule a background task that will later deliver to this conversation.
+_CREATE_DESCRIPTION = f"""Schedule a self-contained prompt to run later in this conversation.
+{_JOB_HELP}"""
 
-Args:
-    prompt: Self-contained prompt to run when the job fires.
-    schedule: {SCHEDULE_HELP}
-    name: Optional human-readable label for the job.
-    repeat_times: Optional cap for recurring schedules. `1` runs a recurring
-        schedule once, at its next match.
-    until: {UNTIL_HELP}
-    deliver_to: {DELIVER_TO_HELP}
-    skills: {SKILLS_HELP}
-
-Returns:
-    Created job details, or an error dictionary for invalid input.
-    {_RESULT_HELP}
-"""
-
-_EDIT_DESCRIPTION = f"""Update one or more settings on a scheduled job from this conversation.
-
-Args:
-    job_id: Job id returned by the create or list tool.
-    name: Optional replacement label.
-    prompt: Optional replacement prompt.
-    schedule: Optional replacement. {SCHEDULE_HELP}
-    enabled: Optional enabled flag. Use `False` to pause, `True` to resume.
-    repeat_times: Optional replacement repeat cap for recurring schedules.
-    until: Optional replacement end time. {UNTIL_HELP}
-        Pass an empty string to remove the end time.
-    deliver_to: Optional replacement. {DELIVER_TO_HELP}
-    skills: Optional replacement. {SKILLS_HELP}
-        Pass an empty list to unpin every skill.
-
-Returns:
-    Updated job details, or an error dictionary for invalid input.
-    {_RESULT_HELP}
-"""
+_EDIT_DESCRIPTION = f"""Edit a job in this conversation by ID from create_job or list_jobs.
+Supply only changes. Set enabled to false to pause or true to resume.
+Clear until with an empty string and unpin all skills with an empty list.
+{_JOB_HELP}"""
 
 
 class CronTools:

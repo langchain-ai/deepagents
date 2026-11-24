@@ -190,6 +190,31 @@ async def test_resume_after_interrupt_keeps_live_slot(mode: InvokeMode) -> None:
 
 
 @pytest.mark.parametrize("mode", ["invoke", "ainvoke"])
+async def test_rebuilt_agent_resumes_paused_eval_with_its_tools(
+    mode: InvokeMode,
+) -> None:
+    saver = InMemorySaver()
+    config = {"configurable": {"thread_id": "rebuilt-resume"}}
+
+    def build(script: list[AIMessage]) -> Any:
+        return create_agent(
+            model=FakeChatModel(messages=iter(script)),
+            tools=[ask],
+            middleware=[CodeInterpreterMiddleware(ptc=["ask"])],
+            checkpointer=saver,
+        )
+
+    first = build([_eval_call("await tools.ask({})", "c1")])
+    paused = await _invoke(first, {"messages": [HumanMessage("go")]}, config, mode)
+    assert paused["__interrupt__"]
+
+    rebuilt = build([AIMessage(content="done")])
+    result = await _invoke(rebuilt, Command(resume="yes"), config, mode)
+
+    assert "<result>yes</result>" in _last_eval(result), _last_eval(result)
+
+
+@pytest.mark.parametrize("mode", ["invoke", "ainvoke"])
 async def test_next_turn_reuses_warm_context(mode: InvokeMode) -> None:
     mw = CodeInterpreterMiddleware()
     agent = _agent(

@@ -341,11 +341,12 @@ class AgentRuntime(Protocol):
 class ContextDoctorRuntime(Protocol):
     """Optional runtime capability for read-only context diagnostics."""
 
-    async def context_doctor(self, conversation_id: str) -> str:
+    async def context_doctor(self, conversation_id: str, *, model: str | None = None) -> str:
         """Audit the current conversation without invoking the model.
 
         Args:
             conversation_id: Host-resolved agent thread to inspect.
+            model: Selected model spec, if the host has an override.
 
         Returns:
             Context token estimates, without prompt or conversation contents.

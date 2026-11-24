@@ -519,6 +519,9 @@ class DeepAgentRuntime:
         tools.append(self._attachment_tool(attachments))
         # The summarizer replacement lands in the Deep Agents summarizer's slot; the
         # selection middleware still swaps the model for everything after it.
+        default_model = (
+            partial(self._build_model, model) if isinstance(model, str) else lambda: model
+        )
         middleware: list[AgentMiddleware[Any, Any, Any]] = [
             # Replaces the default by name. Talon passes no `permissions` and registers
             # no harness profile, so only the blob offload differs from the default.
@@ -527,10 +530,7 @@ class DeepAgentRuntime:
                 backend=self.backend,
                 offload_binary_content=not isinstance(self.backend, StateBackend),
             ),
-            SelectedModelSummarization(
-                partial(self._build_model, model) if isinstance(model, str) else lambda: model,
-                self.backend,
-            ),
+            SelectedModelSummarization(default_model, self.backend),
             ModelSelectionMiddleware(),
             ProgressMessages(),
         ]
@@ -558,6 +558,8 @@ class DeepAgentRuntime:
         ):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
         diagnostics = ContextDoctor(
+            default_model=default_model,
+            tool_search=mcp_tool_search(tools),
             backend=self.backend,
             system_prompt=self._resolve_system_prompt(),
             skills=tuple(self._resolve_skills() or ()),
@@ -578,7 +580,7 @@ class DeepAgentRuntime:
             sorted(
                 [
                     *self.middleware,
-                    mcp_tool_search(tools),
+                    diagnostics.tool_search,
                     AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
                 ],
                 key=lambda layer: isinstance(layer, TalonMCPMiddleware),
@@ -621,11 +623,12 @@ class DeepAgentRuntime:
         self._context_diagnostics = diagnostics
         return graph
 
-    async def context_doctor(self, conversation_id: str) -> str:
+    async def context_doctor(self, conversation_id: str, *, model: str | None = None) -> str:
         """Report estimated context costs without running the agent.
 
         Args:
             conversation_id: Host-resolved agent thread to inspect.
+            model: Selected model spec, if the host has an override.
 
         Returns:
             A plain-text context audit containing counts rather than contents.
@@ -637,7 +640,7 @@ class DeepAgentRuntime:
         if graph is None or diagnostics is None:
             msg = "DeepAgentRuntime must be started before context diagnostics"
             raise RuntimeError(msg)
-        return await diagnostics.render(graph, conversation_id)
+        return await diagnostics.render(graph, conversation_id, model=await self._turn_model(model))
 
     @property
     def default_model(self) -> str:
@@ -675,7 +678,7 @@ class DeepAgentRuntime:
     @contextlib.asynccontextmanager
     async def _turn_models(self, request: AgentRequest) -> AsyncGenerator[None]:
         """Bind the chat's selected model for one turn."""
-        model = await self._turn_model(request)
+        model = await self._turn_model(request.model)
         spec = request.model or self.default_model
         settings = (
             effort_settings(spec, request.effort)
@@ -692,19 +695,19 @@ class DeepAgentRuntime:
             ACTIVE_EFFORT.reset(effort_token)
             ACTIVE_MODEL.reset(model_token)
 
-    async def _turn_model(self, request: AgentRequest) -> BaseChatModel | None:
-        if request.model is None:
+    async def _turn_model(self, spec: str | None) -> BaseChatModel | None:
+        if spec is None:
             return None
         try:
-            return await asyncio.to_thread(self.models.resolve, request.model)
+            return await asyncio.to_thread(self.models.resolve, spec)
         except Exception:  # noqa: BLE001  # a stale selection must not fail the turn
             # Warn once per model: every later turn of that chat would repeat it.
-            warn = request.model not in self._unavailable_models
-            self._unavailable_models.add(request.model)
+            warn = spec not in self._unavailable_models
+            self._unavailable_models.add(spec)
             logger.log(
                 logging.WARNING if warn else logging.DEBUG,
                 "Selected model %s is unavailable; using the default",
-                request.model,
+                spec,
                 exc_info=warn,
             )
             return None

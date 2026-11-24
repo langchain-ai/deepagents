@@ -5,6 +5,7 @@ import json
 import shlex
 from itertools import pairwise
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
@@ -1021,34 +1022,6 @@ async def test_transcript_reads_compact_fresh_subagent_history(
         await runtime.stop()
 
 
-class ResultReaderModel(ToolModel):
-    """Use only the result path actually delivered to the worker."""
-
-    def _generate(self, messages, *args: object, **kwargs: object):
-        reply = super()._generate(messages, *args, **kwargs)
-        last = messages[-1]
-        if isinstance(last, ToolMessage) and last.name == "lookup":
-            path = last.text.splitlines()[0].removeprefix("Full result: ")
-            reply.generations[0].message = AIMessage(
-                content="",
-                tool_calls=[
-                    {**_call("read_tool_result", path=path, offset=1, column=45_000), "id": "own"},
-                    {
-                        **_call("read_tool_result", path="/large_tool_results/another-task"),
-                        "id": "other",
-                    },
-                ],
-            )
-        if isinstance(last, ToolMessage) and last.name == "read_tool_result":
-            path = next(
-                m.text.splitlines()[0].removeprefix("Full result: ")
-                for m in messages
-                if isinstance(m, ToolMessage) and m.name == "lookup"
-            )
-            reply.generations[0].message = AIMessage(content=path)
-        return reply
-
-
 @pytest.mark.parametrize("dynamic", [False, True])
 @pytest.mark.parametrize("background", [False, True])
 async def test_task_can_page_and_hand_off_its_own_result(
@@ -1057,18 +1030,30 @@ async def test_task_can_page_and_hand_off_its_own_result(
     _write_agent(tmp_path, "[]" if dynamic else "[lookup]")
     backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
     backend.write("/large_tool_results/another-task", "private result")
-    content = "head\n" + "x" * 45_000 + "MIDDLE" + "y" * 45_000 + "\ntail"
+    content = "evidence\n" * 6000 + "MIDDLE\n" + "evidence\n" * 6000
 
     @tool
     def lookup() -> str:
         """Look up evidence."""
         return content
 
-    child = ResultReaderModel(
+    archive_id = UUID(int=1)
+    monkeypatch.setattr("deepagents_talon.result_paging.uuid4", lambda: archive_id)
+    path = f"/large_tool_results/{archive_id.hex}"
+    child = ToolModel(
         responses=[
             AIMessage(content="", tool_calls=[_call("lookup")]),
-            AIMessage(content="page"),
-            AIMessage(content="finish"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {**_call("read_file", file_path=path, offset=6000, limit=1), "id": "own"},
+                    {
+                        **_call("read_file", file_path="/large_tool_results/another-task"),
+                        "id": "other",
+                    },
+                ],
+            ),
+            AIMessage(content=path),
         ],
         profile={"max_input_tokens": 1_000_000},
     )
@@ -1091,25 +1076,26 @@ async def test_task_can_page_and_hand_off_its_own_result(
     try:
         await runtime.invoke(AgentRequest("chat", "Research"))
         await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
-        path = (
+        answer = (
             next(iter(runtime.background.results("chat").values()))
             if background
             else next(
                 m.text for m in parent._seen[-1] if isinstance(m, ToolMessage) and m.name == "task"
             )
         )
-        path = next(line for line in path.splitlines() if line.startswith("/large_tool_results/"))
+        assert path in answer
+        assert path in child._seen[1][-1].text
         assert backend.download_files([path])[0].content == content.encode()
         assert child._tools == [
             ["lookup"],
-            ["lookup", "read_tool_result"],
-            ["lookup", "read_tool_result"],
+            ["lookup", "read_file"],
+            ["lookup", "read_file"],
         ]
         assert "MIDDLE" not in str(child._seen[1])
-        replies = {m.tool_call_id: m.text for m in child._seen[-1] if isinstance(m, ToolMessage)}
-        assert replies["own"].startswith("MIDDLE")
-        assert "column=53000" in replies["own"]
-        assert replies["other"] == "Unknown result for this task."
+        replies = {m.tool_call_id: m for m in child._seen[-1] if isinstance(m, ToolMessage)}
+        assert "MIDDLE" in replies["own"].text
+        assert replies["other"].status == "error"
+        assert "private result" not in replies["other"].text
     finally:
         await runtime.stop()
 

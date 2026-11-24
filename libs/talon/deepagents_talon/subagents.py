@@ -301,12 +301,8 @@ def _compile_fresh(
             trim_tokens_to_summarize=_summary_trim_limit(effective_model),
         )
         fresh_middleware: list[AgentMiddleware[Any, Any, Any]] = [summarization]
-        if (
-            available
-            and not isinstance(storage, StateBackend)
-            and ToolResultPaging.reader_name not in available
-        ):
-            fresh_middleware.append(ToolResultPaging(storage))
+        if available and not isinstance(storage, StateBackend):
+            fresh_middleware.append(ToolResultPaging(storage, has_reader="read_file" in available))
         graph = create_agent(
             model=effective_model,
             tools=spec.get("tools", []),

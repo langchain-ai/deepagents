@@ -1,6 +1,18 @@
 # Out-of-process QuickJS worker
 
-`CodeInterpreterMiddleware` runs model-written JavaScript inside the agent's own process, sandboxed by wasm. For multi-tenant deployments that want a second wall, this example runs the same QuickJS engine (`quickjs-rs`) in a separate worker process that holds no credentials. `tools.*` calls are sent back to the host, so tools still run and authorize there with the host's credentials. The credentials never reach the worker.
+A deep agent whose model-written JavaScript runs in a separate worker process that holds no credentials. The agent is composed as usual:
+
+```python
+pool = WorkerPool(WorkerConfig(), size=2)
+await pool.start()
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-6",
+    middleware=[WorkerInterpreterMiddleware(pool, [list_tickets, get_asset])],
+    checkpointer=InMemorySaver(),
+)
+```
+
+`WorkerInterpreterMiddleware` gives the agent an `eval` tool. The JavaScript it runs executes in a worker and reaches the host tools only as `tools.list_tickets(...)` / `tools.get_asset(...)`. Those calls are sent back to the agent's process, so the tools run there, with the host's `TICKETS_API_TOKEN` and the run's config (`get_asset` checks the calling user's team). The worker never sees either.
 
 The worker:
 
@@ -8,52 +20,57 @@ The worker:
 - has rlimits on CPU time, open files and core dumps;
 - on Linux, installs a seccomp filter after QuickJS has loaded. The filter blocks file opens, sockets, exec and new processes;
 - talks to the host only through length-prefixed JSON frames on stdin/stdout;
-- is thrown away after a timeout, out-of-memory, a crash, the host's wall-clock limit, or `max_evals` evals. A small pool keeps replacements started.
+- is thrown away after a timeout, out-of-memory, a crash, the host's wall-clock limit, or `max_evals` evals. A pool keeps replacements started.
+
+`CodeInterpreterMiddleware` runs the same engine (`quickjs-rs`) inside the agent's process. A runtime option on it (an out-of-process slot behind its `_Slot` interface) would make this setup first-class; until then, this example ships its own small middleware.
 
 ## Run
 
 ```bash
-uv run python demo.py
+uv run python agent.py
 ```
 
-Run it as root (e.g. in a container) to also see the switch to `nobody`.
+The script uses `anthropic:claude-sonnet-4-6` when `ANTHROPIC_API_KEY` is set (in the environment or a `.env`). Without a key, a scripted stand-in model makes one `eval` call, and the worker, the tools and the permission check still run for real:
 
 ```text
-1. tools.* calls run in the host:
-   {"result": {"assets": [...], "refused": "ToolException: not authorized to delete asset 1"}, "console": "2 high-severity assets", ...}
-   worker: {'op': 'ready', 'pid': 1432, 'uid': 65534, 'seccomp': True}
-2. Python running inside a worker, as if it had escaped wasm:
+[eval]
+const tickets = await tools.list_tickets({ status: "open" });
+const assets = await Promise.allSettled(tickets.map((t) => tools.get_asset({ asset_id: t.asset_id })));
+...
+
+[eval result]
+{"result": [{"ticket": "T-101 TLS cert expires in 5 days", "asset": {"name": "payments-api", "severity": "critical", ...}},
+            {"ticket": "T-102 Outdated OpenSSH", "asset": "ToolException: alice is not allowed to read asset a-2"}, ...], ...}
+
+the code ran in worker {'op': 'ready', 'pid': 1791, 'uid': 65534, 'seccomp': True}
+```
+
+To see what a worker can reach if code breaks out of wasm, and how runaway scripts are recycled:
+
+```bash
+uv run python escape_check.py
+```
+
+```text
+Python running inside a worker, as if it had escaped wasm:
    environment                                   ALLOWED: {'LC_CTYPE': 'C.UTF-8'}
-   read /tmp/tmp1cj8bitk-token                   denied: Operation not permitted
+   read /tmp/tmp1qz88dud-token                   denied: Operation not permitted
    read /proc/1/environ                          denied: Operation not permitted
    open a socket                                 denied: Operation not permitted
    run /bin/sh                                   denied: Operation not permitted
-3. Runaway scripts recycle the worker:
-   Timeout: worker 1432 replaced by 1439, next eval = 2
-   OutOfMemory: worker 1439 replaced by 1442, next eval = 2
+Runaway scripts recycle the worker:
+   Timeout: worker 1754 replaced by 1764, next eval = 2
+   OutOfMemory: worker 1764 replaced by 1766, next eval = 2
 ```
 
-`LC_CTYPE` is set by Python's own locale coercion at startup; nothing is inherited from the host. Step 2 uses a demo-only `probe` frame (`allow_probe=True`) that stands in for code that has broken out of wasm.
-
-## Use it in an agent
-
-`Interpreter.as_tool()` returns an `eval` tool that works with any LangChain agent:
-
-```python
-pool = WorkerPool(WorkerConfig(), size=4)
-await pool.start()
-interpreter = Interpreter(pool, [lookup_asset, delete_asset])
-agent = create_deep_agent(model=..., tools=[interpreter.as_tool()])
-```
-
-Use one `Interpreter` per conversation. It keeps its worker, and so its JavaScript state, between evals until the worker is recycled.
+`LC_CTYPE` is set by Python's own locale coercion; nothing is inherited from the host.
 
 ## Containers and gVisor
 
 The worker only needs stdin and stdout, so stronger isolation is just a command prefix:
 
 ```python
-WorkerConfig(launcher=["unshare", "--user", "--net", "--"])        # empty network namespace
+WorkerConfig(launcher=["unshare", "--user", "--net", "--"])            # empty network namespace
 WorkerConfig(launcher=["runsc", "--rootless", "--network=none", "do"])  # gVisor
 ```
 

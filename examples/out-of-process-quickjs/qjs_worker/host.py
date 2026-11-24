@@ -13,15 +13,16 @@ import pwd
 import shutil
 import sys
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-
-from langchain_core.tools import BaseTool, StructuredTool
 
 from qjs_worker import protocol
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
 
 # Errors after which a worker is not trusted to run anything else.
 RECYCLE_ON = {"Timeout", "OutOfMemory", "WorkerDied", "HostTimeout"}
@@ -153,13 +154,14 @@ class Interpreter:
         self.worker: WorkerProcess | None = None
         self.lock = asyncio.Lock()
 
-    async def eval(self, code: str) -> Outcome:
+    async def eval(self, code: str, config: RunnableConfig | None = None) -> Outcome:
+        """Run `code`; host tools it calls get `config` (the caller's user, callbacks, tracing)."""
         async with self.lock:
             if self.worker is None or self.worker.proc.returncode is not None:
                 self.worker = await self.pool.take()
             self.worker.evals += 1
             try:
-                outcome = await asyncio.wait_for(self._run(code), self.config.host_timeout)
+                outcome = await asyncio.wait_for(self._run(code, config), self.config.host_timeout)
             except TimeoutError:
                 outcome = Outcome(error_type="HostTimeout", error_message="worker killed after host_timeout")
             if outcome.error_type in RECYCLE_ON or self.worker.evals >= self.config.max_evals:
@@ -167,7 +169,7 @@ class Interpreter:
                 self.worker = None
             return outcome
 
-    async def _run(self, code: str) -> Outcome:
+    async def _run(self, code: str, config: RunnableConfig | None) -> Outcome:
         worker = self.worker
         await worker.send({"op": "eval", "code": code, "timeout": self.config.eval_timeout})
         # Frames from the worker are untrusted: size-capped by `protocol`, and
@@ -176,7 +178,7 @@ class Interpreter:
         try:
             while (msg := await worker.recv()) is not None:
                 if msg["op"] == "tool_call":
-                    task = asyncio.ensure_future(self._call_tool(worker, msg))
+                    task = asyncio.ensure_future(self._call_tool(worker, msg, config))
                     calls.add(task)
                     task.add_done_callback(calls.discard)
                 elif msg["op"] == "done":
@@ -188,33 +190,17 @@ class Interpreter:
             for task in calls:
                 task.cancel()
 
-    async def _call_tool(self, worker: WorkerProcess, msg: dict) -> None:
+    async def _call_tool(self, worker: WorkerProcess, msg: dict, config: RunnableConfig | None) -> None:
         tool = self.tools.get(msg["name"])
         reply = {"op": "tool_result", "id": msg["id"], "ok": False}
         if tool is None:
             reply["error"] = f"tools.{msg['name']} is not available"
         else:
             try:
-                reply |= {"ok": True, "value": await tool.ainvoke(msg["input"])}
+                reply |= {"ok": True, "value": await tool.ainvoke(msg["input"], config=config)}
             except Exception as e:  # noqa: BLE001 - a tool failure becomes a JS exception
                 reply["error"] = f"{type(e).__name__}: {e}"
         await worker.send(reply)
-
-    def as_tool(self) -> BaseTool:
-        """Expose `eval` as a LangChain tool an agent can call."""
-
-        async def run(code: str) -> str:
-            return json.dumps(asdict(await self.eval(code)))
-
-        return StructuredTool.from_function(
-            coroutine=run,
-            name="eval",
-            description=(
-                "Run JavaScript in a sandboxed worker process and return the value of the last "
-                "expression. Top-level await works. Call host tools with `await tools.<name>(input)`; "
-                f"available: {', '.join(self.tools)}."
-            ),
-        )
 
     async def aclose(self) -> None:
         if self.worker is not None:

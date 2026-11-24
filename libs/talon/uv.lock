@@ -696,7 +696,7 @@ requires-dist = [
     { name = "langchain-google-genai", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.4.0" },
     { name = "langgraph", specifier = ">=1.2.24,<2.0.0" },
-    { name = "langsmith", specifier = ">=0.16.0" },
+    { name = "langsmith", specifier = ">=0.16.1" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0" },
     { name = "wcmatch", specifier = ">=11.0" },
@@ -709,7 +709,7 @@ test = [
     { name = "build" },
     { name = "langchain-aws", specifier = ">=1.10.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.8.5,<2.0.0" },
-    { name = "langchain-tests", specifier = ">=1.1.9" },
+    { name = "langchain-tests", specifier = ">=1.2.0" },
     { name = "pillow", specifier = ">=12.3.0,<14.0.0" },
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
@@ -835,12 +835,12 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.8.4,<2.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.2.1,<2.0.0" },
-    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.7.3,<2.0.0" },
+    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.8.0,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.3.0,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.2.1,<2.0.0" },
-    { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.3,<2.0.0" },
+    { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.3.0,<2.0.0" },
     { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.2,<2.0.0" },
     { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.11.2,<2.0.0" },
     { name = "langchain-meta", marker = "extra == 'meta'", specifier = ">=0.5.0,<2.0.0" },
@@ -848,11 +848,11 @@ requires-dist = [
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.5.0,<2.0.0" },
     { name = "langchain-nvidia-openshell", marker = "extra == 'openshell'", specifier = ">=0.1.1" },
-    { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2.0.0" },
+    { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.2.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.8.5,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.8.5,<2.0.0" },
     { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.3.0,<2.0.0" },
-    { name = "langchain-perplexity", marker = "extra == 'perplexity'", specifier = ">=1.4.2,<2.0.0" },
+    { name = "langchain-perplexity", marker = "extra == 'perplexity'", specifier = ">=1.5.0,<2.0.0" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
     { name = "langchain-together", marker = "extra == 'together'", specifier = ">=0.4.0,<2.0.0" },
@@ -860,9 +860,9 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.4.1,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.43,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.38.4,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.38.5,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.14,<1.0.0" },
-    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.16.0" },
+    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.16.1" },
     { name = "markdownify", specifier = ">=1.2.3" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
@@ -1018,7 +1018,7 @@ requires-dist = [
     { name = "langgraph-prebuilt", specifier = ">=1.1.3,<2.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.14,<1.0.0" },
     { name = "langgraph-store-mongodb", marker = "extra == 'mongodb'", specifier = ">=0.4.1,<0.5.0" },
-    { name = "langsmith", specifier = ">=0.16.0" },
+    { name = "langsmith", specifier = ">=0.16.1" },
     { name = "librosa", marker = "extra == 'media'", specifier = ">=1.0.1" },
     { name = "librosa", marker = "extra == 'media-cpu'", specifier = ">=1.0.1" },
     { name = "mcp", specifier = ">=2.3.0" },
@@ -2143,7 +2143,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.38.4"
+version = "0.38.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -2154,9 +2154,9 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2b/a2/15bf23013553f63eef35d8ec1f4598792661bb3ac4fdd95396b5d8158a7e/langgraph_runtime_inmem-0.38.4.tar.gz", hash = "sha256:3691c04ef48f13c24473e8938950986efc09c0b5b6fcda33c78ce75be9c42f06", size = 145086, upload-time = "2026-11-21T00:20:54.408Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/c3/3a741da8c4e23350bd64cbce2fb952a7cf9668874ad28088e4a175b272fa/langgraph_runtime_inmem-0.38.5.tar.gz", hash = "sha256:51d1330e14f06757ac39d9383a9fdbbc1d94149183e45bb50e819fee4efd3e40", size = 145086, upload-time = "2026-11-24T05:09:40.593Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/7f/22e58aac95126a00b6c6241f49464cac0957c89e0c1cbecd99db2d52b40a/langgraph_runtime_inmem-0.38.4-py3-none-any.whl", hash = "sha256:3e4963d0d0a678af6268f1b78a20f0f072ca46afffefd19c7e09b934c857a003", size = 64991, upload-time = "2026-11-21T00:20:53.196Z" },
+    { url = "https://files.pythonhosted.org/packages/18/94/1e19782d6b37388396afdd71acae2ef44a3fbfd95428c46b054a4799fd96/langgraph_runtime_inmem-0.38.5-py3-none-any.whl", hash = "sha256:3c5eb6e6cfd6570bfdf6f87020ad52345e63bb90f4dd9eb123f78d369e36aece", size = 64994, upload-time = "2026-11-24T05:09:39.427Z" },
 ]
 
 [[package]]
@@ -2192,7 +2192,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.16.0"
+version = "0.16.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2210,9 +2210,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/d0/48f803bba3f2032739095779977f38771a350d0b527d44de2ddb0ce067ca/langsmith-0.16.0.tar.gz", hash = "sha256:8111f149c720bc838ee16104d9eec59fe9379d67015dbce00b4fd2dcd910ca69", size = 5123269, upload-time = "2026-11-21T00:39:39.171Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/96/8b1ed7d37bae1f9cd9bd42a4588d26d3855ea80a5932294101feef09cad2/langsmith-0.16.1.tar.gz", hash = "sha256:20f09ff3cc2c26dd0af94a1306c988e48e46bdea2268d8e24f63bfd54f10e6a8", size = 5124903, upload-time = "2026-11-23T20:32:24.686Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/20/7fdaa85d1ff7a45f611b52e2be0c75d28d95b54420ab0083d672f32aa7df/langsmith-0.16.0-py3-none-any.whl", hash = "sha256:edd738910a595751218299c9791099db1b5c63ae6dc21ca68009dbfb6344524a", size = 1036883, upload-time = "2026-11-21T00:39:37.173Z" },
+    { url = "https://files.pythonhosted.org/packages/63/79/b2b50b0a6c6ac21c85411d4c5f02e27a5ea965c73ec2836011930d28e65b/langsmith-0.16.1-py3-none-any.whl", hash = "sha256:6d7ca07f254839309b6f797062271f5447c25112eda0cec9a0e7606eef77d5ee", size = 1037706, upload-time = "2026-11-23T20:32:22.367Z" },
 ]
 
 [package.optional-dependencies]

@@ -4,44 +4,22 @@ title: Run Evals
 description: Choose and operate deterministic checks, traced behavioral evals, Harbor task verification, and unified multi-model comparison campaigns as distinct evaluation signals.
 tags: [evaluations, testing, langsmith, harbor, benchmarking]
 sources:
-  - id: openwiki-source-3032482267151cb6e217d034
-    resource: repo://.github/scripts/evals/aggregate_unified.py
-  - id: openwiki-source-5a18c3a5e98e1bb11b368e4b
-    resource: repo://.github/scripts/evals/prewarm_harbor_snapshots.py
-  - id: openwiki-source-666ffb85801f05fea2a2adbf
-    resource: repo://.github/scripts/evals/unified_prep.py
+  - id: openwiki-source-4c1e9d635ef15e1154151dc8
+    resource: repo://.github/scripts/evals/shard_matrix.py
   - id: openwiki-source-2c61f6f93eae02403e106ed9
     resource: repo://.github/scripts/tests/evals/test_unified_prep.py
-  - id: openwiki-source-c0a8cdd7847afa481defa30b
-    resource: repo://.github/scripts/tests/evals/test_unified_workflow.py
-  - id: openwiki-source-fa750a379507f8fc66395df2
-    resource: repo://.github/workflows/_eval.yml
   - id: openwiki-source-60d75d0ff1b1cedd1f38db0c
     resource: repo://.github/workflows/_harbor_run.yml
-  - id: openwiki-source-f9138a1fe0bc1bdbb69e3995
-    resource: repo://.github/workflows/evals_trials.yml
-  - id: openwiki-source-efa89bc59ebc2bd6d1443749
-    resource: repo://.github/workflows/evals.yml
-  - id: openwiki-source-b6252e3f3473cd89534f2acb
-    resource: repo://.github/workflows/unified_evals.yml
-  - id: openwiki-source-0153e073a6645f3118ca08c4
-    resource: repo://libs/evals/AGENTS.md
-  - id: openwiki-source-c0799cb44ce695871e7f3bf6
-    resource: repo://libs/evals/CONTRIBUTING.md
-  - id: openwiki-source-b57141bb692e5ccd2249f996
-    resource: repo://libs/evals/deepagents_evals/cli.py
   - id: openwiki-source-dd120a1be03e34bad3c59b22
     resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
   - id: openwiki-source-4e154a759dc1eb1f7ad0801d
     resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph.json
-  - id: openwiki-source-8565b7f246ed6e34051d8dfe
-    resource: repo://libs/evals/README.md
   - id: openwiki-source-78f970513a111c43fc9971ce
     resource: repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-21T08:04:00.255Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
+    at: 2026-11-24T08:04:12.461Z
 ---
 
 # Run Evals
@@ -114,6 +92,14 @@ flowchart TD
 
 Caption: snapshot prewarming optimizes independent Harbor task verification; it is never a prerequisite for a shard.
 
+### Matrix, selection, and shard controls
+
+`_harbor_run.yml` has two preparation modes. A normal single-dataset call expands the one model across its shard axis; a caller supplying `flat_matrix` supplies already-expanded leaves, including each leaf's category, dataset or local dataset path, agent implementation, runner, sandbox, concurrency, task filter, and effective shard count. The reusable workflow passes the flat matrix through rather than reconstructing it, derives aggregation legs by `(category, agent implementation)`, and uses `max_parallel` when it is a positive integer; otherwise it uses `shard_parallel`.
+
+For the normal path, `n_shards` must be 1 through 200 and is capped to `n_tasks` when a positive task limit makes larger fan-out provably empty. The public dispatch derives `shard_parallel` from its resource validation, so high shard counts drain through a bounded runner pool rather than launching at once. The workflow permits residual empty shards when a glob selects fewer tasks than expected, writes an empty-shard marker, and still lets aggregation distinguish a successful no-op from a missing artifact.
+
+Selection is deliberately performed before partitioning. Each shard resolves the dataset's native-order task names, applies `include_tasks` globs, applies the total `n_tasks` cap, and takes its modulo slice. Thus the union of all shard task lists matches the corresponding unsharded selection rather than applying the task cap once per shard. A glob that matches no task, unusable registry task names, an invalid shard index, or an invalid local dataset path fails the run rather than producing a green but materially empty evaluation.
+
 ### Snapshot lifecycle and staging
 
 For an eligible single registry-dataset LangSmith run, `_harbor_run.yml` invokes `prewarm_harbor_snapshots.py` before shard execution. It is skipped for flat unified matrices, local datasets, `tau3-subset`, forced builds, and non-LangSmith sandboxes. The prewarmer uses the run's manifest/glob/limit selection order, downloads selected tasks, and prepares task plus separate verifier environments. Compose environments are skipped because they do not use snapshots.
@@ -124,13 +110,15 @@ Before `harbor run`, the reusable workflow stages checked-out `deepagents`, `dee
 
 ### Harnesses, tools, defaults, and secrets
 
-`langgraph.json` registers `bare`, `dcode`, and `tau3`. `bare` is the prompt-free SDK agent with a local shell rooted at the task work directory, a minimal `PATH`/`HOME`, optional task skills, forwarded task MCP tools, and—only when `TAVILY_API_KEY` exists—a bounded Tavily search tool. `dcode` uses the production headless CLI agent and populates its process-wide model identity so its prompt can identify the selected model. `tau3` uses task-forwarded MCP tools for the simulated-user conversation runtime.
+`langgraph.json` registers `bare`, `dcode`, and `tau3`. `bare` is the prompt-free SDK agent with a local shell rooted at the task work directory, a minimal `PATH`/`HOME`, optional task skills, forwarded task MCP tools, and—only when `TAVILY_API_KEY` exists—a bounded Tavily search tool. `dcode` uses the production headless CLI agent. Before it constructs that filesystem-backed agent, it turns `HARBOR_SESSION_ID` into an ASCII `[A-Za-z0-9_-]` assistant ID of at most 64 characters: unsafe or overlong source IDs gain a digest suffix, while an absent or entirely unusable ID receives a UUID-based `harbor-...` fallback. This makes path-like session IDs safe without turning distinct raw IDs that normalize alike into the same state directory.
 
-The graph builder applies provider safeguards: OpenAI models default to the Responses API unless callers explicitly choose otherwise; exact GLM-5.2 profiles get `reasoning_effort: high` only when no reasoning control is supplied; and Fireworks receives streaming, retry, and timeout defaults. These are harness defaults, not unified-comparison constants—an explicit model kwarg wins.
+`dcode` also populates its process-wide runtime model identity from the selected Harbor model and resolved profile before creating the CLI graph. The production prompt can therefore identify the model, context limit, and unsupported input modalities; a missing or malformed profile clears the optional fields and produces a warning rather than leaking a previous graph's identity. `tau3` uses task-forwarded MCP tools for the simulated-user conversation runtime.
 
-Task-provided MCP definitions may use only remote `streamable-http` or SSE transports; `stdio` is rejected so a selectable dataset cannot define a local command to execute. `skills_dir` must be absolute and contain no `..`. Tavily output is bounded by result count and characters; a search exception becomes tool text rather than terminating a long run.
+The graph builder applies provider safeguards: OpenAI models default to the Responses API unless callers explicitly choose otherwise; exact GLM-5.2 profiles get `reasoning_effort: high` only when no reasoning control is supplied; and Fireworks receives streaming, retry, and timeout defaults. A Harbor-only profile override supplies the 1,048,576-token input limit for `fireworks:accounts/fireworks/models/kimi-k3p1-pro` when its LangChain model profile lacks it. These are harness defaults, not unified-comparison constants—an explicit model kwarg wins.
 
-The dcode factory temporarily removes provider and LangSmith credential variables while it constructs the shell-backed agent and restores them afterward, so that construction does not pass credentials into the shell-backed agent environment. The workflow separately validates the selected sandbox, LangSmith and sandbox credentials, model-provider key, verifier/judge keys, and research Tavily key before execution. Research fails rather than silently losing its required web-search capability.
+Task-provided MCP definitions may use only remote `streamable-http` or SSE transports; `stdio` is rejected so a selectable dataset cannot define a local command to execute. `skills_dir` must be absolute and contain no `..`. The optional Tavily `web_search` tool clamps a request to 1–10 results and truncates rendered output at 20,000 characters; no key or no installed Tavily client means no tool, and a search exception becomes tool text rather than terminating a long run. The dcode and bare graphs attach this tool only when it is available.
+
+The dcode factory temporarily removes provider and LangSmith credential/control variables while it constructs the shell-backed agent and restores them afterward, so that construction does not pass those variables into the shell-backed agent environment. `TAVILY_API_KEY` is deliberately not in that shell-scrub set: it is read only to construct the gated search tool, and the workflow forwards it only to research agents. The workflow separately validates the selected sandbox, LangSmith and sandbox credentials, model-provider key, verifier/judge keys, and research Tavily key before execution. Research fails rather than silently losing its required web-search capability.
 
 ## Unified multi-model comparisons
 
@@ -197,7 +185,7 @@ uv run --group test pytest tests/unit_tests/test_harbor_langgraph_agent.py
 uv run --project libs/evals --group test pytest .github/scripts/tests/evals/test_unified_prep.py
 ```
 
-The Harbor graph tests pin graph registration, secret scrubbing, model identity/defaults, shell and skills wiring, MCP transport restrictions, session-ID normalization, and search bounds/failure behavior. Unified-prep tests pin category mapping, graph/native-agent eligibility, task/profile validation, local data presence, packing fidelity, category overrides, numeric validation, branch safety, expected leaf/experiment emission, and pool/job guards. Static unified-workflow tests protect workflow forwarding, matrix and artifact wiring, secret/permission separation, branch overlays, and aggregation behavior without a paid dispatch.
+The Harbor graph tests are deterministic adapter tests, not credentialed model or sandbox evaluations: they replace model construction, CLI construction, search, and MCP endpoints as needed. They pin graph registration, secret scrubbing and restoration, model identity/defaults and profile overrides, shell and skills wiring, MCP transport restrictions, session-ID normalization/collision resistance, and optional-search absence, bounds, output truncation, and failure behavior. Unified-prep tests pin category mapping, graph/native-agent eligibility, task/profile validation, local data presence, packing fidelity, category overrides, numeric validation, branch safety, expected leaf/experiment emission, and pool/job guards. Static unified-workflow tests protect workflow forwarding, matrix and artifact wiring, secret/permission separation, branch overlays, and aggregation behavior without a paid dispatch.
 
 ## Operating checklist
 

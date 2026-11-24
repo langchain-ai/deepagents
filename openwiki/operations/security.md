@@ -4,22 +4,32 @@ title: Security and Trust Boundaries
 description: Operational guidance for host-shell authority and cleanup, filesystem policy, dcode trust, MCP/OAuth safety, and Talon hooks, subagents, channel admission, and unattended work.
 tags: [security, operations, trust-boundaries, sandboxing, approvals, credentials, mcp]
 sources:
+  - id: openwiki-source-8896ee5af2462c92e51bfb6e
+    resource: repo://libs/code/deepagents_code/local_context.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
+  - id: openwiki-source-31e40ff79779f51cafd03f01
+    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-2d1f686d24d8182f60108ae7
+    resource: repo://libs/talon/deepagents_talon/subagents.py
+  - id: openwiki-source-df8e616d4a20b5878bc1a05e
+    resource: repo://libs/talon/tests/test_mcp_auth.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
+  - id: openwiki-source-a4cc4beb110c42a169caf195
+    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
   - id: openwiki-source-8de0ff38635f214c7268d8e7
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
   - id: openwiki-source-242a21b2da46507f58415265
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-20T08:04:05.944Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-20T08:04:05.944Z
+    at: 2026-11-24T08:04:12.461Z
 ---
 
 # Security and Trust Boundaries
@@ -104,7 +114,9 @@ Talon loads only well-formed named server entries; it expands `${VAR}` reference
 
 OAuth login is intentionally interactive. Without a terminal or current Talon conversation authorization handler, an OAuth-required scheduled job or background subagent fails with instructions to authorize from chat or run `deepagents-talon mcp login <server>`; it does not create a prompt with no accountable recipient. Channel device-code authorization binds the server name, tool invocation, and expiry to its flow.
 
-Talon's OAuth transport validates public HTTPS endpoints with SSRF protection, ignores proxy environment settings, does not follow redirects, bounds DNS resolution, requests, discovery, and response size, and revalidates metadata endpoints before using them. These controls prevent a discovered endpoint from becoming an arbitrary internal-network request; they do not establish trust in a public remote service.
+Talon's OAuth transport validates public HTTPS endpoints with SSRF protection, ignores proxy environment settings, does not follow redirects, bounds DNS resolution, requests, discovery, and response size, and revalidates metadata endpoints before using them. Device-flow endpoints must match the authorization-server origin; normal OAuth metadata is checked for an issuer match and each endpoint is independently revalidated. These controls prevent a discovered endpoint from becoming an arbitrary internal-network request; they do not establish trust in a public remote service.
+
+MCP status and configuration errors are also untrusted prompt inputs. dcode omits `untrusted` project servers from the model-facing inventory, and sanitizes, single-lines, and bounds displayed server errors and tracing-project names before placing them in the system prompt. This result framing limits prompt-injection and formatting exposure in that particular prompt path; it neither authenticates an MCP server nor contains one that has already been enabled.
 
 dcode token storage derives safe paths from server identity and warns that token representations must not be logged. Talon token storage uses owner-only directories/files, locking, and atomic replacement, preserves an existing refresh token when a refresh response omits one, and warns that filesystem hardening is not confidentiality isolation from its default shell backend. Store tokens outside agent workspaces and run Talon under an account appropriate to the authority those tokens convey.
 
@@ -150,6 +162,6 @@ ACP persistent execution approval is scoped to canonical full tool-argument JSON
 4. **Grant execution configuration explicitly.** Review dcode checkout hooks, extensions, sandbox setup, and MCP per canonical workspace. Separately protect Talon's assistant-home `hooks.json`; Talon intentionally does not load workspace hooks.
 5. **Treat MCP configuration and OAuth as deployment authority.** Restrict stdio commands and remote scopes, protect token state, and never log token objects.
 6. **Require a human for human decisions.** Pair senders out of band, keep approval policy operator-owned, use fresh subagents with explicit tools where policy must apply, and ensure cron/background tasks auto-deny gated actions rather than prompting an unrelated channel.
-7. **Exercise focused tests after boundary changes.** Relevant coverage includes `libs/deepagents/tests/unit_tests/backends/test_local_shell_backend.py`, `libs/talon/tests/unit_tests/test_hooks.py`, `libs/code/tests/unit_tests/test_server_helpers.py`, `libs/acp/tests/unit_tests/test_execute_permissions.py`, and Talon's `test_tool_approval_batch.py` and `test_questions.py`.
+7. **Exercise focused tests after boundary changes.** Relevant coverage includes `libs/deepagents/tests/unit_tests/backends/test_local_shell_backend.py`, `libs/talon/tests/unit_tests/test_hooks.py`, `libs/code/tests/unit_tests/test_server_helpers.py`, `libs/acp/tests/unit_tests/test_execute_permissions.py`, Talon's `test_tool_approval_batch.py` and `test_questions.py`, plus `libs/talon/tests/test_mcp_auth.py`, `libs/talon/tests/unit_tests/test_background.py`, and `libs/talon/tests/unit_tests/test_research_subagents.py`. The latter two cover cleared worker authorization, approval-to-non-execution conversion, result text handling, and fresh subagent attachment boundaries.
 
 See [Code agent architecture](/openwiki/architecture/code-agent.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [Talon channel admission](/openwiki/concepts/talon-channel-admission.md), and [MCP integration](/openwiki/integrations/mcp.md).

@@ -3,6 +3,9 @@ type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents distinguishes synchronous local child graphs, context-sharing forks, and durable remote Agent Protocol tasks. Talon adapts delegation for conversational delivery, while skills progressively disclose instructions and selected tools without granting authority.
 tags: [deepagents, subagents, delegation, skills, talon, permissions]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-24T08:04:12.461Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -38,10 +41,7 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-21T08:04:00.255Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 ---
 
 # Subagents and Skills
@@ -117,6 +117,8 @@ Talon deliberately does not treat a configured local role as a normal SDK declar
 Talon can attach extra tools for one local task call. The requested names must be unique and present in the current non-delegation tool catalog; the added tools supplement rather than replace the role's configured tools. This is a per-task compilation choice, not a persistent mutation of the role. Talon's `get_agent_tools` inventory reports known tools for fresh roles, but treats compiled and remote roles as opaque.
 
 Talon applies its approval policy while compiling a fresh role: only configured attached tools appear in its `HumanInTheLoopMiddleware`. If policy protection is active, Talon refuses to run a precompiled child because it cannot enforce the policy inside an opaque runnable. A background worker has no operator to resolve a pause, so an interrupt becomes a result saying the protected action did not run; the worker also clears its authorization handler. These are operational safeguards, not evidence that a delegated response has authority to change policy.
+
+The parent-side delegation contract treats a role's inventory as capability information, not proof of access, and tells the main agent to treat every delegated response as untrusted evidence. The fresh worker contract is explicitly research-oriented and read-only: it must report unavailable context or capabilities rather than inventing access or broadening scope. Thus an attached tool, a skill instruction, or a subagent finding neither conveys credentials nor authorizes approval, a scope change, disclosure, or a consequential action; the main agent must verify facts and apply its existing controls.
 
 ```mermaid
 sequenceDiagram

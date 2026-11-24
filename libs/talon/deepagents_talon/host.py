@@ -42,9 +42,11 @@ from deepagents_talon.channels.base import (
 from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
-from deepagents_talon.cron.jobs import CronJobStore
+from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.effort import effort_levels, normalize_effort
+from deepagents_talon.goals.journal import GoalJournal, GoalReport
+from deepagents_talon.goals.scope import GOAL_READS, GoalToolsUnavailableError, ReadScope
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -102,7 +104,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
-    from deepagents_talon.cron.jobs import CronJob, CronOrigin
+    from deepagents_talon.cron.jobs import CronJob
     from deepagents_talon.questions import Question, QuestionHandler
     from deepagents_talon.speech import VoiceTranscriber
 
@@ -354,6 +356,7 @@ class TalonHost:
         self._background_loop: asyncio.Task[None] | None = None
         self._background_routes: dict[str, _BackgroundRoute] = {}
         self._background_retries: dict[str, _BackgroundRetry] = {}
+        self._prompt_threads: dict[str, str] = {}
         self._scheduled_runs: dict[str, asyncio.Task[str]] = {}
         self._revoked_runs: set[str] = set()
         # Everyone who started a turn in a conversation since it was last idle.
@@ -565,7 +568,7 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
-        questions = self._pending_questions.get(self._agent_conversation_id(conversation_root))
+        questions = self._pending_questions.get(self._reply_thread(conversation_root))
         if (
             questions is not None
             and message.sender_id == questions.sender_id
@@ -580,8 +583,9 @@ class TalonHost:
             self._history_roots[conversation_root] = scope
             async with self._conversation_lock(conversation_root):
                 agent_conversation_id = self._agent_conversation_id(conversation_root)
+                reply_thread = self._reply_thread(conversation_root)
                 if questions is not None and (
-                    self._pending_questions.get(agent_conversation_id) is not questions
+                    self._pending_questions.get(reply_thread) is not questions
                     or questions.future.done()
                 ):
                     await send_with_retry(
@@ -601,7 +605,7 @@ class TalonHost:
                 ):
                     return
 
-                pending = self._pending_tool_approvals.get(agent_conversation_id)
+                pending = self._pending_tool_approvals.get(reply_thread)
                 if pending is not None:
                     await self._handle_tool_approval_reply(channel, message, pending)
                     return
@@ -614,7 +618,7 @@ class TalonHost:
                 ):
                     return
 
-                questions = self._pending_questions.get(agent_conversation_id)
+                questions = self._pending_questions.get(reply_thread)
                 if questions is not None and not questions.future.done():
                     await self._handle_question_reply(channel, message, questions)
                     return
@@ -655,11 +659,7 @@ class TalonHost:
                 conversation_root=conversation_root,
             )
         elif command == _STOP_COMMAND:
-            await self._cancel_conversation(
-                channel,
-                self._agent_conversation_id(conversation_root),
-                reply_conversation_id=message.conversation_id,
-            )
+            await self._stop_chat(channel, message, provider, conversation_root)
         elif command == _MCP_RELOAD_COMMAND:
             await self._reload_mcp_configuration(channel, message.conversation_id)
         elif command == _CONTEXT_DOCTOR_COMMAND:
@@ -890,7 +890,7 @@ class TalonHost:
         provider = await _channel_provider(channel)
         provider_key = _channel_key(channel, provider)
         conversation_root = self._conversation_root(provider_key, reaction.conversation_id)
-        agent_conversation_id = self._agent_conversation_id(conversation_root)
+        agent_conversation_id = self._reply_thread(conversation_root)
         pending = self._pending_tool_approvals.get(agent_conversation_id)
         if pending is None:
             _log_tool_approval_reaction(
@@ -934,7 +934,7 @@ class TalonHost:
                 )
                 return
             recovery_degraded = outcome is _CancelOutcome.DEGRADED
-        if isinstance(self.agent, BackgroundRuntime) and route.metadata.get("trigger") != "goal":
+        if isinstance(self.agent, BackgroundRuntime):
             self._background_routes[conversation_id] = route
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation
@@ -1058,7 +1058,6 @@ class TalonHost:
             # host sets. A scheduled turn's cron identity is what its tools scope by.
             **route.metadata,
         }
-        goal_wake = route.metadata.get("trigger") == "goal"
         unattended = bool(route.metadata.get("background_delivery"))
         if isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled:
             metadata["history_channel"] = _channel_key(channel, turn.provider)
@@ -1072,7 +1071,7 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
-        operator = not unattended and not goal_wake and _is_operator(channel, route.message)
+        operator = not unattended and _is_operator(channel, route.message)
 
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
@@ -1104,7 +1103,6 @@ class TalonHost:
                 conversation_id=agent_conversation_id,
                 text=message.text,
                 metadata=metadata,
-                # Goal wakes can ask their owner, but cannot initiate account authorization.
                 approval_handler=None
                 if unattended
                 else (
@@ -1117,7 +1115,7 @@ class TalonHost:
                     )
                 ),
                 authorization_handler=None
-                if unattended or goal_wake
+                if unattended
                 else (
                     lambda event: self._handle_authorization_event(
                         channel,
@@ -1135,12 +1133,8 @@ class TalonHost:
                 model=turn.model,
                 effort=turn.effort,
             )
-            suppress_result = agent_conversation_id in self._terminal_authorizations or (
-                goal_wake and is_silent(result.text)
-            )
-        except Exception as error:
-            if goal_wake:
-                raise
+            suppress_result = agent_conversation_id in self._terminal_authorizations
+        except Exception as error:  # noqa: BLE001  # Convert runtime failures to channel replies.
             result = AgentResult(text=await self._agent_failure_message(turn, error))
         finally:
             active = False
@@ -1352,7 +1346,7 @@ class TalonHost:
     async def _bounded_scheduled_run(self, job: CronJob, conversation_id: str) -> str:
         """Run one scheduled job under its timeout, repairing the thread on expiry."""
         if job.goal_id is not None:
-            return await self._continue_goal(job)
+            return await self._continue_goal(job, conversation_id)
         try:
             async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
                 result = await self._invoke_agent(
@@ -1372,44 +1366,118 @@ class TalonHost:
             raise
         return result.text
 
-    async def _continue_goal(self, job: CronJob) -> str:
-        """Wait for the owner's chat to be free, then run with its normal feedback handlers."""
+    async def _continue_goal(self, job: CronJob, thread: str) -> str:
+        """Run a goal in isolation and journal its outcome before considering delivery."""
         store = getattr(self.scheduler, "store", None)
-        channel = await self.origin_channel(job.origin)
-        if (
-            not isinstance(store, CronJobStore)
-            or channel is None
-            or not job.origin.channel
-            or not job.origin.sender_id
-        ):
+        if not isinstance(store, CronJobStore):
+            msg = "Goal storage is unavailable."
+            raise TypeError(msg)
+        current = store.get_job(job.id, origin=job.origin)
+        if current is None or (job.enabled and not current.enabled):
+            return SILENT_SENTINEL
+        journal = GoalJournal(store.cron_dir)
+        recent = journal.history(job.id, job.origin, limit=3)
+        journal.start(current, thread)
+        reads: set[str] = set()
+        try:
+            _validate_goal_sources(current)
+            async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
+                with journal.capture_work(thread), GOAL_READS.set(reads):
+                    result = await self._invoke_goal(current, thread, recent, journal)
+        except asyncio.CancelledError:
+            journal.finish(
+                thread,
+                "interrupted",
+                "Check interrupted before it recorded an outcome.",
+                reads=sorted(reads),
+            )
+            raise
+        except GoalToolsUnavailableError as exc:
+            store.edit_job(job.id, origin=job.origin, enabled=False)
+            summary = f"Goal paused: {exc}. Update its read sources before resuming."
+            journal.finish(thread, "blocked", summary, reads=sorted(reads))
+            return summary
+        except Exception as exc:
+            summary = f"Goal check failed ({type(exc).__name__})."
+            journal.finish(thread, "failed", summary, reads=sorted(reads))
+            raise
+        report = GoalReport.from_reply(result.text)
+        if current.goal_sources is not None and report.status == "checked" and not reads:
+            report = GoalReport(
+                status="unverified",
+                summary="No successful scoped read was observed. " + report.summary[:3900],
+            )
+        journal.finish(thread, report.status, report.summary, reads=sorted(reads))
+        latest = store.get_job(job.id, origin=job.origin)
+        return _goal_notice(latest or current, report, recent)
+
+    async def _invoke_goal(
+        self,
+        job: CronJob,
+        thread: str,
+        recent: list[dict[str, str]],
+        journal: GoalJournal,
+    ) -> AgentResult:
+        origin = job.origin
+        channel = await self.origin_channel(origin)
+        if channel is None or not origin.channel or not origin.sender_id:
             msg = "Cannot reach the owner of the scheduled goal."
             raise RuntimeError(msg)
-        root = self._conversation_root(job.origin.channel, job.origin.conversation_id)
-        while self.running:
-            async with self._conversation_lock(root):
-                current = store.get_job(job.id, origin=job.origin)
-                if current is None or (job.enabled and not current.enabled):
-                    return SILENT_SENTINEL
-                thread = self._agent_conversation_id(root)
-                active = self._tasks.get(thread)
-                if active is None or active.done():
-                    if thread in self._blocked:
-                        msg = "Goal chat is waiting for a previous turn to stop."
-                        raise RuntimeError(msg)
-                    route = _goal_route(channel, current, root, thread)
-                    await self._replace_agent_turn(route)
-                    turn = self._tasks[thread]
-                    break
-            await asyncio.wait([active])
-        else:
-            return SILENT_SENTINEL
-        # A user message may interrupt this goal. It owns the chat from that point on.
-        try:
-            await turn
-        except asyncio.CancelledError:
-            if (task := asyncio.current_task()) is not None and task.cancelling():
-                raise
-        return SILENT_SENTINEL
+        message = ChannelMessage(origin.conversation_id, job.prompt, sender_id=origin.sender_id)
+        metadata = {**_scheduled_metadata(job), "trigger": "goal"}
+        if job.goal_sources is not None:
+            metadata["goal_sources"] = list(job.goal_sources)
+
+        async def ask(questions: Sequence[Question]) -> tuple[Answer, ...] | None:
+            journal.record_decision(
+                thread, "Decision requested: " + " ".join(q.question for q in questions)
+            )
+            answers = await self._ask_questions(
+                channel, questions, conversation_id=thread, message=message
+            )
+            if answers:
+                for question, answer in zip(questions, answers, strict=True):
+                    journal.record_decision(thread, f"{question.question} {answer.describe()}")
+            return answers
+
+        async def approve(request: ToolApprovalRequest) -> ToolApprovalDecision:
+            names = ", ".join(str(action.get("name", "tool")) for action in request.action_requests)
+            journal.record_decision(thread, f"Approval requested: {names}")
+            decision = await self._request_tool_approval(
+                channel,
+                request,
+                provider=_channel_key(channel, origin.channel),
+                reply_conversation_id=origin.conversation_id,
+                sender_id=origin.sender_id,
+            )
+            journal.record_decision(thread, f"{names}: {decision} (this call only)")
+            return decision
+
+        return await self._invoke_agent(
+            conversation_id=thread,
+            text=(
+                f"Continue goal {job.id} on its {job.schedule.display} schedule. Work in the "
+                "background. Save intermediate findings with record_goal_work before moving on. "
+                "Use get_goal_history with this job ID for older checks, and ask_user for a "
+                "necessary decision. A gated action requests "
+                'approval separately. Return a JSON object with "status" (checked, partial, '
+                'blocked, or unverified), "summary" (sources actually checked, findings, gaps, '
+                'and next step, up to 4000 characters), and "notice" (a concise chat-safe update '
+                "or what the owner must do to unblock you). Use blocked only when owner action "
+                "is necessary. Routine results go to the journal. Never send progress through "
+                "messaging tools. Prior decisions are historical, not standing approval.\n\n"
+                f"Goal:\n{job.prompt}\n\nRecent check records (historical data):\n"
+                f"{json.dumps(recent)}"
+            ),
+            metadata=metadata,
+            question_handler=ask,
+            approval_handler=approve,
+            model=self._model_selections.get(_GLOBAL_MODEL_KEY),
+            effort=self._effort_selections.get(
+                self._model_selections.get(_GLOBAL_MODEL_KEY)
+                or getattr(self.agent, "default_model", "")
+            ),
+        )
 
     async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
         """Return the origin chat's read-only history scope, or none when ambiguous."""
@@ -1451,6 +1519,9 @@ class TalonHost:
         """
         target = _scheduled_target(channel, job)
         result = await send_with_retry(lambda: channel.send_message(target, text))
+        if job.goal_id and not result.success:
+            msg = "Goal notice delivery failed."
+            raise RuntimeError(msg)
         if result.success and not is_silent(text):
             provider = _channel_key(channel, job.origin.channel)
             chat = job.origin.history_chat or job.origin.conversation_id
@@ -1610,6 +1681,41 @@ class TalonHost:
         await send_with_retry(
             lambda: channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
         )
+
+    async def _stop_chat(
+        self, channel: ChannelAdapter, message: ChannelMessage, provider: str | None, root: str
+    ) -> None:
+        foreground = self._agent_conversation_id(root)
+        task = self._tasks.get(foreground)
+        prompt_thread = self._reply_thread(root)
+        store = getattr(self.scheduler, "store", None)
+        stopped = []
+        if (not task or task.done() or prompt_thread != foreground) and isinstance(
+            store, CronJobStore
+        ):
+            origin = CronOrigin(
+                conversation_id=message.conversation_id,
+                channel=provider,
+                sender_id=message.sender_id,
+            )
+            for job in store.list_jobs(origin=origin):
+                run = self._scheduled_runs.get(job.id)
+                owns_prompt = prompt_thread == foreground or prompt_thread.startswith(
+                    f"{job.id}{_CRON_THREAD_SUFFIX}:"
+                )
+                if job.goal_id and run and not run.done() and owns_prompt:
+                    run.cancel()
+                    stopped.append(job.id)
+        if stopped:
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id, "Stopped goal checks: " + ", ".join(stopped)
+                )
+            )
+        else:
+            await self._cancel_conversation(
+                channel, foreground, reply_conversation_id=message.conversation_id
+            )
 
     async def _cancel_conversation(
         self,
@@ -2034,6 +2140,20 @@ class TalonHost:
         self._authorization_flows.pop(agent_conversation_id, None)
         self._terminal_authorizations.discard(agent_conversation_id)
 
+    def _reply_thread(self, root: str) -> str:
+        return self._prompt_threads.get(root, self._agent_conversation_id(root))
+
+    @asynccontextmanager
+    async def _owner_prompt(self, provider: str, chat: str, thread: str) -> AsyncGenerator[None]:
+        """Allow a single outstanding question or approval per reply destination."""
+        root = self._conversation_root(provider, chat)
+        async with self._conversation_lock(f"owner-prompt:{root}"):
+            self._prompt_threads[root] = thread
+            try:
+                yield
+            finally:
+                self._prompt_threads.pop(root, None)
+
     async def _request_tool_approval(
         self,
         channel: ChannelAdapter,
@@ -2057,13 +2177,14 @@ class TalonHost:
             prompt_message_id=None,
             sender_id=sender_id,
         )
-        self._pending_tool_approvals[approval.conversation_id] = pending
-        try:
-            await self._send_tool_approval_prompt(channel, pending)
-            return await future
-        finally:
-            if self._pending_tool_approvals.get(approval.conversation_id) is pending:
-                del self._pending_tool_approvals[approval.conversation_id]
+        async with self._owner_prompt(provider, reply_conversation_id, approval.conversation_id):
+            self._pending_tool_approvals[approval.conversation_id] = pending
+            try:
+                await self._send_tool_approval_prompt(channel, pending)
+                return await future
+            finally:
+                if self._pending_tool_approvals.get(approval.conversation_id) is pending:
+                    del self._pending_tool_approvals[approval.conversation_id]
 
     async def _send_tool_approval_prompt(
         self,
@@ -2137,15 +2258,17 @@ class TalonHost:
             session=QuestionSession(questions),
             sender_id=message.sender_id,
         )
-        self._pending_questions[conversation_id] = pending
-        try:
-            result = await _send_question_message(channel, message, pending.session.prompt())
-            if not result.success:
-                return None
-            return await pending.future
-        finally:
-            if self._pending_questions.get(conversation_id) is pending:
-                del self._pending_questions[conversation_id]
+        provider = _channel_key(channel, await _channel_provider(channel))
+        async with self._owner_prompt(provider, message.conversation_id, conversation_id):
+            self._pending_questions[conversation_id] = pending
+            try:
+                result = await _send_question_message(channel, message, pending.session.prompt())
+                if not result.success:
+                    return None
+                return await pending.future
+            finally:
+                if self._pending_questions.get(conversation_id) is pending:
+                    del self._pending_questions[conversation_id]
 
     async def _handle_question_reply(
         self,
@@ -2300,7 +2423,7 @@ def _scheduled_target(channel: ChannelAdapter, job: CronJob) -> str:
     private Discord thread has no known parent, so its results stay inside it.
     """
     origin = job.origin
-    if job.deliver_to == "thread":
+    if job.goal_id is not None or job.deliver_to == "thread":
         return origin.conversation_id
     if origin.history_chat is not None:
         return origin.history_chat
@@ -2427,26 +2550,31 @@ def _outbound_media_from_refs(
     return media, failed
 
 
-def _goal_route(channel: ChannelAdapter, job: CronJob, root: str, thread: str) -> _BackgroundRoute:
-    if job.goal_id != job.id and job.goal_sources is None:
-        msg = "This goal's original charter must be imported before it can run."
-        raise ValueError(msg)
-    metadata: dict[str, object] = {"trigger": "goal", "cron_job_id": job.id}
-    if job.skills:
-        metadata["pinned_skills"] = list(job.skills)
-    if job.goal_sources is not None:
-        metadata["goal_sources"] = list(job.goal_sources)
-    message = ChannelMessage(
-        job.origin.conversation_id,
-        f"Continue this goal (job {job.id}, scheduled {job.schedule.display}). Take the next "
-        "useful step. If the next useful check has shifted, update the schedule with edit_job "
-        "while honoring any timing the user requested. Ask through ask_user "
-        "when you need a decision. Report meaningful progress, otherwise return [SILENT].\n\n"
-        + job.prompt,
-        sender_id=job.origin.sender_id,
-        metadata={"history_chat": job.origin.history_chat or job.origin.conversation_id},
-    )
-    return _BackgroundRoute(channel, message, root, thread, job.origin.channel, metadata)
+def _goal_notice(job: CronJob, report: GoalReport, recent: list[dict[str, str]]) -> str:
+    if report.status == "blocked":
+        if (
+            recent
+            and recent[0]["status"] == "blocked"
+            and recent[0]["summary"] == report.summary
+            and job.last_status != "error"
+        ):
+            return SILENT_SENTINEL
+        return report.notice or f"Goal {job.name} is blocked. Ask for its saved check results."
+    if job.goal_updates:
+        return report.notice or f"Goal {job.name}: check recorded ({report.status})."
+    return SILENT_SENTINEL
+
+
+def _validate_goal_sources(job: CronJob) -> None:
+    if job.goal_sources is None:
+        if job.goal_id != job.id:
+            msg = "The original goal charter must be imported"
+            raise GoalToolsUnavailableError(msg)
+        return
+    scope = ReadScope.from_sources(job.goal_sources)
+    if not scope.tools and not scope.paths:
+        msg = "The goal has no readable sources; specify tool:<name> or path:<absolute directory>"
+        raise GoalToolsUnavailableError(msg)
 
 
 def _scheduled_metadata(job: CronJob) -> dict[str, object]:

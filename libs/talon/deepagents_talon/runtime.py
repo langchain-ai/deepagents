@@ -389,8 +389,8 @@ class DeepAgentRuntime:
         sandbox_working_dir: str | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
-        values = os.environ if env is None else env
-        resolved_recursion_limit = _recursion_limit_from_env(values, recursion_limit)
+        self.env = dict(os.environ if env is None else env)
+        resolved_recursion_limit = _recursion_limit_from_env(self.env, recursion_limit)
         if resolved_recursion_limit <= 0:
             msg = "recursion_limit must be positive"
             raise ValueError(msg)
@@ -401,7 +401,7 @@ class DeepAgentRuntime:
             msg = "max_continuations cannot be negative"
             raise ValueError(msg)
 
-        self.verbosity = TalonConfig.from_env(values).verbosity
+        self.verbosity = TalonConfig.from_env(self.env).verbosity
         self.model = model
         self.tools = tuple(tools)
         self.refresh_tools = refresh_tools
@@ -413,7 +413,6 @@ class DeepAgentRuntime:
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self._legacy_goal_dir = goal_dir
-        self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
         self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
@@ -1413,14 +1412,13 @@ class DeepAgentRuntime:
         if self.cron_store is not None:
             parts.append(
                 "When the user gives you a continuing goal, check list_jobs for an existing goal. "
-                "Identify what success looks like and inspect the current state in this turn. "
-                "If follow-up is needed, use create_goal for a new goal or edit_job for an "
-                "existing one. Honor the user's requested cadence. Otherwise choose the next "
-                "check based on a deadline, dependency, or expected change. Do the work you can "
-                "now and tell the user what you found and when you'll check again. "
-                "Use edit_job to save progress or pause a goal, and remove_job when it is done "
-                "or the user asks you to stop. Use ask_user for a decision or plan approval, "
-                "then continue with the answer. "
+                "Save the objective, constraints, known findings and next step with create_goal. "
+                "Keep setup brief and do the investigation in scheduled background checks. "
+                "Honor the owner's cadence, otherwise choose a schedule suited to the task. "
+                "Routine findings belong in the private goal history. Use get_goal_history "
+                "when the owner asks for progress. Enable goal_updates only when the owner "
+                "explicitly asks for recurring updates. Use edit_job to pause or revise a goal "
+                "and remove_job when done. Use ask_user when you need a decision. "
                 "A gated tool will request its own approval. Handle one-off requests directly."
             )
         if self.sandbox_working_dir is not None:
@@ -2200,7 +2198,9 @@ def _history_context(request: AgentRequest) -> Generator[None]:
     """Expose the host's history scope, archiving into it only on unscheduled turns."""
     scope = _history_scope(request)
     history = _HISTORY_SCOPE.set(scope)
-    archive = _ARCHIVE_SCOPE.set(None if request.metadata.get("trigger") == "cron" else scope)
+    archive = _ARCHIVE_SCOPE.set(
+        None if request.metadata.get("trigger") in {"cron", "goal"} else scope
+    )
     session = _HISTORY_SESSION.set(request.conversation_id)
     try:
         yield

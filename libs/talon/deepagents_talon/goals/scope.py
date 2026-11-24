@@ -34,7 +34,7 @@ FILE_READ_TOOLS: Mapping[str, str] = {
 }
 """Filesystem read tools and the argument that names the path they read."""
 
-ALWAYS_ALLOWED = frozenset({"current_time", "ask_user"})
+ALWAYS_ALLOWED = frozenset({"current_time", "ask_user", "record_goal_work"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +80,7 @@ class ReadScope:
         name = getattr(tool, "name", None)
         if not isinstance(tool, BaseTool) or not isinstance(name, str):
             return False
-        if name in {"edit_job", "remove_job"}:
+        if name in {"edit_job", "remove_job", "get_goal_history"}:
             return self.job_id is not None
         if name in ALWAYS_ALLOWED or (name in FILE_READ_TOOLS and self.paths):
             return True
@@ -91,7 +91,7 @@ class ReadScope:
         if not self.allows_tool(tool):
             return False
         name = getattr(tool, "name", "")
-        if name in {"edit_job", "remove_job"}:
+        if name in {"edit_job", "remove_job", "get_goal_history"}:
             return args.get("job_id") == self.job_id
         argument = FILE_READ_TOOLS.get(name)
         if argument is None:
@@ -137,6 +137,12 @@ def is_read_only(tool: BaseTool) -> bool:
     )
 
 
+# Shared across tool tasks in a single isolated check.
+GOAL_READS: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
+    "talon_goal_reads", default=None
+)
+
+
 class GoalToolsUnavailableError(RuntimeError):
     """A scheduled check cannot access its confirmed tool sources."""
 
@@ -168,7 +174,7 @@ class GoalScopeMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], ToolMessage],
     ) -> ToolMessage:
         """Refuse a tool call outside the goal's read scope."""
-        return _refusal(request) or handler(request)
+        return _refusal(request) or _observe_read(request, handler(request))
 
     async def awrap_tool_call(
         self,
@@ -176,7 +182,7 @@ class GoalScopeMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
         """Refuse a tool call outside the goal's read scope."""
-        return _refusal(request) or await handler(request)
+        return _refusal(request) or _observe_read(request, await handler(request))
 
 
 def _scoped_request(request: ModelRequest) -> ModelRequest:
@@ -191,6 +197,22 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
         msg = f"Goal check blocked by unavailable read tools: {', '.join(sorted(missing))}"
         raise GoalToolsUnavailableError(msg)
     return request.override(tools=[*allowed])
+
+
+def _observe_read(request: ToolCallRequest, result: ToolMessage) -> ToolMessage:
+    reads = GOAL_READS.get()
+    scope = GOAL_READ_SCOPE.get()
+    if reads is None or scope is None:
+        return result
+    name = request.tool_call["name"]
+    if (
+        isinstance(result, ToolMessage)
+        and result.status == "success"
+        and (name in scope.tools or name in FILE_READ_TOOLS)
+        and name not in ALWAYS_ALLOWED | {"edit_job", "remove_job", "get_goal_history"}
+    ):
+        reads.add(name)
+    return result
 
 
 def _refusal(request: ToolCallRequest) -> ToolMessage | None:

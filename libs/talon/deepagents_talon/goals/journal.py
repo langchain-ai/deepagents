@@ -1,0 +1,146 @@
+"""Durable, owner-scoped history of scheduled goal checks."""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Literal
+
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field, ValidationError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator, Sequence
+    from pathlib import Path
+
+    from deepagents_talon.cron.jobs import CronJob, CronOrigin
+
+
+_SAVE_WORK: ContextVar[Callable[[str], None] | None] = ContextVar("goal_save_work", default=None)
+
+
+@tool
+def record_goal_work(note: str) -> str:
+    """Checkpoint verified work, evidence references, and the next step during a goal check."""
+    save = _SAVE_WORK.get()
+    if save is None:
+        return "Available only during a scheduled goal check."
+    save(note)
+    return "Work saved to goal history."
+
+
+class GoalReport(BaseModel):
+    """One check's private work summary and optional owner-facing message."""
+
+    status: Literal["checked", "partial", "blocked", "unverified"]
+    summary: str = Field(min_length=1, max_length=4000)
+    notice: str = Field(default="", max_length=2000)
+
+    @classmethod
+    def from_reply(cls, text: str) -> GoalReport:
+        """Keep an unstructured result as an unverified note for later inspection."""
+        payload = text.strip()
+        if payload.startswith(("```json\n", "```\n")) and payload.endswith("```"):
+            payload = payload.split("\n", 1)[1][:-3].strip()
+        try:
+            return cls.model_validate_json(payload)
+        except ValidationError:
+            return cls(
+                status="unverified", summary=text.strip()[:4000] or "No work summary returned."
+            )
+
+
+class GoalJournal:
+    """Store bounded check summaries independently of the scheduler's job list."""
+
+    def __init__(self, directory: Path) -> None:
+        """Open the assistant's local journal, creating it on first use."""
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.path = directory / "goal-history.sqlite3"
+        self.path.touch(mode=0o600, exist_ok=True)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS checks ("
+                "run TEXT PRIMARY KEY, job TEXT NOT NULL, name TEXT NOT NULL, "
+                "channel TEXT NOT NULL, "
+                "chat TEXT NOT NULL, owner TEXT NOT NULL, started TEXT DEFAULT CURRENT_TIMESTAMP, "
+                "status TEXT NOT NULL, summary TEXT NOT NULL, decisions TEXT NOT NULL DEFAULT '', "
+                "work TEXT NOT NULL DEFAULT '', read_tools TEXT NOT NULL DEFAULT '')"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS goal_checks ON checks(channel, chat, owner, job)"
+            )
+
+    def start(self, job: CronJob, run: str) -> None:
+        """Record the start before doing work, including when the host subsequently exits."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "INSERT INTO checks(run,job,name,channel,chat,owner,status,summary) "
+                "VALUES(?,?,?,?,?,?,'started','No outcome recorded yet.')",
+                (
+                    run,
+                    job.id,
+                    job.name,
+                    job.origin.channel,
+                    job.origin.conversation_id,
+                    job.origin.sender_id,
+                ),
+            )
+
+    @contextmanager
+    def capture_work(self, run: str) -> Iterator[None]:
+        """Bind checkpoints to the executing check without exposing a writable goal ID."""
+
+        def save(note: str) -> None:
+            with closing(sqlite3.connect(self.path)) as db, db:
+                db.execute(
+                    "UPDATE checks SET work=substr(work || ?,-4000) "
+                    "WHERE run=? AND status='started'",
+                    ("\n" + note[:2000], run),
+                )
+
+        token = _SAVE_WORK.set(save)
+        try:
+            yield
+        finally:
+            _SAVE_WORK.reset(token)
+
+    def record_decision(self, run: str, text: str) -> None:
+        """Keep owner decisions on the run even if the following work is interrupted."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "UPDATE checks SET decisions=substr(decisions || ?,-4000) WHERE run=?",
+                ("\n" + text[:2000], run),
+            )
+
+    def finish(self, run: str, status: str, summary: str, *, reads: Sequence[str] = ()) -> None:
+        """Persist the last known outcome for this host-generated run ID."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "UPDATE checks SET status=?, summary=?, read_tools=? WHERE run=?",
+                (status, summary[:4000], ", ".join(reads)[:2000], run),
+            )
+
+    def history(
+        self, job: str | None, origin: CronOrigin, *, offset: int = 0, limit: int = 10
+    ) -> list[dict[str, str]]:
+        """Return one bounded page, newest first, within the originating owner's thread."""
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT job, name, started, status, summary, decisions, work, read_tools "
+                "FROM checks WHERE channel=? "
+                "AND chat=? AND owner=? AND (? IS NULL OR job=?) ORDER BY rowid DESC "
+                "LIMIT ? OFFSET ?",
+                (
+                    origin.channel,
+                    origin.conversation_id,
+                    origin.sender_id,
+                    job,
+                    job,
+                    limit,
+                    max(0, offset),
+                ),
+            )
+            return [dict(row) for row in rows]

@@ -178,6 +178,7 @@ class CronJobDict(TypedDict):
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
     goal_id: NotRequired[str | None]
+    goal_updates: NotRequired[bool]
     goal_sources: NotRequired[list[str]]
 
 
@@ -685,7 +686,8 @@ class CronJob:
             `channel` posts to the parent channel, `thread` replies in the thread.
         skills: Skill names whose full instructions load into each run.
         goal_id: Continuing goal run in its owner's chat, or `None` for an ordinary job.
-        goal_sources: Read boundaries inherited from a previously confirmed charter.
+        goal_sources: Owner-confirmed read boundaries for scheduled checks.
+        goal_updates: Whether the owner requested routine goal updates.
     """
 
     id: str
@@ -706,6 +708,7 @@ class CronJob:
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
     goal_id: str | None = None
+    goal_updates: bool = field(default=False, kw_only=True)
     goal_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
 
     def upcoming(self, count: int = 3) -> list[datetime]:
@@ -759,6 +762,7 @@ class CronJob:
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
             "goal_id": self.goal_id,
+            **({"goal_updates": True} if self.goal_updates else {}),
             **({"goal_sources": list(self.goal_sources)} if self.goal_sources is not None else {}),
         }
 
@@ -835,6 +839,7 @@ class CronJob:
             skills=pinned_skills(_list_field(record, "skills")),
             # Jobs saved before this field existed belong to no goal.
             goal_id=_optional_str_field(record, "goal_id"),
+            goal_updates=_bool_field(record, "goal_updates") if "goal_updates" in record else False,
             goal_sources=tuple(_string_list(record, "goal_sources"))
             if "goal_sources" in record
             else None,
@@ -892,6 +897,7 @@ class CronJobStore:
         skills: Sequence[str] = (),
         goal_id: str | None = None,
         continuing: bool = False,
+        goal_updates: bool = False,
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -906,6 +912,7 @@ class CronJobStore:
             deliver_to: Whether a thread origin's results post to its channel or thread.
             skills: Skill names to pin to each run; see `pinned_skills`.
             goal_id: Goal that owns the job, if any.
+            goal_updates: Deliver routine updates when the owner explicitly requests them.
             continuing: Create a recurring goal owned by the sender of the originating message.
             now: Creation time override for deterministic tests.
 
@@ -949,6 +956,7 @@ class CronJobStore:
                 until=until,
                 deliver_to=deliver_to,
                 skills=pinned,
+                goal_updates=goal_updates,
                 goal_id=job_id if continuing else goal_id,
             )
             jobs = [*self.list_jobs(), job]
@@ -1026,6 +1034,8 @@ class CronJobStore:
         prompt: str | None = None,
         schedule: CronSchedule | None = None,
         enabled: bool | None = None,
+        goal_updates: bool | None = None,
+        goal_sources: Sequence[str] | None = None,
         repeat_times: int | None = None,
         until: datetime | None = None,
         clear_until: bool = False,
@@ -1041,6 +1051,8 @@ class CronJobStore:
             name: Optional replacement label.
             prompt: Optional replacement prompt.
             schedule: Optional replacement schedule.
+            goal_sources: Replace the read boundaries for scheduled goal checks.
+            goal_updates: Optional owner preference for routine goal updates.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement for the job's last allowed run instant.
@@ -1069,6 +1081,9 @@ class CronJobStore:
                 if job.id != job_id or not _in_scope(job, origin):
                     result.append(job)
                     continue
+                if (goal_sources is not None or goal_updates is not None) and job.goal_id is None:
+                    msg = "Goal settings apply only to continuing goals."
+                    raise CronJobError(msg)
                 next_run_at = (
                     _first_run_at(schedule, current) if schedule is not None else job.next_run_at
                 )
@@ -1084,6 +1099,8 @@ class CronJobStore:
                     _check_until(new_schedule, next_run_at, new_until)
                 updated = replace(
                     job,
+                    goal_sources=job.goal_sources if goal_sources is None else tuple(goal_sources),
+                    goal_updates=job.goal_updates if goal_updates is None else goal_updates,
                     name=job.name if name is None else name,
                     prompt=job.prompt if prompt is None else prompt,
                     schedule=new_schedule,

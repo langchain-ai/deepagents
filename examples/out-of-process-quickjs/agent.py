@@ -1,10 +1,11 @@
 """A deep agent whose code runs in a credential-less QuickJS worker.
 
-The agent is composed as usual with `create_deep_agent`. Its `eval` tool runs
-the model's JavaScript in a separate worker process with an empty environment,
-seccomp and recycling. The ticket tools need a host-only API token and check
-the calling user's permissions, so they stay in this process; the model's code
-reaches them only as `tools.list_tickets(...)` / `tools.get_asset(...)`.
+The agent is composed as usual: `create_deep_agent` with
+`CodeInterpreterMiddleware`, whose `slot_factory` runs the model's JavaScript in
+a separate worker process with an empty environment, seccomp and recycling.
+The ticket tools need a host-only API token and check the calling user's
+permissions, so they stay in this process; the model's code reaches them as
+`tools.listTickets(...)` / `tools.getAsset(...)`.
 
 Uses `anthropic:claude-sonnet-4-6` when `ANTHROPIC_API_KEY` is set (via the
 environment or a `.env`), and a scripted stand-in model otherwise.
@@ -22,10 +23,10 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import ToolException, tool
+from langchain_quickjs import CodeInterpreterMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 
 from qjs_worker.host import WorkerConfig, WorkerPool
-from qjs_worker.middleware import WorkerInterpreterMiddleware
 
 MODEL = "anthropic:claude-sonnet-4-6"
 TASK = "Summarize my open tickets with the name and severity of each affected asset. Use one eval call."
@@ -72,8 +73,8 @@ async def get_asset(asset_id: str, config: RunnableConfig) -> dict:
 
 
 SCRIPTED_CODE = """\
-const tickets = await tools.list_tickets({ status: "open" });
-const assets = await Promise.allSettled(tickets.map((t) => tools.get_asset({ asset_id: t.asset_id })));
+const tickets = await tools.listTickets({ status: "open" });
+const assets = await Promise.allSettled(tickets.map((t) => tools.getAsset({ asset_id: t.asset_id })));
 tickets.map((t, i) => ({
   ticket: `${t.id} ${t.title}`,
   asset: assets[i].status === "fulfilled" ? assets[i].value : assets[i].reason.message,
@@ -106,8 +107,14 @@ async def main() -> None:
 
     pool = WorkerPool(WorkerConfig(), size=2)
     await pool.start()
-    interpreter = WorkerInterpreterMiddleware(pool, [list_tickets, get_asset])
-    agent = create_deep_agent(model=model, middleware=[interpreter], checkpointer=InMemorySaver())
+    agent = create_deep_agent(
+        model=model,
+        tools=[list_tickets, get_asset],
+        middleware=[
+            CodeInterpreterMiddleware(ptc=["list_tickets", "get_asset"], subagents=False, slot_factory=pool.slot)
+        ],
+        checkpointer=InMemorySaver(),
+    )
 
     config: RunnableConfig = {"configurable": {"thread_id": "demo", "user_id": "alice"}}
     result = await agent.ainvoke({"messages": [{"role": "user", "content": TASK}]}, config=config)
@@ -119,10 +126,9 @@ async def main() -> None:
                 print(f"\n[answer]\n{message.text}")
         elif isinstance(message, ToolMessage):
             print(f"\n[{message.name} result]\n{message.content}")
-    worker = interpreter.interpreters["demo"].worker
+    worker = pool.slots[0].worker
     print(f"\nthe code ran in worker {worker.ready}")
 
-    await interpreter.aclose()
     await pool.aclose()
 
 

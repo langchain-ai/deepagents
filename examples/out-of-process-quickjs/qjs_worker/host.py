@@ -1,27 +1,31 @@
-"""Host side: spawn credential-less QuickJS workers and run their tools here.
+"""Host side: a `Slot` for `CodeInterpreterMiddleware` backed by worker processes.
 
-Tools run in this process, with its credentials, config and callbacks. A
-worker only ever sees tool names, JSON inputs and JSON results.
+The middleware, its PTC tools and their credentials stay in this process. A
+worker only ever sees code, tool names, JSON inputs and JSON results.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import pwd
 import shutil
 import sys
 import tempfile
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from langchain_quickjs import EvalOutcome, SlotConfig
 
 from qjs_worker import protocol
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from langchain_core.runnables import RunnableConfig
+    from langchain.tools import ToolRuntime
     from langchain_core.tools import BaseTool
 
 # Errors after which a worker is not trusted to run anything else.
@@ -32,8 +36,6 @@ RECYCLE_ON = {"Timeout", "OutOfMemory", "WorkerDied", "HostTimeout"}
 class WorkerConfig:
     """How workers are started and when they are thrown away."""
 
-    memory_limit: int = 64 * 1024 * 1024  # QuickJS heap, enforced inside wasm
-    eval_timeout: float = 5.0  # QuickJS's own per-eval timeout
     host_timeout: float = 10.0  # wall clock after which the host kills the worker
     cpu_seconds: int = 60  # RLIMIT_CPU over the worker's whole life
     max_files: int = 16
@@ -43,17 +45,7 @@ class WorkerConfig:
     # Prefix for the worker command, e.g. ["runsc", "--network=none", "do"] or
     # ["unshare", "--user", "--net", "--"]. The protocol only needs stdin/stdout.
     launcher: list[str] = field(default_factory=list)
-    allow_probe: bool = False  # demo only: lets demo.py act as an escaped guest
-
-
-@dataclass
-class Outcome:
-    """Result of one eval."""
-
-    result: object = None
-    console: str = ""
-    error_type: str | None = None
-    error_message: str = ""
+    allow_probe: bool = False  # demo only: lets escape_check.py act as an escaped guest
 
 
 class WorkerProcess:
@@ -72,7 +64,6 @@ class WorkerProcess:
         if account:
             os.chown(cwd, account.pw_uid, account.pw_gid)
         worker_config = {
-            "memory_limit": config.memory_limit,
             "cpu_seconds": config.cpu_seconds,
             "max_files": config.max_files,
             "seccomp": config.seccomp,
@@ -104,6 +95,10 @@ class WorkerProcess:
     async def recv(self) -> dict | None:
         return await protocol.read(self.proc.stdout)
 
+    async def request(self, msg: dict) -> dict | None:
+        await self.send(msg)
+        return await self.recv()
+
     async def kill(self) -> None:
         if self.proc.returncode is None:
             self.proc.kill()
@@ -112,88 +107,150 @@ class WorkerProcess:
 
 
 class WorkerPool:
-    """Keeps `size` workers started, so an eval never waits on a spawn."""
+    """Keeps `size` workers starting or started, so an eval rarely waits on a spawn."""
 
     def __init__(self, config: WorkerConfig, size: int = 2) -> None:
         self.config = config
         self.size = size
-        self.ready: asyncio.Queue[WorkerProcess] = asyncio.Queue()
-        self.spawning: set[asyncio.Task] = set()
+        self.spawning: deque[asyncio.Task[WorkerProcess]] = deque()
+        self.slots: list[ProcessSlot] = []
 
     async def start(self) -> None:
-        for _ in range(self.size):
-            self._replace()
+        while len(self.spawning) < self.size:
+            self._spawn()
 
-    def _replace(self) -> None:
-        task = asyncio.ensure_future(self._spawn())
-        self.spawning.add(task)
-        task.add_done_callback(self.spawning.discard)
-
-    async def _spawn(self) -> None:
-        self.ready.put_nowait(await WorkerProcess.spawn(self.config))
+    def _spawn(self) -> None:
+        self.spawning.append(asyncio.ensure_future(WorkerProcess.spawn(self.config)))
 
     async def take(self) -> WorkerProcess:
-        """Return a started worker and begin spawning its replacement."""
-        worker = await self.ready.get()
-        self._replace()
-        return worker
+        """Return the oldest spawn, raising its error if it failed, and start a replacement."""
+        if not self.spawning:
+            self._spawn()
+        task = self.spawning.popleft()
+        self._spawn()
+        return await task
+
+    def slot(self, name: str, config: SlotConfig) -> ProcessSlot:
+        """`slot_factory` for `CodeInterpreterMiddleware`."""
+        del name  # workers are named by pid
+        self.slots.append(ProcessSlot(self, config))
+        return self.slots[-1]
 
     async def aclose(self) -> None:
-        await asyncio.gather(*self.spawning)
-        while not self.ready.empty():
-            await self.ready.get_nowait().kill()
+        """Kill every worker: the slots' and the spares."""
+        for slot in self.slots:
+            await slot.aclose()
+        for worker in await asyncio.gather(*self.spawning, return_exceptions=True):
+            if isinstance(worker, WorkerProcess):
+                await worker.kill()
 
 
-class Interpreter:
-    """One conversation's interpreter: evals run one at a time on a pooled worker."""
+class ProcessSlot:
+    """A `Slot` whose QuickJS Context lives in a pooled worker process.
 
-    def __init__(self, pool: WorkerPool, tools: Sequence[BaseTool]) -> None:
+    The worker is the Context: closing the Context kills it, and the next eval
+    takes a fresh one from the pool. Async only, so run the agent with
+    `ainvoke`/`astream`. `fs` and `task()` are not bridged; create the
+    middleware with `subagents=False` and no `fs`.
+    """
+
+    def __init__(self, pool: WorkerPool, config: SlotConfig) -> None:
         self.pool = pool
-        self.config = pool.config
-        self.tools = {tool.name: tool for tool in tools}
+        self.config = config
         self.worker: WorkerProcess | None = None
-        self.lock = asyncio.Lock()
+        self.tools: dict[str, BaseTool] = {}
+        self.eval_running = False
+        self.snapshot: bytes | None = None  # the snapshot the live worker still matches
+        self.restored = False  # a worker restores a snapshot at most once
 
-    async def eval(self, code: str, config: RunnableConfig | None = None) -> Outcome:
-        """Run `code`; host tools it calls get `config` (the caller's user, callbacks, tracing)."""
-        async with self.lock:
-            if self.worker is None or self.worker.proc.returncode is not None:
-                self.worker = await self.pool.take()
-            self.worker.evals += 1
-            try:
-                outcome = await asyncio.wait_for(self._run(code, config), self.config.host_timeout)
-            except TimeoutError:
-                outcome = Outcome(error_type="HostTimeout", error_message="worker killed after host_timeout")
-            if outcome.error_type in RECYCLE_ON or self.worker.evals >= self.config.max_evals:
-                await self.worker.kill()
-                self.worker = None
-            return outcome
+    async def _live_worker(self) -> WorkerProcess:
+        if self.worker is None or self.worker.proc.returncode is not None:
+            self.worker = await self.pool.take()
+            self.snapshot, self.restored = None, False
+            await self.worker.send({"op": "init", "memory_limit": self.config.memory_limit})
+        return self.worker
 
-    async def _run(self, code: str, config: RunnableConfig | None) -> Outcome:
-        worker = self.worker
-        await worker.send({"op": "eval", "code": code, "timeout": self.config.eval_timeout})
+    async def _close_worker(self) -> None:
+        if self.worker is not None:
+            await self.worker.kill()
+        self.worker, self.snapshot = None, None
+
+    async def eval_async(
+        self,
+        code: str,
+        *,
+        outer_runtime: ToolRuntime | None = None,
+        tools: Sequence[BaseTool] | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
+        fs: object = None,
+        close_context_after: bool = False,
+    ) -> EvalOutcome:
+        del outer_loop  # tools run on the caller's loop, which is this one
+        if fs is not None:
+            return EvalOutcome(error_type="UnsupportedCommand", error_message="fs is not available in this sandbox")
+        if self.eval_running:
+            return EvalOutcome(error_type="ConcurrentEval", error_message="another eval call is still running")
+        if tools is not None:
+            self.tools = {to_camel_case(tool.name): tool for tool in tools}
+        worker = await self._live_worker()
+        self.eval_running = True
+        worker.evals += 1
+        self.snapshot = None
+        outcome = None
+        try:
+            outcome = await asyncio.wait_for(self._run(worker, code, outer_runtime), self.pool.config.host_timeout)
+        except TimeoutError:
+            outcome = EvalOutcome(error_type="HostTimeout", error_message="worker killed after host_timeout")
+        finally:
+            self.eval_running = False
+            # No outcome means the eval was cancelled with its script still
+            # running: the worker can't be reused.
+            recycle = outcome is None or outcome.error_type in RECYCLE_ON
+            if recycle or close_context_after or worker.evals >= self.pool.config.max_evals:
+                await self._close_worker()
+        return outcome
+
+    async def _run(self, worker: WorkerProcess, code: str, outer_runtime: ToolRuntime | None) -> EvalOutcome:
+        timeout = self.config.timeout if self.config.timeout is not None else float("inf")
+        await worker.send({"op": "eval", "code": code, "timeout": timeout})
         # Frames from the worker are untrusted: size-capped by `protocol`, and
         # all they can do is name a tool in `self.tools` and pass it JSON.
+        config = outer_runtime.config if outer_runtime is not None else None
         calls: set[asyncio.Task] = set()
+        limit, made = self.config.max_ptc_calls, 0
         try:
             while (msg := await worker.recv()) is not None:
                 if msg["op"] == "tool_call":
-                    task = asyncio.ensure_future(self._call_tool(worker, msg, config))
+                    made += 1
+                    over_budget = limit is not None and made > limit
+                    task = asyncio.ensure_future(self._call_tool(worker, msg, config, over_budget=over_budget))
                     calls.add(task)
                     task.add_done_callback(calls.discard)
                 elif msg["op"] == "done":
-                    return Outcome(
-                        msg.get("result"), msg["console"], msg.get("error_type"), msg.get("error_message", "")
-                    )
-            return Outcome(error_type="WorkerDied", error_message=f"worker exited ({await worker.proc.wait()})")
+                    return self._outcome(msg)
+            return EvalOutcome(error_type="WorkerDied", error_message=f"worker exited ({await worker.proc.wait()})")
         finally:
             for task in calls:
                 task.cancel()
 
-    async def _call_tool(self, worker: WorkerProcess, msg: dict, config: RunnableConfig | None) -> None:
+    def _outcome(self, done: dict) -> EvalOutcome:
+        limit = self.config.max_stdout_chars
+        console = done["console"] if self.config.capture_console else ""
+        result = done.get("result")
+        return EvalOutcome(
+            stdout=console[:limit],
+            stdout_truncated_chars=max(0, len(console) - limit),
+            result=None if "error_type" in done else result if isinstance(result, str) else json.dumps(result),
+            error_type=done.get("error_type"),
+            error_message=done.get("error_message", ""),
+        )
+
+    async def _call_tool(self, worker: WorkerProcess, msg: dict, config: object, *, over_budget: bool) -> None:
         tool = self.tools.get(msg["name"])
         reply = {"op": "tool_result", "id": msg["id"], "ok": False}
-        if tool is None:
+        if over_budget:
+            reply["error"] = f"PTCCallBudgetExceeded: more than {self.config.max_ptc_calls} tool calls in one eval"
+        elif tool is None:
             reply["error"] = f"tools.{msg['name']} is not available"
         else:
             try:
@@ -202,6 +259,47 @@ class Interpreter:
                 reply["error"] = f"{type(e).__name__}: {e}"
         await worker.send(reply)
 
+    async def arestore_snapshot(self, payload: bytes) -> None:
+        worker = await self._live_worker()
+        if self.restored:
+            return
+        self.restored = True
+        await worker.request({"op": "restore", "data": base64.b64encode(payload).decode()})
+
+    async def acreate_snapshot(self) -> bytes | None:
+        if self.worker is None or self.snapshot is not None:
+            return None
+        reply = await self.worker.request({"op": "snapshot"})
+        self.snapshot, self.restored = base64.b64decode(reply["data"]), True
+        return self.snapshot
+
+    async def aclose_context(self, *, keep_snapshot: bytes | None = None) -> None:
+        if keep_snapshot is None or keep_snapshot != self.snapshot:
+            await self._close_worker()
+
     async def aclose(self) -> None:
-        if self.worker is not None:
-            await self.worker.kill()
+        await self._close_worker()
+
+    def eval_sync(self, code: str, **kwargs: object) -> EvalOutcome:
+        raise NotImplementedError(ASYNC_ONLY)
+
+    def restore_snapshot(self, payload: bytes) -> None:
+        raise NotImplementedError(ASYNC_ONLY)
+
+    def create_snapshot(self) -> bytes | None:
+        raise NotImplementedError(ASYNC_ONLY)
+
+    def close_context(self, *, keep_snapshot: bytes | None = None) -> None:
+        raise NotImplementedError(ASYNC_ONLY)
+
+    def close(self) -> None:
+        raise NotImplementedError(ASYNC_ONLY)
+
+
+ASYNC_ONLY = "ProcessSlot is async only; run the agent with ainvoke/astream"
+
+
+def to_camel_case(name: str) -> str:
+    """`list_tickets` -> `listTickets`, the name the middleware's prompt uses."""
+    head, *rest = name.replace("-", "_").split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)

@@ -9,7 +9,9 @@ import asyncio
 import os
 import tempfile
 
-from qjs_worker.host import Interpreter, WorkerConfig, WorkerPool
+from langchain_quickjs import SlotConfig
+
+from qjs_worker.host import WorkerConfig, WorkerPool
 
 os.environ["TICKETS_API_TOKEN"] = "fake-secret"
 # Stands in for a mounted service-account token. World-readable on purpose:
@@ -32,17 +34,16 @@ async def main() -> None:
     await worker.kill()
 
     print("Runaway scripts recycle the worker:")
-    interpreter = Interpreter(pool, [])
-    await interpreter.eval("1")
+    slot = pool.slot("escape-check", SlotConfig())
+    await slot.eval_async("1")
     for code in ("while (true) {}", "const a = []; while (true) a.push(new Array(1e5).fill(1));"):
-        pid = interpreter.worker.ready["pid"]
-        outcome = await interpreter.eval(code)
-        after = await interpreter.eval("1 + 1")
+        pid = slot.worker.ready["pid"]
+        outcome = await slot.eval_async(code)
+        after = await slot.eval_async("1 + 1")
         print(
-            f"   {outcome.error_type}: worker {pid} replaced by {interpreter.worker.ready['pid']}, next eval = {after.result}"
+            f"   {outcome.error_type}: worker {pid} replaced by {slot.worker.ready['pid']}, next eval = {after.result}"
         )
 
-    await interpreter.aclose()
     await pool.aclose()
     os.unlink(token_file.name)
 

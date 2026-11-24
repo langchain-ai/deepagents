@@ -1,18 +1,21 @@
 # Out-of-process QuickJS worker
 
-A deep agent whose model-written JavaScript runs in a separate worker process that holds no credentials. The agent is composed as usual:
+A deep agent whose model-written JavaScript runs in a separate worker process that holds no credentials. The agent is composed as usual, with `CodeInterpreterMiddleware` and its PTC tools. Only the slot that runs the code changes:
 
 ```python
 pool = WorkerPool(WorkerConfig(), size=2)
 await pool.start()
 agent = create_deep_agent(
     model="anthropic:claude-sonnet-4-6",
-    middleware=[WorkerInterpreterMiddleware(pool, [list_tickets, get_asset])],
+    tools=[list_tickets, get_asset],
+    middleware=[
+        CodeInterpreterMiddleware(ptc=["list_tickets", "get_asset"], subagents=False, slot_factory=pool.slot)
+    ],
     checkpointer=InMemorySaver(),
 )
 ```
 
-`WorkerInterpreterMiddleware` gives the agent an `eval` tool. The JavaScript it runs executes in a worker and reaches the host tools only as `tools.list_tickets(...)` / `tools.get_asset(...)`. Those calls are sent back to the agent's process, so the tools run there, with the host's `TICKETS_API_TOKEN` and the run's config (`get_asset` checks the calling user's team). The worker never sees either.
+`ProcessSlot` (in `qjs_worker/host.py`) implements langchain-quickjs's `Slot` interface. It keeps each thread's QuickJS Context in a pooled worker, and snapshots and persistence modes work as usual. The model's code reaches the tools as `tools.listTickets(...)` / `tools.getAsset(...)`. Those calls are sent back to the agent's process, so the tools run there, with the host's `TICKETS_API_TOKEN` and the run's config (`get_asset` checks the calling user's team). The worker never sees either.
 
 The worker:
 
@@ -20,9 +23,11 @@ The worker:
 - has rlimits on CPU time, open files and core dumps;
 - on Linux, installs a seccomp filter after QuickJS has loaded. The filter blocks file opens, sockets, exec and new processes;
 - talks to the host only through length-prefixed JSON frames on stdin/stdout;
-- is thrown away after a timeout, out-of-memory, a crash, the host's wall-clock limit, or `max_evals` evals. A pool keeps replacements started.
+- is thrown away after a timeout, out-of-memory, a crash, a cancelled eval, the host's wall-clock limit, or `max_evals` evals. A pool keeps replacements started.
 
-`CodeInterpreterMiddleware` runs the same engine (`quickjs-rs`) inside the agent's process. A runtime option on it (an out-of-process slot behind its `_Slot` interface) would make this setup first-class; until then, this example ships its own small middleware.
+`ProcessSlot` is async only (run the agent with `ainvoke`/`astream`). It doesn't bridge `fs` or `task()`, so create the middleware with `subagents=False` and no `fs`.
+
+`slot_factory` comes from [langchain-ai/deepagents#7965](https://github.com/langchain-ai/deepagents/pull/7965). Until that ships in a release, `pyproject.toml` installs langchain-quickjs from that branch.
 
 ## Run
 
@@ -34,15 +39,15 @@ The script uses `anthropic:claude-sonnet-4-6` when `ANTHROPIC_API_KEY` is set (i
 
 ```text
 [eval]
-const tickets = await tools.list_tickets({ status: "open" });
-const assets = await Promise.allSettled(tickets.map((t) => tools.get_asset({ asset_id: t.asset_id })));
+const tickets = await tools.listTickets({ status: "open" });
+const assets = await Promise.allSettled(tickets.map((t) => tools.getAsset({ asset_id: t.asset_id })));
 ...
 
 [eval result]
-{"result": [{"ticket": "T-101 TLS cert expires in 5 days", "asset": {"name": "payments-api", "severity": "critical", ...}},
-            {"ticket": "T-102 Outdated OpenSSH", "asset": "ToolException: alice is not allowed to read asset a-2"}, ...], ...}
+<result>[{"ticket": "T-101 TLS cert expires in 5 days", "asset": {"name": "payments-api", "severity": "critical", ...}},
+         {"ticket": "T-102 Outdated OpenSSH", "asset": "ToolException: alice is not allowed to read asset a-2"}, ...]</result>
 
-the code ran in worker {'op': 'ready', 'pid': 1791, 'uid': 65534, 'seccomp': True}
+the code ran in worker {'op': 'ready', 'pid': 3272, 'uid': 65534, 'seccomp': True}
 ```
 
 To see what a worker can reach if code breaks out of wasm, and how runaway scripts are recycled:
@@ -59,8 +64,8 @@ Python running inside a worker, as if it had escaped wasm:
    open a socket                                 denied: Operation not permitted
    run /bin/sh                                   denied: Operation not permitted
 Runaway scripts recycle the worker:
-   Timeout: worker 1754 replaced by 1764, next eval = 2
-   OutOfMemory: worker 1764 replaced by 1766, next eval = 2
+   Timeout: worker 3236 replaced by 3238, next eval = 2
+   OutOfMemory: worker 3238 replaced by 3249, next eval = 2
 ```
 
 `LC_CTYPE` is set by Python's own locale coercion; nothing is inherited from the host.
@@ -70,7 +75,7 @@ Runaway scripts recycle the worker:
 The worker only needs stdin and stdout, so stronger isolation is just a command prefix:
 
 ```python
-WorkerConfig(launcher=["unshare", "--user", "--net", "--"])            # empty network namespace
+WorkerConfig(launcher=["unshare", "--user", "--net", "--"])  # empty network namespace
 WorkerConfig(launcher=["runsc", "--rootless", "--network=none", "do"])  # gVisor
 ```
 

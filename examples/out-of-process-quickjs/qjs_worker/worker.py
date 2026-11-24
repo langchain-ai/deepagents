@@ -5,13 +5,16 @@ root, in an empty working directory. Startup order matters: rlimits, then
 load QuickJS (wasm compile, event loop, pipes), then seccomp, then `ready`.
 Untrusted code only arrives after the filter is in place.
 
-`tools.*` calls leave as `tool_call` frames on stdout; the host runs the tool
-and answers with a `tool_result` frame on stdin.
+The host's `ProcessSlot` sends `init` (the middleware's memory limit) when it
+takes the worker, then `eval`, `snapshot` and `restore` frames. `tools.*`
+calls leave as `tool_call` frames on stdout; the host runs the tool and
+answers with a `tool_result` frame on stdin.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import errno
 import itertools
 import json
@@ -21,7 +24,7 @@ import socket
 import subprocess
 import sys
 
-from quickjs_rs import JSError, MemoryLimitError, Runtime
+from quickjs_rs import JSError, MemoryLimitError, Runtime, Snapshot
 from quickjs_rs import TimeoutError as QjsTimeoutError
 
 from qjs_worker import protocol
@@ -34,7 +37,7 @@ globalThis.tools = new Proxy({}, {
     return reply.value;
   },
 });
-globalThis.console = { log: __console_log };
+globalThis.console = { log: __console_log, warn: __console_log, error: __console_log };
 undefined
 """
 
@@ -73,13 +76,18 @@ def apply_seccomp() -> None:
 class Worker:
     """One QuickJS context whose host functions are frames to the host."""
 
-    def __init__(self, memory_limit: int, *, allow_probe: bool) -> None:
-        self.runtime = Runtime(memory_limit=memory_limit)
-        self.ctx = self.runtime.new_context()
+    def __init__(self, *, allow_probe: bool) -> None:
+        # Compile the engine's wasm now, while files can still be opened; the
+        # real Runtime is built on `init`, with the middleware's memory limit.
+        Runtime().new_context().close()
         self.allow_probe = allow_probe
         self.console: list[str] = []
         self.pending: dict[int, asyncio.Future[dict]] = {}
         self.call_ids = itertools.count(1)
+
+    def init(self, memory_limit: int | None) -> None:
+        self.runtime = Runtime(memory_limit=memory_limit)
+        self.ctx = self.runtime.new_context()
         self.ctx.register("__tools_call", self.tools_call, is_async=True)
         self.ctx.register("__console_log", self.console_log)
         self.ctx.eval(TOOLS_NAMESPACE)
@@ -121,10 +129,18 @@ class Worker:
 
     async def serve(self, reader: asyncio.StreamReader) -> None:
         while (msg := await protocol.read(reader)) is not None:
-            if msg["op"] == "eval":
+            if msg["op"] == "init":
+                self.init(msg["memory_limit"])
+            elif msg["op"] == "eval":
                 asyncio.ensure_future(self.run_eval(msg))
             elif msg["op"] == "tool_result":
                 self.pending.pop(msg["id"]).set_result(msg)
+            elif msg["op"] == "snapshot":
+                data = base64.b64encode(self.ctx.create_snapshot().to_bytes()).decode()
+                send({"op": "snapshot", "data": data})
+            elif msg["op"] == "restore":
+                self.runtime.restore_snapshot(Snapshot.from_bytes(base64.b64decode(msg["data"])), self.ctx)
+                send({"op": "restored"})
             elif msg["op"] == "probe" and self.allow_probe:
                 send({"op": "probe", "results": probe(msg["paths"])})
 
@@ -154,7 +170,7 @@ def probe(paths: list[str]) -> dict[str, str]:
 
 async def main(config: dict) -> None:
     apply_rlimits(config["cpu_seconds"], config["max_files"])
-    worker = Worker(config["memory_limit"], allow_probe=config["allow_probe"])
+    worker = Worker(allow_probe=config["allow_probe"])
     reader = await protocol.stdin_reader()
     if config["seccomp"]:
         apply_seccomp()

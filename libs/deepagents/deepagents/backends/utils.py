@@ -516,6 +516,8 @@ def _encodable_text(content: str) -> str:
     Rejoins a surrogate pair split across code points and replaces each lone
     surrogate with U+FFFD, as Node does when it writes a JavaScript string.
     """
+    if content.isascii():
+        return content
     try:
         content.encode("utf-8")
     except UnicodeEncodeError:

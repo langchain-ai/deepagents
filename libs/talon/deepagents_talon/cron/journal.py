@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 
 _SAVE_WORK: ContextVar[Callable[[str], None] | None] = ContextVar("job_save_work", default=None)
+_NOTE_LIMIT = 2000
 
 
 @tool
@@ -30,6 +31,8 @@ def record_job_work(note: str) -> str:
     if save is None:
         return "Available only during a scheduled job run."
     save(note)
+    if len(note) > _NOTE_LIMIT:
+        return "Work saved with its middle truncated. Checkpoint any missing reference separately."
     return "Work saved to job history."
 
 
@@ -233,18 +236,25 @@ class JobJournal:
         """Bind checkpoints to the executing check without exposing a writable job ID."""
 
         def save(note: str) -> None:
-            with closing(sqlite3.connect(self.path)) as db, db:
-                db.execute(
-                    "UPDATE checks SET work=substr(work || ?,-4000) "
-                    "WHERE run=? AND status='started'",
-                    ("\n" + note[:2000], run),
-                )
+            self.append_work(run, note)
 
         token = _SAVE_WORK.set(save)
         try:
             yield
         finally:
             _SAVE_WORK.reset(token)
+
+    def append_work(self, run: str, note: str) -> None:
+        """Keep a bounded note, preserving the next step at the end of long checkpoints."""
+        if len(note) > _NOTE_LIMIT:
+            marker = "\n[truncated]\n"
+            head = _NOTE_LIMIT // 2
+            note = note[:head] + marker + note[-(_NOTE_LIMIT - head - len(marker)) :]
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "UPDATE checks SET work=substr(work || ?,-4000) WHERE run=? AND status='started'",
+                ("\n" + note, run),
+            )
 
     def finish(self, run: str, status: str, summary: str, *, reads: Sequence[str] = ()) -> None:
         """Persist the last known outcome for this host-generated run ID."""

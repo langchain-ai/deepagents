@@ -13,7 +13,7 @@ from langchain_core.tools import StructuredTool
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, record_job_work
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
-from deepagents_talon.cron.scope import JobScopeMiddleware
+from deepagents_talon.cron.scope import SCHEDULER_FINALIZING, JobScopeMiddleware
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
 from deepagents_talon.mcp_auth import _no_authorization_channel_error
@@ -313,6 +313,77 @@ def test_stale_completion_preserves_revised_objective(tmp_path: Path) -> None:
     assert store.get_job(job.id) == revised
     store.finish_objective(revised)
     assert store.get_job(job.id).next_run_at is None
+
+
+@pytest.mark.parametrize("stall_finalizer", [False, True])
+async def test_deadline_handoff_survives_a_stalled_tool_or_finalizer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, stall_finalizer: bool
+) -> None:
+    monkeypatch.setattr("deepagents_talon.host._SCHEDULED_RUN_TIMEOUT_SECONDS", 0.5)
+    channel = RecordingChannel("slack")
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(prompt="Verify build", mode="objective", origin=ORIGIN)
+    wake = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=5)
+    middleware = JobScopeMiddleware()
+    tool = StructuredTool.from_function(lambda: "", name="poll", description="Poll the build")
+    call = _request("owner", tool)
+    check = _request(
+        "owner", StructuredTool.from_function(lambda: "", name="check", description="Check")
+    )
+
+    async def stall(_request):
+        await asyncio.Event().wait()
+
+    class DeadlineAgent(BlockingAgent):
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            self.requests.append(request)
+            if not SCHEDULER_FINALIZING.get():
+                label = record_job_work.invoke({"note": "Build 29 " + "x" * 2100 + " next: sign"})
+                assert "truncated" in label
+                await middleware.awrap_tool_call(check, _successful_check)
+                await middleware.awrap_tool_call(call, stall)
+            assert (await middleware.awrap_tool_call(call, stall)).status == "error"
+            if stall_finalizer:
+                await asyncio.Event().wait()
+            return AgentResult(
+                text=json.dumps(
+                    {
+                        "status": "partial",
+                        "summary": "Build 29; verify signing.",
+                        "next_wake_at": wake.isoformat(),
+                    }
+                )
+            )
+
+    agent = DeadlineAgent()
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    host.scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=host.run_scheduled_job,
+        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
+    )
+    if stall_finalizer:
+        with pytest.raises(TimeoutError):
+            await host.run_scheduled_job(job)
+    else:
+        assert await host.run_scheduled_job(job) == "[SILENT]"
+        assert store.get_job(job.id).next_run_at == wake
+    first, final = agent.requests
+    assert first.conversation_id == final.conversation_id
+    assert "Final report deadline" in first.text
+    row = JobJournal(tmp_path).history(job.id, ORIGIN)[0]
+    assert row["status"] == ("failed" if stall_finalizer else "partial")
+    assert all(
+        s in row["work"] for s in ("Build 29", "[truncated]", "next: sign", first.conversation_id)
+    )
+    assert "Last tool receipt: check (call), status success, exit code 0" in row["work"]
+    assert "Calls without a receipt: poll (call)" in row["work"]
+
+
+async def _successful_check(request):
+    return ToolMessage(
+        content="Complete.", tool_call_id=request.tool_call["id"], artifact={"exit_code": 0}
+    )
 
 
 def test_unacknowledged_and_changed_blockers_are_deliverable(tmp_path: Path) -> None:

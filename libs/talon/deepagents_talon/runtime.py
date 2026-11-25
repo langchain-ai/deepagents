@@ -72,7 +72,12 @@ from deepagents_talon.codex_sessions import (
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
-from deepagents_talon.cron.scope import JOB_READ_SCOPE, JobScopeMiddleware, ReadScope
+from deepagents_talon.cron.scope import (
+    JOB_READ_SCOPE,
+    SCHEDULER_FINALIZING,
+    JobScopeMiddleware,
+    ReadScope,
+)
 from deepagents_talon.dcode_sessions import (
     SEND_TOOL as DCODE_SEND_TOOL,
     DcodeSessions,
@@ -812,9 +817,14 @@ class DeepAgentRuntime:
                 else contextlib.nullcontext()
             ),
         ):
+            marker = (
+                "[SYSTEM] The scheduler deadline interrupted this run. Verify outstanding effects."
+                if SCHEDULER_FINALIZING.get()
+                else _INTERRUPTED_MESSAGE
+            )
             await update_state(
                 recovery_config,
-                {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
+                {"messages": [*messages, HumanMessage(content=marker)]},
             )
 
     async def prepare_inbound_media(
@@ -1132,7 +1142,7 @@ class DeepAgentRuntime:
             pinned_skills=_request_pinned_skills(request),
         )
         text = _last_text(state)
-        if text:
+        if text or SCHEDULER_FINALIZING.get():
             return text
 
         for attempt in range(self.max_continuations):

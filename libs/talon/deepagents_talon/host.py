@@ -17,7 +17,7 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import FrameType
@@ -49,8 +49,11 @@ from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.cron.scope import (
     FILE_READ_TOOLS,
     JOB_READS,
+    OBJECTIVE_ACTIVITY,
     REQUIRED_READS,
+    SCHEDULER_FINALIZING,
     JobToolsUnavailableError,
+    ObjectiveActivity,
     ReadScope,
 )
 from deepagents_talon.effort import effort_levels, normalize_effort
@@ -165,6 +168,7 @@ _AGENT_FAILURE_MESSAGE = "Something went wrong while working on that. Check Talo
 # hangs in any one subagent: the ticker runs due jobs one at a time, so an unbounded run
 # silences every other job.
 _SCHEDULED_RUN_TIMEOUT_SECONDS = 1800.0
+_OBJECTIVE_FINALIZATION_SECONDS = 90.0
 _BACKGROUND_FOLLOW_UP = "Process the completed background subagent results."
 _BACKGROUND_RETRY_BASE_SECONDS = 2.0
 _BACKGROUND_RETRY_MAX_SECONDS = 60.0
@@ -1363,21 +1367,20 @@ class TalonHost:
         journal.start(job, thread)
         reads: set[str] = set()
         logins: set[str] = set()
+        deadline = asyncio.get_running_loop().time() + _SCHEDULED_RUN_TIMEOUT_SECONDS
+        hard_limit = asyncio.timeout_at(deadline)
         try:
             _validate_read_sources(job)
-            async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
+            async with hard_limit:
                 with (
                     journal.capture_work(thread),
                     JOB_READS.set(reads),
                     REQUIRED_READS.set(job.required_sources),
                     BACKGROUND_LOGIN_REQUIRED.set(logins if job.mode == "objective" else None),
                 ):
-                    result = await self._invoke_scheduled(job, thread, journal)
+                    result = await self._invoke_scheduled(job, thread, journal, deadline)
         except TimeoutError:
-            journal.finish(thread, "failed", "Scheduled run timed out.", reads=sorted(reads))
-            log_event(logger, "cron.run_timeout", job_id=job.id, job_name=job.name)
-            with contextlib.suppress(Exception):
-                await self.agent.recover_interrupted(thread)
+            await self._record_scheduled_timeout(job, thread, hard_limit, journal, reads)
             raise
         except asyncio.CancelledError:
             journal.finish(
@@ -1415,6 +1418,25 @@ class TalonHost:
         report = _objective_report(result.text, set(job.required_sources) - reads, logins)
         return self._finish_objective(job, journal, thread, report, reads)
 
+    async def _record_scheduled_timeout(
+        self,
+        job: CronJob,
+        thread: str,
+        limit: asyncio.Timeout,
+        journal: JobJournal,
+        reads: set[str],
+    ) -> None:
+        if not limit.expired():
+            journal.finish(
+                thread, "failed", "A scheduled operation timed out.", reads=sorted(reads)
+            )
+            return
+        journal.finish(thread, "failed", "Scheduled run timed out.", reads=sorted(reads))
+        log_event(logger, "cron.run_timeout", job_id=job.id, job_name=job.name)
+        with SCHEDULER_FINALIZING.set(True), contextlib.suppress(Exception):
+            async with asyncio.timeout(5):
+                await self.agent.recover_interrupted(thread)
+
     def _finish_objective(
         self,
         job: CronJob,
@@ -1448,24 +1470,65 @@ class TalonHost:
         return journal.notice(job, report) or SILENT_SENTINEL
 
     async def _invoke_scheduled(
-        self, job: CronJob, thread: str, journal: JobJournal
+        self, job: CronJob, thread: str, journal: JobJournal, deadline: float
     ) -> AgentResult:
-        metadata = _scheduled_metadata(job)
         if job.mode == "objective":
             if await self.origin_channel(job.origin) is None:
                 msg = "Cannot reach the owner of the objective job."
                 raise RuntimeError(msg)
-            model = self._model_selections.get(_GLOBAL_MODEL_KEY)
-            effort = self._effort_selections.get(model or getattr(self.agent, "default_model", ""))
+            return await self._run_objective(job, thread, journal, deadline)
+        metadata = _scheduled_metadata(job)
+        metadata.update(await self._scheduled_history(job))
+        return await self._invoke_agent(conversation_id=thread, text=job.prompt, metadata=metadata)
+
+    async def _run_objective(
+        self, job: CronJob, thread: str, journal: JobJournal, deadline: float
+    ) -> AgentResult:
+        reserve = min(_OBJECTIVE_FINALIZATION_SECONDS, _SCHEDULED_RUN_TIMEOUT_SECONDS / 2)
+        work_limit = asyncio.timeout_at(deadline - reserve)
+        hard_at = datetime.now(UTC) + timedelta(
+            seconds=deadline - asyncio.get_running_loop().time()
+        )
+        work_at = hard_at - timedelta(seconds=reserve)
+        prompt = (
+            f"Scheduler work deadline (UTC): {work_at.isoformat()}. "
+            f"Final report deadline: {hard_at.isoformat()}. Schedule a wake for waits that "
+            "would cross the work deadline. Checkpoint verified writes immediately, including "
+            "the destination, revision and next check.\n" + _objective_prompt(job, journal)
+        )
+        model = self._model_selections.get(_GLOBAL_MODEL_KEY)
+        effort = self._effort_selections.get(model or getattr(self.agent, "default_model", ""))
+        metadata = _scheduled_metadata(job)
+        activity = ObjectiveActivity()
+        with OBJECTIVE_ACTIVITY.set(activity):
+            try:
+                async with work_limit:
+                    return await self._invoke_agent(
+                        conversation_id=thread,
+                        text=prompt,
+                        metadata=metadata,
+                        model=model,
+                        effort=effort,
+                    )
+            except TimeoutError:
+                if not work_limit.expired():
+                    raise
+            finally:
+                if work_limit.expired():
+                    journal.append_work(thread, activity.handoff(thread))
+        with SCHEDULER_FINALIZING.set(True):
+            await self.agent.recover_interrupted(thread)
             return await self._invoke_agent(
                 conversation_id=thread,
-                text=_objective_prompt(job, journal),
+                text=(
+                    f"{activity.handoff(thread)}\nReturn the objective JSON report now. "
+                    "Use this thread's results. Include confirmed effects and artifact references, "
+                    "unfinished operations, what to verify before retrying, and the next wake."
+                ),
                 metadata=metadata,
                 model=model,
                 effort=effort,
             )
-        metadata.update(await self._scheduled_history(job))
-        return await self._invoke_agent(conversation_id=thread, text=job.prompt, metadata=metadata)
 
     async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
         """Return the origin chat's read-only history scope, or none when ambiguous."""

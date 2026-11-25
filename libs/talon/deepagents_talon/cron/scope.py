@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextvars
 import posixpath
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware.types import AgentMiddleware
@@ -149,6 +149,41 @@ REQUIRED_READS: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar
 )
 
 
+@dataclass(slots=True)
+class ObjectiveActivity:
+    """Tool receipts for a timeout handoff, including concurrent calls with unknown outcomes."""
+
+    pending: dict[str, str] = field(default_factory=dict)
+    last_result: str = ""
+
+    def finished(self, call_id: str, result: object) -> None:
+        """Record a reference to the returned tool message without copying private output."""
+        name = self.pending.pop(call_id, "tool")
+        self.last_result = f"{name} ({call_id}), status {getattr(result, 'status', 'returned')}"
+        if isinstance(result, ToolMessage) and isinstance(result.artifact, dict):
+            code = result.artifact.get("exit_code")
+            if isinstance(code, int):
+                self.last_result += f", exit code {code}"
+
+    def handoff(self, thread: str) -> str:
+        """Point the next run to the interrupted work and its last observed result."""
+        pending = ", ".join(f"{name} ({key})" for key, name in self.pending.items())
+        return (
+            f"Scheduler work deadline reached on thread {thread}. "
+            f"Last tool receipt: {self.last_result or 'none observed'}. "
+            f"Calls without a receipt: {pending or 'none observed'}. "
+            "Verify outstanding effects at their destination before retrying."
+        )
+
+
+OBJECTIVE_ACTIVITY: contextvars.ContextVar[ObjectiveActivity | None] = contextvars.ContextVar(
+    "talon_objective_activity", default=None
+)
+SCHEDULER_FINALIZING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "talon_scheduler_finalizing", default=False
+)
+
+
 class JobToolsUnavailableError(RuntimeError):
     """A scheduled check cannot access its confirmed tool sources."""
 
@@ -186,10 +221,21 @@ class JobScopeMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
         """Refuse a tool call outside the job's read scope."""
-        return _refusal(request) or _observe_read(request, await handler(request))
+        if refusal := _refusal(request):
+            return refusal
+        activity = OBJECTIVE_ACTIVITY.get()
+        call = request.tool_call
+        if activity is not None:
+            activity.pending[call["id"]] = call["name"]
+        result = await handler(request)
+        if activity is not None:
+            activity.finished(call["id"], result)
+        return _observe_read(request, result)
 
 
 def _scoped_request(request: ModelRequest) -> ModelRequest:
+    if SCHEDULER_FINALIZING.get():
+        return request.override(tools=[])
     scope = JOB_READ_SCOPE.get()
     if scope is None:
         if not REQUIRED_READS.get():
@@ -242,10 +288,14 @@ def _observe_read(request: ToolCallRequest, result: ToolMessage) -> ToolMessage:
 def _refusal(request: ToolCallRequest) -> ToolMessage | None:
     scope = JOB_READ_SCOPE.get()
     call = request.tool_call
-    if scope is None or scope.allows_call(request.tool, call.get("args") or {}):
+    if SCHEDULER_FINALIZING.get():
+        reason = "The scheduler work deadline has passed. Return the final report now."
+    elif scope is None or scope.allows_call(request.tool, call.get("args") or {}):
         return None
+    else:
+        reason = "Refused: this job run may only read the sources its owner confirmed."
     return ToolMessage(
-        content="Refused: this job run may only read the sources its owner confirmed.",
+        content=reason,
         name=call["name"],
         tool_call_id=call["id"],
         status="error",

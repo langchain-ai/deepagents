@@ -46,6 +46,10 @@ class ObjectiveReport(BaseModel):
     notice: str = Field(default="", max_length=2000)
 
     requires_signoff: bool = False
+    deadline_risk: str = Field(default="", max_length=1000)
+    decision_question: str = Field(default="", max_length=1000)
+    decision_unlocks: str = Field(default="", max_length=1000)
+
     blocker_key: str = Field(default="", max_length=200)
 
     verified: list[str] = Field(default_factory=list, max_length=64)
@@ -165,6 +169,11 @@ class JobJournal:
             )
 
             db.execute(
+                "CREATE TABLE IF NOT EXISTS decisions (job TEXT, revision TEXT, question TEXT, "
+                "unlocks TEXT NOT NULL, answer TEXT, delivered INTEGER DEFAULT 0, message_id TEXT, "
+                "PRIMARY KEY(job,revision,question))"
+            )
+            db.execute(
                 "CREATE TABLE IF NOT EXISTS objective_actions (job TEXT, run TEXT, call_id TEXT, "
                 "tool TEXT, arguments TEXT, PRIMARY KEY(job, call_id))"
             )
@@ -229,6 +238,8 @@ class JobJournal:
                     update={
                         "status": "blocked",
                         "notice": report.notice or notice,
+                        "decision_question": notice,
+                        "decision_unlocks": "Resolve the previous action before continuing.",
                         "blocker_key": f"uncertain-action:{call_id}",
                     }
                 )
@@ -270,6 +281,14 @@ class JobJournal:
         question = (
             f"Do you approve completion of {job.name} (evidence {version})? Reply yes to approve."
         )
+        answer = self.decision_answer(job, question)
+        if answer and answer.strip().casefold().rstrip(".!") in {
+            "yes",
+            "approve",
+            "approved",
+            "i approve",
+        }:
+            return report
         return report.model_copy(
             update={
                 "status": "blocked",
@@ -280,6 +299,63 @@ class JobJournal:
             }
         )
 
+    def decisions(self, job: CronJob) -> list[tuple[str, str, str | None]]:
+        """List questions, the work they unlock, and owner answers for the current revision."""
+        with closing(sqlite3.connect(self.path)) as db:
+            return db.execute(
+                "SELECT question,unlocks,answer FROM decisions WHERE job=? AND revision=? "
+                "ORDER BY rowid",
+                (job.id, _revision(job)),
+            ).fetchall()
+
+    def open_decision(self, job: CronJob, reply_to: str | None = None) -> tuple[str, str] | None:
+        """Find the current unanswered question, optionally by its delivered channel message."""
+        with closing(sqlite3.connect(self.path)) as db:
+            return db.execute(
+                "SELECT question,unlocks FROM decisions WHERE job=? AND revision=? AND answer "
+                "IS NULL AND (? IS NULL OR message_id=?)",
+                (job.id, _revision(job), reply_to, reply_to),
+            ).fetchone()
+
+    def decision_answer(self, job: CronJob, question: str) -> str | None:
+        """Read the owner's answer to this exact question under the current instructions."""
+        return next((answer for q, _, answer in self.decisions(job) if q == question), None)
+
+    def resolve_decision(
+        self, job: CronJob, question: str, answer: str, *, wake: Callable[[], bool]
+    ) -> bool:
+        """Resolve an open question exactly once."""
+        with closing(sqlite3.connect(self.path)) as db, db:
+            updated = db.execute(
+                "UPDATE decisions SET answer=? WHERE job=? AND revision=? AND question=? "
+                "AND answer IS NULL",
+                (answer, job.id, _revision(job), question),
+            ).rowcount
+            if updated and wake():
+                return True
+            db.rollback()
+            return False
+
+    def decision_notice(self, job: CronJob, report: ObjectiveReport) -> str:
+        """Keep the current question pending until its notice reaches the owner."""
+        question = report.decision_question.strip()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "DELETE FROM decisions WHERE job=? AND revision=? AND answer IS NULL "
+                "AND question!=?",
+                (job.id, _revision(job), question),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO decisions(job,revision,question,unlocks) VALUES(?,?,?,?)",
+                (job.id, _revision(job), question, report.decision_unlocks),
+            )
+            row = db.execute(
+                "SELECT unlocks FROM decisions WHERE job=? AND revision=? AND "
+                "question=? AND answer IS NULL AND delivered=0",
+                (job.id, _revision(job), question),
+            ).fetchone()
+            return decision_text(job.name, job.id, question, row[0]) if row else ""
+
     def blocker_key(self, job: str) -> str:
         """Return the current blocker identity for the next isolated check."""
         with closing(sqlite3.connect(self.path)) as db:
@@ -289,15 +365,19 @@ class JobJournal:
     def notice(self, job: CronJob, report: ObjectiveReport) -> str:
         """Keep one notice pending until delivered, or until progress clears the blocker."""
         with closing(sqlite3.connect(self.path)) as db, db:
-            if report.status != "blocked":
+            risk = report.deadline_risk.strip() if job.target_at or job.until else ""
+            if report.status != "blocked" and not risk:
                 if report.status in {"checked", "partial", "complete"}:
                     db.execute("DELETE FROM blockers WHERE job=?", (job.id,))
                 return ""
             notice = (
-                report.notice.strip()
+                risk
+                or report.notice.strip()
                 or f"Job {job.name} is blocked. Ask for its saved check results."
             )
             key = (report.blocker_key.strip() or report.notice.strip() or report.summary).casefold()
+            if risk:
+                key = "deadline:" + risk.casefold()
             db.execute(
                 "INSERT INTO blockers(job,key,notice) VALUES(?,?,?) ON CONFLICT(job) "
                 "DO UPDATE SET key=excluded.key,notice=excluded.notice,delivered=0 "
@@ -309,10 +389,24 @@ class JobJournal:
             ).fetchone()
             return row[0] if row else ""
 
-    def mark_delivered(self, job: str, notice: str) -> None:
+    def mark_delivered(self, job: str, notice: str, message_id: str | None = None) -> None:
         """Acknowledge a blocker only after the channel accepted its message."""
         with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute("UPDATE blockers SET delivered=1 WHERE job=? AND notice=?", (job, notice))
+            for revision, question, unlocks in db.execute(
+                "SELECT revision,question,unlocks FROM decisions WHERE job=? AND delivered=0",
+                (job,),
+            ):
+                if notice.endswith(decision_text("", job, question, unlocks)):
+                    db.execute(
+                        "UPDATE decisions SET delivered=1,message_id=? WHERE job=? AND revision=? "
+                        "AND question=?",
+                        (message_id, job, revision, question),
+                    )
+            db.execute(
+                "UPDATE blockers SET delivered=1 WHERE job=? AND "
+                "(notice=? OR instr(? || char(10), notice || char(10)) > 0)",
+                (job, notice, notice),
+            )
 
     def start(self, job: CronJob, run: str) -> None:
         """Record the start before doing work, including when the host subsequently exits."""
@@ -394,6 +488,11 @@ class JobJournal:
                 ),
             )
             return [dict(row) for row in rows]
+
+
+def decision_text(name: str, job_id: str, question: str, unlocks: str) -> str:
+    """Format an owner question with its explicit answer address."""
+    return f"{name} [{job_id}] {question} {unlocks} Reply with: answer {job_id}: <your answer>"
 
 
 def _revision(job: CronJob) -> str:

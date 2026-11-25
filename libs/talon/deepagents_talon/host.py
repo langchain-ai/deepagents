@@ -42,6 +42,7 @@ from deepagents_talon.channels.base import (
 )
 from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
+from deepagents_talon.cron.decisions import decision_reply
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, criterion_ids
@@ -633,16 +634,23 @@ class TalonHost:
                     await self._handle_question_reply(channel, message, questions)
                     return
 
-                await self._replace_agent_turn(
-                    _BackgroundRoute(
-                        channel=channel,
-                        message=message,
-                        conversation_root=conversation_root,
-                        conversation_id=agent_conversation_id,
-                        provider=provider,
-                    ),
-                    user_interrupted=True,
-                )
+                if reply := decision_reply(
+                    getattr(self.scheduler, "store", None), message, provider
+                ):
+                    await send_with_retry(
+                        lambda: channel.send_message(message.conversation_id, reply)
+                    )
+                else:
+                    await self._replace_agent_turn(
+                        _BackgroundRoute(
+                            channel=channel,
+                            message=message,
+                            conversation_root=conversation_root,
+                            conversation_id=agent_conversation_id,
+                            provider=provider,
+                        ),
+                        user_interrupted=True,
+                    )
 
     async def _handle_conversation_command(
         self,
@@ -1455,6 +1463,10 @@ class TalonHost:
             missing_source_count=len(set(job.required_sources) - reads),
         )
         store = getattr(self.scheduler, "store", None)
+        if isinstance(store, CronJobStore) and store.get_job(job.id) != job:
+            return SILENT_SENTINEL
+        question = report.decision_question.strip() if report.status != "complete" else ""
+        decision = journal.decision_notice(job, report) if question else ""
         if isinstance(store, CronJobStore):
             complete = report.status == "complete"
             wake = None
@@ -1464,15 +1476,24 @@ class TalonHost:
                     history[0] if history else None, datetime.now(UTC), job.until
                 )
             notice = f"Goal {job.id} completed. {report.notice or job.name}" if complete else ""
+            waiting = (
+                bool(question)
+                and report.status == "blocked"
+                and (journal.decision_answer(job, question) is None)
+            )
             if not store.apply_objective_result(
                 job,
                 complete=complete,
                 wake=wake,
                 notice=notice,
+                waiting_for_owner=waiting,
                 wait_condition=report.wait_condition,
             ):
                 return SILENT_SENTINEL
-        return journal.notice(job, report) or SILENT_SENTINEL
+        if question and not report.deadline_risk:
+            return decision or SILENT_SENTINEL
+        notice = journal.notice(job, report)
+        return "\n".join(filter(None, (notice, decision))) or SILENT_SENTINEL
 
     async def _invoke_scheduled(
         self, job: CronJob, thread: str, journal: JobJournal, deadline: float
@@ -1605,7 +1626,7 @@ class TalonHost:
         if job.mode == "objective" and isinstance(
             store := getattr(self.scheduler, "store", None), CronJobStore
         ):
-            JobJournal(store.cron_dir).mark_delivered(job.id, text)
+            JobJournal(store.cron_dir).mark_delivered(job.id, text, result.message_id)
         if result.success and not is_silent(text):
             provider = _channel_key(channel, job.origin.channel)
             chat = job.origin.history_chat or job.origin.conversation_id
@@ -2673,6 +2694,11 @@ def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
         "Omit unchanged entries. "
         f"Standing criteria: {json.dumps(identifiers)}. If null, return completion_criteria once "
         "from the owner's standing prompt, listing each finish condition or [] for ongoing work. "
+        "When the owner must decide, include decision_question and decision_unlocks. Continue "
+        "independent work with partial status, then report blocked once only the decision remains. "
+        "If the target or deadline is at risk, include deadline_risk with the specific risk. "
+        f"Target: {job.target_at}. Deadline: {job.until}. "
+        f"Questions and owner answers: {json.dumps(journal.decisions(job))}. "
         f"Saved evidence: {json.dumps(evidence)}. "
         f"Required reads for this check: {json.dumps(job.required_sources)}. "
         "Use complete only when a finite objective "

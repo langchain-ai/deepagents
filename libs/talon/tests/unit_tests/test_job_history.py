@@ -802,3 +802,78 @@ async def test_subjective_completion_stays_open_pending_owner_acceptance(tmp_pat
     notice = await host.run_scheduled_job(job)
     assert store.get_job(job.id).enabled
     assert "approve" in notice.lower()
+
+
+async def test_decision_sleeps_then_owner_reply_wakes_only_named_goal(tmp_path: Path) -> None:
+    agent = _WorkingGoalAgent()
+    agent.released.set()
+    channel = RecordingChannel("slack")
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    _attach_scheduler(host, store)
+    goals = []
+    for name in ("build", "release"):
+        goal = store.create_job(
+            prompt=name,
+            name=name,
+            origin=ORIGIN,
+            mode="objective",
+            schedule=CronSchedule.parse("every 1h"),
+        )
+        agent.report.update(
+            status="blocked",
+            decision_question=f"Approve {name}?",
+            decision_unlocks="Proceed with signing.",
+        )
+        notice = await host.run_scheduled_job(goal)
+        assert f"Approve {name}?" in notice
+        channel.next_message_id = name
+        await host.deliver_scheduled_result(channel, goal, notice)
+        assert store.get_job(goal.id).next_run_at is None
+        goals.append(goal)
+
+    async def chat(text: str) -> str:
+        await host.receive_message(
+            channel, ChannelMessage(ORIGIN.conversation_id, text, sender_id="alice")
+        )
+        return channel.sent[-1][1]
+
+    assert "Proceed with signing." in await chat("what needs me?")
+    assert "Which" in await chat("yes")
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            ORIGIN.conversation_id,
+            "yes",
+            sender_id="alice",
+            metadata={"quoted_message_id": "build"},
+        ),
+    )
+    assert [job.id for job in store.due_jobs()] == [goals[0].id]
+    assert "Approve build?" not in await chat("what needs me?")
+    assert JobJournal(store.cron_dir).decision_answer(goals[0], "Approve build?") == "yes"
+
+
+async def test_independent_work_continues_and_notifies_of_deadline_risk(tmp_path: Path) -> None:
+    agent = _WorkingGoalAgent()
+    agent.released.set()
+    channel = RecordingChannel("slack")
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    _attach_scheduler(host, store)
+    target = datetime.now(UTC) + timedelta(days=1)
+    goal = store.create_job(
+        prompt="Publish the release",
+        origin=ORIGIN,
+        mode="objective",
+        schedule=CronSchedule.parse("every 1h"),
+        target_at=target,
+    )
+    agent.report.update(decision_question="Which track?", decision_unlocks="Publish the build.")
+    notice = await host.run_scheduled_job(goal)
+    assert "Which track?" in notice
+    await host.deliver_scheduled_result(channel, goal, notice)
+    assert store.get_job(goal.id).next_run_at < target
+    assert await host.run_scheduled_job(goal) == "[SILENT]"
+    agent.report.update(deadline_risk="Signing capacity will expire before release.")
+    assert "Signing capacity will expire" in await host.run_scheduled_job(goal)

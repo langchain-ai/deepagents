@@ -1317,7 +1317,7 @@ class CronJobStore:
             )
             self._write_jobs(jobs)
 
-    def apply_objective_result(  # Scheduling and notice fields are independent.
+    def apply_objective_result(  # noqa: PLR0913  # Scheduling and notice fields are independent.
         self,
         snapshot: CronJob,
         *,
@@ -1325,6 +1325,7 @@ class CronJobStore:
         wake: datetime | None = None,
         notice: str = "",
         wait_condition: str = "",
+        waiting_for_owner: bool = False,
     ) -> bool:
         """Apply a scheduling decision and report whether the run is still current."""
         with self._lock:
@@ -1341,6 +1342,13 @@ class CronJobStore:
                     wait_condition="",
                     completion_notice=notice,
                     notice_state="pending" if notice else "",
+                )
+            elif waiting_for_owner:
+                future_targets = [
+                    t for t in (current.target_at, current.until) if t and t > _coerce_utc()
+                ]
+                updated = replace(
+                    current, next_run_at=min(future_targets, default=None), wait_condition=""
                 )
             elif wake is not None and snapshot.enabled:
                 wake = _coerce_utc(wake)
@@ -1362,6 +1370,23 @@ class CronJobStore:
             if snapshot not in jobs:
                 return False
             jobs[jobs.index(snapshot)] = replace(snapshot, notice_state=state)
+            self._write_jobs(jobs)
+            return True
+
+    def wake_for_answer(self, snapshot: CronJob) -> bool:
+        """Wake an unchanged active assignment and invalidate its earlier running check."""
+        with self._lock:
+            jobs = self.list_jobs()
+            if not snapshot.enabled or snapshot not in jobs:
+                return False
+            index = jobs.index(snapshot)
+            current = jobs[index]
+            jobs[index] = replace(
+                current,
+                next_run_at=_coerce_utc(),
+                run_requested=True,
+                owner_context_revision=current.owner_context_revision + 1,
+            )
             self._write_jobs(jobs)
             return True
 

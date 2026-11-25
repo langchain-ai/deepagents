@@ -14,8 +14,16 @@ import html
 import inspect
 import json
 import logging
+import os
+import shutil
+import subprocess  # noqa: S404  # fixed-argv Git for Windows lookup
+import sys
+import tempfile
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
+from functools import cache
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -26,6 +34,7 @@ from typing import (
     runtime_checkable,
 )
 
+from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -45,7 +54,7 @@ from deepagents_code.goal_state_notice import anchor_summarization_event
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Generator
 
     from deepagents.backends.protocol import ExecuteResponse
     from deepagents.middleware.summarization import SummarizationEvent
@@ -59,6 +68,9 @@ _TOOL_NAME_DISPLAY_LIMIT = 10
 
 _DETECT_SCRIPT_TIMEOUT = 30
 """Timeout in seconds for the environment detection script."""
+
+_GIT_EXEC_PATH_TIMEOUT = 5
+"""Timeout in seconds for `git --exec-path` when locating Git Bash on Windows."""
 
 _MCP_ERROR_DETAIL_LIMIT = 200
 """Max characters of an MCP server error surfaced in the system prompt."""
@@ -139,6 +151,9 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
     Returns:
         Formatted markdown string, or `""` if no servers.
     """
+    # Unapproved project servers carry names and transports straight from an
+    # unreviewed `.mcp.json`; nothing about them may reach the model.
+    servers = [s for s in servers if s.status != "untrusted"]
     if not servers:
         return ""
 
@@ -666,8 +681,8 @@ if [ -n "$MK" ]; then
 fi"""
 
 
-def build_detect_script() -> str:
-    """Concatenate all section functions into the full detection script.
+def _build_detect_script_body() -> str:
+    """Concatenate all section functions into the detection script body.
 
     Independent sections run as parallel background jobs writing to temp
     files, then results are concatenated in the original display order.
@@ -675,7 +690,7 @@ def build_detect_script() -> str:
     because later sections depend on their variables.
 
     Returns:
-        Complete bash heredoc ready for `backend.execute()`.
+        Bash script body, without the heredoc wrapper.
     """
     # Header (sets CWD, IN_GIT, ROOT) + project run synchronously for others
     serial_prefix = f"{_section_header()}\n{_section_project()}"
@@ -705,11 +720,105 @@ def build_detect_script() -> str:
     )
     cat_line = "cat " + " ".join(f'"$_DCT/{name}"' for name, _ in parallel_sections)
 
-    body = f"{serial_prefix}\n{parallel_setup}\n{parallel_block}\nwait\n{cat_line}"
+    return f"{serial_prefix}\n{parallel_setup}\n{parallel_block}\nwait\n{cat_line}"
+
+
+def build_detect_script() -> str:
+    """Wrap the detection script body in a heredoc.
+
+    Returns:
+        Complete bash heredoc ready for `backend.execute()`.
+    """
+    body = _build_detect_script_body()
     return f"bash <<'__DETECT_CONTEXT_EOF__'\n{body}\n__DETECT_CONTEXT_EOF__\n"
 
 
 DETECT_CONTEXT_SCRIPT = build_detect_script()
+
+
+@cache
+def _windows_git_bash() -> Path | None:
+    """Locate the `bash.exe` that ships with Git for Windows.
+
+    Bare `bash` is avoided: on Windows it often resolves to the WSL launcher,
+    which runs in a Linux VM and would describe the wrong machine.
+
+    Returns:
+        Path to Git Bash, or `None` if Git for Windows is not installed.
+    """
+    # Windows also searches the current directory, which may be an untrusted
+    # project, so only absolute `PATH` entries are considered.
+    path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if Path(entry).is_absolute()
+    )
+    git = shutil.which("git", path=path)
+    if git is not None and Path(git).is_absolute():
+        # `git` may be a shim (e.g. Scoop), so ask it where it is installed.
+        try:
+            exec_path = subprocess.run(  # noqa: S603  # fixed argv with resolved Git path
+                [git, "--exec-path"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_GIT_EXEC_PATH_TIMEOUT,
+                check=True,
+            ).stdout.strip()
+        except OSError, subprocess.SubprocessError:
+            logger.debug("Git exec path lookup failed", exc_info=True)
+        else:
+            # e.g. C:/Program Files/Git/mingw64/libexec/git-core -> C:/Program Files/Git
+            for parent in Path(exec_path).parents:
+                bash = parent / "bin" / "bash.exe"
+                if bash.is_file():
+                    return bash
+    logger.info(
+        "Git for Windows not found; local context will be omitted from the "
+        "system prompt"
+    )
+    return None
+
+
+def _runs_through_cmd(backend: object) -> bool:
+    """Whether `backend` runs commands through `cmd.exe`.
+
+    `cmd.exe` has no heredocs and caps a command line at 8191 characters, so
+    the detection script must run from a file with Git Bash instead.
+
+    Returns:
+        `True` for `LocalShellBackend` on Windows.
+    """
+    return sys.platform == "win32" and isinstance(backend, LocalShellBackend)
+
+
+@contextmanager
+def _detect_command(backend: object) -> Generator[str | None]:
+    """Yield the command that runs the detection script on `backend`.
+
+    Args:
+        backend: Backend that will execute the command.
+
+    Yields:
+        Command for `backend.execute()`, or `None` when the script cannot run.
+    """
+    if not _runs_through_cmd(backend):
+        yield DETECT_CONTEXT_SCRIPT
+        return
+    bash = _windows_git_bash()
+    if bash is None:
+        yield None
+        return
+    fd, script = tempfile.mkstemp(prefix="dcode-context-", suffix=".sh")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            # Print `C:/...` like `git rev-parse --show-toplevel`, not `/c/...`.
+            f.write("pwd() { builtin pwd -W; }\n")
+            f.write(_build_detect_script_body())
+        yield f'"{bash}" "{script}"'
+    finally:
+        Path(script).unlink(missing_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # State schema
@@ -880,9 +989,10 @@ class LocalContextMiddleware(AgentMiddleware):
             )
             return None
         try:
-            result = backend.execute(
-                DETECT_CONTEXT_SCRIPT, timeout=_DETECT_SCRIPT_TIMEOUT
-            )
+            with _detect_command(backend) as command:
+                if command is None:
+                    return None
+                result = backend.execute(command, timeout=_DETECT_SCRIPT_TIMEOUT)
         except NotImplementedError:
             # Expected for async-only backends (e.g. HarborSandbox) that
             # define a stub execute() raising NotImplementedError.
@@ -1007,13 +1117,14 @@ class LocalContextMiddleware(AgentMiddleware):
 
         Prefers `aexecute` when the backend implements `_AsyncExecutableBackend`.
         Falls back to running the sync detection script in a thread pool
-        for sync-only backends.
+        for sync-only backends, and for `cmd.exe` backends, whose script file
+        setup blocks.
 
         Returns:
             Stripped script output, or `None` on failure/empty output.
         """
         backend = self.backend
-        if not (
+        if _runs_through_cmd(backend) or not (
             isinstance(backend, _AsyncExecutableBackend)
             and inspect.iscoroutinefunction(backend.aexecute)
         ):

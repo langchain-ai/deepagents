@@ -325,9 +325,6 @@ def test_ptc_injects_tool_call_id_per_call() -> None:
     _assert_result_contains(_eval_tool_message(result).content, "true:true:true")
 
 
-@pytest.mark.filterwarnings(
-    "ignore:The v3 streaming protocol on Pregel is experimental"
-)
 def test_ptc_calls_surface_in_native_tool_stream() -> None:
     """PTC calls use the standard tool-call stream with correlated IDs."""
     code = "await tools.streamProgress({value: 'working'})"
@@ -336,25 +333,28 @@ def test_ptc_calls_surface_in_native_tool_stream() -> None:
         CodeInterpreterMiddleware(ptc=[stream_progress]),
         streaming=True,
     )
-    run = agent.stream_events(
-        {"messages": [HumanMessage(content="go")]},
-        version="v3",
+    events = list(
+        agent.stream(
+            {"messages": [HumanMessage(content="go")]},
+            stream_mode="tools",
+        )
     )
 
-    calls = []
-    deltas: list[Any] = []
-    for call in run.tool_calls:
-        calls.append(call)
-        if call.tool_name == "stream_progress":
-            deltas.extend(call.output_deltas)
-
-    assert [call.tool_name for call in calls] == ["eval", "stream_progress"]
-    outer_call, ptc_call = calls
-    assert outer_call.completed
-    assert ptc_call.completed
-    assert ptc_call.error is None
-    assert deltas == [{"progress": "working"}]
-    assert ptc_call.output.startswith("done:working|ptc_stream_progress_")
+    started = [event for event in events if event["event"] == "tool-started"]
+    assert [event["tool_name"] for event in started] == ["eval", "stream_progress"]
+    outer_id, ptc_id = (event["tool_call_id"] for event in started)
+    deltas = [event for event in events if event["event"] == "tool-output-delta"]
+    assert [(event["tool_call_id"], event["delta"]) for event in deltas] == [
+        (ptc_id, {"progress": "working"})
+    ]
+    outputs = {
+        event["tool_call_id"]: event["output"]
+        for event in events
+        if event["event"] == "tool-finished"
+    }
+    assert set(outputs) == {outer_id, ptc_id}
+    assert outputs[ptc_id].startswith("done:working|ptc_stream_progress_")
+    assert not [event for event in events if event["event"] == "tool-error"]
 
 
 def test_ptc_calls_do_not_add_child_graph_messages() -> None:
@@ -521,9 +521,6 @@ def test_quickjs_sync_timeout_error() -> None:
     assert result["messages"][-1].content == "timeout hit"
 
 
-@pytest.mark.filterwarnings(
-    "ignore:The v3 streaming protocol on Pregel is experimental"
-)
 def test_ptc_errors_surface_in_native_tool_stream() -> None:
     """PTC failures close the standard tool stream with the original error."""
     agent = _make_agent(
@@ -531,26 +528,26 @@ def test_ptc_errors_surface_in_native_tool_stream() -> None:
         CodeInterpreterMiddleware(ptc=[always_fails]),
         streaming=True,
     )
-    run = agent.stream_events(
-        {"messages": [HumanMessage(content="go")]},
-        version="v3",
-    )
-
-    calls = []
-
-    def _collect_calls() -> None:
-        for call in run.tool_calls:
-            calls.append(call)  # noqa: PERF402
+    events: list[dict[str, Any]] = []
 
     with pytest.raises(RuntimeError, match="boom:stream"):
-        _collect_calls()
+        events.extend(
+            agent.stream(
+                {"messages": [HumanMessage(content="go")]},
+                stream_mode="tools",
+            )
+        )
 
-    assert [call.tool_name for call in calls] == ["eval", "always_fails"]
-    outer_call, ptc_call = calls
-    assert outer_call.completed
-    assert outer_call.error == "boom:stream"
-    assert ptc_call.completed
-    assert ptc_call.error == "boom:stream"
+    started = [event for event in events if event["event"] == "tool-started"]
+    assert [event["tool_name"] for event in started] == ["eval", "always_fails"]
+    outer_id, ptc_id = (event["tool_call_id"] for event in started)
+    errors = {
+        event["tool_call_id"]: event["message"]
+        for event in events
+        if event["event"] == "tool-error"
+    }
+    assert errors == {ptc_id: "boom:stream", outer_id: "boom:stream"}
+    assert not [event for event in events if event["event"] == "tool-finished"]
 
 
 def test_quickjs_sync_tool_exception_propagates() -> None:
@@ -730,3 +727,41 @@ async def test_ptc_and_task_runs_nest_under_eval(use_async: bool) -> None:
     eval_run_id, _ = recorder.runs["eval"]
     assert recorder.runs["sync_label"][1] == eval_run_id
     assert recorder.runs["task"][1] == eval_run_id
+
+
+@pytest.mark.filterwarnings("ignore::langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_forked_subagent_evals_in_its_own_slot(use_async: bool) -> None:
+    """A `mode="fork"` subagent launched from `task()` evals in its own slot."""
+    fork_results: list[str] = []
+
+    @tool
+    def record(value: str) -> str:
+        """Record a value."""
+        fork_results.append(value)
+        return value
+
+    agent = create_deep_agent(
+        model=FakeChatModel(
+            messages=_script("await task({description: 'w', subagentType: 'forker'})")
+        ),
+        middleware=[CodeInterpreterMiddleware(ptc=[record])],
+        subagents=[
+            {
+                "name": "forker",
+                "description": "Does work.",
+                "system_prompt": "Do the work.",
+                "mode": "fork",
+                "model": FakeChatModel(
+                    messages=_script("await tools.record({value: String(6 * 7)})")
+                ),
+            }
+        ],
+    )
+    payload = {"messages": [HumanMessage(content="go")]}
+    if use_async:
+        await agent.ainvoke(payload)
+    else:
+        await asyncio.to_thread(agent.invoke, payload)
+
+    assert fork_results == ["42"]

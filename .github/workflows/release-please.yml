@@ -840,10 +840,15 @@ jobs:
       matrix:
         pr: ${{ fromJson(needs.release-please.outputs.prs) }}
     steps:
+      # Full history and tags (blobs fetched on demand): the Dependencies step
+      # diffs `pyproject.toml` against the package's previous release tag.
       - name: Checkout release branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.pr.headBranchName }}
+          fetch-depth: 0
+          fetch-tags: true
+          filter: blob:none
 
       # Use the composite action rather than calling setup-uv directly: it is
       # the single place the uv `version:` pin lives, and `bump_uv_pin.yml`
@@ -858,9 +863,20 @@ jobs:
           # makes setup-uv's post-job save throw. See `check_lockfiles.yml`.
           enable-cache: "false"
 
-      - name: Update lockfiles
+      - name: Update lockfiles and dependency notes
         id: update-lockfiles
+        env:
+          RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
+          PR_TITLE: ${{ matrix.pr.title }}
         run: |
+          # Writes the release's dependency range changes into its CHANGELOG.md
+          # section (see update_changelog_dependencies.py). Fails open with a
+          # warning, so it never blocks the lockfile update.
+          update_dependencies() {
+            uv run --no-project python .github/scripts/release/update_changelog_dependencies.py \
+              --component "${RELEASE_BRANCH#release-please--branches--main--components--}" \
+              --version "${PR_TITLE##*: }"
+          }
           regenerate() {
             git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
               dir=$(dirname "$lockfile")
@@ -873,20 +889,31 @@ jobs:
             done
           }
           regenerate
+          update_dependencies
 
       - name: Commit and push
         # Retry on push rejection. Concurrent release-please runs (one per push to
         # main) all update the same release branch, so a stale local checkout can
         # lose the push race ("cannot lock ref ...: is at X but expected Y"). On
         # rejection: fetch the new tip, reset, re-run `uv lock` against it, and
-        # retry. `uv lock` is deterministic on a given pyproject.toml, so this
-        # converges — and if the rebased state already has the right lockfiles
+        # retry. `uv lock` and the Dependencies update are deterministic on a
+        # given branch state, so this converges — and if the rebased state already has the right lockfiles
         # (another run won), the diff is empty and we exit cleanly.
         env:
           RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
+          PR_TITLE: ${{ matrix.pr.title }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Writes the release's dependency range changes into its CHANGELOG.md
+          # section (see update_changelog_dependencies.py). Fails open with a
+          # warning, so it never blocks the lockfile update.
+          update_dependencies() {
+            uv run --no-project python .github/scripts/release/update_changelog_dependencies.py \
+              --component "${RELEASE_BRANCH#release-please--branches--main--components--}" \
+              --version "${PR_TITLE##*: }"
+          }
 
           regenerate() {
             git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
@@ -900,7 +927,7 @@ jobs:
           }
 
           stage_and_commit() {
-            git add "**/uv.lock"
+            git add "**/uv.lock" "**/CHANGELOG.md"
             if git diff --staged --quiet; then
               return 1
             fi
@@ -927,6 +954,7 @@ jobs:
             git fetch origin "${RELEASE_BRANCH}"
             git reset --hard FETCH_HEAD
             regenerate
+            update_dependencies
             if ! stage_and_commit; then
               echo "Lockfile already up-to-date on remote after rebase; nothing to push"
               exit 0

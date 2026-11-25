@@ -94,6 +94,7 @@ MCPServerStatus = Literal[
     "awaiting_reconnect",
     "error",
     "disabled",
+    "untrusted",
 ]
 """Load states a configured MCP server can end up in.
 
@@ -107,6 +108,12 @@ failure.
 `disabled` is set when the user has turned the server off via the TUI
 (`/mcp` -> F2). No connection is attempted and no tools are loaded, but
 the entry is still surfaced in the viewer so the user can re-enable it.
+
+`untrusted` is set for a project-scoped server skipped because the user has
+not approved it for this project (or its definition changed since approval).
+Approval happens only in the startup prompt, so a server added or edited
+mid-session cannot load until the next launch; the entry exists so `/reload`
+and `/mcp` can say so instead of dropping the server silently.
 
 `awaiting_reconnect` is a transient UI-only state used after OAuth login
 has succeeded but before the LangGraph server has restarted and loaded
@@ -133,8 +140,8 @@ class MCPServerInfo:
     status: MCPServerStatus = "ok"
     """Load status.
 
-    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`, or
-    `disabled`.
+    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`,
+    `disabled`, or `untrusted`.
     """
 
     error: str | None = None
@@ -1272,6 +1279,47 @@ def _merge_mcp_configs_with_sources(
             for name in cast("dict[str, Any]", config_servers):
                 sources[name] = path
     return {"mcpServers": servers}, sources
+
+
+def resolve_mcp_server_sources(config_paths: Collection[Path]) -> dict[str, Path]:
+    """Map each server name to the config file whose definition wins.
+
+    Display-only provenance for the trust prompt, so a user can see which file
+    a server came from. Unreadable files are skipped; this never decides trust.
+
+    Args:
+        config_paths: Config paths in ascending precedence order.
+
+    Returns:
+        Server name to the path that supplied its highest-precedence definition.
+    """
+    loaded: list[tuple[Path, dict[str, Any]]] = []
+    for path in config_paths:
+        config, _ = _load_mcp_config_top_level_with_error(path)
+        if config is not None:
+            loaded.append((path, config))
+    _, sources = _merge_mcp_configs_with_sources(loaded)
+    return sources
+
+
+def is_user_mcp_config_path(path: Path) -> bool:
+    """Return whether `path` is the user-level MCP config file.
+
+    Outside a git repository the project root falls back to the working
+    directory. Started from home, the project candidate
+    `<home>/.deepagents/.mcp.json` is the user config itself, and discovery
+    deliberately keeps it at project scope.
+
+    Args:
+        path: A discovered config path.
+
+    Returns:
+        `True` only when the paths are known to be the same file.
+    """
+    return (
+        _same_config_location(path, PATHS.profile.mcp_config_file)
+        is MCPConfigIdentity.SAME
+    )
 
 
 def load_mcp_config_lenient(
@@ -2431,6 +2479,17 @@ async def get_mcp_tools(
     return await _load_tools_from_config(config)
 
 
+_UNTRUSTED_PROJECT_SERVER_ERROR = (
+    "Not approved for this project. Restart to review it in the approval "
+    "prompt, or launch with --trust-project-mcp."
+)
+"""Reason attached to project servers skipped for lacking trust approval.
+
+The approval prompt runs only at startup, so the guidance points there rather
+than at an in-session action that does not exist.
+"""
+
+
 def _log_skipped_project_servers(
     dropped: list[ProjectServerSummary],
     *,
@@ -2706,6 +2765,7 @@ async def resolve_and_load_mcp_tools(
                 configs.append({**plugin_config, "mcpServers": plugin_kept})
 
     loaded_project_configs: list[tuple[Path, dict[str, Any]]] = []
+    untrusted: list[ProjectServerSummary] = []
 
     for path in project_configs:
         config, error = _load_mcp_config_top_level_with_error(path)
@@ -2789,6 +2849,16 @@ async def resolve_and_load_mcp_tools(
                 trust_project_mcp=trust_project_mcp,
                 config_trusted=config_trusted,
             )
+        # Rejections are settled decisions, so only servers still awaiting
+        # approval are surfaced (see `_untrusted_infos`). That covers saved
+        # rejections and a "deny for this session" answer to the startup
+        # prompt (`trust_project_mcp is False`); re-reporting either would just
+        # send the user back to a prompt they already answered.
+        untrusted = (
+            []
+            if trust_project_mcp is False
+            else [s for s in dropped if s.name not in trust_lists.disabled]
+        )
 
     if explicit_config_path:
         config_path = (
@@ -2799,6 +2869,49 @@ async def resolve_and_load_mcp_tools(
         explicit_config = load_mcp_config(config_path)
         configs.append(explicit_config)
         session_cwd_servers.update(explicit_config["mcpServers"])
+
+    from deepagents_code.configuration.service import ManagedConfigError
+    from deepagents_code.mcp_disabled import get_disabled_servers
+
+    # Read the F2/managed deny list once, up front: unapproved project servers
+    # need it too, so a server the user switched off reads as disabled (and
+    # stays re-enableable) rather than as awaiting approval.
+    disabled_names: set[str] = set()
+    disabled_policy_unreadable = False
+    if configs or untrusted:
+        try:
+            disabled_names = get_disabled_servers()
+        except ManagedConfigError:
+            disabled_policy_unreadable = True
+
+    def _untrusted_infos() -> list[MCPServerInfo]:
+        # Name servers awaiting approval so `/reload` and `/mcp` can show them;
+        # a log line alone reads as the server vanishing. A name another config
+        # still supplies (e.g. the user-level file) is reported by that entry,
+        # so skip it rather than list the same name twice.
+        supplied = {
+            name
+            for config in configs
+            if isinstance(config.get("mcpServers"), dict)
+            for name in config["mcpServers"]
+        }
+        return [
+            MCPServerInfo(
+                name=summary.name,
+                transport=summary.kind,
+                status="disabled",
+                error="Disabled by user (F2 to re-enable).",
+            )
+            if summary.name in disabled_names
+            else MCPServerInfo(
+                name=summary.name,
+                transport=summary.kind,
+                status="untrusted",
+                error=_UNTRUSTED_PROJECT_SERVER_ERROR,
+            )
+            for summary in untrusted
+            if summary.name not in supplied
+        ]
 
     def _bad_config_infos() -> list[MCPServerInfo]:
         return [
@@ -2812,24 +2925,17 @@ async def resolve_and_load_mcp_tools(
         ]
 
     if not configs:
-        return [], None, _bad_config_infos()
+        return [], None, _untrusted_infos() + _bad_config_infos()
 
     merged = merge_mcp_configs(configs)
     if not merged.get("mcpServers"):
-        return [], None, _bad_config_infos()
+        return [], None, _untrusted_infos() + _bad_config_infos()
 
-    from deepagents_code.configuration.service import ManagedConfigError
-    from deepagents_code.mcp_disabled import get_disabled_servers
-
-    try:
-        disabled_names = get_disabled_servers()
-    except ManagedConfigError:
+    if disabled_policy_unreadable:
         # The managed deny list is unreadable, so no server can be shown to be
         # permitted. Deny every one rather than start the servers an
         # administrator may have blocked.
-        logger.error(  # noqa: TRY400
-            "Managed MCP policy is unreadable; disabling all MCP servers."
-        )
+        logger.error("Managed MCP policy is unreadable; disabling all MCP servers.")
         disabled_names = set(merged["mcpServers"])
     disabled_infos: list[MCPServerInfo] = []
     if disabled_names:
@@ -2851,7 +2957,7 @@ async def resolve_and_load_mcp_tools(
         merged = {"mcpServers": active}
 
     if not merged.get("mcpServers"):
-        return [], None, disabled_infos + _bad_config_infos()
+        return [], None, disabled_infos + _untrusted_infos() + _bad_config_infos()
 
     try:
         for server_name, server_config in merged["mcpServers"].items():
@@ -2871,5 +2977,6 @@ async def resolve_and_load_mcp_tools(
         session_manager=session_manager,
     )
     server_infos.extend(disabled_infos)
+    server_infos.extend(_untrusted_infos())
     server_infos.extend(_bad_config_infos())
     return tools, manager, server_infos

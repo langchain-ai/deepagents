@@ -2205,9 +2205,24 @@ _DEPENDENCY_FILES = frozenset(
 )
 
 
+def _file_tool_path(raw: object) -> Path | None:
+    """Return the path a filesystem tool writes for a model-authored `file_path`.
+
+    The tools root a relative path at `/`, not at the worktree. Do not resolve it
+    against `root`: that judges a different file than the one written.
+    """
+    from deepagents.backends.utils import validate_path
+
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return Path(validate_path(raw)).resolve(strict=False)
+    except OSError, RuntimeError, ValueError:
+        return None
+
+
 def _routine_write_allowed(root: Path, call: ToolCall) -> bool:
-    raw_path = call.get("args", {}).get("file_path")
-    path = _resolve_path(root, raw_path)
+    path = _file_tool_path(call.get("args", {}).get("file_path"))
     if path is None or _is_sensitive_write_path(root, path):
         return False
     if path.name.lower() in _DEPENDENCY_FILES:

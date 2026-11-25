@@ -142,18 +142,15 @@ from deepagents.middleware._skill_tools import (
     _INCLUDE_TOOLS_KEY,
     _SKILL_TOOLS_DISCLOSED_KEY,
     _acall_resolver,
-    _bind_disclosures,
     _call_resolver,
-    _discard_rejected_schemas,
     _disclosed_record,
     _find_skill_reads,
-    _inline_block_builder,
-    _insert_disclosures,
     _normalize_skill_tools,
     _plan_disclosure,
     _SkillRead,
     _unclaimed_include_names,
 )
+from deepagents.middleware._tool_disclosure import disclose_tools
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -1308,14 +1305,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             The request to send, and the record of the gated skill tools it discloses.
         """
         disclosure = _plan_disclosure(reads, request.tools, resolved)
-        _discard_rejected_schemas(disclosure, request.model)
-        record = disclosure.record()
-        if not disclosure.anchors:
-            return request, record
-        build = _inline_block_builder(request.model)
-        if build is None:
-            return request.override(tools=_bind_disclosures(request.tools, disclosure)), record
-        return request.override(messages=_insert_disclosures(request.messages, disclosure, build)), record
+        request = disclose_tools(request, disclosure)
+        return request, disclosure.record()
 
     def wrap_model_call(
         self,

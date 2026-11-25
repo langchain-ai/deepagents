@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +24,9 @@ from deepagents_code.configurable_model import (
     _model_spec_from_model,
     _ResolvedModelRequest,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def _make_model(name: str) -> MagicMock:
@@ -98,11 +101,24 @@ def _make_model_result(
 
 _PATCH_CREATE = "deepagents_code.config.create_model"
 
+_INSTALL_ID = "0123456789abcdef0123456789abcdef"
+_CACHE_KEY = f"dcode_v1:{_INSTALL_ID}"
+_PATCH_INSTALL_ID = "deepagents_code.install_id.get_install_id"
+
+
+@pytest.fixture(autouse=True)
+def _fixed_install_id() -> Iterator[None]:
+    """Pin the install ID so expected cache keys are deterministic."""
+    with patch(_PATCH_INSTALL_ID, return_value=_INSTALL_ID):
+        yield
+
+
 # The shared instance pins the OpenAI cache-key flag explicitly so it does not
 # read config at import time — that keeps it hermetic regardless of a
 # developer's env/config.toml. Tests that exercise flag *resolution* construct
 # their own instances after patching the config lookup.
-_mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+with patch(_PATCH_INSTALL_ID, return_value=_INSTALL_ID):
+    _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 
 
 class TestCheckpointPersistence:
@@ -903,7 +919,38 @@ class TestFireworksSessionSettings:
 
 
 class TestOpenAIPromptCacheKey:
-    """OpenAI model calls receive a `prompt_cache_key` from the thread ID."""
+    """OpenAI model calls receive a per-install `prompt_cache_key`."""
+
+    def test_threads_share_one_key(self) -> None:
+        """Different threads from one install send the same key.
+
+        Every thread starts with the same system-prompt prefix, so a per-thread
+        key would split that prefix's cache across keys.
+        """
+        captured: list[ModelRequest] = []
+        for thread_id in ("thread-a", "thread-b"):
+            request = _make_request(
+                _make_model("gpt-5.6"), context=CLIContext(thread_id=thread_id)
+            )
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        keys = [r.model_settings["prompt_cache_key"] for r in captured]
+        assert keys == [_CACHE_KEY, _CACHE_KEY]
+
+    def test_model_kwargs_key_wins(self) -> None:
+        """A key configured on the model (`model_kwargs`) is not overridden."""
+        model = _make_model("gpt-5.6")
+        model.model_kwargs = {"prompt_cache_key": "custom-cache"}
+        request = _make_request(model, context=CLIContext(thread_id="thread-123"))
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert "prompt_cache_key" not in captured[0].model_settings
 
     def test_non_mapping_model_kwargs_still_injects(self) -> None:
         """A non-mapping `model_kwargs` is treated as no key present."""
@@ -919,7 +966,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": _CACHE_KEY}
 
     @pytest.mark.parametrize(
         "base_url",
@@ -950,7 +997,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": _CACHE_KEY}
 
     def test_default_config_injects_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch
@@ -976,7 +1023,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": _CACHE_KEY}
 
     def test_opt_out_skips_prompt_cache_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1084,7 +1131,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": _CACHE_KEY}
 
     def test_blocking_error_propagates_not_fail_open(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1135,7 +1182,7 @@ class TestOpenAIPromptCacheKey:
             )
 
         assert captured[0].model is override
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": _CACHE_KEY}
 
     def test_caller_model_settings_not_mutated(self) -> None:
         """Injection copies the caller's dict instead of mutating in place."""

@@ -1,11 +1,11 @@
-"""Validated public-client OAuth settings for MCP servers."""
+"""Validated OAuth client settings for MCP servers."""
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
-from typing import cast
+from dataclasses import dataclass, field
+from typing import Literal, cast
 from urllib.parse import urlparse
 
 from pydantic import AnyUrl
@@ -13,6 +13,14 @@ from pydantic import AnyUrl
 _ASCII_CONTROL_LIMIT = 32
 _ASCII_DELETE = 127
 _MAX_PORT = 65535
+_FIELDS = frozenset(
+    {"client_id", "client_secret", "token_endpoint_auth_method", "callback_url", "scopes"}
+)
+SECRET_REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+"""The only accepted spelling of `client_secret` in stored configuration."""
+
+TokenEndpointAuthMethod = Literal["client_secret_basic", "client_secret_post"]
+_AUTH_METHODS: frozenset[str] = frozenset({"client_secret_basic", "client_secret_post"})
 
 
 class MCPOAuthConfigError(ValueError):
@@ -21,26 +29,64 @@ class MCPOAuthConfigError(ValueError):
 
 @dataclass(frozen=True)
 class MCPOAuthConfig:
-    """Explicit public-client settings, independent of stored registration."""
+    """Explicit client settings, independent of stored registration.
+
+    A `client_secret` makes this a confidential client. It is held only in
+    memory: it is excluded from `repr`, from the storage identity, and from the
+    credential file.
+    """
 
     client_id: str | None = None
     callback_url: str | None = None
     scopes: tuple[str, ...] | None = None
+    client_secret: str | None = field(default=None, repr=False)
+    token_endpoint_auth_method: TokenEndpointAuthMethod | None = None
 
     def storage_identity(self) -> str:
-        """Return the configuration identity used to isolate credentials."""
+        """Return the configuration identity used to isolate credentials.
+
+        The secret and its auth method are left out so rotating a secret, or
+        upgrading a public client to a confidential one, keeps the grant.
+        """
         return json.dumps([self.client_id, self.callback_url, self.scopes])
 
 
+def require_secret_reference(value: object) -> None:
+    """Reject an `oauth.client_secret` that is not a whole `${VAR}` reference.
+
+    Call this on raw configuration, before environment resolution. A literal
+    secret in `mcp.json` would sit in a file the agent can read and edit, and a
+    `${VAR:-default}` fallback is a literal in disguise.
+
+    Args:
+        value: The raw `oauth` setting of one server.
+
+    Raises:
+        MCPOAuthConfigError: `client_secret` is present but not a reference.
+    """
+    if not isinstance(value, dict) or "client_secret" not in value:
+        return
+    secret = value["client_secret"]
+    if not isinstance(secret, str) or SECRET_REFERENCE.fullmatch(secret) is None:
+        msg = (
+            "MCP oauth.client_secret must be an environment reference such as "
+            "${MY_SERVER_CLIENT_SECRET}; set the secret in the environment, not in the config."
+        )
+        raise MCPOAuthConfigError(msg)
+
+
 def parse_oauth_config(value: object) -> MCPOAuthConfig:
-    """Validate optional public-client settings without reflecting input values."""
+    """Validate optional client settings without reflecting input values."""
     if value is None:
         return MCPOAuthConfig()
     if not isinstance(value, dict):
         msg = "MCP oauth must be an object."
         raise MCPOAuthConfigError(msg)
-    if value.keys() - {"client_id", "callback_url", "scopes"}:
-        msg = "Supported MCP oauth fields: client_id, callback_url, scopes; no secret is required."
+    if value.keys() - _FIELDS:
+        msg = (
+            "Supported MCP oauth fields: client_id, client_secret, "
+            "token_endpoint_auth_method, callback_url, scopes."
+        )
         raise MCPOAuthConfigError(msg)
     client_id = value.get("client_id")
     if "client_id" in value and (
@@ -54,11 +100,41 @@ def parse_oauth_config(value: object) -> MCPOAuthConfig:
             "MCP oauth.scopes requires an explicit client_id; omit scopes for dynamic registration."
         )
         raise MCPOAuthConfigError(msg)
+    secret, method = _confidential(value)
     return MCPOAuthConfig(
         client_id=cast("str | None", client_id),
         callback_url=_callback_url(value),
         scopes=scopes,
+        client_secret=secret,
+        token_endpoint_auth_method=method,
     )
+
+
+def _confidential(
+    value: dict[str, object],
+) -> tuple[str | None, TokenEndpointAuthMethod | None]:
+    secret = value.get("client_secret")
+    method = value.get("token_endpoint_auth_method")
+    if "client_secret" in value:
+        if not isinstance(secret, str) or not secret or _has_controls(secret):
+            msg = "MCP oauth.client_secret must be a non-empty string without control characters."
+            raise MCPOAuthConfigError(msg)
+        if "client_id" not in value:
+            msg = "MCP oauth.client_secret requires the client_id it was issued with."
+            raise MCPOAuthConfigError(msg)
+    if "token_endpoint_auth_method" in value:
+        if secret is None:
+            msg = "MCP oauth.token_endpoint_auth_method requires client_secret."
+            raise MCPOAuthConfigError(msg)
+        if method not in _AUTH_METHODS:
+            msg = (
+                "MCP oauth.token_endpoint_auth_method must be client_secret_basic "
+                "or client_secret_post."
+            )
+            raise MCPOAuthConfigError(msg)
+    if secret is None:
+        return None, None
+    return cast("str", secret), cast("TokenEndpointAuthMethod", method or "client_secret_basic")
 
 
 def _has_controls(value: str) -> bool:

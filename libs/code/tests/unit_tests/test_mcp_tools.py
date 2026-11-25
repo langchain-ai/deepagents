@@ -58,10 +58,12 @@ from deepagents_code.mcp_tools import (
     discover_mcp_config_sources,
     extract_project_server_summaries,
     get_mcp_tools,
+    is_user_mcp_config_path,
     load_mcp_config,
     load_mcp_config_lenient,
     load_merged_mcp_configs_lenient,
     resolve_and_load_mcp_tools,
+    resolve_mcp_server_sources,
 )
 from deepagents_code.project_utils import ProjectContext
 
@@ -867,6 +869,40 @@ class TestLoadMCPConfig:
 
 class TestDiscoverMcpConfigs:
     """Tests for file-system discovery of MCP config files."""
+
+
+class TestTrustPromptProvenance:
+    """Tests for the display-only provenance helpers the trust prompt uses."""
+
+    def test_sources_follow_precedence_and_skip_unreadable(
+        self, tmp_path: Path
+    ) -> None:
+        """The later file wins a shared name; a broken file contributes nothing."""
+        low = tmp_path / "low.json"
+        high = tmp_path / "high.json"
+        broken = tmp_path / "broken.json"
+        low.write_text(
+            json.dumps({"mcpServers": {"a": {"command": "x"}, "b": {"command": "x"}}})
+        )
+        high.write_text(json.dumps({"mcpServers": {"b": {"command": "y"}}}))
+        broken.write_text("{not json")
+
+        sources = resolve_mcp_server_sources([low, high, broken, tmp_path / "gone"])
+
+        assert sources == {"a": low, "b": high}
+
+    def test_user_config_path_detection(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only the profile's own `.mcp.json` counts as the user config."""
+        home = tmp_path / "home"
+        profile = home / ".deepagents"
+        profile.mkdir(parents=True)
+        (profile / ".mcp.json").write_text("{}")
+        _set_profile_root(monkeypatch, profile, launch_home=home)
+
+        assert is_user_mcp_config_path(profile / ".mcp.json")
+        assert not is_user_mcp_config_path(home / ".mcp.json")
 
 
 class TestLoadMcpConfigLenient:
@@ -2035,16 +2071,117 @@ class TestResolveAndLoadMcpTools:
         )
         caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
 
-        tools, _manager, _infos = await resolve_and_load_mcp_tools(
+        tools, _manager, infos = await resolve_and_load_mcp_tools(
             trust_project_mcp=False,
         )
 
         assert tools == []
         assert mock_load.call_count == 0
+        # `False` is a "deny for this session" answer: settled, so the servers
+        # are logged but not re-surfaced as awaiting approval.
+        assert infos == []
         assert "Skipped untrusted project MCP servers:\n" in caplog.text
         assert "- evil [http]: http://169.254.169.254" in caplog.text
         assert "- docs-langchain [http]: https://docs.langchain.com/mcp" in caplog.text
         assert "; docs-langchain" not in caplog.text
+
+    @patch("deepagents_code.mcp_tools._load_tools_from_config")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
+    async def test_rejected_project_server_not_reported_as_untrusted(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicitly rejected name is a settled choice, not pending approval."""
+        project_cfg = tmp_path / ".mcp.json"
+        project_cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "rejected": {"transport": "http", "url": "https://a.test"},
+                        "pending": {"transport": "http", "url": "https://b.test"},
+                    }
+                }
+            )
+        )
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
+        mock_load.return_value = ([], None, [])
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        monkeypatch.delenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            raising=False,
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", "rejected")
+
+        _tools, _manager, infos = await resolve_and_load_mcp_tools(
+            trust_project_mcp=None,
+        )
+
+        assert [(i.name, i.status) for i in infos] == [("pending", "untrusted")]
+
+        # A session-wide deny settles every dropped server, not just saved ones.
+        _tools, _manager, infos = await resolve_and_load_mcp_tools(
+            trust_project_mcp=False,
+        )
+
+        assert infos == []
+
+    @patch("deepagents_code.mcp_tools._load_tools_from_config")
+    @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")
+    async def test_f2_disabled_unapproved_server_reported_as_disabled(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Switching a server off with F2 wins over its pending approval."""
+        project_cfg = tmp_path / ".mcp.json"
+        project_cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "off": {"transport": "http", "url": "https://a.test"},
+                        "pending": {"transport": "http", "url": "https://b.test"},
+                    }
+                }
+            )
+        )
+        mock_discover.return_value = [
+            DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+        ]
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        monkeypatch.delenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            raising=False,
+        )
+        monkeypatch.delenv(
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", raising=False
+        )
+
+        with patch(
+            "deepagents_code.mcp_disabled.get_disabled_servers",
+            return_value={"off"},
+        ):
+            _tools, _manager, infos = await resolve_and_load_mcp_tools(
+                trust_project_mcp=None,
+            )
+
+        assert mock_load.call_count == 0
+        assert [(i.name, i.status) for i in infos] == [
+            ("off", "disabled"),
+            ("pending", "untrusted"),
+        ]
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_config_sources")

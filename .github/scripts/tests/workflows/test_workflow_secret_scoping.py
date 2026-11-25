@@ -118,6 +118,14 @@ def test_release_keeps_disabled_package_scoped_integration_wiring() -> None:
     assert run_step["env"] == RELEASE_INTEGRATION_ENV
 
 
+def test_trusted_publishing_jobs_use_release_environment() -> None:
+    """PyPI and TestPyPI trusted publishers are bound to the `release` environment."""
+    jobs = _load_workflow("release.yml")["jobs"]
+    for name in ("test-pypi-publish", "publish"):
+        assert jobs[name]["permissions"] == {"id-token": "write"}
+        assert jobs[name]["environment"] == "release"
+
+
 def test_openwiki_uses_dedicated_environment_and_token() -> None:
     workflow = _load_workflow("openwiki-update.yml")
     update = workflow["jobs"]["update"]

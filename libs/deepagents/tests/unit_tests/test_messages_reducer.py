@@ -11,13 +11,12 @@ from __future__ import annotations
 from typing import Annotated
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import REMOVE_ALL_MESSAGES, _messages_delta_reducer
 from typing_extensions import TypedDict
-
-from deepagents._messages_reducer import _messages_delta_reducer
 
 
 def _build_graph(checkpointer: object) -> object:
@@ -91,29 +90,17 @@ def test_human_message_id_stable_across_invocations_sync() -> None:
     )
 
 
-def test_reducer_handles_none_base_state() -> None:
-    """`DeltaChannel.replay_writes` passes `state=None` when the earliest
-    checkpoint for a thread did not seed `messages: []`. The reducer must
-    treat that the same as an empty base.
+def test_replay_from_none_checkpoint() -> None:
+    """A checkpointer that returns `None` for the messages blob still replays.
 
     Regression test for https://github.com/langchain-ai/deepagents/issues/3564.
-    """  # noqa: D205
-    msg = HumanMessage(content="hi", id="h1")
-    result = _messages_delta_reducer(None, [[msg]])
-    assert result == [msg]
-
-    # Empty writes against a None base should also not crash.
-    assert _messages_delta_reducer(None, []) == []
-    assert _messages_delta_reducer(None, [[]]) == []
-
-
-def test_reducer_handles_none_base_state_with_dict_messages() -> None:
-    """None-base replay still coerces raw over-the-wire message payloads."""
-    result = _messages_delta_reducer(None, [[{"role": "user", "content": "hi"}]])
-
-    assert len(result) == 1
-    assert isinstance(result[0], HumanMessage)
-    assert result[0].content == "hi"
+    """
+    channel = DeltaChannel(_messages_delta_reducer, list).from_checkpoint(None)
+    channel.replay_writes([("t0", "messages", [{"role": "user", "content": "hi", "id": "h1"}])])
+    messages = channel.get()
+    assert len(messages) == 1
+    assert isinstance(messages[0], HumanMessage)
+    assert messages[0].id == "h1"
 
 
 @pytest.mark.anyio
@@ -133,3 +120,12 @@ async def test_human_message_id_stable_across_invocations_async() -> None:
 
     assert id_turn1 is not None
     assert id_turn1 == id_turn2, f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"
+
+
+def test_reducer_remove_all_messages_resets_state() -> None:
+    """`REMOVE_ALL_MESSAGES` drops prior state and earlier writes in the batch."""
+    old = HumanMessage(content="old", id="h0")
+    dropped = HumanMessage(content="dropped", id="h1")
+    kept = AIMessage(content="kept", id="a1")
+    result = _messages_delta_reducer([old], [[dropped], [RemoveMessage(id=REMOVE_ALL_MESSAGES), kept]])
+    assert result == [kept]

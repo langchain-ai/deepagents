@@ -35,6 +35,7 @@ import secrets
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 from typing import NamedTuple
 
@@ -1667,6 +1668,380 @@ def finalize_body(base_body: str, git_log_details: str) -> tuple[str, list[str]]
     return base_body, warnings
 
 
+# ── Dependency changes ──────────────────────────────────────────────────────
+
+# PEP 508 requirement split into name, extras, version specifier, and marker.
+# A full parser (`packaging`) is deliberately avoided to keep the script
+# dependency-free; manifests here only use the `name[extras] spec; marker`
+# shape, and anything that does not match is reported verbatim instead.
+_REQUIREMENT_RE = re.compile(
+    r"^\s*(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*"
+    r"(?P<extras>\[[^\]]*\])?\s*"
+    r"(?P<spec>[^;]*?)\s*"
+    r"(?:;\s*(?P<marker>.*?))?\s*$"
+)
+
+
+class Requirement(NamedTuple):
+    """One runtime requirement, keyed for comparison across releases."""
+
+    name: str
+    """Display name: the requirement name as written, plus any marker."""
+
+    spec: str
+    """Whitespace-free version specifier as written; empty when unconstrained."""
+
+
+def _normalize_spec(spec: str) -> str:
+    """Strip whitespace, keeping clause order as written for display."""
+    return ",".join(c for c in re.sub(r"\s+", "", spec).split(",") if c)
+
+
+def _same_spec(a: str, b: str) -> bool:
+    """Compare specifiers ignoring clause order, so a reorder is not a change."""
+    return sorted(a.split(",")) == sorted(b.split(","))
+
+
+def _parse_requirement(text: str, extra: str) -> tuple[tuple[str, ...], Requirement]:
+    """Parse *text* into a comparison key and a displayable requirement.
+
+    The key holds the extra, the PEP 503-normalized name, and the marker, so a
+    package listed under several markers is compared marker by marker. The
+    requirement's own extras (`pkg[extra]`) are dropped from the display name,
+    so one package reads the same wherever it is listed.
+    """
+    match = _REQUIREMENT_RE.match(text)
+    if not match:
+        return (extra, text.strip(), ""), Requirement(text.strip(), "")
+    name = match["name"]
+    marker = re.sub(r"\s+", " ", match["marker"] or "")
+    display = name + (f"; {marker}" if marker else "")
+    key = (extra, re.sub(r"[-_.]+", "-", name).lower(), marker)
+    return key, Requirement(display, _normalize_spec(match["spec"]))
+
+
+def _project_table(pyproject: dict[str, object]) -> dict[str, object]:
+    """Return the `[project]` table, or an empty dict when absent or malformed."""
+    project = pyproject.get("project")
+    return project if isinstance(project, dict) else {}
+
+
+def _runtime_requirements(
+    pyproject: dict[str, object],
+) -> dict[tuple[str, ...], Requirement]:
+    """Collect the requirements users install, keyed by `_parse_requirement`.
+
+    Covers `[project.dependencies]` and `[project.optional-dependencies]`;
+    `[dependency-groups]` is skipped because it never ships to PyPI.
+    """
+    project = _project_table(pyproject)
+    groups: dict[str, object] = {"": project.get("dependencies", [])}
+    optional = project.get("optional-dependencies", {})
+    if isinstance(optional, dict):
+        groups.update(optional)
+    requirements: dict[tuple[str, ...], Requirement] = {}
+    for extra, entries in groups.items():
+        for entry in entries if isinstance(entries, list) else []:
+            key, requirement = _parse_requirement(str(entry), extra)
+            requirements[key] = requirement
+    return requirements
+
+
+def _requires_python(pyproject: dict[str, object]) -> str:
+    """Return the normalized `requires-python` specifier, or "" when unset."""
+    return _normalize_spec(str(_project_table(pyproject).get("requires-python", "")))
+
+
+# Packages this repo or its sister repos publish. Their changes are always
+# listed: raising these floors is what `raise_langchain_minimums.yml` does.
+_FIRST_PARTY_PREFIXES = ("deepagents", "langchain", "langgraph", "langsmith")
+
+_LOWER_BOUND_OPERATORS = (">=", "~=", ">")
+
+# Opens the closing line that names the remaining third-party floor raises.
+# Shared with `collapse_dependency_section`, which counts that line's packages.
+_ROUTINE_PREFIX = "- Other minimum version"
+
+
+class DependencyChange(NamedTuple):
+    """One package's change, merged across every extra that lists it."""
+
+    name: str
+    old: str | None
+    """Old specifier; None when the package was added."""
+
+    new: str | None
+    """New specifier; None when the package was removed."""
+
+    extras: frozenset[str]
+    """Extras listing the package; contains "" when it is a core dependency."""
+
+
+def _floor_release(spec: str) -> tuple[int, int] | None:
+    """Return `(major, minor)` of *spec*'s single lower bound, or None."""
+    floors = [c for c in spec.split(",") if c.startswith(_LOWER_BOUND_OPERATORS)]
+    if len(floors) != 1:
+        return None
+    match = re.match(r"(\d+)(?:\.(\d+))?", floors[0].lstrip(">=~"))
+    return (int(match[1]), int(match[2] or 0)) if match else None
+
+
+def _non_floor_clauses(spec: str) -> list[str]:
+    """Return every clause of *spec* except lower bounds, sorted."""
+    clauses = spec.split(",")
+    return sorted(c for c in clauses if not c.startswith(_LOWER_BOUND_OPERATORS))
+
+
+def _is_notable(change: DependencyChange) -> bool:
+    """Whether a third-party change could plausibly affect an install.
+
+    Additions, removals, and any change besides the lower bound (a new cap, a
+    pin, an exclusion) always qualify. A floor raise qualifies when it crosses
+    a breaking boundary: a new major version, or a new minor version on 0.x.
+    Anything this cannot parse counts as notable rather than being hidden.
+    """
+    if change.old is None or change.new is None:
+        return True
+    if _non_floor_clauses(change.old) != _non_floor_clauses(change.new):
+        return True
+    old, new = _floor_release(change.old), _floor_release(change.new)
+    if old is None or new is None:
+        return True
+    return old[0] != new[0] or (new[0] == 0 and old[1] != new[1])
+
+
+def _merged_changes(
+    before: dict[tuple[str, ...], Requirement],
+    after: dict[tuple[str, ...], Requirement],
+) -> list[DependencyChange]:
+    """Merge per-extra changes into one entry per package, sorted by name.
+
+    Entries merge when they name the same package and marker and change it the
+    same way, so a package listed in several extras reads as one line.
+    """
+    merged: dict[tuple[str, str, str | None, str | None], DependencyChange] = {}
+    for key in before.keys() | after.keys():
+        extra, normalized, marker = key
+        old, new = before.get(key), after.get(key)
+        if old and new and _same_spec(old.spec, new.spec):
+            continue
+        old_spec, new_spec = (old.spec if old else None), (new.spec if new else None)
+        group = (normalized, marker, old_spec, new_spec)
+        name = new.name if new else old.name if old else normalized
+        prior = merged.get(group)
+        extras = (prior.extras if prior else frozenset()) | {extra}
+        merged[group] = DependencyChange(name, old_spec, new_spec, extras)
+    return [merged[group] for group in sorted(merged, key=lambda g: tuple(map(str, g)))]
+
+
+def _describe_change(change: DependencyChange) -> str:
+    """Render one bullet. A core dependency needs no extras note."""
+    extras = sorted(change.extras - {""}) if "" not in change.extras else []
+    names = ", ".join(f"`{extra}`" for extra in extras)
+    suffix = f" ({names} extra{'s' if len(extras) > 1 else ''})" if extras else ""
+    if change.old is None:
+        return f"- Added `{change.name}` `{change.new or 'any version'}`{suffix}"
+    if change.new is None:
+        return f"- Removed `{change.name}`{suffix}"
+    was, now = change.old or "any version", change.new or "any version"
+    return f"- `{change.name}`: `{was}` → `{now}`{suffix}"
+
+
+def _dependency_change_lines(
+    old: dict[str, object], new: dict[str, object]
+) -> list[str]:
+    """List the dependency changes worth a reader's attention, alphabetically.
+
+    Only packages whose range changed appear. A `requires-python` change comes
+    first. Every first-party change gets its own line; a third-party one only
+    when `_is_notable`. The remaining third-party floor raises are named with
+    their old and new minimums in one closing line, so nothing is left out.
+    """
+    lines: list[str] = []
+    old_python, new_python = _requires_python(old), _requires_python(new)
+    if not _same_spec(old_python, new_python):
+        lines.append(f"- Python: `{old_python or 'any'}` → `{new_python or 'any'}`")
+
+    changes = _merged_changes(_runtime_requirements(old), _runtime_requirements(new))
+    routine: dict[str, str] = {}
+    for change in changes:
+        normalized = re.sub(r"[-_.]+", "-", change.name.split(";")[0]).lower()
+        if normalized.startswith(_FIRST_PARTY_PREFIXES) or _is_notable(change):
+            lines.append(_describe_change(change))
+        else:
+            was, now = _floor_version(change.old), _floor_version(change.new)
+            routine.setdefault(normalized, f"`{change.name}` {was} → {now}")
+    if routine:
+        lines.append(_routine_line(list(routine.values())))
+    return lines
+
+
+def _floor_version(spec: str | None) -> str:
+    """Return the version in *spec*'s lower bound; routine raises always have one."""
+    clauses = (spec or "").split(",")
+    floors = [c for c in clauses if c.startswith(_LOWER_BOUND_OPERATORS)]
+    return floors[0].lstrip(">=~") if floors else spec or ""
+
+
+def _routine_line(items: list[str]) -> str:
+    """Name the remaining floor raises in one sentence, e.g. "`a` 1.0 → 1.1"."""
+    plural = "s" if len(items) > 1 else ""
+    if len(items) > 2:
+        joined = ", ".join(items[:-1]) + f", and {items[-1]}"
+    else:
+        joined = " and ".join(items)
+    return f"{_ROUTINE_PREFIX}{plural} raised: {joined}."
+
+
+def _read_pyproject_at(
+    repo: Path, working_dir: str, ref: str, warnings: list[str]
+) -> dict[str, object] | None:
+    """Parse `pyproject.toml` as it stood at *ref*, or warn and return None."""
+    rel_path = f"{working_dir}/pyproject.toml"
+    result = _git_run(repo, "show", f"{ref}:{rel_path}")
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        warnings.append(
+            f"Could not read {rel_path} at {ref}"
+            + (f" ({detail})" if detail else "")
+            + "; the Dependencies section was omitted"
+        )
+        return None
+    try:
+        return tomllib.loads(result.stdout)
+    except tomllib.TOMLDecodeError as err:
+        warnings.append(
+            f"Could not parse {rel_path} at {ref} ({err}); the Dependencies"
+            " section was omitted"
+        )
+        return None
+
+
+DEPENDENCIES_HEADING = "### Dependencies"
+
+
+def dependency_change_lines(
+    repo: Path,
+    working_dir: str,
+    prev_tag: str,
+    ref: str,
+    warnings: list[str],
+) -> list[str]:
+    """List dependency range changes between *prev_tag* and *ref* as bullets.
+
+    Routine floor raises land as hidden `chore` commits so they never cut a
+    release on their own. Diffing the manifest still surfaces them, along with
+    any other range change, in the release that ships them. An initial release
+    (no *prev_tag*) has nothing to compare against and gets no lines.
+    """
+    if not prev_tag:
+        return []
+    old = _read_pyproject_at(repo, working_dir, prev_tag, warnings)
+    new = _read_pyproject_at(repo, working_dir, ref, warnings)
+    if old is None or new is None:
+        return []
+    return _dependency_change_lines(old, new)
+
+
+def _version_section_bounds(lines: list[str], version: str) -> tuple[int, int] | None:
+    """Return the `[start, end)` line range of *version*'s entries, heading excluded."""
+    start = None
+    for index, line in enumerate(lines):
+        header = _CHANGELOG_HEADER_RE.match(line)
+        if not header:
+            continue
+        if start is not None:
+            return start, index
+        if header.group("version") == version:
+            start = index + 1
+    return (start, len(lines)) if start is not None else None
+
+
+def _without_dependencies(entries: list[str]) -> list[str]:
+    """Drop an existing Dependencies subsection, up to the next `###` heading."""
+    kept: list[str] = []
+    skipping = False
+    for line in entries:
+        if line.strip() == DEPENDENCIES_HEADING:
+            skipping = True
+            continue
+        if skipping and line.startswith("### "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    return kept
+
+
+def collapse_dependency_section(changelog_body: str) -> str:
+    """Render the changelog's Dependencies subsection as a collapsed toggle.
+
+    Only the GitHub release body is rendered this way; CHANGELOG.md keeps the
+    plain `### Dependencies` heading. The bullets are copied unchanged, so the
+    release page still says nothing about the package that the file does not.
+    """
+    lines = changelog_body.splitlines()
+    headings = [i for i, line in enumerate(lines) if line.strip() == DEPENDENCIES_HEADING]
+    if not headings:
+        return changelog_body
+    start = headings[0]
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("### ")),
+        len(lines),
+    )
+    entries = [line for line in lines[start + 1 : end] if line.strip()]
+    if not entries:
+        return changelog_body
+    # Each bullet is one change, except the closing line, which names several
+    # packages, each as one backticked name.
+    count = sum(
+        len(re.findall(r"`[^`]+`", line))
+        if line.startswith(_ROUTINE_PREFIX)
+        else 1
+        for line in entries
+        if line.lstrip().startswith(("- ", "* "))
+    )
+    noun = "change" if count == 1 else "changes"
+    toggle = [
+        "<details>",
+        f"<summary>Dependencies ({count} {noun})</summary>",
+        "",
+        *entries,
+        "",
+        "</details>",
+    ]
+    tail = ["", *lines[end:]] if end < len(lines) else []
+    return "\n".join([*lines[:start], *toggle, *tail])
+
+
+def upsert_dependency_section(
+    changelog: str, version: str, change_lines: list[str]
+) -> str | None:
+    """Set *version*'s Dependencies subsection in *changelog* to *change_lines*.
+
+    The subsection always goes last in the version's entries, after the
+    release-please sections. Any existing one is replaced, and an empty
+    *change_lines* removes it, so rerunning on the same input is a no-op.
+
+    Returns:
+        The updated changelog, or None when it has no section for *version*.
+
+    """
+    lines = changelog.splitlines()
+    bounds = _version_section_bounds(lines, version)
+    if bounds is None:
+        return None
+    start, end = bounds
+    entries = _without_dependencies(lines[start:end])
+    while entries and not entries[-1].strip():
+        entries.pop()
+    if change_lines:
+        entries += ["", DEPENDENCIES_HEADING, "", *change_lines]
+    if end < len(lines):
+        entries.append("")
+    updated = "\n".join([*lines[:start], *entries, *lines[end:]])
+    return updated + "\n" if changelog.endswith("\n") else updated
+
+
 # ── Main entry point ────────────────────────────────────────────────────────
 
 
@@ -1863,7 +2238,7 @@ def build_release_notes(
         pkg_name=package,
         version=version,
         changelog_body=_with_section(
-            changelog_body,
+            collapse_dependency_section(changelog_body),
             f"[Full changelog](https://github.com/{repository}/blob/"
             f"{release_sha}/{working_dir}/CHANGELOG.md)",
         ),

@@ -15,6 +15,7 @@ from langgraph.types import Command, interrupt
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
+from tests.unit_tests._slots import drop_slots
 
 
 def _child(
@@ -120,7 +121,7 @@ async def test_fanout_keeps_three_ids_across_checkpoint_resumes() -> None:
             msg = "Subagent hooks did not finish after five resumes"
             raise AssertionError(msg)
     finally:
-        middleware._registry.close()
+        drop_slots(middleware)
 
     assert len(rounds) == 5
     assert work == {"fast": 1, "review": 1, "cost": 1}

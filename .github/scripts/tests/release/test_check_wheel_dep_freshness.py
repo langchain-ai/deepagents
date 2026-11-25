@@ -807,8 +807,7 @@ def test_workflow_mirrors_release_install_flags() -> None:
     assert 'uv build --python "$PYTHON_VERSION"' in freshness
     assert "DEEPAGENTS_CODE_BUILD_COMMIT:" in freshness
     assert 'INSTALL_ARGS=(--index-url "https://pypi.org/simple"' in freshness
-    assert 'if [ "$PACKAGE_NAME" = "deepagents-talon" ]; then' in freshness
-    assert 'INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")' in freshness
+    assert "--prerelease" not in freshness
     assert (
         'env -u UV_PYTHON VIRTUAL_ENV="$VENV_PATH" uv pip install "${INSTALL_ARGS[@]}"'
         in freshness
@@ -816,8 +815,7 @@ def test_workflow_mirrors_release_install_flags() -> None:
 
     assert "resolve_python_matrix.py" in release
     assert "DEEPAGENTS_CODE_BUILD_COMMIT:" in release
-    assert 'if [ "$PKG_NAME" = "deepagents-talon" ]; then' in release
-    assert 'INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")' in release
+    assert "--prerelease" not in release
     assert (
         'env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"'
         in release

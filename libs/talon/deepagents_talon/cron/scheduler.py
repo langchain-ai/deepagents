@@ -54,6 +54,7 @@ class PersistentCronScheduler:
         self.tick_seconds = tick_seconds
         self.now = now or (lambda: datetime.now(UTC))
         self._task: asyncio.Task[None] | None = None
+        self._running: dict[str, asyncio.Task[None]] = {}
         self._stopped = asyncio.Event()
 
     async def start(self) -> None:
@@ -66,25 +67,55 @@ class PersistentCronScheduler:
     async def stop(self) -> None:
         """Stop the scheduler ticker."""
         self._stopped.set()
-        if self._task is None:
-            return
-        self._task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._task
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
         self._task = None
+        runs = list(self._running.values())
+        for task in runs:
+            task.cancel()
+        await asyncio.gather(*runs, return_exceptions=True)
+        self._running.clear()
 
-    async def tick_once(self) -> None:
+    async def tick_once(self, *, wait: bool = True) -> None:
         """Remove finished jobs, then run all jobs due at the current clock value once.
 
-        The sweep runs first and due jobs run one after another inside the
-        tick, so it never removes a job that is mid-run.
+        Args:
+            wait: Wait for runs dispatched by this tick. The ticker keeps scanning
+                while they run and coalesces overlapping runs of the same job.
         """
         current = self.now()
         self._discard_finished(current)
+        for job_id, task in list(self._running.items()):
+            if task.done():
+                # Cancellation before the coroutine starts skips its finally block.
+                self._running.pop(job_id)
+                continue
+            current_job = self.store.get_job(job_id)
+            # A final claimed fire can be disabled with no next run by design.
+            if current_job is None or (
+                not current_job.enabled and current_job.next_run_at is not None
+            ):
+                task.cancel()
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
+        started = []
         for job in jobs:
-            await self._run_due_job(job, current)
+            if job.id not in self._running:
+                task = asyncio.create_task(self._dispatch(job, current))
+                self._running[job.id] = task
+                started.append(task)
+        if wait:
+            await asyncio.gather(*started)
+
+    async def _dispatch(self, job: CronJob, now: datetime) -> None:
+        try:
+            await self._run_due_job(job, now)
+        except Exception:
+            logger.exception("Failed to dispatch job %s", job.id)
+        finally:
+            self._running.pop(job.id, None)
 
     async def _ticker(self) -> None:
         """Scan for due jobs until stopped, surviving a failed scan.
@@ -103,7 +134,7 @@ class PersistentCronScheduler:
         """
         while not self._stopped.is_set():
             try:
-                await self.tick_once()
+                await self.tick_once(wait=False)
             except Exception as exc:
                 logger.exception("Cron tick failed")
                 # `log_event` JSON-encodes and redacts its fields, so untrusted

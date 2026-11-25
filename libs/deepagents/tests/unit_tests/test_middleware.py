@@ -15,6 +15,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from langgraph.errors import GraphInterrupt, ParentCommand
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
@@ -527,6 +528,16 @@ class TestFilesystemMiddleware:
 
         assert result.status == "error"
         assert result.content == "Error: glob failed: path traversal not allowed"
+
+    @pytest.mark.parametrize("error", [GraphInterrupt(), ParentCommand(Command())], ids=["interrupt", "parent_command"])
+    def test_glob_propagates_graph_control_flow(self, error: Exception) -> None:
+        """An interrupt or parent command raised in the backend glob propagates instead of becoming a tool error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        with patch.object(backend, "glob", side_effect=error), pytest.raises(type(error)):
+            glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
 
     def test_glob_backend_timeouterror_not_misreported_as_glob_timeout(self):
         """A `TimeoutError` raised inside the backend must not be reported as a glob-pattern timeout.

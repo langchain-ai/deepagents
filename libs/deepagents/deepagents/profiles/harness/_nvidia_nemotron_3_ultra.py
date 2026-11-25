@@ -46,7 +46,6 @@ _NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
     "NVIDIA:nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
     # Nemotron 3 Ultra as served by other providers.
-    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b",

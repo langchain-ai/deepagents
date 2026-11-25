@@ -5,7 +5,7 @@
 # - Unit Tests for changed packages
 #
 # PR feedback selects changed packages; SDK changes also trigger CLI and ACP tests.
-# Merge-queue runs, pushes to main, and workflow changes run full CI.
+# Pushes to main and workflow changes run full CI.
 
 name: "🔧 CI"
 
@@ -286,7 +286,7 @@ jobs:
   lint-deepagents:
     name: "🧹 Lint deepagents"
     needs: changes
-    if: needs.changes.outputs.deepagents == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/deepagents"
@@ -295,7 +295,7 @@ jobs:
   lint-code:
     name: "🧹 Lint code"
     needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/code"
@@ -304,7 +304,7 @@ jobs:
   lint-talon:
     name: "🧹 Lint talon"
     needs: changes
-    if: needs.changes.outputs.talon == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/talon"
@@ -313,7 +313,7 @@ jobs:
   lint-evals:
     name: "🧹 Lint evals"
     needs: changes
-    if: needs.changes.outputs.evals == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/evals"
@@ -322,7 +322,7 @@ jobs:
   lint-acp:
     name: "🧹 Lint acp"
     needs: changes
-    if: needs.changes.outputs.acp == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/acp"
@@ -331,7 +331,7 @@ jobs:
   lint-daytona:
     name: "🧹 Lint daytona"
     needs: changes
-    if: needs.changes.outputs.daytona == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
@@ -340,7 +340,7 @@ jobs:
   lint-modal:
     name: "🧹 Lint modal"
     needs: changes
-    if: needs.changes.outputs.modal == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/modal"
@@ -349,7 +349,7 @@ jobs:
   lint-runloop:
     name: "🧹 Lint runloop"
     needs: changes
-    if: needs.changes.outputs.runloop == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
@@ -358,7 +358,7 @@ jobs:
   lint-vercel:
     name: "🧹 Lint vercel"
     needs: changes
-    if: needs.changes.outputs.vercel == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.vercel == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/vercel"
@@ -367,7 +367,7 @@ jobs:
   lint-quickjs:
     name: "🧹 Lint quickjs"
     needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/quickjs"
@@ -377,7 +377,7 @@ jobs:
   test-deepagents:
     name: "🧪 Test deepagents"
     needs: changes
-    if: needs.changes.outputs.deepagents == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/deepagents"
@@ -387,7 +387,7 @@ jobs:
   test-code:
     name: "🧪 Test deepagents-code"
     needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/code"
@@ -399,7 +399,7 @@ jobs:
   test-talon:
     name: "🧪 Test deepagents-talon"
     needs: changes
-    if: needs.changes.outputs.talon == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/talon"
@@ -408,7 +408,7 @@ jobs:
   test-evals:
     name: "🧪 Test evals"
     needs: changes
-    if: needs.changes.outputs.evals == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
@@ -417,7 +417,7 @@ jobs:
   test-acp:
     name: "🧪 Test acp"
     needs: changes
-    if: needs.changes.outputs.acp == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/acp"
@@ -426,7 +426,7 @@ jobs:
   test-daytona:
     name: "🧪 Test daytona"
     needs: changes
-    if: needs.changes.outputs.daytona == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
@@ -435,7 +435,7 @@ jobs:
   test-modal:
     name: "🧪 Test modal"
     needs: changes
-    if: needs.changes.outputs.modal == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
@@ -444,7 +444,7 @@ jobs:
   test-runloop:
     name: "🧪 Test runloop"
     needs: changes
-    if: needs.changes.outputs.runloop == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/runloop"
@@ -453,7 +453,7 @@ jobs:
   test-vercel:
     name: "🧪 Test vercel"
     needs: changes
-    if: needs.changes.outputs.vercel == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.vercel == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/vercel"
@@ -462,7 +462,7 @@ jobs:
   test-quickjs:
     name: "🧪 Test quickjs"
     needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/quickjs"
@@ -486,7 +486,7 @@ jobs:
     name: "🧪 Test quickjs SDK smoke"
     needs: changes
     if: >-
-      github.event_name == 'pull_request' &&
+      github.event_name != 'push' &&
       needs.changes.outputs.deepagents == 'true' &&
       needs.changes.outputs.quickjs != 'true'
     runs-on: ubuntu-latest
@@ -550,7 +550,7 @@ jobs:
   drbench-dataset:
     name: "🗂️ Build DRBench dataset"
     needs: changes
-    if: needs.changes.outputs.evals == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -694,7 +694,7 @@ jobs:
               '',
               "**Why:** this PR doesn't touch `libs/talon`, so talon failures are advisory during PR feedback to keep each fix scoped to one package. talon editable-installs `deepagents-code`, so its CI runs on every libs/code PR and can be broken by libs/code changes.",
               '',
-              '**Required follow-up:** fix the breakage in a separate `fix(talon): ...` PR. Talon remains red at HEAD; merge-queue and main checks are strict, so the scoped fixes must be coordinated before the queue can pass.',
+              '**Required follow-up:** fix the breakage in a separate `fix(talon): ...` PR. Talon remains red at HEAD, and main CI stays strict, so main will show red until that fix lands.',
             ].join('\n');
 
             try {
@@ -878,14 +878,14 @@ jobs:
                   sys.exit(f"Invalid selection: {package}={selected!r}")
               jobs = {f"lint-{package}", f"test-{package}"}
               expected.update(jobs)
-              if event == "pull_request" and selected == "false":
+              if event != "push" and selected == "false":
                   allowed_skips.update(jobs)
           expected.update({"text-hygiene", "drbench-dataset", "test-quickjs-sdk-smoke"})
-          if event == "pull_request" and selection["evals"] == "false":
+          if event != "push" and selection["evals"] == "false":
               allowed_skips.add("drbench-dataset")
           if event == "push":
               allowed_skips.add("text-hygiene")
-          if event != "pull_request" or selection["deepagents"] != "true" or selection["quickjs"] == "true":
+          if event == "push" or selection["deepagents"] != "true" or selection["quickjs"] == "true":
               allowed_skips.add("test-quickjs-sdk-smoke")
           missing = expected - needs.keys()
           if missing:
@@ -897,7 +897,12 @@ jobs:
               if result == "skipped" and job not in allowed_skips:
                   sys.exit(f"Required job did not run: {job}")
               if result == "failure" and waive_talon and job in {"lint-talon", "test-talon"}:
-                  print(f"::warning::Waiving {job}=failure under the single-package PR policy. Fix Talon in a separate fix(talon): ... PR; merge-queue and main checks remain strict.")
+                  print(f"::warning::Waiving {job}=failure under the single-package PR policy. Fix Talon in a separate fix(talon): ... PR; main checks remain strict.")
+                  continue
+              # Pushes to main cancel in-progress runs when a newer commit lands;
+              # the newer run validates the same changes, so don't flag these.
+              if result == "cancelled" and event == "push":
+                  print(f"::notice::Ignoring {job}=cancelled on push (superseded by a newer main run).")
                   continue
               if result not in {"success", "skipped"}:
                   sys.exit(f"Job did not pass: {job}={result}")

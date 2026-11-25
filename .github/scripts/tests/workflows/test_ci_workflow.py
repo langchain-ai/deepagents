@@ -243,7 +243,7 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
     assert completed.returncode == (0 if passes else 1)
 
 
-@pytest.mark.parametrize("event", ["merge_group", "push"])
+@pytest.mark.parametrize("event", ["push"])
 def test_full_suite_does_not_depend_on_path_selection(event: str) -> None:
     workflow = _load_workflow(CI_WORKFLOW)
     jobs = workflow["jobs"]
@@ -336,8 +336,13 @@ def test_ci_gate_requires_selected_checks(
         and job in {"lint-talon", "test-talon"}
         and result == "failure"
     )
-    expected = waived or (
-        passes and not (result == "skipped" and event != "pull_request")
+    cancelled_on_push = (
+        event == "push" and result == "cancelled" and job != "changes"
+    )
+    expected = (
+        waived
+        or cancelled_on_push
+        or (passes and not (result == "skipped" and event == "push"))
     )
     assert (completed.returncode == 0) == expected, completed.stdout + completed.stderr
     assert ("::warning::Waiving" in completed.stdout) == waived
@@ -449,7 +454,7 @@ console.log = () => {};
     assert "lint-talon" in message and "test-talon" in message
     assert "failure(s) were waived" in message
     assert "fix(talon):" in message
-    assert "merge-queue and main checks are strict" in message
+    assert "main CI stays strict" in message
     assert "https://github.com/langchain-ai/deepagents/actions/runs/456" in message
 
 

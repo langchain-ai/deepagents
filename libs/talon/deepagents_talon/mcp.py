@@ -276,14 +276,12 @@ class MCPToolProvider:
             }
             for server in servers
         )
-        summary = (
-            ", ".join(f"{status['server_name']} ({status['status']})" for status in statuses)
-            or "none configured"
-        )
 
         @tool(
             "get_mcp_server_status",
-            description=f"Report configured MCP server availability. Current servers: {summary}.",
+            description=(
+                "Report current availability and authentication state of configured MCP servers."
+            ),
         )
         def get_mcp_server_status() -> tuple[dict[str, object], ...]:
             return statuses

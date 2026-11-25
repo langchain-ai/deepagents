@@ -233,6 +233,31 @@ def _assert_result_contains(content: str, expected: str) -> None:
     assert expected in content, content
 
 
+@pytest.mark.parametrize("sync", [False, True])
+async def test_failed_tool_message_is_visible_in_eval(sync: bool) -> None:
+    @tool
+    def failed_result() -> ToolMessage:
+        """Return a tool-reported failure."""
+        return ToolMessage(
+            content='{"error": "boom"}', tool_call_id="failed", status="error"
+        )
+
+    agent = _make_agent(
+        "const r = await tools.failedResult({}); console.log(r.missing); null",
+        CodeInterpreterMiddleware(ptc=[failed_result]),
+    )
+    inputs = {"messages": [HumanMessage(content="Run the tool.")]}
+    result = (
+        await asyncio.to_thread(agent.invoke, inputs)
+        if sync
+        else await agent.ainvoke(inputs)
+    )
+    content = _eval_tool_message(result).content
+    assert '<error type="Error">' in content
+    assert '{"error": "boom"}' in content
+    assert "<result>null</result>" not in content
+
+
 def test_deepagent_with_quickjs_interpreter_sync() -> None:
     """Basic sync test with QuickJS interpreter."""
     result = _make_agent(

@@ -432,17 +432,14 @@ TOOLS_NAMES = "__tools_names"
 
 
 def render_tools_namespace() -> str:
-    """Return JS that defines `globalThis.tools` as a proxy over the host.
-
-    Python owns the tool map: a call is `__tools_call(name, input)` and the
-    installed names come from `__tools_names()`, so changing the tool set
-    never touches the guest. Any other name, including inherited
-    `Object.prototype` members, reads from a plain object.
-    """
+    """Define the tools proxy, unwrapping host replies into values or rejections."""
     call = json.dumps(TOOLS_CALL)
     names = json.dumps(TOOLS_NAMES)
     return (
-        f"{{ const fn = (name) => (input) => globalThis[{call}](name, input);"
+        f"{{ const fn = (name) => async (input) => {{"
+        f" const reply = await globalThis[{call}](name, input);"
+        " if (Object.hasOwn(reply, 'error')) throw new Error(reply.error);"
+        " return reply.value; };"
         " const has = (name) => typeof name === 'string'"
         f" && globalThis[{names}]().includes(name);"
         " globalThis.tools = new Proxy({}, {"

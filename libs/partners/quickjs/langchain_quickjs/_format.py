@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import ToolException
 from langgraph.types import Command
 from pydantic import BaseModel
 from quickjs_rs import Undefined
@@ -91,29 +92,18 @@ _NATIVE_JS_SCALARS = (str, bool, int, float, type(None))
 
 
 def coerce_tool_output_for_ptc(value: Any) -> Any:
-    """Coerce a tool result for the PTC bridge, preserving native types.
-
-    The quickjs_rs `register` bridge marshals Python primitives, `list`,
-    and `dict` directly to native JS values, so the model can use them
-    without an explicit `JSON.parse`. This helper unwraps LangChain's
-    `ToolMessage` / `Command` envelopes (matching `coerce_tool_output`'s
-    selection rules) and returns the underlying value typed.
-
-    Compound returns are walked recursively: nested values that the binding
-    cannot marshal natively (`datetime`, Pydantic models, custom classes)
-    are stringified in place via `str(value)` so the surrounding object
-    structure remains navigable from JS. Cyclic structures hit Python's
-    recursion limit and surface as a host error in the eval — same outcome
-    as `json.dumps` on a self-referencing dict.
-    """
+    """Unwrap tool results with native types, raising on failed ToolMessages."""
     if isinstance(value, Command):
         return coerce_tool_output_for_ptc(_extract_command_content(value))
     if isinstance(value, ToolMessage):
+        if value.status == "error":
+            msg = _coerce_message_content(value.content)
+            raise ToolException(msg)
         return coerce_tool_output_for_ptc(value.content)
     if isinstance(value, list):
         for entry in reversed(value):
             if isinstance(entry, ToolMessage):
-                return coerce_tool_output_for_ptc(entry.content)
+                return coerce_tool_output_for_ptc(entry)
             if isinstance(entry, Command):
                 return coerce_tool_output_for_ptc(_extract_command_content(entry))
     return _coerce_for_marshal(value)
@@ -136,7 +126,7 @@ def _coerce_for_marshal(value: Any) -> Any:
 
 
 def _extract_command_content(command: Command) -> Any:
-    """Return the trailing message content from a `Command` update, if any."""
+    """Return the trailing ToolMessage or content from a `Command` update."""
     update = command.update
     if isinstance(update, dict):
         messages = update.get("messages")
@@ -144,7 +134,7 @@ def _extract_command_content(command: Command) -> Any:
             for entry in reversed(messages):
                 content = getattr(entry, "content", None)
                 if content is not None:
-                    return content
+                    return entry if isinstance(entry, ToolMessage) else content
     return str(update)
 
 

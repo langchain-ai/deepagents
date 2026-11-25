@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import ToolException
 from langgraph.errors import GraphInterrupt
 from quickjs_rs import (
     ConcurrentEvalError,
@@ -416,7 +417,10 @@ class _Slot:
                     # PTC calls. Surface their validation/runtime failures as
                     # eval errors without changing normal `tools.*` semantics.
                     raise _TaskBridgeError(e) from e
-            return coerce_tool_output_for_ptc(result)
+            try:
+                return coerce_tool_output_for_ptc(result)
+            except ToolException as e:
+                raise _TaskBridgeError(e) from e
 
         ctx.register(_TASK_FUNCTION_NAME, _bridge, is_async=True)
         ctx.eval(
@@ -458,12 +462,7 @@ class _Slot:
         return await _on_outer_loop(_call, outer_loop)
 
     def _register_tools_bridge(self) -> None:
-        """Install the host functions behind the guest's `tools` proxy.
-
-        `_call` looks the tool up in `self._tools` on every call, so
-        `install_tools` swapping the map is picked up without touching
-        the guest.
-        """
+        """Install host functions that look up the current tools on each call."""
         ctx = self._require_context()
 
         def _names() -> list[str]:
@@ -498,7 +497,12 @@ class _Slot:
                 outer_loop=state.outer_loop,
             )
             send_state_updates(state.outer_runtime, f"tools.{camel}", result)
-            return coerce_tool_output_for_ptc(result)
+            # Host exceptions are sanitized by QuickJS; carry tool error text
+            # explicitly so JavaScript can reject with the original message.
+            try:
+                return {"value": coerce_tool_output_for_ptc(result)}
+            except ToolException as e:
+                return {"error": str(e)}
 
         ctx.register(TOOLS_NAMES, _names)
         ctx.register(TOOLS_CALL, _call, is_async=True)

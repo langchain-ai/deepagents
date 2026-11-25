@@ -6,6 +6,7 @@ the REPL so one `eval` can orchestrate many tool invocations.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import patch
 
@@ -445,6 +446,49 @@ async def test_tool_failure_surfaces_as_js_error(repl: _Slot) -> None:
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "Host function failed"
+
+
+@pytest.mark.parametrize("envelope", ["message", "list", "command", "command_list"])
+@pytest.mark.parametrize("settled", [False, True])
+async def test_tool_error_message_rejects(
+    repl: _Slot, envelope: str, settled: bool
+) -> None:
+    def _fail() -> Any:
+        message = ToolMessage(
+            content='{"error": "boom"}', tool_call_id="failed", status="error"
+        )
+        earlier = ToolMessage(content="ok", tool_call_id="earlier")
+        if envelope == "list":
+            return [earlier, message]
+        if envelope == "command":
+            return Command(update={"messages": [earlier, message]})
+        if envelope == "command_list":
+            return [earlier, Command(update={"messages": [earlier, message]})]
+        return message
+
+    tool = StructuredTool.from_function(
+        name="fail", description="Return a failed tool result.", func=_fail
+    )
+    install_tools(repl, [tool])
+    if settled:
+        outcome = await repl.eval_async(
+            "const [r] = await Promise.allSettled([tools.fail({})]);"
+            "JSON.stringify({status: r.status, reason: String(r.reason)})"
+        )
+        assert outcome.error_type is None, outcome.error_message
+        result = json.loads(outcome.result)
+        assert result["status"] == "rejected"
+        assert '{"error": "boom"}' in result["reason"]
+    else:
+        outcome = await repl.eval_async(
+            "const r = await tools.fail({}); console.log(r.missing); null"
+        )
+        from langchain_quickjs._format import format_outcome
+
+        rendered = format_outcome(outcome, max_result_chars=10000)
+        assert "<error type=" in rendered
+        assert '{"error": "boom"}' in rendered
+        assert outcome.result is None
 
 
 async def test_install_tools_skips_invalid_js_identifier_names(

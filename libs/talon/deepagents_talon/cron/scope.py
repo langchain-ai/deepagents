@@ -189,6 +189,7 @@ class ObjectiveActivity:
 OBJECTIVE_ACTIVITY: contextvars.ContextVar[ObjectiveActivity | None] = contextvars.ContextVar(
     "talon_objective_activity", default=None
 )
+HIDE_CONVERSATION_SEARCH = contextvars.ContextVar("hide_conversation_search", default=False)
 SCHEDULER_FINALIZING: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "talon_scheduler_finalizing", default=False
 )
@@ -262,6 +263,13 @@ async def _action(request: ToolCallRequest) -> AsyncGenerator[ToolMessage | None
     refusal = _refusal(request)
     actions = CURRENT_ACTIONS.get()
     name = request.tool_call["name"]
+    if actions and actions.current and not actions.current():
+        yield ToolMessage(
+            content="The owner changed this job. End this check.",
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+        return
     if (
         refusal
         or actions is None
@@ -269,9 +277,9 @@ async def _action(request: ToolCallRequest) -> AsyncGenerator[ToolMessage | None
         or name in {"ask_user", "record_job_work", "reconcile_job_action"}
     ):
         yield refusal
-    elif (name, actions.arguments(request.tool_call["args"])) in actions.applied:
+    elif await actions.already_applied(name, request.tool_call["args"]):
         yield ToolMessage(
-            content="Destination already confirmed this action.",
+            content="This action was confirmed at its destination or retired by the owner.",
             tool_call_id=request.tool_call["id"],
             status="error",
         )
@@ -288,7 +296,17 @@ async def _action(request: ToolCallRequest) -> AsyncGenerator[ToolMessage | None
             )
             return
         async with actions.dispatch(request.tool_call["id"], name, request.tool_call["args"]):
-            yield None
+            if actions.current and not actions.current():
+                await actions.receipt(
+                    request.tool_call["id"], "Skipped after the owner changed the job."
+                )
+                yield ToolMessage(
+                    content="The owner changed this job. End this check.",
+                    tool_call_id=request.tool_call["id"],
+                    status="error",
+                )
+            else:
+                yield None
 
 
 def _read_call(request: ToolCallRequest) -> bool:
@@ -303,6 +321,10 @@ def _read_call(request: ToolCallRequest) -> bool:
 def _scoped_request(request: ModelRequest) -> ModelRequest:
     if SCHEDULER_FINALIZING.get():
         return request.override(tools=[])
+    if HIDE_CONVERSATION_SEARCH.get():
+        request = request.override(
+            tools=[t for t in request.tools if getattr(t, "name", None) != "search_conversations"]
+        )
     scope = JOB_READ_SCOPE.get()
     if scope is None:
         if not REQUIRED_READS.get():
@@ -324,12 +346,15 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
 
 
 async def _observe_action(request: ToolCallRequest, result: ToolMessage) -> None:
-    if (actions := CURRENT_ACTIONS.get()) and isinstance(result, ToolMessage):
+    if actions := CURRENT_ACTIONS.get():
         call = request.tool_call
         if call["id"] is None:
             return
+        success = successful(result, call["id"])
+        if not success and not isinstance(result, ToolMessage):
+            return
         if (
-            successful(result)
+            success
             and _read_call(request)
             and call["name"]
             not in {
@@ -340,7 +365,7 @@ async def _observe_action(request: ToolCallRequest, result: ToolMessage) -> None
         ):
             actions.reads.add(call["id"])
         elif call["id"] in actions.active:
-            status = "success" if successful(result) else "error"
+            status = "success" if success else "error"
             await actions.receipt(
                 call["id"], f"Tool receipt: {call['name']} ({call['id']}), status {status}."
             )

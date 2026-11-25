@@ -29,6 +29,16 @@ _SAVE_WORK: ContextVar[Callable[[str], Awaitable[None]] | None] = ContextVar(
 _NOTE_LIMIT = 2000
 
 
+ACTION_CHOICES = 'Reply "retire action" or "retry despite duplicate risk".'
+
+
+def _action_question(tool_name: str, call_id: str) -> str:
+    return (
+        f"The outcome of {tool_name} ({call_id}) is uncertain. Can you verify the "
+        "result at its destination or decide whether to accept the risk of a duplicate?"
+    )
+
+
 @tool
 async def record_job_work(note: str) -> str:
     """Checkpoint verified work, evidence references, and the next step during a job run."""
@@ -49,6 +59,10 @@ class ObjectiveReport(BaseModel):
     notice: str = Field(default="", max_length=2000)
 
     requires_signoff: bool = False
+    deadline_risk: str = Field(default="", max_length=1000)
+    decision_question: str = Field(default="", max_length=1000)
+    decision_unlocks: str = Field(default="", max_length=1000)
+
     blocker_key: str = Field(default="", max_length=200)
 
     verified: list[str] = Field(default_factory=list, max_length=64)
@@ -150,18 +164,35 @@ class JobJournal:
             yield cls(archive.records.store, config.assistant_id)
 
     @contextmanager
-    def capture_actions(self, job: str, run: str) -> Generator[ActionRun]:
+    def capture_actions(
+        self, job: str, run: str, *, current: Callable[[], bool] | None = None
+    ) -> Generator[ActionRun]:
         """Track tool receipts for this objective run."""
-        actions = ActionRun(self.records, job, run)
+        actions = ActionRun(self.records, job, run, current=current)
         with CURRENT_ACTIONS.set(actions):
             yield actions
+
+    async def _state(self, job: CronJob) -> dict[str, object]:
+        state = await self.records.get(_revision_key(job))
+        if state is not None:
+            return state
+        inherited = {}
+        for criterion, revisions in job.evidence_sources.items():
+            for revision in revisions:
+                prior = await self.records.get(_revision_key(job, revision))
+                if prior is not None:
+                    evidence = _progress(job, prior)[1].get(criterion)
+                    if evidence and evidence["verified"]:
+                        inherited[criterion] = evidence
+                    break
+        return {"evidence": inherited}
 
     async def verification(
         self, job: CronJob
     ) -> tuple[tuple[str, ...] | None, dict[str, dict[str, str | bool]]]:
         """Read criteria and evidence for the current objective revision."""
         async with self.records.access():
-            state = await self.records.get(_revision_key(job)) or {}
+            state = await self._state(job)
             return _progress(job, state)
 
     async def finish_check(
@@ -174,7 +205,7 @@ class JobJournal:
                 msg = "Unknown scheduled run"
                 raise ValueError(msg)
             key = _revision_key(job)
-            state = await self.records.get(key) or {}
+            state = await self._state(job)
             if report.completion_criteria is not None:
                 state.setdefault("criteria", report.completion_criteria)
             criteria, evidence = _progress(job, state)
@@ -187,16 +218,14 @@ class JobJournal:
             for action in actions.values():
                 if isinstance(action, dict) and action["run"] != run:
                     call_id = action["call_id"]
-                    notice = (
-                        f"The outcome of {action['tool']} ({call_id}) is uncertain. "
-                        "Can you verify the result at its destination or decide whether to accept "
-                        "the risk of a duplicate?"
-                    )
+                    notice = _action_question(str(action["tool"]), str(call_id))
                     report = report.model_copy(
                         update={
                             "status": "blocked",
                             "notice": report.notice or notice,
                             "blocker_key": f"uncertain-action:{call_id}",
+                            "decision_question": notice,
+                            "decision_unlocks": ACTION_CHOICES,
                         }
                     )
                     break
@@ -231,7 +260,18 @@ class JobJournal:
         question = (
             f"Do you approve completion of {job.name} (evidence {version})? Reply yes to approve."
         )
-        if state.get("signoff_version") == version and blocker.get("key") == key:
+        decisions = await self._questions(job)
+        decision = decisions.get(question, {})
+        if str(decision.get("answer", "")).strip().casefold().rstrip(".!") in {
+            "yes",
+            "approve",
+            "approved",
+            "i approve",
+        }:
+            return report
+        if state.get("signoff_version") == version and (
+            blocker.get("key") == key or (decision and not decision.get("answer"))
+        ):
             owner_note = next(
                 (note for note in reversed(job.handoffs) if note.startswith("Owner: ")), ""
             )
@@ -266,29 +306,136 @@ class JobJournal:
         key = "blocker:" + job.id
         async with self.records.access():
             row = await self.records.get(key)
-            if report.status != "blocked":
+            risk = report.deadline_risk.strip() if job.target_at or job.until else ""
+            if report.status != "blocked" and not risk:
                 if row and report.status in {"checked", "partial", "complete"}:
                     await self.records.commit([(key, None)])
                 return ""
             identity = (
                 report.blocker_key.strip() or report.notice.strip() or report.summary
             ).casefold()
+            if risk:
+                identity = "deadline:" + risk.casefold()
             if row and row["key"] == identity:
                 return "" if row.get("delivered") else str(row["notice"])
             notice = (
-                report.notice.strip()
+                risk
+                or report.notice.strip()
                 or f"Job {job.name} is blocked. Ask for its saved check results."
             )
             await self.records.commit([(key, {"key": identity, "notice": notice})])
             return notice
 
-    async def mark_delivered(self, job: str, notice: str) -> None:
-        """Acknowledge the matching pending notice."""
-        key = "blocker:" + job
+    async def _questions(self, job: CronJob) -> dict[str, dict[str, str]]:
+        record = await self.records.get("decisions:" + job.id) or {}
+        return cast("dict[str, dict[str, str]]", record.get(_revision_key(job), {}))
+
+    async def decisions(self, job: CronJob) -> list[tuple[str, str, str | None]]:
+        """List owner decisions for the current revision."""
         async with self.records.access():
-            row = await self.records.get(key)
-            if row and row["notice"] == notice:
-                await self.records.commit([(key, {**row, "delivered": True})])
+            return [
+                (q, item["unlocks"], item.get("answer"))
+                for q, item in (await self._questions(job)).items()
+            ]
+
+    async def open_decision(
+        self, job: CronJob, reply_to: str | None = None
+    ) -> tuple[str, str] | None:
+        """Find the open question addressed by this message."""
+        async with self.records.access():
+            for question, item in (await self._questions(job)).items():
+                if "answer" not in item and (
+                    reply_to is None or item.get("message_id") == reply_to
+                ):
+                    return question, item["unlocks"]
+        return None
+
+    async def pending_question(self, job: CronJob) -> str:
+        """Read the current undelivered question."""
+        async with self.records.access():
+            for question, item in (await self._questions(job)).items():
+                if "answer" not in item and "delivered" not in item:
+                    return decision_text(job.name, job.id, question, item["unlocks"])
+        return ""
+
+    async def decision_answer(self, job: CronJob, question: str) -> str | None:
+        """Read the exact answer for this revision."""
+        async with self.records.access():
+            return (await self._questions(job)).get(question, {}).get("answer")
+
+    async def decision_notice(self, job: CronJob, report: ObjectiveReport) -> str:
+        """Retain answered questions and replace superseded pending questions."""
+        question = report.decision_question.strip() if report.status != "complete" else ""
+        if not question and report.status != "complete":
+            return ""
+        key = "decisions:" + job.id
+        async with self.records.access():
+            record = await self.records.get(key) or {}
+            items = {
+                q: v
+                for q, v in (await self._questions(job)).items()
+                if q == question or "answer" in v
+            }
+            item = (
+                items.setdefault(question, {"unlocks": report.decision_unlocks}) if question else {}
+            )
+            record[_revision_key(job)] = items
+            await self.records.commit([(key, record)])
+            if question and "answer" not in item and "delivered" not in item:
+                return decision_text(job.name, job.id, question, item["unlocks"])
+            return ""
+
+    async def resolve_decision(
+        self, job: CronJob, question: str, answer: str, *, wake: Callable[[], bool]
+    ) -> bool:
+        """Resolve an unanswered question and retire or release its action intent."""
+        key = "decisions:" + job.id
+        async with self.records.access():
+            record = await self.records.get(key) or {}
+            items = await self._questions(job)
+            if question not in items or "answer" in items[question]:
+                return False
+            intents = await self.records.get("actions:" + job.id) or {}
+            retired = await self.records.get("retired:" + job.id) or {}
+            for call_id, action in list(intents.items()):
+                if isinstance(action, dict) and question == _action_question(
+                    action["tool"], call_id
+                ):
+                    choice = answer.strip().casefold()
+                    if choice not in {"retire action", "retry despite duplicate risk"}:
+                        return False
+                    if choice == "retire action":
+                        retired[digest(action["tool"], action["arguments"])] = [
+                            action["tool"],
+                            action["arguments"],
+                        ]
+                    del intents[call_id]
+            if not wake():
+                return False
+            items[question]["answer"] = answer
+            record[_revision_key(job)] = items
+            await self.records.commit(
+                [(key, record), ("actions:" + job.id, intents), ("retired:" + job.id, retired)]
+            )
+            return True
+
+    async def mark_delivered(self, job: str, notice: str, message_id: str | None = None) -> None:
+        """Acknowledge only notices included in the delivered message."""
+        async with self.records.access():
+            key = "decisions:" + job
+            record = await self.records.get(key) or {}
+            for items in cast("dict[str, dict[str, dict[str, str]]]", record).values():
+                for question, item in items.items():
+                    if "delivered" not in item and notice.endswith(
+                        decision_text("", job, question, item["unlocks"])
+                    ):
+                        item["delivered"] = "yes"
+                        if message_id:
+                            item["message_id"] = message_id
+            blocker = await self.records.get("blocker:" + job)
+            if blocker and str(blocker["notice"]) + "\n" in notice + "\n":
+                blocker["delivered"] = True
+            await self.records.commit([(key, record), ("blocker:" + job, blocker)])
 
     async def start(self, job: CronJob, run: str) -> None:
         """Link a new run into the owner's history before executing it."""
@@ -382,13 +529,25 @@ class JobJournal:
             return result
 
 
+def decision_text(name: str, job_id: str, question: str, unlocks: str) -> str:
+    """Format an owner question with its explicit answer address."""
+    return f"{name} [{job_id}] {question} {unlocks} Reply with: answer {job_id}: <your answer>"
+
+
 def _owner_key(origin: CronOrigin) -> str:
     return "owner:" + digest(origin.channel or "", origin.conversation_id, origin.sender_id or "")
 
 
-def _revision_key(job: CronJob) -> str:
+def revision_id(job: CronJob) -> str:
+    """Return the persisted instruction revision or derive the legacy revision."""
+    if job.instruction_revision:
+        return job.instruction_revision
     instructions = [job.prompt, job.completion_criteria, job.required_sources, job.read_sources]
-    return "progress:" + digest(job.id, _owner_key(job.origin), json.dumps(instructions))
+    return digest(json.dumps(instructions))
+
+
+def _revision_key(job: CronJob, revision: str | None = None) -> str:
+    return "progress:" + digest(job.id, _owner_key(job.origin), revision or revision_id(job))
 
 
 def _progress(

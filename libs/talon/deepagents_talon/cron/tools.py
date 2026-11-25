@@ -55,8 +55,8 @@ Record applicable standing and job-specific delegations, destination and limits 
 Routines require a schedule. For objectives, omit it to start now or specify the first check.
 Derive verifiable completion_criteria from a clear finite assignment. Clarify ambiguity with the
 owner before creating the job when the answer would change the work. Use [] for ongoing work.
-List explicitly required reads as required_sources (tool:<name> or path:<absolute
-path>). These track coverage without granting access. Preserve timing constraints in the prompt.
+List explicitly required reads as required_sources (tool:<name> or path:<absolute path>). These
+track coverage without granting access. Preserve timing constraints in the prompt.
 Objective blocker notices always return to their original thread.
 {_JOB_HELP}"""
 

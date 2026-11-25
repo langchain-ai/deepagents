@@ -74,6 +74,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.cron.scope import (
+    HIDE_CONVERSATION_SEARCH,
     JOB_READ_SCOPE,
     SCHEDULER_FINALIZING,
     SENDING_OBJECTIVE,
@@ -1893,6 +1894,9 @@ def _job_scope(request: AgentRequest) -> Generator[None]:
                 job_id=job_id,
             )
     with (
+        HIDE_CONVERSATION_SEARCH.set(
+            request.metadata.get("trigger") == "cron" and _history_scope(request) is None
+        ),
         JOB_READ_SCOPE.set(scope),
         SENDING_OBJECTIVE.set(sender),
     ):
@@ -1906,7 +1910,9 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
     # A scheduled run has no sender of its own; jobs it creates inherit its creator.
     sender_id = request.metadata.get("sender_id") or request.metadata.get("cron_origin_sender_id")
     history_chat = request.metadata.get("history_chat")
+    account = request.metadata.get("channel_account_id")
     return CronOrigin(
+        account_id=account if isinstance(account, str) else None,
         conversation_id=(
             origin_conversation_id
             if isinstance(origin_conversation_id, str) and origin_conversation_id

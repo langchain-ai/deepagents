@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
+from langgraph.types import Command
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Callable
 
     from deepagents_talon.store_records import StoreRecords, Write
 
@@ -25,6 +26,7 @@ class ActionRun:
     records: StoreRecords
     job: str
     run: str
+    current: Callable[[], bool] | None = field(default=None, kw_only=True)
     loop: asyncio.AbstractEventLoop = field(default_factory=asyncio.get_running_loop)
     reads: set[str] = field(default_factory=set)
     active: set[str] = field(default_factory=set)
@@ -34,6 +36,15 @@ class ActionRun:
     def arguments(args: dict[str, object]) -> str:
         """Bound historical arguments and normalize key order across retries."""
         return json.dumps(args, default=str, sort_keys=True)[:4000]
+
+    async def already_applied(self, name: str, args: dict[str, object]) -> bool:
+        """Check destination receipts and owner-retired writes."""
+        args_key = self.arguments(args)
+        if (name, args_key) in self.applied:
+            return True
+        async with self.records.access():
+            retired = await self.records.get("retired:" + self.job) or {}
+            return [name, args_key] in retired.values()
 
     async def unresolved(self) -> list[dict[str, str]]:
         """Return interrupted calls requiring a destination lookup."""
@@ -115,10 +126,19 @@ async def reconcile_job_action(
     return f"Recorded: {note}."
 
 
-def successful(result: object) -> bool:
+def successful(result: object, call_id: str) -> bool:
     """Whether a tool returned an unambiguous success receipt."""
+    if isinstance(result, Command) and isinstance(result.update, dict):
+        messages = result.update.get("messages")
+        if not isinstance(messages, list):
+            return False
+        matches = [m for m in messages if isinstance(m, ToolMessage) and m.tool_call_id == call_id]
+        if len(matches) != 1:
+            return False
+        result = matches[0]
     return (
         isinstance(result, ToolMessage)
+        and result.tool_call_id == call_id
         and result.status == "success"
         and not (isinstance(result.content, str) and result.content.startswith("Error:"))
     )

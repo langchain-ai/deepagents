@@ -6,6 +6,7 @@ import base64
 import concurrent.futures
 import contextlib
 import contextvars
+import functools
 import mimetypes
 import threading
 import uuid
@@ -1484,6 +1485,7 @@ class ReadVideoFileSchema(ReadFileSchema):
     )
 
 
+@functools.lru_cache(maxsize=32)
 def _read_file_schema(base: type[ReadFileSchema], limit: int) -> type[ReadFileSchema]:
     """Return `base` with its `limit` field defaulting to `limit`."""
     if limit == DEFAULT_READ_LIMIT:

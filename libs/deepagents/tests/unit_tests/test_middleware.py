@@ -1608,6 +1608,15 @@ class TestFilesystemMiddleware:
         assert read_file_tool.args["limit"]["default"] == 2
         assert "reads up to 2 lines" in read_file_tool.description
 
+    def test_read_file_schema_reused_for_same_default_read_limit(self):
+        backend, _ = _make_backend()
+        schemas = [
+            next(tool for tool in FilesystemMiddleware(backend=backend, default_read_limit=7).tools if tool.name == "read_file").args_schema
+            for _ in range(2)
+        ]
+
+        assert schemas[0] is schemas[1]
+
     def test_read_file_explicit_limit_overrides_default_read_limit(self):
         files = {"/notes.txt": FileData(content="one\ntwo\nthree", encoding="utf-8")}
         backend, _ = _make_backend(files)

@@ -79,11 +79,12 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-fable-5-2": "Claude Fable 5.2",
     "anthropic:claude-opus-5-5": "Claude Opus 5.5",
     "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
-    "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
     "baseten:deepseek-ai/DeepSeek-V4.1-Flash-1017": "DeepSeek V4.1 Flash 1017",
     "baseten:meta-models/muse-spark-open": "Muse Spark Open",
     "baseten:moonshotai/Kimi-K3.1-Pro": "Kimi K3.1 Pro",
-    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
+    "baseten:nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B": (
+        "Nemotron 3.5 Super VL 120B A12B"
+    ),
     "baseten:zai-org/GLM-5.3": "GLM 5.3",
     "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",
     "fireworks:accounts/fireworks/models/deepseek-v4p1-flash-1017": (

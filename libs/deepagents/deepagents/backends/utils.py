@@ -510,6 +510,21 @@ def file_data_to_string(file_data: FileData) -> str:
     return _normalize_content(file_data)
 
 
+def _encodable_text(content: str) -> str:
+    """Return `content` as text that encodes to UTF-8.
+
+    Rejoins a surrogate pair split across code points and replaces each lone
+    surrogate with U+FFFD, as Node does when it writes a JavaScript string.
+    """
+    if content.isascii():
+        return content
+    try:
+        content.encode("utf-8")
+    except UnicodeEncodeError:
+        return content.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    return content
+
+
 def create_file_data(
     content: str,
     created_at: str | None = None,
@@ -519,6 +534,8 @@ def create_file_data(
 
     Args:
         content: File content as string (plain text or base64-encoded binary).
+            Text that cannot be encoded as UTF-8 is stored as described in
+            `_encodable_text`.
         created_at: Optional creation timestamp (ISO format).
         encoding: Content encoding — `"utf-8"` for text, `"base64"` for binary.
 
@@ -528,7 +545,7 @@ def create_file_data(
     now = datetime.now(UTC).isoformat()
 
     return {
-        "content": content,
+        "content": _encodable_text(content) if encoding == "utf-8" else content,
         "encoding": encoding,
         "created_at": created_at or now,
         "modified_at": now,
@@ -546,10 +563,11 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
         Updated `FileData` dict
     """
     now = datetime.now(UTC).isoformat()
+    encoding = file_data.get("encoding", "utf-8")
 
     result = FileData(
-        content=content,
-        encoding=file_data.get("encoding", "utf-8"),
+        content=_encodable_text(content) if encoding == "utf-8" else content,
+        encoding=encoding,
     )
     if "created_at" in file_data:
         result["created_at"] = file_data["created_at"]

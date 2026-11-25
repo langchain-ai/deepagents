@@ -367,43 +367,35 @@ async def test_soft_target_reports_delay_and_resumes_after_six_missed_checks(tmp
     assert notices[1:] == ["done"]
 
 
-async def test_deadline_cancels_active_final_claim(tmp_path) -> None:
+async def test_final_run_starts_with_tick_latency_and_finishes_after_until(tmp_path) -> None:
     store = _store(tmp_path)
-    until = NOON + timedelta(minutes=2)
-    job = store.create_job(
-        prompt="wait",
-        schedule=CronSchedule.parse("every 1m"),
-        repeat_times=1,
-        origin=ORIGIN,
-        now=NOON,
-        until=until,
-    )
+    until = NOON + timedelta(hours=1)
+    job = _hourly_until(store, until)
     entered = asyncio.Event()
-    cancelled = asyncio.Event()
+    release = asyncio.Event()
     notices: list[str] = []
 
     async def run(_job: CronJob) -> str:
         entered.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-        return "late"
+        await release.wait()
+        return "done"
 
     async def deliver(_job: CronJob, text: str) -> None:
         notices.append(text)
 
-    now = NOON + timedelta(minutes=1)
+    now = until + timedelta(seconds=30)
     scheduler = PersistentCronScheduler(
         store=store, run_job=run, deliver_result=deliver, now=lambda: now
     )
-    await scheduler.tick_once(wait=False)
+    first_tick = asyncio.create_task(scheduler.tick_once())
     await asyncio.wait_for(entered.wait(), 2)
-    now = until + timedelta(seconds=1)
+    now = until + timedelta(minutes=10)
     await scheduler.tick_once()
-    assert cancelled.is_set()
-    assert len(notices) == 1
-    assert f"Job {job.id} missed its deadline" in notices[0]
+    release.set()
+    await first_tick
+    assert store.get_job(job.id).last_status == "ok"
+    await scheduler.tick_once()
+    assert notices == ["done"]
 
 
 async def test_soft_target_crossed_during_run(tmp_path) -> None:

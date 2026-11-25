@@ -86,8 +86,9 @@ class PersistentCronScheduler:
                 while they run and coalesces overlapping runs of the same job.
         """
         current = self.now()
-        missed = self.store.claim_missed_deadlines(now=current)
-        self._discard_finished(current)
+        running = frozenset(self._running)
+        missed = self.store.claim_missed_deadlines(now=current, running=running)
+        self._discard_finished(current, running)
         for job_id, task in list(self._running.items()):
             if task.done():
                 # Cancellation before the coroutine starts skips its finally block.
@@ -103,10 +104,6 @@ class PersistentCronScheduler:
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
         started = []
         for job in missed:
-            task = self._running.get(job.id)
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
             task = asyncio.create_task(self._report_expiration(job))
             self._running[job.id] = task
             started.append(task)
@@ -169,11 +166,11 @@ class PersistentCronScheduler:
             except TimeoutError:
                 continue
 
-    def _discard_finished(self, now: datetime) -> None:
+    def _discard_finished(self, now: datetime, running: frozenset[str]) -> None:
         # One event with the facts rather than a completed/expired split: a job
         # can finish its last run and pass `until` in the same tick, and
         # `last_run_at` already says whether it ever ran.
-        for job in self.store.discard_finished(now=now):
+        for job in self.store.discard_finished(now=now, running=running):
             log_event(
                 logger,
                 "cron.job_removed",
@@ -196,37 +193,26 @@ class PersistentCronScheduler:
             conversation_id=claimed.origin.conversation_id,
             next_run_at=None if claimed.next_run_at is None else claimed.next_run_at.isoformat(),
         )
-        timeout = (
-            None
-            if claimed.until is None
-            else max(0.0, (claimed.until - self.now()).total_seconds())
-        )
-        deadline = asyncio.timeout(timeout)
         try:
-            async with deadline:
-                text = await self.run_job(claimed)
+            text = await self.run_job(claimed)
         except Exception as exc:
-            # Keep an expired claim for the next tick to report.
-            if not deadline.expired():
-                logger.exception("Cron job %s failed", claimed.id)
-                log_event(
-                    logger,
-                    "cron.failure",
-                    job_id=claimed.id,
-                    job_name=claimed.name,
-                    error=str(exc),
-                )
-                self.store.mark_job_run(
-                    claimed.id,
-                    status="error",
-                    error=str(exc),
-                    now=self.now(),
-                )
+            logger.exception("Cron job %s failed", claimed.id)
+            log_event(
+                logger,
+                "cron.failure",
+                job_id=claimed.id,
+                job_name=claimed.name,
+                error=str(exc),
+            )
+            self.store.mark_job_run(
+                claimed.id,
+                status="error",
+                error=str(exc),
+                now=self.now(),
+            )
             return
 
         finished = self.now()
-        if claimed.until and finished > claimed.until:
-            return
         if notice := claimed.target_delay(finished):
             text = notice if not text or is_silent(text) else f"{notice}\n{text}"
 

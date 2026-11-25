@@ -1188,16 +1188,18 @@ class CronJobStore:
                 self._write_jobs(result)
             return updated
 
-    def claim_missed_deadlines(self, *, now: datetime) -> list[CronJob]:
+    def claim_missed_deadlines(
+        self, *, now: datetime, running: frozenset[str] = frozenset()
+    ) -> list[CronJob]:
         """Retire overdue enabled jobs before any expired action can be dispatched."""
         with self._lock:
             jobs = self.list_jobs()
             missed = [
                 job
                 for job in jobs
-                if (job.enabled or job.claimed_at is not None)
-                and job.until is not None
-                and now > job.until
+                if job.id not in running
+                and (job.enabled or job.claimed_at is not None)
+                and _is_expired(job, now)
             ]
             if missed:
                 ids = {job.id for job in missed}
@@ -1211,7 +1213,9 @@ class CronJobStore:
                 )
             return missed
 
-    def discard_finished(self, *, now: datetime | None = None) -> list[CronJob]:
+    def discard_finished(
+        self, *, now: datetime | None = None, running: frozenset[str] = frozenset()
+    ) -> list[CronJob]:
         """Delete jobs that will never run again, or whose `until` has passed.
 
         Two kinds of job are kept for `list_jobs` to show, and `prune_completed`
@@ -1224,6 +1228,7 @@ class CronJobStore:
 
         Args:
             now: Current timestamp override for deterministic tests.
+            running: Jobs whose active run still needs to record its outcome.
 
         Returns:
             Removed job records.
@@ -1235,7 +1240,7 @@ class CronJobStore:
             removed: list[CronJob] = []
             for job in jobs:
                 expired = _is_expired(job, current)
-                if not (expired or _is_finished(job)):
+                if job.id in running or not (expired or _is_finished(job)):
                     kept.append(job)
                 elif job.last_status != "error" and job.claimed_at is None:
                     removed.append(job)

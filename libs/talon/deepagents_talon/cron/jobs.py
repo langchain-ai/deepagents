@@ -178,6 +178,7 @@ class CronJobDict(TypedDict):
     origin: CronOriginDict
     target_at: NotRequired[int | None]
     until: NotRequired[int | None]
+    wait_condition: NotRequired[str]
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
@@ -208,6 +209,8 @@ class CronJobWireDict(TypedDict):
     origin: CronOriginDict
     target_at: str | None
     until: str | None
+
+    wait_condition: NotRequired[str]
     claimed_at: str | None
     deliver_to: DeliverTo
     skills: list[str]
@@ -717,6 +720,8 @@ class CronJob:
     origin: CronOrigin
     target_at: datetime | None = field(default=None, kw_only=True)
     until: datetime | None = None
+
+    wait_condition: str = field(default="", kw_only=True)
     claimed_at: datetime | None = None
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
@@ -775,6 +780,7 @@ class CronJob:
             "assistant_id": self.assistant_id,
             "name": self.name,
             "prompt": self.prompt,
+            **({"wait_condition": self.wait_condition} if self.wait_condition else {}),
             "schedule": self.schedule.to_dict(),
             "repeat": self.repeat.to_dict(),
             "enabled": self.enabled,
@@ -821,6 +827,7 @@ class CronJob:
             "assistant_id": self.assistant_id,
             "name": self.name,
             "prompt": self.prompt,
+            **({"wait_condition": self.wait_condition} if self.wait_condition else {}),
             "schedule": self.schedule.to_wire(),
             "repeat": self.repeat.to_dict(),
             "enabled": self.enabled,
@@ -871,6 +878,7 @@ class CronJob:
             origin=CronOrigin.from_dict(record.get("origin")),
             target_at=_from_optional_epoch(_optional_int_field(record, "target_at")),
             until=_from_optional_epoch(_optional_int_field(record, "until")),
+            wait_condition=_optional_str_field(record, "wait_condition") or "",
             claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
             # Jobs saved before this field existed default to the channel.
             deliver_to=cast(
@@ -1301,7 +1309,12 @@ class CronJobStore:
             self._write_jobs(jobs)
 
     def apply_objective_result(
-        self, snapshot: CronJob, *, complete: bool = False, wake: datetime | None = None
+        self,
+        snapshot: CronJob,
+        *,
+        complete: bool = False,
+        wake: datetime | None = None,
+        wait_condition: str = "",
     ) -> bool:
         """Apply a scheduling decision and report whether the run is still current."""
         with self._lock:
@@ -1311,12 +1324,14 @@ class CronJobStore:
             index = jobs.index(snapshot)
             current = jobs[index]
             if complete:
-                updated = replace(current, enabled=False, next_run_at=None)
+                updated = replace(current, enabled=False, next_run_at=None, wait_condition="")
             elif wake is not None and snapshot.enabled:
                 wake = _coerce_utc(wake)
                 if wake <= _coerce_utc() or (snapshot.until is not None and wake > snapshot.until):
-                    return True
-                updated = replace(current, next_run_at=wake)
+                    wake = current.next_run_at
+                updated = replace(current, next_run_at=wake, wait_condition=wait_condition)
+            elif current.wait_condition != wait_condition:
+                updated = replace(current, wait_condition=wait_condition)
             else:
                 return True
             jobs[index] = updated

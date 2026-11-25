@@ -407,6 +407,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "repeat": data["repeat"],
         "enabled": data["enabled"],
         "next_run_at": data["next_run_at"],
+        **({"wait_condition": job.wait_condition} if job.wait_condition else {}),
         "last_run_at": data["last_run_at"],
         "last_status": data["last_status"],
         "last_error": data["last_error"],

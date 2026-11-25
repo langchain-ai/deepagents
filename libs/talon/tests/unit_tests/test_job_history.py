@@ -581,10 +581,20 @@ async def test_required_reads_and_evidence_survive_separate_checks(tmp_path: Pat
     assert inspected["completion_criteria"] == ["publish", "rescan"]
     assert inspected["verified_progress"] == {"publish": "registry digest abcd"}
     soon = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=1)
-    agent.report = {"status": "checked", "summary": "No change", "next_wake_at": soon.isoformat()}
+    agent.report = {
+        "status": "checked",
+        "summary": "No change",
+        "next_wake_at": soon.isoformat(),
+        "wait_condition": "Registry lists the signed image.",
+    }
     for _ in range(4):
         await host.run_scheduled_job(job)
     assert store.get_job(job.id).next_run_at >= soon + timedelta(minutes=9)
+    assert (
+        CronTools(store=restarted, origin=lambda: ORIGIN).list_jobs()[0]["wait_condition"]
+        == "Registry lists the signed image."
+    )
+    assert "Registry lists the signed image." in agent.requests[-1].text
     agent.report.update(wake_reason="owner_timing")
     await host.run_scheduled_job(job)
     assert store.get_job(job.id).next_run_at == soon

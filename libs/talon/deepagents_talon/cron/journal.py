@@ -49,6 +49,7 @@ class ObjectiveReport(BaseModel):
 
     verified: list[str] = Field(default_factory=list, max_length=64)
 
+    wait_condition: str = Field(default="", max_length=2000)
     next_wake_at: datetime | None = None
     wake_reason: Literal["poll", "owner_timing", "expected_event"] = "poll"
     completion_criteria: list[str] | None = None
@@ -66,6 +67,8 @@ class ObjectiveReport(BaseModel):
             or not previous
             or previous["status"] != "checked"
         ):
+            if deadline and self.next_wake_at:
+                return min(deadline, self.next_wake_at)
             return self.next_wake_at
         elapsed = now - datetime.fromisoformat(previous["started"]).replace(tzinfo=UTC)
         delay = min(timedelta(hours=4), max(timedelta(minutes=10), elapsed * 2))

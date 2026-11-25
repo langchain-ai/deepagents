@@ -1463,7 +1463,9 @@ class TalonHost:
                 wake = report.next_wake(
                     history[0] if history else None, datetime.now(UTC), job.until
                 )
-            if not store.apply_objective_result(job, complete=complete, wake=wake):
+            if not store.apply_objective_result(
+                job, complete=complete, wake=wake, wait_condition=report.wait_condition
+            ):
                 return SILENT_SENTINEL
         return journal.notice(job, report) or SILENT_SENTINEL
 
@@ -2625,6 +2627,9 @@ def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
         "criteria and perform this run's required reads. "
         f"UTC now: {datetime.now(UTC).isoformat()}. For each unfinished objective, include "
         "next_wake_at, an ISO 8601 timestamp with timezone for the next useful check. "
+        f"Current external wait: {json.dumps(job.wait_condition)}. Include wait_condition with the "
+        "observable condition while waiting. When it is met, continue authorized work this run. "
+        "Use previous attempts to reconsider repeatedly failing approaches. "
         "Set wake_reason to owner_timing for an explicit owner cadence, expected_event for a "
         "specific upcoming event (identify it in the summary), otherwise poll. "
         "Use available tools within the owner's standing and job-specific delegations. Tool access "

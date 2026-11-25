@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -39,23 +40,21 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.outputs import ChatGenerationChunk
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-from langgraph.checkpoint.base import (
-    ChannelVersions,
-    Checkpoint,
-    CheckpointMetadata,
-)
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import interrupt
+from langgraph.types import Command, Interrupt, interrupt
 
 from deepagents_acp import server as server_module
-from deepagents_acp.server import AgentServerACP, AgentSessionContext
+from deepagents_acp._tool_calls import _ToolCall
+from deepagents_acp.server import AgentServerACP, AgentSessionContext, _Turn
 from tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.types import StateSnapshot
 
 
 class FakeACPClient(Client):
@@ -100,50 +99,6 @@ class FakeACPClient(Client):
         )
 
 
-class DelayedMemorySaver(MemorySaver):
-    """Simulate a persistent checkpointer whose async writes are not immediate."""
-
-    async def aput(
-        self,
-        config: RunnableConfig,
-        checkpoint: Checkpoint,
-        metadata: CheckpointMetadata,
-        new_versions: ChannelVersions,
-    ) -> RunnableConfig:
-        """Delay checkpoint visibility until the async write completes."""
-        await asyncio.sleep(0.05)
-        return await super().aput(config, checkpoint, metadata, new_versions)
-
-
-async def test_acp_agent_prompt_streams_text() -> None:
-    model = GenericFakeChatModel(
-        messages=iter([AIMessage(content="Hello!")]), stream_delimiter=r"(\s)"
-    )
-    graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-
-    agent = AgentServerACP(agent=graph)
-    client = FakeACPClient()
-    agent.on_connect(client)  # type: ignore[arg-type]
-
-    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
-    session_id = session.session_id
-
-    resp = await agent.prompt([TextContentBlock(type="text", text="Hi")], session_id=session_id)
-    assert resp.stop_reason == "end_turn"
-
-    texts: list[str] = []
-    for entry in client.events:
-        if entry["type"] != "session_update":
-            continue
-        update = entry["update"]
-        if update == AgentMessageChunk(
-            session_update="agent_message_chunk",
-            content=TextContentBlock(type="text", text="Hello!"),
-        ):
-            texts.append("Hello!")
-    assert texts == ["Hello!"]
-
-
 async def test_acp_agent_prompt_streams_visible_reasoning_in_block_order() -> None:
     class Graph:
         @staticmethod
@@ -172,12 +127,7 @@ async def test_acp_agent_prompt_streams_visible_reasoning_in_block_order() -> No
 
             return State()
 
-    agent = AgentServerACP(
-        agent=create_deep_agent(
-            model=GenericFakeChatModel(messages=iter([])), checkpointer=MemorySaver()
-        )
-    )
-    agent._agent = Graph()  # type: ignore[assignment]
+    agent = AgentServerACP(agent=lambda _context: Graph())  # type: ignore[arg-type]
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
@@ -217,12 +167,7 @@ def _streaming_server(chunks: list[tuple[tuple[str, ...], Any]]) -> tuple[Any, F
 
             return State()
 
-    agent = AgentServerACP(
-        agent=create_deep_agent(
-            model=GenericFakeChatModel(messages=iter([])), checkpointer=MemorySaver()
-        )
-    )
-    agent._agent = Graph()  # type: ignore[assignment]
+    agent = AgentServerACP(agent=lambda _context: Graph())  # type: ignore[arg-type]
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
     return agent, client
@@ -317,6 +262,56 @@ async def test_acp_agent_prompt_streams_content_before_tool_calls() -> None:
     assert response.stop_reason == "end_turn"
     kinds = [event["update"].session_update for event in client.events]
     assert kinds.index("agent_message_chunk") < kinds.index("tool_call")
+
+
+def _fragment(args: str, *, call_id: str | None = None, name: str | None = None) -> AIMessageChunk:
+    """Build a chunk carrying one streamed piece of a tool call's arguments."""
+    return AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {"id": call_id, "name": name, "args": args, "index": 0, "type": "tool_call_chunk"}
+        ],
+    )
+
+
+def _started_calls(client: FakeACPClient) -> dict[str, Any]:
+    starts = [e["update"] for e in client.events if e["update"].session_update == "tool_call"]
+    assert len({start.tool_call_id for start in starts}) == len(starts)
+    return {start.tool_call_id: start.raw_input for start in starts}
+
+
+async def test_acp_agent_prompt_starts_a_fragmented_tool_call_once_its_arguments_complete() -> None:
+    agent, client = _streaming_server(
+        [
+            ((), _fragment('{"path": ', call_id="call-1", name="ls")),
+            # Ends in a brace that is still inside the string.
+            ((), _fragment('"/a}')),
+            ((), _fragment('b"} ')),
+            ((), _fragment("\n", call_id="call-1", name="ls")),
+        ]
+    )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    await agent.prompt([TextContentBlock(type="text", text="Hi")], session_id=session.session_id)
+
+    assert _started_calls(client) == {"call-1": {"path": "/a}b"}}
+
+
+async def test_acp_agent_prompt_keeps_parallel_subagent_tool_calls_apart() -> None:
+    one, two = ("tools:1",), ("tools:2",)
+    agent, client = _streaming_server(
+        [
+            (one, _fragment('{"path": ', call_id="call-1", name="ls")),
+            (two, _fragment('{"path": ', call_id="call-2", name="ls")),
+            (one, _fragment('"/one"}')),
+            (two, _fragment('"/two"}')),
+        ]
+    )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    await agent.prompt([TextContentBlock(type="text", text="Hi")], session_id=session.session_id)
+
+    assert _started_calls(client) == {"call-1": {"path": "/one"}, "call-2": {"path": "/two"}}
 
 
 async def test_acp_agent_cancel_stops_prompt() -> None:
@@ -428,15 +423,7 @@ async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
 
             return S()
 
-    agent = AgentServerACP(
-        agent=create_deep_agent(
-            model=GenericFakeChatModel(
-                messages=iter([AIMessage(content="ok")]), stream_delimiter=None
-            ),
-            checkpointer=MemorySaver(),
-        ),
-    )
-    agent._agent = Graph()  # type: ignore[assignment]
+    agent = AgentServerACP(agent=lambda _context: Graph())  # type: ignore[arg-type]
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -647,6 +634,55 @@ async def test_acp_agent_load_session_replays_compacted_messages() -> None:
     ] == ["old", "old reply", "new"]
 
 
+class _Marker:
+    """A weakly referenceable token riding along in one snapshot."""
+
+
+class _HistoryWatcher:
+    """Wrap a graph to count how many history snapshots replay still holds."""
+
+    def __init__(self, graph: CompiledStateGraph) -> None:
+        self._graph = graph
+        self.markers: list[weakref.ref[_Marker]] = []
+        self.peak_held = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._graph, name)
+
+    async def aget_state_history(self, config: RunnableConfig) -> AsyncIterator[StateSnapshot]:
+        async for snapshot in self._graph.aget_state_history(config):
+            marker = _Marker()
+            self.markers.append(weakref.ref(marker))
+            yield snapshot._replace(values={**snapshot.values, "marker": marker})
+            del marker
+            held = sum(ref() is not None for ref in self.markers)
+            self.peak_held = max(self.peak_held, held)
+
+
+async def test_acp_agent_load_session_replay_does_not_keep_every_snapshot() -> None:
+    checkpointer = MemorySaver()
+    graph = _persistent_graph(checkpointer)
+    server, _ = _persistent_server(graph)
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    config = server._session_config(session.session_id)
+    for turn in range(5):
+        message = HumanMessage(content=f"turn {turn}", id=f"turn-{turn}")
+        await graph.aupdate_state(config, {"messages": [message]}, as_node="__start__")
+
+    watcher = _HistoryWatcher(_persistent_graph(checkpointer))
+    restarted = AgentServerACP(agent=lambda _context: watcher, load_sessions=True)
+    client = FakeACPClient()
+    restarted.on_connect(client)  # type: ignore[arg-type]
+    await restarted.load_session(cwd="/tmp", session_id=session.session_id, mcp_servers=[])
+
+    replayed = [event["update"] for event in client.events]
+    assert [update.content.text for update in replayed if isinstance(update, UserMessageChunk)] == [
+        f"turn {turn}" for turn in range(5)
+    ]
+    assert len(watcher.markers) > 5
+    assert watcher.peak_held <= 1
+
+
 async def test_acp_agent_load_session_restores_config_options() -> None:
     checkpointer = MemorySaver()
     contexts: list[AgentSessionContext] = []
@@ -703,10 +739,14 @@ async def test_acp_agent_load_session_restores_config_options() -> None:
 
     assert response.modes is not None
     assert response.modes.current_mode_id == "manual"
-    options = [getattr(option, "root", option) for option in response.config_options or []]
+    options = response.config_options or []
     model_option = next(option for option in options if option.id == "model")
     assert model_option.current_value == "model-b"
-    assert contexts[-1] == AgentSessionContext(cwd="/tmp", mode="manual", model="model-b")
+    assert (contexts[-1].cwd, contexts[-1].mode, contexts[-1].model) == (
+        "/tmp",
+        "manual",
+        "model-b",
+    )
 
 
 async def test_acp_agent_load_session_rejects_sessions_it_did_not_create() -> None:
@@ -749,18 +789,25 @@ async def test_acp_agent_load_session_rejects_different_cwd() -> None:
 
 
 async def test_new_session_preserves_positional_mcp_servers_slot() -> None:
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="OK")])),
-        checkpointer=MemorySaver(),
-    )
-    agent = AgentServerACP(agent=graph)
+    built: list[AgentSessionContext] = []
+
+    def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
+        built.append(context)
+        return create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="OK")])),
+            checkpointer=MemorySaver(),
+        )
+
+    agent = AgentServerACP(agent=build_agent)
+    agent.on_connect(FakeACPClient())  # type: ignore[arg-type]
     mcp_servers = [
         McpServerStdio(name="test-server", command="mcp-test", args=[], env=[]),
     ]
 
     session = await agent.new_session("/tmp", mcp_servers)
+    await agent.prompt([TextContentBlock(type="text", text="hi")], session_id=session.session_id)
 
-    assert agent._session_mcp_servers[session.session_id] == mcp_servers
+    assert built[0].mcp_servers == tuple(mcp_servers)
 
 
 @tool(description="Write a file")
@@ -879,19 +926,11 @@ async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
         ],
     )
 
-    active_tool_calls: dict[str, Any] = {}
-    tool_call_accumulator: dict[int, Any] = {}
+    turn = _Turn(cwd="/tmp", context=AgentSessionContext(cwd="/tmp", mode="auto"))
 
-    await agent._process_tool_call_chunks(
-        session_id=session.session_id,
-        message_chunk=msg,
-        active_tool_calls=active_tool_calls,
-        tool_call_accumulator=tool_call_accumulator,
-    )
+    await agent._process_tool_call_chunks(session.session_id, msg, turn)
 
-    assert active_tool_calls == {
-        "call_123": {"name": "read_file", "args": {"file_path": "/tmp/x.txt"}}
-    }
+    assert turn.calls == {"call_123": _ToolCall(name="read_file", args={"file_path": "/tmp/x.txt"})}
 
 
 async def test_acp_agent_tool_result_completes_tool_call() -> None:
@@ -934,7 +973,7 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
 
             return S()
 
-    agent._agent = Graph()  # type: ignore[assignment]
+    agent._sessions[session.session_id].agent = Graph()  # type: ignore[assignment]
 
     resp = await agent.prompt(
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id
@@ -1040,29 +1079,29 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
     assert plan_clear_updates
 
 
-async def test_acp_agent_hitl_approve_always_execute_auto_approves_next_time() -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("execute", {"command": "python -m pytest -q"}),
+        ("write_file", {"file_path": "/tmp/x.txt", "content": "hi"}),
+    ],
+)
+async def test_acp_agent_hitl_approve_always_approves_the_next_call_without_asking(
+    tool_name: str, args: dict[str, str]
+) -> None:
+    calls = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": tool_name, "args": args, "id": call_id, "type": "tool_call"}],
+        )
+        for call_id in ("call_1", "call_2")
+    ]
     model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "execute",
-                            "args": {"command": "python -m pytest -q"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        ),
-        stream_delimiter=None,
+        messages=iter([*calls, AIMessage(content="done")]), stream_delimiter=None
     )
     graph = create_deep_agent(
         model=model,
-        middleware=[HumanInTheLoopMiddleware(interrupt_on={"execute": True})],
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={tool_name: True})],
         checkpointer=MemorySaver(),
     )
 
@@ -1076,85 +1115,7 @@ async def test_acp_agent_hitl_approve_always_execute_auto_approves_next_time() -
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id
     )
     assert resp.stop_reason == "end_turn"
-
-    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
-    assert len(permission_requests) == 1
-    assert permission_requests[0]["tool_call"].title.startswith("Execute:")
-
-    assert session.session_id in agent._allowed_execute_commands
-    assert permission_requests[0]["options"][-1].name == (
-        "Always allow this exact command in this session"
-    )
-
-    client.events = []
-    state = type("S", (), {"next": ("x",), "interrupts": []})()
-    interrupt = type(
-        "I",
-        (),
-        {
-            "id": "int_2",
-            "value": {
-                "action_requests": [{"name": "execute", "args": {"command": "python -m pytest -q"}}]
-            },
-        },
-    )()
-    state.interrupts = [interrupt]
-    decisions = await agent._handle_interrupts(current_state=state, session_id=session.session_id)
-    assert decisions == [{"type": "approve"}]
-    assert [e for e in client.events if e["type"] == "request_permission"] == []
-
-
-async def test_acp_agent_hitl_approve_always_tool_auto_approves_next_time() -> None:
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "write_file",
-                            "args": {"file_path": "/tmp/x.txt", "content": "hi"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        ),
-        stream_delimiter=None,
-    )
-    graph = create_deep_agent(
-        model=model,
-        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_file": True})],
-        checkpointer=MemorySaver(),
-    )
-
-    agent = AgentServerACP(agent=graph)
-    client = FakeACPClient(permission_outcomes=["approve_always"])
-    agent.on_connect(client)  # type: ignore[arg-type]
-
-    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
-
-    resp = await agent.prompt(
-        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
-    )
-    assert resp.stop_reason == "end_turn"
-
-    assert session.session_id in agent._allowed_command_types
-    assert ("write_file", None) in agent._allowed_command_types[session.session_id]
-
-    client.events = []
-    state = type("S", (), {"next": ("x",), "interrupts": []})()
-    interrupt = type(
-        "I",
-        (),
-        {"id": "int_2", "value": {"action_requests": [{"name": "write_file", "args": {}}]}},
-    )()
-    state.interrupts = [interrupt]
-    decisions = await agent._handle_interrupts(current_state=state, session_id=session.session_id)
-    assert decisions == [{"type": "approve"}]
-    assert [e for e in client.events if e["type"] == "request_permission"] == []
+    assert len([e for e in client.events if e["type"] == "request_permission"]) == 1
 
 
 async def test_acp_agent_hitl_client_cancel_raises_request_error() -> None:
@@ -1393,24 +1354,18 @@ async def test_set_session_mode_resets_agent_with_new_mode() -> None:
     assert created_agents[0]["mode"] == "mode_a"
     assert created_agents[0]["cwd"] == "/tmp"
 
-    # Change the session mode to mode_b
+    # Changing the mode rebuilds the agent for the next turn, not immediately.
     await agent_server.set_session_mode(mode_id="mode_b", session_id=session_id)
+    assert len(created_agents) == 1
 
-    # Verify that changing mode created a new agent instance with mode_b
-    assert len(created_agents) == 2
-    assert created_agents[1]["mode"] == "mode_b"
-    assert created_agents[1]["cwd"] == "/tmp"
-
-    # Verify the agent was actually reset (not the same instance)
-    assert created_agents[0]["agent"] is not created_agents[1]["agent"]
-
-    # Make another prompt to ensure the new agent is being used
     await agent_server.prompt(
         [TextContentBlock(type="text", text="Test in mode B")], session_id=session_id
     )
 
-    # Should still be 2 agents (no new one created, just using the existing mode_b agent)
     assert len(created_agents) == 2
+    assert created_agents[1]["mode"] == "mode_b"
+    assert created_agents[1]["cwd"] == "/tmp"
+    assert created_agents[0]["agent"] is not created_agents[1]["agent"]
 
 
 async def test_reset_agent_with_compiled_state_graph() -> None:
@@ -1425,14 +1380,7 @@ async def test_reset_agent_with_compiled_state_graph() -> None:
     session = await agent_server.new_session(cwd="/tmp", mcp_servers=[])
     session_id = session.session_id
 
-    # Initially agent is None
-    assert agent_server._agent is None
-
-    # Call _reset_agent
-    agent_server._reset_agent(session_id)
-
-    # Agent should now be set to the compiled graph
-    assert agent_server._agent is compiled_graph
+    assert await agent_server._reset_agent(session_id) is compiled_graph
 
 
 async def test_reset_agent_preserves_session_cwd() -> None:
@@ -1467,10 +1415,10 @@ async def test_reset_agent_preserves_session_cwd() -> None:
     assert len(created_cwds) == 1
     assert created_cwds[0] == "/custom/path"
 
-    # Change mode (which calls _reset_agent)
+    # Changing the mode rebuilds the agent at the next turn.
     await agent_server.set_session_mode(mode_id="default", session_id=session_id)
+    await agent_server.prompt([TextContentBlock(type="text", text="Again")], session_id=session_id)
 
-    # Verify the new agent was also created with the same cwd
     assert len(created_cwds) == 2
     assert created_cwds[1] == "/custom/path"
 
@@ -1530,32 +1478,28 @@ async def test_acp_agent_hitl_requests_permission_only_once() -> None:
 
 
 async def test_acp_agent_hitl_waits_for_interrupt_checkpoint() -> None:
-    """Test that permission state is read after the interrupt stream closes."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "write_file",
-                            "args": {"file_path": "/tmp/test.txt", "content": "hello"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="File written successfully"),
-            ]
-        ),
-        stream_delimiter=None,
-    )
-    graph = create_deep_agent(
-        model=model,
-        interrupt_on={"write_file": True},
-        checkpointer=DelayedMemorySaver(),
-    )
-    agent = AgentServerACP(agent=graph)
+    """An interrupt that only shows in the saved state once the stream closes is still asked."""
+    action = {"name": "write_file", "args": {"file_path": "/tmp/test.txt", "content": "hello"}}
+    pending = Interrupt(value={"action_requests": [action]}, id="interrupt-1")
+
+    class Graph:
+        def __init__(self) -> None:
+            self.resumes: list[Any] = []
+
+        async def astream(self, graph_input: Any, **kwargs: Any):
+            if isinstance(graph_input, Command):
+                self.resumes.append(graph_input.resume)
+                yield ((), "messages", (AIMessageChunk(content="File written successfully"), {}))
+
+        async def aget_state(self, config: Any) -> Any:
+            class State:
+                next = ()
+                interrupts = [] if self.resumes else [pending]
+
+            return State()
+
+    graph = Graph()
+    agent = AgentServerACP(agent=lambda _context: graph)  # type: ignore[arg-type]
     client = FakeACPClient(permission_outcomes=["approve"])
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -1569,6 +1513,7 @@ async def test_acp_agent_hitl_waits_for_interrupt_checkpoint() -> None:
     permission_requests = [e for e in client.events if e["type"] == "request_permission"]
     assert len(permission_requests) == 1
     assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
+    assert graph.resumes == [{"interrupt-1": {"decisions": [{"type": "approve"}]}}]
     assert any(
         e["update"]
         == AgentMessageChunk(
@@ -1613,52 +1558,8 @@ def _make_server(*, with_modes: bool = True, with_models: bool = True) -> AgentS
     return AgentServerACP(agent=factory, modes=modes, models=models)
 
 
-def test_build_config_options_bare_when_wrapper_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Regression guard: when the v0.9+ import fallback sets SessionConfigOption to None,
-    `_build_config_options` must emit bare SessionConfigOptionSelect instances. A future
-    change that drops the `else mode_select` branch in server.py would fail this test.
-    """
-    monkeypatch.setattr(server_module, "SessionConfigOption", None)
-
-    agent = _make_server()
-    options = agent._build_config_options("session-1")
-
-    assert len(options) == 2
-    for opt in options:
-        assert isinstance(opt, SessionConfigOptionSelect)
-    assert [opt.category for opt in options] == ["mode", "model"]
-
-
-def test_build_config_options_wrapped_when_wrapper_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Regression guard: when SessionConfigOption is importable (acp v0.8.x), each option
-    must be wrapped via `root=<Select>`. Dropping the wrapper branch in server.py would
-    break v0.8 clients; this test pins the behavior.
-    """
-
-    @dataclass
-    class FakeWrapper:
-        root: SessionConfigOptionSelect
-
-    monkeypatch.setattr(server_module, "SessionConfigOption", FakeWrapper)
-
-    agent = _make_server()
-    options = agent._build_config_options("session-1")
-
-    assert len(options) == 2
-    for opt in options:
-        assert isinstance(opt, FakeWrapper)
-        assert isinstance(opt.root, SessionConfigOptionSelect)
-    assert [opt.root.category for opt in options] == ["mode", "model"]
-
-
-def test_build_config_options_modes_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_config_options_modes_only() -> None:
     """When only modes are configured, `_build_config_options` emits a single mode entry."""
-    monkeypatch.setattr(server_module, "SessionConfigOption", None)
-
     agent = _make_server(with_modes=True, with_models=False)
     options = agent._build_config_options("session-1")
 
@@ -1666,10 +1567,8 @@ def test_build_config_options_modes_only(monkeypatch: pytest.MonkeyPatch) -> Non
     assert options[0].category == "mode"
 
 
-def test_build_config_options_models_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_config_options_models_only() -> None:
     """When only models are configured, `_build_config_options` emits a single model entry."""
-    monkeypatch.setattr(server_module, "SessionConfigOption", None)
-
     agent = _make_server(with_modes=False, with_models=True)
     options = agent._build_config_options("session-1")
 

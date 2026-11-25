@@ -5,7 +5,7 @@ description: Package responsibilities, published Python compatibility contracts,
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
+    at: 2026-11-25T08:04:06.996Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -47,7 +47,7 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 ---
 
 # Repository Architecture Overview
@@ -63,7 +63,7 @@ Related: [runtime behavior](./runtime-behavior.md), [source map](./source-map.md
 | `deepagents` | `0.7.41` | `>=3.11,<4.0` | Reusable agent harness. `create_deep_agent()` assembles the graph. |
 | `deepagents-acp` | `0.1.0` | `>=3.11,<4.0` | Agent Client Protocol bridge. |
 | `deepagents-code` / `dcode` | `0.2.14` | `>=3.14,<3.15` | Terminal coding-agent product; both console scripts call `deepagents_code:cli_main`. |
-| `deepagents-talon` | `0.1.1` | `>=3.14,<3.15` | Experimental local host for channels, schedules, and agent lifecycle; `deepagents-talon` starts it. |
+| `deepagents-talon` | `0.1.2` | `>=3.14,<3.15` | Experimental local host for channels, schedules, and agent lifecycle; `deepagents-talon` starts it. |
 | `deepagents-evals` | `0.0.1` | `>=3.14,<3.15` | Evaluation suite and Harbor integration; `deepagents-evals` runs its CLI. |
 | `langchain-daytona`, `langchain-modal`, `langchain-runloop` | `0.0.9`, `0.0.8`, `0.0.7` | `>=3.11,<4.0` | Optional sandbox integrations. |
 | `langchain-vercel-sandbox`, `langchain-quickjs` | `0.0.2`, `0.4.0` | `>=3.11,<4.0` | Optional Vercel sandbox and JavaScript-REPL middleware integrations. |
@@ -116,7 +116,7 @@ flowchart TD
 
 Dcode publishes `deepagents==0.7.41`, ACP `>=0.1.0,<1.0.0`, and QuickJS `>=0.4.0,<0.5.0`. The exact SDK pin is an explicit compatibility promise: raise it in the same change that starts depending on newer SDK behavior, because an editable checkout can otherwise mask an inadequate PyPI requirement. ACP declares `deepagents` without a version constraint.
 
-Talon publishes `deepagents>=0.7.41` and `deepagents-code>=0.2.13,<1.0.0`. Evals uses separately selected floors—`deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`. All five partner distributions require `deepagents>=0.7.41,<0.8.0`; their local SDK mappings are editable.
+Talon publishes `deepagents>=0.7.41` and `deepagents-code>=0.2.14,<1.0.0`. Evals uses separately selected floors—`deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`. All five partner distributions require `deepagents>=0.7.41,<0.8.0`; their local SDK mappings are editable.
 
 The checkout graph deliberately differs from the wheel graph:
 
@@ -148,7 +148,7 @@ Talon selects SQLite, PostgreSQL, MongoDB, or a trusted entry-point checkpoint b
 
 Release Please creates separate draft release pull requests for the SDK, ACP, dcode, Talon, and five partner distributions; evals has no managed package configuration. The configuration disables Release Please's own GitHub-release action. When a managed release PR is merged, the repository workflow publishes PyPI artifacts and creates the GitHub release.
 
-The release manifest is a released-version baseline rather than ordinary dependency metadata. It currently records SDK `0.7.41`, ACP `0.1.0`, dcode `0.2.14`, Talon `0.1.1`, Daytona `0.0.9`, Modal `0.0.8`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.4.0`. Release Please updates this shared baseline; package manifests describe the prospective source distribution. Adding a managed package requires both configuration and a manifest baseline, while evals remains intentionally outside that system.
+The release manifest is a released-version baseline rather than ordinary dependency metadata. It currently records SDK `0.7.41`, ACP `0.1.0`, dcode `0.2.14`, Talon `0.1.2`, Daytona `0.0.9`, Modal `0.0.8`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.4.0`. Release Please updates this shared baseline; package manifests describe the prospective source distribution. Adding a managed package requires both configuration and a manifest baseline, while evals remains intentionally outside that system.
 
 ## Lockfile propagation
 

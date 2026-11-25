@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:da08df93ed699fd8d9dd8f61671b036193a5537908b32fcc8354cc95971d3650",
+  "pageVersion": "sha256:3a5d1a761c6f23463428124b31ea05e6e079b5f6d2d6d7c5f7abddd8bdf9a2c6",
   "claims": [
     {
       "id": "claim_6bdfb8742f1343cf8ba28d8db535656f",
@@ -94,11 +94,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/subagents.py",
-          "version": "repo-file-v1:sha256:30a0239ab96fec0421f7bc82b76fa847cfbd665246217781dd8f1a1a407eb3a1"
+          "version": "repo-file-v1:sha256:d643fbb9cb5c8781a68f4cb5e87da5a566964d9dcf323c37ec33cb758b167a09"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_research_subagents.py",
-          "version": "repo-file-v1:sha256:5e1c821e057d552087ae131e15204875dbe6334711c92fddb1eb34493a719f94"
+          "version": "repo-file-v1:sha256:726d6c162ba7da873a7759c57e53aab9d333b26a2ddd2a8d0c5354b45bb00bd5"
         }
       ]
     },
@@ -206,7 +206,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:f2efa1fe81d240a8ce43bb7139d1a34bed02983a3d8c7d64079c32bfe4c94178"
+          "version": "repo-file-v1:sha256:9b116560e7225d8247d9474801f15a1df090826a21d56486daf26c4396bc882d"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
@@ -244,21 +244,21 @@
     },
     {
       "id": "claim_38475ab712ae4020afe3f763ac912506",
-      "statement": "Talon's delegation and fresh-worker contracts treat capability inventories and delegated findings as untrusted evidence: fresh roles are read-only, report unavailable capabilities instead of inventing access, and do not gain authority to change scope, destinations, access, or approval controls.",
+      "statement": "Talon's delegation and fresh-worker contracts treat capability inventories and delegated findings as untrusted evidence, require research workers to report unavailable capabilities rather than inventing access, and preserve approval controls; explicit tool attachments can deliberately grant a fresh role a capability but do not make its findings or claimed approvals authoritative.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/subagents.py",
-          "version": "repo-file-v1:sha256:30a0239ab96fec0421f7bc82b76fa847cfbd665246217781dd8f1a1a407eb3a1"
+          "version": "repo-file-v1:sha256:d643fbb9cb5c8781a68f4cb5e87da5a566964d9dcf323c37ec33cb758b167a09"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_research_subagents.py",
-          "version": "repo-file-v1:sha256:5e1c821e057d552087ae131e15204875dbe6334711c92fddb1eb34493a719f94"
+          "version": "repo-file-v1:sha256:726d6c162ba7da873a7759c57e53aab9d333b26a2ddd2a8d0c5354b45bb00bd5"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-24T08:04:12.461Z"
+    "at": "2026-11-25T08:04:06.996Z"
   }
 }

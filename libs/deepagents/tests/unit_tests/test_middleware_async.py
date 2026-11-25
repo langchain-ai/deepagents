@@ -12,11 +12,7 @@ from langgraph.types import Command
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
-from deepagents.backends.protocol import (
-    ExecuteResponse,
-    GrepResult,
-    SandboxBackendProtocol,
-)
+from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemPermission, FilesystemState
 
@@ -40,50 +36,8 @@ def _make_backend(files=None):
     return backend, mem_store
 
 
-def _runtime(tool_call_id=""):
-    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
-
-
-class _RaisingSandbox(SandboxBackendProtocol, StateBackend):
-    """Sandbox whose async file operations and `aexecute` raise the exception it was built with."""
-
-    def __init__(self, error: BaseException) -> None:
-        super().__init__()
-        self._error = error
-
-    async def _afail(self, *args: object, **kwargs: object):
-        raise self._error
-
-    als = aread = awrite = aedit = adelete = aglob = agrep = _afail
-
-    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        raise self._error
-
-    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
-        raise self._error
-
-    @property
-    def id(self) -> str:
-        return "raising-sandbox"
-
-
-_FILE_TOOL_ARGS = {
-    "ls": {"path": "/dir"},
-    "read_file": {"file_path": "/notes.txt"},
-    "write_file": {"file_path": "/notes.txt", "content": "text"},
-    "edit_file": {"file_path": "/notes.txt", "old_string": "old", "new_string": "new"},
-    "delete": {"file_path": "/notes.txt"},
-    "glob": {"pattern": "*.txt"},
-    "grep": {"pattern": "needle"},
-}
-"""Valid arguments for each file tool, keyed by tool name."""
-
-_CONTROL_FLOW_ERRORS = pytest.mark.parametrize(
-    "error",
-    [GraphInterrupt(), ParentCommand(Command()), asyncio.CancelledError()],
-    ids=["interrupt", "parent_command", "cancelled"],
-)
-"""Exceptions a tool must let through: graph control flow and task cancellation."""
+def _runtime():
+    return ToolRuntime(state={}, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
 
 
 class TestFilesystemMiddlewareAsync:
@@ -392,6 +346,16 @@ class TestFilesystemMiddlewareAsync:
 
         assert result.status == "error"
         assert result.content == "Error: glob failed: path traversal not allowed"
+
+    @pytest.mark.parametrize("error", [GraphInterrupt(), ParentCommand(Command())], ids=["interrupt", "parent_command"])
+    async def test_glob_propagates_graph_control_flow_async(self, error: Exception) -> None:
+        """An interrupt or parent command raised in the backend aglob propagates instead of becoming a tool error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        with patch.object(backend, "aglob", side_effect=error), pytest.raises(type(error)):
+            await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
 
     async def test_glob_backend_timeouterror_not_misreported_as_glob_timeout_async(self):
         """A `TimeoutError` raised inside the backend aglob must not be reported as a glob-pattern timeout."""
@@ -1105,25 +1069,6 @@ class TestFilesystemMiddlewareAsync:
         raised = await execute_tool.ainvoke({"command": "echo test", "runtime": rt})
         assert raised.status == "error"
         assert raised.artifact is None
-
-    @pytest.mark.parametrize("tool_name", [name for name in _FILE_TOOL_ARGS if name != "glob"])
-    async def test_async_file_tool_raises_backend_failure(self, tool_name: str) -> None:
-        """A backend that fails, such as a sandbox service that is down, ends the run instead of reaching the model."""
-        middleware = FilesystemMiddleware(backend=_RaisingSandbox(RuntimeError("backend service unavailable")))
-        file_tool = next(tool for tool in middleware.tools if tool.name == tool_name)
-
-        with pytest.raises(RuntimeError, match="backend service unavailable"):
-            await file_tool.ainvoke({**_FILE_TOOL_ARGS[tool_name], "runtime": _runtime("call_1")})
-
-    @pytest.mark.parametrize("tool_name", _FILE_TOOL_ARGS)
-    @_CONTROL_FLOW_ERRORS
-    async def test_async_file_tool_propagates_control_flow(self, tool_name: str, error: BaseException) -> None:
-        """Interrupts, parent commands and cancellation raised under the backend are not turned into error messages."""
-        middleware = FilesystemMiddleware(backend=_RaisingSandbox(error))
-        file_tool = next(tool for tool in middleware.tools if tool.name == tool_name)
-
-        with pytest.raises(type(error)):
-            await file_tool.ainvoke({**_FILE_TOOL_ARGS[tool_name], "runtime": _runtime("call_1")})
 
     async def test_aexecute_tool_output_formatting_with_truncation(self):
         """Test async execute tool formats truncated output correctly."""

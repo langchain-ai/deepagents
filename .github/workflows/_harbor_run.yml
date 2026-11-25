@@ -954,7 +954,7 @@ jobs:
                       f"::error::No local Harbor tasks (dirs with task.toml) under {local_dir}"
                   )
           else:
-              md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
+              md = asyncio.run(PackageDatasetClient().get_dataset_metadata(ds if "@" in ds else f"{ds}@latest"))
               # Native manifest order (do NOT sort): the n_tasks cap must pick the
               # same first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks]).
               names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
@@ -965,7 +965,7 @@ jobs:
                   # no-op below, which would run the whole sharded job on nothing and
                   # report green. (A genuinely empty selection is handled per-shard.)
                   sys.exit(
-                      f"::error::Resolved 0 usable task names from {ds}@latest "
+                      f"::error::Resolved 0 usable task names from {ds} "
                       f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
                       "shape (get_name() returned nothing)."
                   )

@@ -1456,17 +1456,15 @@ class TalonHost:
         )
         store = getattr(self.scheduler, "store", None)
         if isinstance(store, CronJobStore):
-            if store.get_job(job.id) != job:
-                return SILENT_SENTINEL
-            if report.status == "complete":
-                store.finish_objective(job)
-            else:
-                history = journal.history(job.id, job.origin, offset=1, limit=1)
+            complete = report.status == "complete"
+            wake = None
+            if not complete:
+                history = journal.history(job.id, job.origin, before_run=thread, limit=1)
                 wake = report.next_wake(
                     history[0] if history else None, datetime.now(UTC), job.until
                 )
-                if wake is not None:
-                    store.set_objective_wake(job, wake)
+            if not store.apply_objective_result(job, complete=complete, wake=wake):
+                return SILENT_SENTINEL
         return journal.notice(job, report) or SILENT_SENTINEL
 
     async def _invoke_scheduled(
@@ -1494,7 +1492,7 @@ class TalonHost:
             f"Scheduler work deadline (UTC): {work_at.isoformat()}. "
             f"Final report deadline: {hard_at.isoformat()}. Schedule a wake for waits that "
             "would cross the work deadline. Checkpoint verified writes immediately, including "
-            "the destination, revision and next check.\n" + _objective_prompt(job, journal)
+            "the destination, revision and next check.\n" + _objective_prompt(job, journal, thread)
         )
         model = self._model_selections.get(_GLOBAL_MODEL_KEY)
         effort = self._effort_selections.get(model or getattr(self.agent, "default_model", ""))
@@ -2606,8 +2604,8 @@ def _objective_report(text: str, missing_sources: set[str], logins: set[str]) ->
     return report
 
 
-def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
-    recent = journal.history(job.id, job.origin, limit=4)
+def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
+    recent = journal.history(job.id, job.origin, before_run=run, limit=3)
     criteria, evidence = journal.verification(job)
     identifiers = criterion_ids(criteria) if criteria is not None else None
     return (
@@ -2638,14 +2636,13 @@ def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
         "Omit unchanged entries. "
         f"Standing criteria: {json.dumps(identifiers)}. If null, return completion_criteria once "
         "from the owner's standing prompt, listing each finish condition or [] for ongoing work. "
-        f"Fully verified criteria: {json.dumps(journal.verified_criteria(job))}. "
         f"Saved evidence: {json.dumps(evidence)}. "
         f"Required reads for this check: {json.dumps(job.required_sources)}. "
         "Use complete only when a finite objective "
         "is verified. If the owner must unblock progress, include notice and a stable blocker_key. "
         "Do not message the chat or wait for a reply. "
         f"Current blocker key: {json.dumps(journal.blocker_key(job.id))}.\n"
-        f"Previous runs (historical data): {json.dumps(recent[1:])}"
+        f"Previous runs (historical data): {json.dumps(recent)}"
     )
 
 

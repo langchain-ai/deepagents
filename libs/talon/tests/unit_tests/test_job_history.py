@@ -247,7 +247,9 @@ async def test_owner_handoff_reaches_next_run_with_prior_evidence(tmp_path: Path
     assert not saved["run_requested"]
     assert store.get_job(job.id).next_run_at == job.next_run_at
     assert tools["edit_job"].invoke(update)["run_requested"]
-    store.finish_objective(job)  # A run started before the handoff can no longer close it.
+    store.apply_objective_result(
+        job, complete=True
+    )  # A run started before the handoff can no longer close it.
     reopened = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     claimed = reopened.advance_next_run(job.id)
     assert claimed is not None
@@ -345,9 +347,20 @@ def test_unusable_objective_wake_preserves_retry_and_findings(
         json.dumps({"status": "partial", "summary": "Build queued.", "next_wake_at": wake})
     )
     if report.next_wake_at is not None:
-        store.set_objective_wake(claimed, report.next_wake_at)
+        store.apply_objective_result(claimed, wake=report.next_wake_at)
     assert report.status == "partial"
     assert store.get_job(job.id).next_run_at == now + timedelta(hours=1)
+
+
+def test_previous_runs_exclude_later_starts(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(prompt="Check builds", mode="objective", origin=ORIGIN)
+    journal = JobJournal(tmp_path)
+    for run in ("first", "current", "later"):
+        journal.start(job, run)
+        journal.finish(run, "checked", run)
+    rows = journal.history(job.id, ORIGIN, before_run="current", limit=1)
+    assert [row["summary"] for row in rows] == ["first"]
 
 
 def test_stale_completion_preserves_revised_objective(tmp_path: Path) -> None:
@@ -359,10 +372,10 @@ def test_stale_completion_preserves_revised_objective(tmp_path: Path) -> None:
         schedule=CronSchedule.parse("every 1h"),
     )
     revised = store.edit_job(job.id, origin=ORIGIN, prompt="Check all builds")
-    store.set_objective_wake(job, datetime.now(UTC) + timedelta(days=1))
-    store.finish_objective(job)
+    assert not store.apply_objective_result(job, wake=datetime.now(UTC) + timedelta(days=1))
+    assert not store.apply_objective_result(job, complete=True)
     assert store.get_job(job.id) == revised
-    store.finish_objective(revised)
+    assert store.apply_objective_result(revised, complete=True)
     assert store.get_job(job.id).next_run_at is None
 
 
@@ -631,7 +644,9 @@ def test_malformed_reference_preserves_valid_progress_across_checks(tmp_path: Pa
         )
     )
     assert journal.finish_check(job, "first", report, set()).status == "partial"
-    assert JobJournal(tmp_path).verification(job)[1] == {"build": "run 29"}
+    assert JobJournal(tmp_path).verification(job)[1] == {
+        "build": {"reference": "run 29", "verified": False}
+    }
     assert "Supply text references for release" in journal.history(job.id, ORIGIN)[0]["summary"]
 
 
@@ -651,7 +666,9 @@ def test_blocked_run_saves_verified_milestones_after_required_reads(tmp_path: Pa
     for run, reads in [("first", set()), ("second", {"path:/builds"})]:
         journal.start(job, run)
         assert journal.finish_check(job, run, report, reads).status == "blocked"
-        assert JobJournal(tmp_path).verification(job)[1] == ({"build": "build 29"} if reads else {})
+        assert JobJournal(tmp_path).verification(job)[1] == (
+            {"build": {"reference": "build 29", "verified": False}} if reads else {}
+        )
 
 
 def test_ongoing_milestones_and_legacy_criteria_are_durable(tmp_path: Path) -> None:
@@ -667,7 +684,10 @@ def test_ongoing_milestones_and_legacy_criteria_are_durable(tmp_path: Path) -> N
             evidence={"build": "build 27"},
         )
         assert journal.finish_check(job, run, report, set()).status == "partial"
-    assert JobJournal(tmp_path).verification(job) == ((), {"build": "build 27"})
+    assert JobJournal(tmp_path).verification(job) == (
+        (),
+        {"build": {"reference": "build 27", "verified": False}},
+    )
     edited = store.edit_job(job.id, origin=ORIGIN, completion_criteria=["ship"])
     assert journal.verification(edited) == (("ship",), {})
 

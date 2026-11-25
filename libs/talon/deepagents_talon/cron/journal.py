@@ -157,17 +157,21 @@ class JobJournal:
             if "verified" not in {row[1] for row in db.execute("PRAGMA table_info(evidence)")}:
                 db.execute("ALTER TABLE evidence ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
 
-    def verified_criteria(self, job: CronJob) -> list[str]:
-        """Return criteria whose latest reference explicitly verifies the whole condition."""
-        with closing(sqlite3.connect(self.path)) as db:
-            return list(_saved_evidence(db, job.id, _revision(job), verified_only=True))
-
-    def verification(self, job: CronJob) -> tuple[tuple[str, ...] | None, dict[str, str]]:
+    def verification(
+        self, job: CronJob
+    ) -> tuple[tuple[str, ...] | None, dict[str, dict[str, str | bool]]]:
         """Return standing criteria and evidence, including those learned for older jobs."""
         with closing(sqlite3.connect(self.path)) as db:
             revision = _revision(job)
             criteria = _criteria(db, job, revision)
-            return criteria, _saved_evidence(db, job.id, revision, limit=-1 if criteria else 12)
+            rows = db.execute(
+                "SELECT criterion,reference,verified FROM evidence WHERE job=? AND revision=? "
+                "ORDER BY rowid DESC LIMIT ?",
+                (job.id, revision, -1 if criteria else 12),
+            )
+            return criteria, {
+                key: {"reference": ref, "verified": bool(verified)} for key, ref, verified in rows
+            }
 
     def finish_check(
         self, job: CronJob, run: str, report: ObjectiveReport, reads: set[str]
@@ -192,7 +196,13 @@ class JobJournal:
             report = _check_coverage(job, report, reads)
             report = _update_evidence(db, job.id, revision, criteria, report)
             if report.status == "complete":
-                evidence = _saved_evidence(db, job.id, revision, verified_only=True)
+                evidence = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT criterion FROM evidence WHERE job=? AND revision=? AND verified",
+                        (job.id, revision),
+                    )
+                }
                 report = _check_completion(report, criteria, evidence)
             db.execute(
                 "UPDATE checks SET status=?,summary=?,read_tools=? WHERE run=?",
@@ -284,7 +294,13 @@ class JobJournal:
             )
 
     def history(
-        self, job: str | None, origin: CronOrigin, *, offset: int = 0, limit: int = 10
+        self,
+        job: str | None,
+        origin: CronOrigin,
+        *,
+        offset: int = 0,
+        limit: int = 10,
+        before_run: str | None = None,
     ) -> list[dict[str, str]]:
         """Return one bounded page, newest first, within the originating owner's thread."""
         with closing(sqlite3.connect(self.path)) as db:
@@ -292,14 +308,17 @@ class JobJournal:
             rows = db.execute(
                 "SELECT job, name, started, status, summary, work, read_tools "
                 "FROM checks WHERE channel=? "
-                "AND chat=? AND owner=? AND (? IS NULL OR job=?) ORDER BY rowid DESC "
-                "LIMIT ? OFFSET ?",
+                "AND chat=? AND owner=? AND (? IS NULL OR job=?) "
+                "AND (? IS NULL OR rowid < (SELECT rowid FROM checks WHERE run=?)) "
+                "ORDER BY rowid DESC LIMIT ? OFFSET ?",
                 (
                     origin.channel or "",
                     origin.conversation_id,
                     origin.sender_id or "",
                     job,
                     job,
+                    before_run,
+                    before_run,
                     limit,
                     max(0, offset),
                 ),
@@ -310,18 +329,6 @@ class JobJournal:
 def _revision(job: CronJob) -> str:
     instructions = [job.prompt, job.completion_criteria, job.required_sources, job.read_sources]
     return hashlib.sha256(json.dumps(instructions).encode()).hexdigest()
-
-
-def _saved_evidence(
-    db: sqlite3.Connection, job: str, revision: str, *, limit: int = -1, verified_only: bool = False
-) -> dict[str, str]:
-    return dict(
-        db.execute(
-            "SELECT criterion,reference FROM evidence WHERE job=? AND revision=? "
-            "AND (NOT ? OR verified) ORDER BY rowid DESC LIMIT ?",
-            (job, revision, verified_only, limit),
-        )
-    )
 
 
 def _criteria(db: sqlite3.Connection, job: CronJob, revision: str) -> tuple[str, ...] | None:
@@ -391,13 +398,13 @@ def _check_coverage(job: CronJob, report: ObjectiveReport, reads: set[str]) -> O
 
 
 def _check_completion(
-    report: ObjectiveReport, criteria: tuple[str, ...] | None, evidence: dict[str, str]
+    report: ObjectiveReport, criteria: tuple[str, ...] | None, evidence: set[str]
 ) -> ObjectiveReport:
     if criteria is None:
         gap = "Finish criteria have not been recorded."
     elif not criteria:
         gap = "Ongoing objective."
-    elif outstanding := sorted(set(criteria) - evidence.keys()):
+    elif outstanding := sorted(set(criteria) - evidence):
         gap = "Missing evidence for: " + ", ".join(outstanding)
     else:
         return report

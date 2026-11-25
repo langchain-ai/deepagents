@@ -1236,21 +1236,26 @@ class CronJobStore:
                 self._write_jobs(result)
             return claimed
 
-    def set_objective_wake(self, snapshot: CronJob, wake: datetime) -> None:
-        """Save a future check unless the job was edited, paused, or finished."""
-        wake = _coerce_utc(wake)
-        if (
-            snapshot.mode != "objective"
-            or not snapshot.enabled
-            or wake <= _coerce_utc()
-            or (snapshot.until is not None and wake > snapshot.until)
-        ):
-            return
+    def apply_objective_result(
+        self, snapshot: CronJob, *, complete: bool = False, wake: datetime | None = None
+    ) -> bool:
+        """Apply a scheduling decision and report whether the run is still current."""
         with self._lock:
             jobs = self.list_jobs()
-            if snapshot in jobs:
-                jobs[jobs.index(snapshot)] = replace(snapshot, next_run_at=wake)
-                self._write_jobs(jobs)
+            if snapshot.mode != "objective" or snapshot not in jobs:
+                return False
+            if complete:
+                updated = replace(snapshot, enabled=False, next_run_at=None)
+            elif wake is not None and snapshot.enabled:
+                wake = _coerce_utc(wake)
+                if wake <= _coerce_utc() or (snapshot.until is not None and wake > snapshot.until):
+                    return True
+                updated = replace(snapshot, next_run_at=wake)
+            else:
+                return True
+            jobs[jobs.index(snapshot)] = updated
+            self._write_jobs(jobs)
+            return True
 
     def pause_objective(self, snapshot: CronJob) -> bool:
         """Pause an inaccessible objective only while the failing instructions are current."""
@@ -1259,14 +1264,6 @@ class CronJobStore:
                 return False
             self.edit_job(snapshot.id, origin=snapshot.origin, enabled=False)
             return True
-
-    def finish_objective(self, snapshot: CronJob) -> None:
-        """Stop a completed objective unless its instructions changed during the run."""
-        with self._lock:
-            jobs = self.list_jobs()
-            if snapshot.mode == "objective" and snapshot in jobs:
-                jobs[jobs.index(snapshot)] = replace(snapshot, enabled=False, next_run_at=None)
-                self._write_jobs(jobs)
 
     def mark_job_run(
         self,

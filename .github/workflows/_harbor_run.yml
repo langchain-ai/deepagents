@@ -873,7 +873,8 @@ jobs:
           fi
 
           dataset_args=(--dataset "$HARBOR_DATASET")
-          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
+          # A pinned ref (org/name@rev) runs that version but keeps the unversioned LangSmith dataset name.
+          HARBOR_LANGSMITH_DATASET="${HARBOR_DATASET%%@*}"
           if [ -n "$HARBOR_DATASET_PATH" ]; then
             if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
               echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"
@@ -894,7 +895,7 @@ jobs:
             # enumerates task names from disk instead of querying the registry.
             export HARBOR_LOCAL_DATASET_DIR="$dataset_path"
             HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\//-}"
-          elif ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+          elif ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+(@[A-Za-z0-9.:-]+)?$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1
           fi

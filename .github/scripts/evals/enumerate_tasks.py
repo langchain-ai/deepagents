@@ -34,13 +34,14 @@ def registry_task_names(dataset_ref: str) -> list[str]:
 
     from harbor.registry.client.package import PackageDatasetClient
 
-    md = asyncio.run(
-        PackageDatasetClient().get_dataset_metadata(f"{dataset_ref}@latest")
-    )
+    # Honor an explicit version pin (org/name@rev); otherwise resolve latest.
+    if "@" not in dataset_ref:
+        dataset_ref = f"{dataset_ref}@latest"
+    md = asyncio.run(PackageDatasetClient().get_dataset_metadata(dataset_ref))
     names = [x for x in (shard_matrix.task_display_name(t) for t in md.task_ids) if x]
     if not names:
         raise SystemExit(
-            f"Resolved 0 usable task names from {dataset_ref}@latest "
+            f"Resolved 0 usable task names from {dataset_ref} "
             f"({len(md.task_ids)} task ids); unexpected task-id shape."
         )
     return names

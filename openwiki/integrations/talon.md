@@ -22,8 +22,6 @@ sources:
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
-  - id: openwiki-source-d98b6d615a63b95a7c893810
-    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
   - id: openwiki-source-ca1a2f0041cc7c11f4a22b63
@@ -42,6 +40,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_claude_sessions.py
   - id: openwiki-source-a2224df8e6d0c4947ebe6499
     resource: repo://libs/talon/tests/unit_tests/test_codex_sessions.py
+  - id: openwiki-source-1e472b2d67bd29dc25c17e85
+    resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
   - id: openwiki-source-40c11e4c205e2dd133c4f0c3
     resource: repo://libs/talon/tests/unit_tests/test_dcode_sessions.py
   - id: openwiki-source-7dcd7e37c18e77553a46cce3
@@ -50,10 +50,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_memory_reload.py
   - id: openwiki-source-ba64217fcf5745a7cb863296
     resource: repo://libs/talon/tests/unit_tests/test_subagent_reload.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
+    at: 2026-11-25T08:04:06.996Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 ---
 
 # Talon Runtime Integration
@@ -81,12 +81,16 @@ flowchart TD
     Host --> Request["AgentRequest with handlers"]
     Request --> Runtime
     Runtime --> Graph["Deep Agents graph"]
+    Runtime --> Bridge["Claude and Codex bridges"]
+    Bridge --> Delivery["Background delivery queue"]
+    Runtime --> Dcode["dcode bridge"]
     Graph --> Result["AgentResult"]
     Result --> Host
+    Delivery --> Host
     Host --> Channel
 ```
 
-*Channels and the scheduler enter through the host. The runtime executes a request but does not own channel delivery or the lifetime of host callbacks.*
+*Channels and the scheduler enter through the host. The runtime executes a request but does not own channel delivery or the lifetime of host callbacks. Claude and Codex replies enter the host's existing background-delivery path; dcode confirms a direct prompt delivery and has no reply path.*
 
 ### Lifecycle and failure containment
 
@@ -124,13 +128,13 @@ Talon wires one `talon_mcp_middleware()` into the main `DeepAgentRuntime` and in
 
 ### Operator session bridges
 
-Optional, disabled-by-default session bridges expose list and message tools for Claude Code, Codex, or dcode. They are operator-only and unavailable to subagents; the send tools require human approval even if the ordinary stored policy marks the tool unprotected. Their purpose is controlled cross-session collaboration, not a general remote-agent substrate.
+Optional, disabled-by-default session bridges expose list and message tools for Claude Code, Codex, or dcode. They are operator-only and unavailable to subagents. A session send is approval-protected by default when its tool has no saved policy entry; an explicit `false` policy disables that prompt, while operator admission remains required. Their purpose is controlled cross-session collaboration, not a general remote-agent substrate.
 
 - **Claude Code:** Talon discovers only sockets in private, owned runtime directories, validates peer identity, creates its own private inbox, and accepts only correlated protocol frames from the selected session. Replies and optional idle notices are delivered as bounded, escaped external results to the originating conversation; unsolicited or malformed frames are dropped.
 - **Codex:** Talon lists valid saved thread identifiers through the Codex app-server protocol, queues a marker-bearing message, and reads only a completed turn that carries the matching request marker. It bounds outbound message size, escapes returned content, and drops a late reply after the owning conversation is cancelled.
 - **dcode:** Talon discovers live, non-symlink Unix event sockets only in private directories and sends one framed `prompt` event with a correlation ID. It accepts delivery only when the peer acknowledges that same ID; dcode provides a delivery receipt, not a conversational reply stream.
 
-All three bridges use `BackgroundSubagents.deliver()` and its existing owner, retry, acknowledgement, and requeue path. This keeps untrusted external text distinct from a model tool result and prevents a reply from being injected into another conversation.
+Claude Code and Codex use `BackgroundSubagents` expectations and delivery: correlated replies are offered only to the owner conversation through the existing retry, acknowledgement, and requeue path. This keeps untrusted external text distinct from a model tool result and prevents a reply from being injected into another conversation. dcode has no `BackgroundSubagents` dependency: its direct, correlated acknowledgement only confirms that the target accepted the prompt.
 
 ## Fresh local subagents and task replacement
 
@@ -174,7 +178,7 @@ The host dispatches eligible completed results using an unattended `background_d
 
 ## Compatibility and operations
 
-Talon is an alpha package named `deepagents-talon` (version `0.1.1`), requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. It depends on the Deep Agents SDK (`deepagents>=0.7.41`), `deepagents-code>=0.2.13,<1.0.0`, LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. dcode remains outside Talon's channel and worker lifecycle; when enabled, the dcode session bridge is a narrowly scoped local Unix-socket messaging integration.
+Talon is an alpha package named `deepagents-talon` (version `0.1.2`), requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. It depends on the Deep Agents SDK (`deepagents>=0.7.41`), `deepagents-code>=0.2.14,<1.0.0`, LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. dcode remains outside Talon's channel and worker lifecycle; when enabled, the dcode session bridge is a narrowly scoped local Unix-socket messaging integration.
 
 Relevant configuration includes the assistant manifest/home, model and context settings, optional sandbox, MCP configuration, `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, and `DEEPAGENTS_TALON_VERBOSITY`. Validate a normal attended turn and a cron turn separately: their authority and delegation lifecycle intentionally differ.
 
@@ -193,7 +197,7 @@ When changing this integration:
 
 `tests/unit_tests/test_memory_reload.py` is the regression guard for fresh sources: after a checkpointed turn, changes to every configured memory file—including a file edited through the agent's filesystem tools—appear on the next turn without duplicate memory blocks or stale text. `tests/unit_tests/test_context_doctor.py` verifies content-free, non-mutating diagnostics and command behavior. Hook and research-subagent tests cover hook wire payloads, denial versus approval, trusted file loading, fresh context, explicit attachments, MCP protections, and opaque-agent approval enforcement.
 
-The focused session-bridge suites are security and routing regression tests. `test_claude_sessions.py` covers private socket discovery, peer/frame correlation, escape framing, idle notifications, owner routing, operator/approval gates, and shutdown. `test_codex_sessions.py` covers app-server handshake and turn correlation, outbound bounds, escaping, cancellation races, and forced approval. `test_dcode_sessions.py` covers private live-socket discovery, correlation acknowledgements, and the same operator, subagent, and approval boundaries.
+The focused session-bridge suites are security and routing regression tests. `test_claude_sessions.py` covers private socket discovery, peer/frame correlation, escape framing, idle notifications, owner routing, operator/approval gates, and shutdown. `test_codex_sessions.py` covers app-server handshake and turn correlation, outbound bounds, escaping, cancellation races, and approval-policy behavior. `test_dcode_sessions.py` covers private live-socket discovery, correlation acknowledgements, and the same operator, subagent, and approval-policy boundaries.
 
 ```bash
 cd libs/talon

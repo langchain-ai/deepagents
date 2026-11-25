@@ -32,10 +32,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
   - id: openwiki-source-cf14bb91e6251d6d6d4a9413
     resource: repo://libs/talon/tests/unit_tests/test_subagent_control.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
+    at: 2026-11-25T08:04:06.996Z
 ---
 
 # Talon Scheduling and Background Work
@@ -52,7 +52,7 @@ The CLI installs the persistent scheduler only when at least one channel is conf
 
 ## Durable cron lifecycle
 
-A persisted job includes the prompt, schedule and recurrence/end state, next run, last status/error, trusted origin, delivery choice, claim timestamp, and optional pinned skills. Cron tools create, list, edit, and remove only jobs in the current origin scope. They support relative one-shot or recurring schedules, timezone-aware wall-clock schedules, and five-field cron schedules. Wall-clock and cron forms retain their local-time meaning across daylight-saving changes. `deliver_to` selects a channel-versus-thread result target only; it neither widens management scope nor changes the originating conversation.
+A persisted job includes the prompt, schedule and recurrence/end state, next run, last status/error, trusted origin, delivery choice, claim timestamp, and optional pinned skills. Cron tools create, list, edit, and remove only jobs in the current origin scope: Slack channel and group-thread jobs share their parent channel scope, and public Discord threads share their parent/history chat scope. They accept `in <duration>` one-shots, `every <duration>` recurrence, `at YYYY-MM-DD HH:MM <IANA timezone>`, `daily at HH:MM <IANA timezone>`, and `cron <five fields or @macro> <IANA timezone>`. Durations are positive whole minutes or hours; cron schedules are recurring and all schedule forms have minute granularity. `repeat_times` and `until` apply only to recurring schedules: the count must be at least one, `until` is inclusive, and creation or editing rejects a bound before the next run. Wall-clock and cron forms are recomputed from local time across daylight-saving changes: a spring-forward nonexistent time moves to the first existing minute, and an ambiguous fall-back time fires once at its earlier occurrence. `deliver_to` selects a channel-versus-thread result target only; it neither widens management scope nor changes the originating conversation.
 
 ```mermaid
 sequenceDiagram

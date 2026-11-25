@@ -24,10 +24,10 @@ sources:
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
   - id: openwiki-source-e0e6f6b6ce0dbf7a671d682f
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
+    at: 2026-11-25T08:04:06.996Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 ---
 
 # Agent Client Protocol Integration
@@ -36,9 +36,9 @@ verified:
 
 ## Compatibility and embedding boundary
 
-`deepagents-acp` 0.1.0 is an alpha package for Python `>=3.11,<4.0`; it depends on `deepagents`, `agent-client-protocol>=1.0.0,<2.0.0`, and `python-dotenv>=1.2.2`. The `deepagents-code` 0.2.14 release line pins `deepagents==0.7.41`, requires Python `>=3.14,<3.15`, and accepts `deepagents-acp>=0.1.0,<1.0.0`. Consequently, a dcode ACP deployment follows dcode's narrower Python range and its selected Deep Agents release, while the installed ACP adapter must fall within dcode's adapter range.
+`deepagents-acp` 0.1.0 is an alpha package for Python `>=3.11,<4.0`; its runtime dependencies include unpinned `deepagents`, `agent-client-protocol>=1.0.0,<2.0.0`, and `python-dotenv>=1.2.2`. `deepagents-code` 0.2.14 declares `deepagents-acp>=0.1.0,<1.0.0` as a direct runtime dependency, pins `deepagents==0.7.41`, and requires Python `>=3.14,<3.15`. Therefore, installing dcode resolves the ACP adapter transitively, but a dcode ACP process follows dcode's narrower Python range, its pinned Deep Agents SDK release, and its adapter range—not the adapter's standalone Python floor or unconstrained SDK dependency.
 
-The server is served by `acp.run_agent` over dcode's stdin/stdout. Generic embedding accepts either a compiled graph or a factory accepting `AgentSessionContext(cwd, mode, model)`. Mode and model selectors are only meaningful with a factory and are rejected with a directly supplied compiled graph. The adapter dynamically resolves ACP's removed `SessionConfigOption` wrapper, so it can build config options under both ACP SDK 0.8.x and 0.9+ APIs; the package dependency itself now targets ACP 1.x.
+This is package compatibility, not a dcode policy inherited by every adapter host. The generic server is served by `acp.run_agent` and accepts either a compiled graph or a factory accepting `AgentSessionContext(cwd, mode, model)`. Mode and model selectors are only meaningful with a factory and are rejected with a directly supplied compiled graph. The adapter dynamically resolves ACP's removed `SessionConfigOption` wrapper, so it can build config options under both ACP SDK 0.8.x and 0.9+ APIs even though its declared SDK dependency is ACP 1.x.
 
 ```mermaid
 flowchart TD
@@ -125,11 +125,13 @@ The generic adapter retains client-supplied `mcp_servers` descriptors as session
 
 ### Editor launch
 
-Install a dcode environment containing the ACP adapter, then configure an ACP-capable editor to run `dcode` over stdio:
+Install dcode, which declares the ACP adapter as a runtime dependency, then configure an ACP-capable editor to run `dcode` over stdio:
 
 ```sh
-uv tool install -U deepagents-code --with deepagents-acp
+uv tool install -U deepagents-code
 ```
+
+Do not treat the generic adapter's Python floor as sufficient for this command: dcode's `>=3.14,<3.15` requirement still applies. An environment assembled manually must satisfy both manifests' ACP-adapter constraint and dcode's pinned `deepagents` version.
 
 ```json
 {

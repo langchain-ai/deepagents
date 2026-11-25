@@ -1,11 +1,8 @@
 ---
 type: model and profile configuration
 title: Profiles and Models
-description: Distinguishes SDK profiles, dcode's manifest-backed configuration and model-construction policy, and Talon's per-chat model selection. Explains dcode scalar-option precedence, validation, safe fallback, and the model lifecycle across these independent control planes.
+description: Distinguishes Deep Agents SDK profiles, dcode model policy and construction, and Talon's operator-controlled selected-model graph. Explains Talon catalog validation, persisted global selection, turn binding, selected-model summarization, diagnostics, and fallback.
 tags: [models, sdk-profiles, dcode, talon, configuration, retries]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
 sources:
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
     resource: repo://libs/code/deepagents_code/config_manifest.py
@@ -33,33 +30,38 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
     resource: repo://libs/talon/deepagents_talon/model_selection.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-817808ec0e85107297729a56
     resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-25T08:04:06.996Z
 ---
 
 # Profiles and Models
 
-"Profile" has three deliberately separate meanings. They compose at integration boundaries, but none is a substitute for another.
+These are three independent control planes. SDK profiles make an agent or a model client; dcode applies its own policy and construction configuration; Talon selects an already-admitted model for its channel-hosted graph. In particular, Talon's `/model` is not a dcode model switch and does not inherit dcode allowlists, credential store, defaults, or retry policy.
 
 | Control plane | Owner and key | Controls | Does not control |
 | --- | --- | --- | --- |
 | SDK `ProviderProfile` | Deep Agents; `provider` or `provider:model` | Construction of a string-selected model | Prompts, tools, or graph middleware |
-| SDK `HarnessProfile` | Deep Agents; `provider` or `provider:model` | The agent harness around a resolved model | Model-client construction |
-| dcode configuration | dcode; managed policy, CLI, environment, user TOML, and runtime state | Scalar settings, model admission, credentials, constructor options, defaults, retries, and picker persistence | Talon's catalog and per-turn selection |
-| Talon selection | Talon; discovered catalog and persisted chat setting | The selected model for an interactive Talon turn | dcode allowlists, dcode credential storage, dcode retries, or dcode defaults |
+| SDK `HarnessProfile` | Deep Agents; `provider` or `provider:model` | Agent harness around a resolved model | Model-client construction |
+| dcode model configuration | dcode; policy, configuration, credentials, and persisted preferences | Admission, construction kwargs, defaults, and retries | Talon's discovered catalog or turn selection |
+| Talon selection | Talon host; discovered catalog plus a persisted global selection | The main-agent model for a Talon turn | dcode policy and dcode state |
 
-## SDK profiles: construction and harness are orthogonal
+## SDK profiles: construction and harness
 
-The SDK profile APIs are beta. Both registries accept provider-wide and exact-model keys, and re-registration layers fields over an existing registration rather than replacing unspecified settings. Built-in and third-party profiles load lazily when a registry is first used.
+The beta SDK registries are deliberately orthogonal. `ProviderProfile` controls `resolve_model()` when it must turn a string into a client through `init_chat_model`; `HarnessProfile` controls what `create_deep_agent()` assembles after the model exists. Both use provider-wide or exact `provider:model` keys, load built-ins/plugins lazily, and merge a later registration over an existing one rather than discarding unspecified fields.
 
 ```mermaid
 flowchart TD
-    Input["String specification or model instance"] --> Existing{"Existing model instance"}
+    Input["String specification or model instance"] --> Existing{"Model instance"}
     Existing -->|Yes| Retain["Keep client construction"]
     Existing -->|No| Provider["Resolve ProviderProfile"]
     Provider --> Build["Call init_chat_model"]
@@ -68,129 +70,105 @@ flowchart TD
     Harness --> Graph["Assemble Deep Agents graph"]
 ```
 
-*Provider profiles affect string-model construction; harness profiles shape the assembled agent.*
+*Provider profiles build string-selected clients; harness profiles shape the agent graph.*
 
-### Provider profiles
+Provider lookup combines an exact profile over its provider profile. Base hooks and dynamic factories run before the exact ones; a factory takes precedence over static profile kwargs; caller kwargs win last. A failed hook stops later profile work and model construction. Profiles are appropriate for client defaults, environment-derived constructor values, headers, and preflight checks—not prompt or tool behavior. Static kwargs are defensively copied and read-only.
 
-`resolve_model()` leaves a supplied `BaseChatModel` alone. For a string, `apply_provider_profile()` resolves an exact profile over the provider profile, invokes `pre_init`, and prepares `init_chat_model` kwargs. Static kwargs merge with exact values winning; base hooks and factories run first; a factory overrides static profile kwargs; and caller kwargs have final precedence. A failing hook stops subsequent factories and construction.
+Harness lookup prefers an exact spec while retaining provider-level fields. `create_deep_agent()` resolves it for the main agent and each declarative subagent, then applies its prompt, tool-description, tool-visibility, middleware, and default-subagent choices. Tool exclusion changes model visibility, not authorization; protected filesystem and synchronous-subagent middleware cannot be excluded, and an exclusion that matches nothing fails assembly.
 
-Use `ProviderProfile` for construction defaults, environment-derived values, attribution headers, and construction preflight—not prompt or tool behavior. Its static kwargs are defensively copied and made read-only, so registration cannot be silently changed through a retained dictionary.
+## dcode: policy before construction
 
-### Harness profiles
+`ModelConfig` owns dcode's structured providers, `models.allowed` policy, per-model overrides, and stored preferences. The scalar manifest/resolver is a separate configuration system: the manifest declares typed scalar defaults, locations, CLI metadata, redaction, and merge behavior; dedicated loaders own structured configuration. Standard scalar replacement precedence is managed policy, CLI, reload retention, environment, user TOML, then the typed default. Resolution returns a typed result with provenance, tier health, masking, and diagnostics from one locked provider generation.
 
-`create_deep_agent()` resolves a harness profile for the main model and every declarative synchronous subagent. Exact lookup takes priority while inheriting provider-level fields. The profile can assemble the `USER → BASE → SUFFIX` prompt, change tool descriptions, hide tools from the model, add middleware, and configure the generated `general-purpose` subagent.
-
-Tool exclusion controls model visibility rather than authorization. Filesystem and synchronous-subagent middleware are protected; excluding either, or naming middleware that is absent from the final stack, fails graph assembly. `HarnessProfileConfig` is the serializable subset: live middleware and factories remain runtime-only.
-
-## dcode scalar configuration: manifest and resolver
-
-`config_manifest.py` is dcode's canonical contract for **user-tunable scalar options**: stable dotted keys, type/coercion kind, typed defaults, environment names and fallbacks, `config.toml` paths, CLI binding, redaction status, and merge strategy. The manifest deliberately does not flatten user-defined structured configuration. Structured tables use dedicated typed loaders and appear in the manifest only for discovery; credential-bearing tables are marked redacted so configuration inspection reports source and presence without displaying their contents.
-
-A `ConfigOption` validates the manifest itself. It rejects incoherent option metadata—such as mutable or wrong-typed defaults, a negative default for a non-negative integer, a blank required string default, incompatible boolean inversion, or an accumulating strategy on a scalar. This makes a new scalar setting a single contract change rather than a scattered default, parser, environment, and CLI update.
+Invalid scalar values fall through to lower-precedence values and ultimately the typed default. This preserves bounded safeguards such as timeouts and recursion limits. For accumulated structured inputs, valid tiers union or deep-merge with provenance; if accumulation is unsafe, the strongest valid replacement wins. Refresh refuses an unusable managed replacement and keeps the prior usable policy snapshot.
 
 ```mermaid
 flowchart TD
-    Managed["Managed TOML rank 200"] --> Resolve["ConfigResolver"]
-    Cli["CLI rank 300"] --> Resolve
-    Reload["Retained reload rank 350"] --> Resolve
-    Environment["Environment rank 400"] --> Resolve
-    User["User config.toml rank 500"] --> Resolve
-    Default["Typed manifest default rank 1000"] --> Resolve
-    Resolve --> Value["Typed value plus provenance and tier health"]
-```
-
-*The resolver evaluates one ordered provider generation; lower rank has stronger precedence.*
-
-The shared process resolver is built from managed and user snapshots, the process environment, and the manifest default, with an installed CLI provider when arguments supply one. Its cached generation gives runtime readers and `dcode config` the same answer. `resolve_options()` resolves a selected set against one lock-held generation; `resolve_all()` does the same for the full manifest. Resolver output carries the effective typed value, source provenance, each tier's health, masked ranks, and diagnostics, which lets inspection describe what actually won rather than merely printing raw files.
-
-For ordinary replacement options, managed policy is strongest, followed by CLI, retained reload values, environment, user TOML, and the typed default. A valid value from a durable higher tier masks lower non-durable contenders; a lower durable user value never displaces a stronger environment value. Structured options may instead union list-like restrictions or deep-merge mappings from weak to strong precedence, retaining leaf provenance. If an accumulating input cannot safely be merged, resolution falls back to the strongest valid replacement rather than allowing a weaker layer to displace policy.
-
-### Invalid input, bounds, and safe fallback
-
-Providers coerce values before ranked resolution. A malformed numeric, list, permission-to-call, duration, or ISO timestamp; an unrecognized boolean token; or a wrong-typed TOML value is marked invalid, logged, and skipped. Resolution then tries the next layer and ultimately the typed default. One damaged entry therefore does not erase valid sibling policy or turn a configuration error into a startup exception.
-
-Bounds belong to the option's resolution contract, not to scattered consumers. Important examples are:
-
-- `mcp.tool_timeout` defaults to 120 seconds and accepts only 1 through 900 seconds.
-- The Auto classifier timeout defaults to 20 seconds and accepts only 1 through 300 seconds, preserving a finite decision deadline.
-- Managed, environment, and TOML `recursion_limit` values must be 25 through 100,000. The explicit `--recursion-limit` escape hatch accepts values from 1 upward.
-
-An out-of-range value falls through exactly like malformed input. For example, an invalid managed MCP timeout can yield a valid environment or user value, and if every layer is invalid, the finite 120-second default remains. This behavior is essential for timeouts and traversal limits: an accidental or hostile override cannot turn off the guard merely by being present.
-
-The resolver also protects policy during reload. A refresh that cannot produce an enforceable managed snapshot retains the prior usable policy rather than silently exposing lower tiers. A malformed user file similarly retains its prior resolver generation for runtime reload and reports that the edit did not take effect. Reload-specific retained values can temporarily preserve accepted reloadable settings when a refreshed generation cannot reproduce them.
-
-## dcode model construction: policy before side effects
-
-The scalar resolver does not replace dcode's typed model configuration. `ModelConfig` owns structured model providers, allowed-model policy, per-model overrides, and persisted preferences; `create_model()` is the construction boundary that joins this model configuration with credentials and SDK provider profiles.
-
-```mermaid
-flowchart TD
-    Request["Requested model specification"] --> Canonical["Infer and canonicalize provider"]
+    Request["Requested model specification"] --> Canonical["Infer provider and canonicalize"]
     Canonical --> Permit{"models.allowed permits it"}
     Permit -->|No| Deny["Raise ModelNotAllowedError"]
     Permit -->|Yes| Credentials["Bridge and check credentials"]
-    Credentials --> Compose["Layer config and ProviderProfile kwargs"]
-    Compose --> Retry["Resolve dcode retry budget"]
-    Retry --> Construct["Codex, class_path, or init_chat_model"]
-    Construct --> Result["Return ModelResult"]
+    Credentials --> Profile["Apply ProviderProfile"]
+    Profile --> Retry["Resolve dcode retry budget"]
+    Retry --> Construct["Construct provider client"]
 ```
 
-*dcode checks admission after provider inference but before credential and provider side effects.*
+*dcode admits the canonical request before credential bridging, profile hooks, or provider imports.*
 
-`create_model()` accepts `provider:model` or an inferable bare name. Its allowlist gate runs after inference, so policy sees canonical specifications, but before stored-credential bridging, SDK profile hooks/factories, and provider imports. A blocked request therefore cannot copy a stored credential into the environment or trigger profile side effects.
+`create_model()` accepts an explicit `provider:model` specification or an inferable bare name. Its authoritative allowlist check follows provider inference but precedes credential bridging, SDK provider profiles, and imports, so a blocked request cannot produce those side effects. No allowlist is unrestricted, an empty one denies all, exact and `provider:*` entries admit matching models, and a malformed declared list fails closed. If user model configuration cannot be used, default-path loading preserves managed policy.
 
-After admission, dcode checks credentials except for implicit-auth providers, layers provider and per-model configuration with stored credentials and SDK profile output, and gives `extra_kwargs` final precedence. Profile failures become actionable `ModelConfigError`s. Construction uses the OAuth-aware Codex class for `openai_codex`, directly imports and instantiates a configured `class_path`, or calls `init_chat_model`. A `class_path` is consequently a trusted configuration boundary, not ordinary provider selection.
+Once admitted, dcode layers provider and per-model defaults, stored credentials, and SDK provider-profile results before runtime kwargs. It constructs the Codex OAuth-aware model, a configured `class_path`, or an `init_chat_model` client. `class_path` imports and instantiates a configured `BaseChatModel`, making it a trusted configuration boundary. A profile failure is surfaced as an actionable `ModelConfigError`.
 
-`[models].allowed` is admission policy, not a picker filter or default selector. Its semantics distinguish no policy (unrestricted), an empty value (deny all), and exact or `provider:*` matches. A malformed declared allowlist fails closed. dcode keeps separate persisted defaults for the main model, Auto classifier, and summarizer; picker saves validate admission and reject a newly saved model if its provider package is unavailable, while still allowing an unusable saved value to be cleared.
+The picker maintains separate persisted defaults for the main model, Auto classifier, and summarizer. It validates policy before saving and rejects a newly persisted model with a missing provider package, but still lets an operator clear a now-unusable stored value.
 
-### Retry ownership and environment lifecycle
+### Retry and environment ownership
 
-The model-node middleware owns dcode's visible retry budget. Precedence is `--max-retries`, provider-specific configuration, global configuration, then the built-in default of 5; zero disables retries. After kwargs merge, dcode disables recognized provider SDK retry loops and stamps the selected budget on the concrete model and `ModelResult`. A runtime model switch thus uses the new provider's budget without multiplying attempts through nested retries.
+dcode's model-node middleware owns the visible retry budget. Precedence is `--max-retries`, provider-specific retry configuration, global retry configuration, then the built-in default; zero disables retries. `create_model()` disables recognized SDK retry loops and stamps the resolved provider budget on the concrete model, and the middleware reads that model-specific budget for each request. A runtime switch therefore does not multiply retries or accidentally retain the prior provider's budget.
 
-Importing `deepagents_code.config` does not eagerly load dotenv files or discover project context. First use of the lazy credentials proxy performs one lock-protected bootstrap, records failure, and permits the application to continue with the available environment. Shell values override the nearest project dotenv, which overrides the global profile dotenv. Model construction may instead use an immutable context-local environment snapshot; for a canonical variable, a present `DEEPAGENTS_CODE_` override shadows it even when blank, allowing deliberate suppression.
+Credentials bootstrap is lazy: first use of the proxy lock-protects one dotenv/project-context/credential initialization attempt, records failures, and continues with available environment. Shell values override nearest project dotenv, which overrides global profile dotenv. Construction can use an immutable context-local environment snapshot; a present `DEEPAGENTS_CODE_` variable shadows the canonical variable even when blank.
 
-## Talon: catalog admission and turn-scoped swapping
+## Talon: discovered catalog, global selection, turn binding
 
-Talon is an experimental and separate runtime. Its `/model` flow is neither a dcode switch nor a dcode-policy bypass. It discovers installed tool-calling provider models only when credentials exist in **Talon's supplied environment**. A key stored only by dcode is not enough. The graph startup default remains selectable. A LangSmith gateway can augment the OpenAI catalog only after strict HTTPS gateway endpoint validation; Talon accepts safe model identifiers and chat-completions-capable catalog entries.
+Talon is an experimental, distinct runtime. It discovers selectable tool-calling models from installed provider catalogs only when the required credential is present in Talon's supplied environment; a credential held only by dcode is insufficient. The startup default is always added to the catalog and selecting it means no override. A LangSmith gateway can augment OpenAI entries only when its endpoint is a validated HTTPS LangSmith gateway `/v1` URL with valid authentication. Gateway results must have safe identifiers and, when declared, `/v1/chat/completions` support.
+
+A nondefault request must exactly match the catalog before Talon builds it. `ModelSelection` delays discovery and construction until use, caches each validated built model under a lock, and returns `None` for the startup default. Thus a catalog check is an admission boundary for untrusted chat input, not merely a presentation filter.
 
 ```mermaid
 sequenceDiagram
     participant Operator
-    participant Host as Talon Host
+    participant Host as TalonHost
     participant Runtime as DeepAgentRuntime
-    participant Selector as ModelSelection
-    participant Graph as Deep Agents Graph
+    participant Selection as ModelSelection
+    participant Graph as Deep Agents graph
+
     Operator->>Host: /model provider:model
-    Host->>Runtime: select_model
-    Runtime->>Selector: catalog check and build
-    Selector-->>Runtime: cached model or rejection
-    Operator->>Host: chat message
-    Host->>Runtime: AgentRequest with selected spec
-    Runtime->>Selector: resolve selected model
-    Runtime->>Graph: bind ACTIVE_MODEL for turn
-    Graph-->>Runtime: selected call and summary budget
+    Host->>Runtime: select_model and build now
+    Runtime->>Selection: exact catalog check
+    Selection-->>Runtime: cached model or rejection
+    Host->>Host: persist global selection
+    Operator->>Host: message
+    Host->>Host: capture selection in new turn
+    Host->>Runtime: AgentRequest
+    Runtime->>Selection: resolve selected model
+    Runtime->>Graph: bind ACTIVE_MODEL for invocation
+    Graph-->>Runtime: selected call and context handling
 ```
 
-*A Talon selection is validated and built before use, then bound only for its invocation.*
+*The host validates and persists a selection before later turns capture it; the runtime binds it only during an invocation.*
 
-`ModelSelection` does no discovery or construction at initialization. It requires exact `provider:model` catalog membership before building a nondefault model, caches the result under a lock, and treats selection of the startup default as no override. A stale or unavailable persisted selection falls back to the graph default instead of failing the turn.
+### Operator control and persistence
 
-For each invocation, the runtime sets `ACTIVE_MODEL` and effort settings in `ContextVar`s and resets them in `finally`. `ModelSelectionMiddleware` swaps the main-agent request model without graph recompilation. `SelectedModelSummarization` replaces the Deep Agents summarizer slot and caches a selected-model-specific summarizer, using 80% of the selected model's input limit or 4,000 tokens if unavailable. Delegated subagents retain startup model and summarizer behavior.
+`/model` with no spec, or a provider name, is a catalog/listing operation. Changing a model requires a channel operator; the host asks the runtime to validate and construct the requested nondefault model before writing state. It stores at most one `__default__` selection, so the setting applies across conversations and survives a restart. `/model default` (or explicitly selecting the startup default) deletes the persisted override. Failures to discover, build, or write state return generic user-facing messages and log details rather than exposing credentials or provider errors.
 
-Host-level selection is operator-controlled and persists across new conversations and restart. `/model default` clears it. A selection changed after a turn starts applies on the next turn, and untrusted requested specifications are rejected without echoing them.
+The host captures the current global selection into `_Turn` when it starts work. Consequently, a switch after a turn begins applies to its next turn, including turns in new conversations; it cannot alter an in-flight request. A persisted selection that later disappears from the catalog remains visible as unavailable in listing output but does not make chats fail.
 
-## Package compatibility and focused verification
+### Invocation graph and fallback
 
-`deepagents-code` 0.2.14 requires Python `>=3.14,<3.15` and pins `deepagents==0.7.41`. Deep Agents 0.7.41 supports Python `>=3.11,<4.0`; that broader SDK range does not widen dcode's release contract. The SDK requires LangChain `>=1.5.2,<2.0.0`, LangChain Core `>=1.8.4,<2.0.0`, `langchain-anthropic >=1.7.12,<2.0.0`, and `langchain-google-genai >=4.4.3,<5.0.0`.
+For every invocation, `DeepAgentRuntime` resolves the request's selected spec in a worker thread, sets `ACTIVE_MODEL` and effort settings in `ContextVar`s, and resets both in `finally`. Failure to resolve or build a stale selection is caught, logged once per spec at warning level, and represented as `None`; the graph then uses its startup default. This is an availability fallback, not a silent expansion of the catalog.
 
-`libs/code/tests/unit_tests/test_config_manifest.py` is the focused regression suite for scalar configuration: manifest/CLI and credential coverage, runtime-versus-introspection agreement, coercion and normalization, source reporting, redaction, bounds, and fallthrough across managed, environment, TOML, and default layers. Preserve tests that prove invalid timeout values retain a finite deadline and that a displayed source is the same source runtime uses.
+`ModelSelectionMiddleware` is installed in the graph and swaps `ACTIVE_MODEL` into every main-agent model request without recompiling the graph. It is outermost, so downstream prompt caching sees the selected client. The selection middleware also merges active effort settings for main-agent calls, while avoiding that effort override inside delegated subagents.
 
-Keep model-policy tests proving that a blocked model cannot bridge credentials or execute profile side effects. `libs/talon/tests/unit_tests/test_model_selection.py` covers authorization, persistence and reset, exact-catalog rejection, one-time model builds, fallback for stale selection, gateway validation, turn isolation, and selected-model context limits. These are the regressions to preserve when changing catalog discovery, caching, middleware ordering, or request lifecycle.
+Talon replaces the standard summarizer slot with `SelectedModelSummarization`, because the standard summarizer runs before ordinary custom middleware and would otherwise size context for the startup model. For a selected main-agent model it builds and caches a summarizer keyed to that model, swaps the request model before compaction, and uses 80% of `profile["max_input_tokens"]`; invalid or unavailable profile capacity falls back to 4,000 tokens. With no selection, or inside a delegated subagent, it uses the cached startup summarizer. Subagents therefore retain their startup model and context behavior.
+
+`context_doctor()` accepts the host-selected model and resolves it through the same fallback path before rendering diagnostics. It reports a default-sized diagnostic when the selected model is unavailable rather than letting a stale persisted selection prevent diagnostics.
+
+## Compatibility and focused verification
+
+`deepagents-code` 0.2.14 requires Python `>=3.14,<3.15` and pins `deepagents==0.7.41`; Deep Agents 0.7.41 supports Python `>=3.11,<4.0`. The SDK dependency manifest requires LangChain `>=1.5.2,<2.0.0`, LangChain Core `>=1.8.4,<2.0.0`, `langchain-anthropic >=1.7.12,<2.0.0`, and `langchain-google-genai >=4.4.3,<5.0.0`.
+
+Use `libs/talon/tests/unit_tests/test_model_selection.py` for model selection changes. It covers operator authorization, global persistence/reset, next-turn capture, exact catalog admission, gateway URL and response validation, single construction and caching, stale-selection fallback, selected-model context budgets, subagent summarizer isolation, and selected-provider cache behavior. Test through the package route described in the [Testing guide](/openwiki/testing/testing-guide.md):
+
+```bash
+cd libs/talon
+uv sync --all-groups
+make test TEST_FILE=tests/unit_tests/test_model_selection.py
+```
+
+For dcode changes, keep tests proving policy precedes credential/profile side effects, retry ownership survives a switch, malformed policy fails closed, and picker persistence validates both policy and provider availability. The manifest and model-config suites are the focused routes.
 
 ## Related pages
 
-- [Architecture overview](/openwiki/architecture/overview.md)
-- [Configuration layering](/openwiki/concepts/config-layering.md)
-- [MCP integration](/openwiki/integrations/mcp.md)
-- [dcode install and update](/openwiki/operations/dcode-install-and-update.md)
+- [Source map](/openwiki/architecture/source-map.md)
+- [Talon channel admission](/openwiki/concepts/talon-channel-admission.md)
+- [Talon runtime integration](/openwiki/integrations/talon.md)
 - [Testing guide](/openwiki/testing/testing-guide.md)

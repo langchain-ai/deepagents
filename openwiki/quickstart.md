@@ -1,11 +1,8 @@
 ---
 type: maintainer routing guide
 title: Repository Quickstart
-description: Route a Deep Agents monorepo change to the independently released package that owns its public contract, tests, dependency metadata, and release handoff. Use package-local uv and Make workflows, and distinguish published requirements from checkout wiring and generated locks.
+description: Route a Deep Agents monorepo change to the independently released package that owns its public contract, tests, dependency metadata, lockfile closure, and release handoff. Use package-local uv and Make workflows, and distinguish published requirements from checkout wiring and generated locks.
 tags: [deepagents, dcode, talon, maintenance, dependencies, lockfiles, testing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -41,12 +38,15 @@ sources:
     resource: repo://libs/talon/Makefile
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-25T08:04:06.996Z
 ---
 
 # Repository Quickstart
 
-This monorepo contains independently versioned distributions under `libs/`. Start with the package that owns the public contract, durable state, or process lifecycle—not merely the place where a symptom appears. Its `pyproject.toml`, `Makefile`, README, source, and nearest behavioral regression test are the authority for a focused change.
+This monorepo contains independently versioned distributions under `libs/`. Start in the package that owns the public contract, durable state, or process lifecycle—not merely where a symptom appears. That package's `pyproject.toml`, `Makefile`, README, source, and nearest behavioral regression test are the authority for a focused change.
 
 Use `uv` for interpreters, environments, and dependencies, and the package-local `Makefile` for normal commands. `uv` provisions the required interpreter, so there is no repository-wide environment or global Python version to pin.
 
@@ -82,7 +82,7 @@ Repository convention places deterministic, network-free tests in `tests/unit_te
 | SDK: `libs/deepagents/` | `deepagents` 0.7.41 | Python `>=3.11,<4.0` |
 | dcode: `libs/code/` | `deepagents-code` 0.2.14 | Python `>=3.14,<3.15`; exact `deepagents==0.7.41` |
 | ACP: `libs/acp/` | `deepagents-acp` 0.1.0 | Python `>=3.11,<4.0`; depends on `deepagents` and Agent Client Protocol `>=1.0.0,<2.0.0` |
-| Talon: `libs/talon/` | `deepagents-talon` 0.1.1 | Python `>=3.14,<3.15`; `deepagents>=0.7.41`, `deepagents-code>=0.2.13,<1.0.0` |
+| Talon: `libs/talon/` | `deepagents-talon` 0.1.2 | Python `>=3.14,<3.15`; `deepagents>=0.7.41`, `deepagents-code>=0.2.14,<1.0.0` |
 | Evals: `libs/evals/` | `deepagents-evals` 0.0.1 | Python `>=3.14,<3.15`; published requirements include SDK and dcode |
 | QuickJS: `libs/partners/quickjs/` | `langchain-quickjs` 0.4.0 | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` |
 
@@ -116,7 +116,7 @@ For focused validation, ACP and Talon `make test` disable network sockets while 
 
 ## Release handoff
 
-The release manifest records separate last-released baselines: `deepagents` 0.7.41, `deepagents-acp` 0.1.0, `deepagents-code` 0.2.14, `deepagents-talon` 0.1.1, Daytona 0.0.9, Modal 0.0.8, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.4.0. These baselines are not installer compatibility constraints; the package `pyproject.toml` is.
+The release manifest records separate last-released baselines for the SDK, ACP, dcode, Talon, and the managed partner packages: `deepagents` 0.7.41, `deepagents-acp` 0.1.0, `deepagents-code` 0.2.14, `deepagents-talon` 0.1.2, Daytona 0.0.9, Modal 0.0.8, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.4.0. The evals package is independently versioned but is not listed in that release manifest. These baselines are not installer compatibility constraints; the package `pyproject.toml` is.
 
 Release Please analyzes conventional commits on `main` and creates or updates a separate draft release PR for each managed package. Wait for its refresh and lockfile update, review the generated changelog and curated notes, and merge only after required checks pass; the merge triggers pre-release checks, PyPI publication, and the GitHub release. Use [Development and Release Operations](./operations/development.md) and `.github/RELEASING.md` for fan-out, release gates, recovery, and notes. Do not hand-edit release-automation artifacts.
 

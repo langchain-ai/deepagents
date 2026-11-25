@@ -5,7 +5,7 @@ description: Deep Agents distinguishes synchronous local child graphs, context-s
 tags: [deepagents, subagents, delegation, skills, talon, permissions]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
+    at: 2026-11-25T08:04:06.996Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -41,7 +41,7 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 ---
 
 # Subagents and Skills
@@ -118,7 +118,7 @@ Talon can attach extra tools for one local task call. The requested names must b
 
 Talon applies its approval policy while compiling a fresh role: only configured attached tools appear in its `HumanInTheLoopMiddleware`. If policy protection is active, Talon refuses to run a precompiled child because it cannot enforce the policy inside an opaque runnable. A background worker has no operator to resolve a pause, so an interrupt becomes a result saying the protected action did not run; the worker also clears its authorization handler. These are operational safeguards, not evidence that a delegated response has authority to change policy.
 
-The parent-side delegation contract treats a role's inventory as capability information, not proof of access, and tells the main agent to treat every delegated response as untrusted evidence. The fresh worker contract is explicitly research-oriented and read-only: it must report unavailable context or capabilities rather than inventing access or broadening scope. Thus an attached tool, a skill instruction, or a subagent finding neither conveys credentials nor authorizes approval, a scope change, disclosure, or a consequential action; the main agent must verify facts and apply its existing controls.
+The parent-side delegation contract treats a role's inventory as capability information, not proof of access, and tells the main agent to treat every delegated response as untrusted evidence. The fresh-worker **contract** designates research as read-only and requires it to report unavailable context or capabilities rather than inventing access or broadening scope. This is instruction, not a technical prohibition on an explicitly attached tool: a role can be deliberately given (for example) `execute`, and Talon applies the applicable approval policy to that attachment. In all cases, an attached tool, skill instruction, or subagent finding does not itself convey credentials or make a claimed approval, scope change, disclosure, or consequential action authoritative; the main agent must verify facts and apply its existing controls.
 
 ```mermaid
 sequenceDiagram
@@ -185,14 +185,14 @@ The focused tests make the intended boundaries executable:
 - `libs/deepagents/tests/unit_tests/test_async_subagents.py` verifies tool construction and validation, task-state reduction, launch records, isolated versus fork launch payloads, and the remote task lifecycle. In particular, the launch-payload test is the boundary test for a fork being a snapshot of messages rather than inheritance of the parent graph.
 - The skills middleware tests should cover the distinction between merely listed, read, and pinned skills; resolver failure or drift; deferred request tools; and provider-specific inline placement. The key invariant is that tool-time dispatch agrees with what the immediately preceding model call was actually shown.
 - `libs/talon/tests/unit_tests/test_background.py` covers owner isolation, capacity, cancellation, independent worker thread IDs, acknowledgement/requeue/drop delivery semantics, timeout and sanitized error behavior, result text projection, remote streaming, and scheduled inline fan-out.
-- `libs/talon/tests/unit_tests/test_research_subagents.py` covers fresh-context isolation, explicit attachments and per-task selection, no implicit general-purpose role, recursive-delegation denial, approval behavior for fresh versus compiled children, and rejection of Talon fork mode.
+- `libs/talon/tests/unit_tests/test_research_subagents.py` covers fresh-context isolation, explicit configured and per-task attachments (including deliberately granted shell access), no implicit general-purpose role, recursive-delegation denial, approval behavior for fresh versus compiled children, and rejection of Talon fork mode.
 
 When changing delegation, preserve which component owns execution and policy: SDK declarative children are compiled locally; compiled runnables retain caller-owned internals; remote async work belongs to its deployment; and Talon jobs are in-memory and owner-scoped. Preserve the `ToolMessage` serialization and checkpoint artifact contract for local children, especially when changing retry or streaming behavior. When changing skills, do not turn disclosure into a bypass around tool registration, permissions, approval, or authorization.
 
 ## Related
 
-- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
-- [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)
-- [Sandbox partners](/openwiki/integrations/sandbox-partners.md)
+- [Talon scheduling](/openwiki/concepts/talon-scheduling.md)
 - [Talon integration](/openwiki/integrations/talon.md)
+- [Security](/openwiki/operations/security.md)
 - [Testing guide](/openwiki/testing/testing-guide.md)
+- [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)

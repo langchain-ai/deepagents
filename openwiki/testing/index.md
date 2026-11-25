@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for dcode configuration and local context, Talon subagents and MCP/OAuth, release-note automation, and the Harbor LangGraph adapter. Use package-owned Make targets and assert observable behavior while treating warnings as failures.
+- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for Deep Agents streaming, Talon runtime boundaries, QuickJS tool bridging, and release and workflow automation. Use package Makefiles for package test commands and assert observable ownership, correlation, and failure behavior.

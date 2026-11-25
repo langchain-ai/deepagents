@@ -23,6 +23,7 @@ from langsmith import tracing_context
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
 from deepagents_talon.cron import CronJobStore
+from deepagents_talon.cron.scope import SCHEDULER_FINALIZING
 from deepagents_talon.interfaces import (
     AgentRequest,
     ToolApprovalDecision,
@@ -819,17 +820,16 @@ async def test_runtime_repairs_dangling_tool_call_before_interruption_marker() -
     )
     runtime._graph = graph
 
-    await runtime.recover_interrupted("chat")
+    with SCHEDULER_FINALIZING.set(True):
+        await runtime.recover_interrupted("chat")
 
     assert graph.update is not None
     messages = graph.update[1]["messages"]
     assert isinstance(messages[0], RemoveMessage)
     assert isinstance(messages[-2], ToolMessage)
+    assert "scheduler deadline" in messages[-1].content
     assert messages[-2].tool_call_id == "call-1"
     assert messages[-1].type == "human"
-    assert messages[-1].content == (
-        "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
-    )
 
 
 async def test_runtime_preserves_conversation_thread_across_turns(

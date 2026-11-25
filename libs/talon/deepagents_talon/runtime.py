@@ -72,6 +72,13 @@ from deepagents_talon.codex_sessions import (
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
+from deepagents_talon.cron.scope import (
+    JOB_READ_SCOPE,
+    SCHEDULER_FINALIZING,
+    SENDING_OBJECTIVE,
+    JobScopeMiddleware,
+    ReadScope,
+)
 from deepagents_talon.dcode_sessions import (
     SEND_TOOL as DCODE_SEND_TOOL,
     DcodeSessions,
@@ -386,8 +393,8 @@ class DeepAgentRuntime:
         sandbox_working_dir: str | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
-        values = os.environ if env is None else env
-        resolved_recursion_limit = _recursion_limit_from_env(values, recursion_limit)
+        self.env = dict(os.environ if env is None else env)
+        resolved_recursion_limit = _recursion_limit_from_env(self.env, recursion_limit)
         if resolved_recursion_limit <= 0:
             msg = "recursion_limit must be positive"
             raise ValueError(msg)
@@ -398,7 +405,7 @@ class DeepAgentRuntime:
             msg = "max_continuations cannot be negative"
             raise ValueError(msg)
 
-        self.verbosity = TalonConfig.from_env(values).verbosity
+        self.verbosity = TalonConfig.from_env(self.env).verbosity
         self.model = model
         self.tools = tuple(tools)
         self.refresh_tools = refresh_tools
@@ -409,7 +416,6 @@ class DeepAgentRuntime:
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
-        self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
         self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
@@ -580,6 +586,7 @@ class DeepAgentRuntime:
             sorted(
                 [
                     *self.middleware,
+                    JobScopeMiddleware(),
                     diagnostics.tool_search,
                     AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
                 ],
@@ -811,9 +818,14 @@ class DeepAgentRuntime:
                 else contextlib.nullcontext()
             ),
         ):
+            marker = (
+                "[SYSTEM] The scheduler deadline interrupted this run. Verify outstanding effects."
+                if SCHEDULER_FINALIZING.get()
+                else _INTERRUPTED_MESSAGE
+            )
             await update_state(
                 recovery_config,
-                {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
+                {"messages": [*messages, HumanMessage(content=marker)]},
             )
 
     async def prepare_inbound_media(
@@ -883,6 +895,7 @@ class DeepAgentRuntime:
                 progress_messages(request.message_handler, self.verbosity),
                 question_scope(_question_handler_from_request(request)),
                 _history_context(request),
+                _job_scope(request),
             ):
                 async with (
                     self.checkpointer.protect_session(request.conversation_id)
@@ -1130,7 +1143,7 @@ class DeepAgentRuntime:
             pinned_skills=_request_pinned_skills(request),
         )
         text = _last_text(state)
-        if text:
+        if text or SCHEDULER_FINALIZING.get():
             return text
 
         for attempt in range(self.max_continuations):
@@ -1832,6 +1845,31 @@ def _current_cron_origin() -> CronOrigin:
         msg = "cron tools must be called from within a Talon conversation"
         raise RuntimeError(msg)
     return origin
+
+
+@contextlib.contextmanager
+def _job_scope(request: AgentRequest) -> Generator[None]:
+    """Apply the scheduled job's saved read grants during its run."""
+    scope = None
+    sender = None
+    if request.metadata.get("trigger") == "cron":
+        sources = request.metadata.get("read_sources")
+        value = request.metadata.get("cron_job_id")
+        job_id = value if isinstance(value, str) else None
+        if request.metadata.get("job_mode") == "objective":
+            sender = job_id
+        if sources is not None:
+            scope = ReadScope.from_sources(
+                (source for source in sources if isinstance(source, str))
+                if isinstance(sources, list)
+                else (),
+                job_id=job_id,
+            )
+    with (
+        JOB_READ_SCOPE.set(scope),
+        SENDING_OBJECTIVE.set(sender),
+    ):
+        yield
 
 
 def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:

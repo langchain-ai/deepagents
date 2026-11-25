@@ -1971,3 +1971,22 @@ def test_from_talon_config_reads_mention_optional_chats(tmp_path):
     assert parsed("*") == frozenset({"*"})
     with pytest.raises(ValueError, match="channel ids or"):
         parsed("general")
+
+
+@pytest.mark.parametrize(
+    "notice", ["Goal release completed. OK", "Job release missed its deadline."]
+)
+async def test_gateway_reconciles_only_own_completion_notice(notice: str) -> None:
+    gateway = _DiscordPyGateway(token="t", connect_timeout_seconds=1)  # noqa: S106  # inert
+
+    class Destination:
+        async def history(self, *, limit: int):
+            assert limit > 0
+            yield SimpleNamespace(author=SimpleNamespace(id=9), content="Goal other completed. OK")
+            yield SimpleNamespace(author=SimpleNamespace(id=1), content=notice)
+
+    gateway._client = SimpleNamespace(
+        user=SimpleNamespace(id=1), get_channel=lambda _: Destination()
+    )
+    assert await gateway.completion_notice_received("123", "release")
+    assert not await gateway.completion_notice_received("123", "other")

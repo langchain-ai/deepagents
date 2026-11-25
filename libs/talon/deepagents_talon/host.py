@@ -1465,8 +1465,13 @@ class TalonHost:
                 wake = report.next_wake(
                     history[0] if history else None, datetime.now(UTC), job.until
                 )
+            notice = f"Goal {job.id} completed. {report.notice or job.name}" if complete else ""
             if not store.apply_objective_result(
-                job, complete=complete, wake=wake, wait_condition=report.wait_condition
+                job,
+                complete=complete,
+                wake=wake,
+                notice=notice,
+                wait_condition=report.wait_condition,
             ):
                 return SILENT_SENTINEL
         return await journal.notice(job, report) or SILENT_SENTINEL
@@ -1580,6 +1585,25 @@ class TalonHost:
             text: Message text to send.
         """
         target = _scheduled_target(channel, job)
+        store = getattr(self.scheduler, "store", None)
+        if job.completion_notice and isinstance(store, CronJobStore):
+            if job.notice_state == "uncertain":
+                lookup = getattr(channel, "completion_notice_received", None)
+                received = await lookup(target, job.id) if lookup else False
+                if received is not None:
+                    store.transition_notice(job, "delivered" if received else "pending")
+                return
+            if job.notice_state != "pending" or not store.transition_notice(job, "uncertain"):
+                return
+            result = await channel.send_message(target, text)
+            uncertain = replace(job, notice_state="uncertain")
+            if result.success:
+                store.transition_notice(uncertain, "delivered")
+            elif not result.retryable:
+                store.transition_notice(uncertain, "pending")
+                msg = "Destination rejected scheduled notice."
+                raise RuntimeError(msg)
+            return
         result = await send_with_retry(lambda: channel.send_message(target, text))
         if job.mode == "objective" and not result.success:
             msg = "Objective notice delivery failed."
@@ -2660,7 +2684,9 @@ async def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
         f"Saved evidence: {json.dumps(evidence)}. "
         f"Required reads for this check: {json.dumps(job.required_sources)}. "
         "Use complete only when a finite objective "
-        "is verified. If the owner must unblock progress, include notice and a stable blocker_key. "
+        "is verified. Report requires_signoff as true when the owner requests approval or a "
+        "criterion requires subjective acceptance. Include an owner-facing completion notice. "
+        "If the owner must unblock progress, include notice and a stable blocker_key. "
         "Do not message the chat or wait for a reply. "
         f"Current blocker key: {json.dumps(await journal.blocker_key(job.id))}.\n"
         f"Previous runs (historical data): {json.dumps(recent)}"

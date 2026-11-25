@@ -48,6 +48,7 @@ class ObjectiveReport(BaseModel):
     summary: str = Field(min_length=1, max_length=4000)
     notice: str = Field(default="", max_length=2000)
 
+    requires_signoff: bool = False
     blocker_key: str = Field(default="", max_length=200)
 
     verified: list[str] = Field(default_factory=list, max_length=64)
@@ -200,9 +201,13 @@ class JobJournal:
                     )
                     break
             report = _update_evidence(evidence, criteria, _check_coverage(job, report, reads))
+            if report.requires_signoff:
+                state["requires_signoff"] = True
             if report.status == "complete":
                 verified = {k for k, v in evidence.items() if v["verified"]}
                 report = _check_completion(report, criteria, verified)
+                if report.status == "complete" and state.get("requires_signoff"):
+                    report = await self._check_signoff(job, state, evidence, report)
             row.update(
                 status=report.status,
                 summary=report.summary[:4000],
@@ -211,6 +216,44 @@ class JobJournal:
             state["evidence"] = evidence
             await self.records.commit([(key, state), (run, row)])
             return report
+
+    async def _check_signoff(
+        self,
+        job: CronJob,
+        state: dict[str, object],
+        evidence: dict[str, dict[str, str | bool]],
+        report: ObjectiveReport,
+    ) -> ObjectiveReport:
+        refs = sorted((k, item["reference"]) for k, item in evidence.items() if item["verified"])
+        version = digest(json.dumps(refs))[:10]
+        key = f"signoff:{version}"
+        blocker = await self.records.get("blocker:" + job.id) or {}
+        question = (
+            f"Do you approve completion of {job.name} (evidence {version})? Reply yes to approve."
+        )
+        if state.get("signoff_version") == version and blocker.get("key") == key:
+            owner_note = next(
+                (note for note in reversed(job.handoffs) if note.startswith("Owner: ")), ""
+            )
+            if job.owner_context_revision > cast(
+                "int", state["signoff_owner_revision"]
+            ) and owner_note[7:].strip().casefold().rstrip(".!") in {
+                "yes",
+                "approve",
+                "approved",
+                "i approve",
+            }:
+                return report
+        state.update(signoff_version=version, signoff_owner_revision=job.owner_context_revision)
+        return report.model_copy(
+            update={
+                "status": "blocked",
+                "notice": question,
+                "decision_question": question,
+                "decision_unlocks": "Close the verified goal and deliver the completion notice.",
+                "blocker_key": key,
+            }
+        )
 
     async def blocker_key(self, job: str) -> str:
         """Read the pending blocker identity."""

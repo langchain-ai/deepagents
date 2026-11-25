@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from html import escape
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -381,6 +382,9 @@ class _DiscordGateway(Protocol):
     async def stop(self) -> None:
         """Disconnect from the Gateway and release resources."""
 
+    async def completion_notice_received(self, channel_id: str, job_id: str) -> bool:
+        """Check for this bot's goal completion marker in a channel."""
+
     async def send_message(self, channel_id: str, text: str) -> str:
         """Send a text-only message and return the new message id."""
 
@@ -634,6 +638,16 @@ class _DiscordPyGateway:
         self._task = None
         self._watch = None
 
+    async def completion_notice_received(self, channel_id: str, job_id: str) -> bool:
+        """Look up the completion marker among recent destination messages."""
+        channel = await self._resolve_channel(channel_id)
+        async for message in channel.history(limit=100):
+            if str(message.author.id) == self.bot_id and message.content.startswith(
+                (f"Goal {job_id} completed. ", f"Job {job_id} missed its deadline.")
+            ):
+                return True
+        return False
+
     async def send_message(self, channel_id: str, text: str) -> str:
         channel = await self._resolve_channel(channel_id)
         message = await channel.send(content=text)
@@ -828,6 +842,10 @@ class DiscordChannel:
         self._status = ChannelStatus(provider="discord", connected=False, detail="disconnected")
         log_debug_event(logger, "discord.channel.stopped")
 
+    async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool:
+        """Check the goal's channel for an unacknowledged post."""
+        return await self._gateway.completion_notice_received(conversation_id, job_id)
+
     async def send_message(self, conversation_id: str, text: str) -> SendResult:
         """Send a message, splitting text over 2000 characters across multiple sends.
 
@@ -850,7 +868,15 @@ class DiscordChannel:
         )
         message_id: str | None = None
         for chunk in chunks:
-            message_id = await self._gateway.send_message(conversation_id, chunk)
+            try:
+                message_id = await self._gateway.send_message(conversation_id, chunk)
+            except discord.HTTPException as exc:
+                if (
+                    message_id is None
+                    and HTTPStatus.BAD_REQUEST <= exc.status < HTTPStatus.INTERNAL_SERVER_ERROR
+                ):
+                    return SendResult(success=False, error=f"Discord rejected post ({exc.status})")
+                raise
         log_debug_event(
             logger,
             "discord.outbound.text.completed",

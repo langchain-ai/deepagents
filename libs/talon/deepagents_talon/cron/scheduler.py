@@ -87,7 +87,7 @@ class PersistentCronScheduler:
         """
         current = self.now()
         running = frozenset(self._running)
-        missed = self.store.claim_missed_deadlines(now=current, running=running)
+        await self.store.claim_missed_deadlines(now=current, running=running)
         self._discard_finished(current, running)
         for job_id, task in list(self._running.items()):
             if task.done():
@@ -103,11 +103,10 @@ class PersistentCronScheduler:
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
         started = []
-        for job in missed:
-            task = asyncio.create_task(self._report_expiration(job))
-            self._running[job.id] = task
-            started.append(task)
-        for job in jobs:
+        notices = [
+            job for job in self.store.list_jobs() if job.notice_state in {"pending", "uncertain"}
+        ]
+        for job in [*jobs, *notices]:
             if job.id not in self._running:
                 task = asyncio.create_task(self._dispatch(job, current))
                 self._running[job.id] = task
@@ -115,35 +114,24 @@ class PersistentCronScheduler:
         if wait:
             await asyncio.gather(*started)
 
-    async def _report_expiration(self, job: CronJob) -> None:
-        try:
-            history = (
-                await self.store.journal.history(job.id, job.origin, limit=1)
-                if self.store.journal
-                else []
-            )
-            text = f"Job {job.id} missed its deadline. Scheduled work stopped."
-            if history:
-                row = history[0]
-                checkpoint = row["work"].strip() if row["status"] == "started" else ""
-                text += f" Last recorded work: {checkpoint or row['summary'] or row['status']}"
-            if job.claimed_at:
-                text += " The previous run was interrupted. Its effects need verification."
-            await self.deliver_result(job, text)
-            self.store.mark_job_run(job.id, status="ok", now=self.now())
-        except Exception as exc:
-            logger.exception("Could not report missed deadline for %s", job.id)
-            self.store.mark_job_run(job.id, status="error", error=str(exc), now=self.now())
-        finally:
-            self._running.pop(job.id, None)
-
     async def _dispatch(self, job: CronJob, now: datetime) -> None:
         try:
-            await self._run_due_job(job, now)
+            if job.completion_notice:
+                await self._deliver_completion(job)
+            else:
+                await self._run_due_job(job, now)
         except Exception:
             logger.exception("Failed to dispatch job %s", job.id)
         finally:
             self._running.pop(job.id, None)
+
+    async def _deliver_completion(self, job: CronJob) -> None:
+        try:
+            await self.deliver_result(job, job.completion_notice)
+            if job.notice_state == "pending":
+                self.store.transition_notice(job, "delivered")
+        except Exception:
+            logger.exception("Completion notice delivery interrupted for %s", job.id)
 
     async def _ticker(self) -> None:
         """Scan for due jobs until stopped, surviving a failed scan.
@@ -234,6 +222,10 @@ class PersistentCronScheduler:
             silent=is_silent(text),
             has_delivery=bool(text and not is_silent(text)),
         )
+        current = self.store.get_job(claimed.id)
+        if current and current.notice_state == "pending":
+            await self._deliver_completion(current)
+            return
         if is_silent(text):
             log_event(
                 logger,

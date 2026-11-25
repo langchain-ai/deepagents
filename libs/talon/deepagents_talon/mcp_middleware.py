@@ -40,13 +40,14 @@ def _preserve_mcp_schemas(request: ModelRequest) -> ModelRequest:
     if not isinstance(request.model, BaseChatOpenAI):
         return request
     # Native search also selects Responses when the model uses automatic routing.
-    if not request.model.use_responses_api and {"type": "tool_search"} not in request.tools:
+    search_enabled = {"type": "tool_search"} in request.tools
+    if not request.model.use_responses_api and not search_enabled:
         return request
     tools = []
     for tool in request.tools:
         if isinstance(tool, BaseTool) and (tool.metadata or {}).get(MCP_TOOL_METADATA_KEY):
             definition = convert_to_openai_tool(tool, strict=False)
-            if (tool.extras or {}).get("defer_loading"):
+            if search_enabled and (tool.extras or {}).get("defer_loading"):
                 definition["defer_loading"] = True
             tools.append(definition)
         else:

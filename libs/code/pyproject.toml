@@ -60,7 +60,7 @@ dependencies = [
     "markdownify>=1.2.3",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.16.1",
+    "langsmith[sandbox]>=0.16.2",
 
     # Tools
     "tavily-python>=0.7.26",
@@ -110,7 +110,7 @@ dependencies = [
 [project.optional-dependencies]
 # Model providers
 anthropic = ["langchain-anthropic>=1.7.12,<2.0.0"]
-baseten = ["langchain-baseten>=0.2.6,<1.0.0"]
+baseten = ["langchain-baseten>=0.2.7,<1.0.0"]
 bedrock = ["langchain-aws>=1.10.0,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.2.1,<2.0.0"]

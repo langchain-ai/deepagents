@@ -44,7 +44,7 @@ from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
-from deepagents_talon.cron.journal import JobJournal, ObjectiveReport
+from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, criterion_ids
 from deepagents_talon.cron.scheduler import SILENT_SENTINEL, is_silent
 from deepagents_talon.cron.scope import (
     FILE_READ_TOOLS,
@@ -2609,6 +2609,7 @@ def _objective_report(text: str, missing_sources: set[str], logins: set[str]) ->
 def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
     recent = journal.history(job.id, job.origin, limit=4)
     criteria, evidence = journal.verification(job)
+    identifiers = criterion_ids(criteria) if criteria is not None else None
     return (
         f"Pursue this objective privately: {job.prompt}\n"
         f"Context handed off from the owner's chat (oldest first): {json.dumps(job.handoffs)}. "
@@ -2626,13 +2627,18 @@ def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
         "when authorized, verify the update, and checkpoint its reference with record_job_work. "
         "If work remains, say what you tried and what makes another wake necessary. "
         "Return JSON with status (checked, partial, blocked, unverified, or complete) "
-        "and a concise summary string. Use checked for an inspected source with no material "
+        "and a private factual summary naming the source and result, even for quiet checks. "
+        "Never use [SILENT] as the summary. Use checked for an inspected source with no material "
         "change, partial for new evidence or completed work (name the change), and unverified "
         "for an inconclusive check. "
-        "Return evidence as a JSON object mapping the exact criterion or ongoing milestone to "
-        "its verified reference; use null to retract outdated evidence. Omit unchanged entries. "
-        f"Standing criteria: {json.dumps(criteria)}. If null, return completion_criteria once "
+        "Return evidence as a JSON object mapping each criterion ID (C1, C2, ...) or "
+        "ongoing milestone to "
+        "its partial or verified reference. Include a verified array of evidence keys whose new "
+        "references prove the entire criterion. Use null to retract outdated evidence. "
+        "Omit unchanged entries. "
+        f"Standing criteria: {json.dumps(identifiers)}. If null, return completion_criteria once "
         "from the owner's standing prompt, listing each finish condition or [] for ongoing work. "
+        f"Fully verified criteria: {json.dumps(journal.verified_criteria(job))}. "
         f"Saved evidence: {json.dumps(evidence)}. "
         f"Required reads for this check: {json.dumps(job.required_sources)}. "
         "Use complete only when a finite objective "

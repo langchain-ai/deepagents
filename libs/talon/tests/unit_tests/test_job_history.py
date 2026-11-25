@@ -550,7 +550,7 @@ async def test_required_reads_and_evidence_survive_separate_checks(tmp_path: Pat
     assert "Missing required reads: path:/logs" in row["summary"]
     assert row["read_tools"] == "path:/audit"
     agent.paths = ("/audit/image", "/logs/release")
-    agent.report.update(status="complete", evidence={"publish": "registry digest abcd"})
+    agent.report.update(status="complete", evidence={"C1": "registry digest abcd"}, verified=["C1"])
     await host.run_scheduled_job(job)
     assert store.get_job(job.id).enabled
     assert "Missing evidence for: rescan" in journal.history(job.id, ORIGIN)[0]["summary"]
@@ -562,7 +562,7 @@ async def test_required_reads_and_evidence_survive_separate_checks(tmp_path: Pat
     agent.report.update(wake_reason="owner_timing")
     await host.run_scheduled_job(job)
     assert store.get_job(job.id).next_run_at == soon
-    agent.report.update(status="complete", evidence={"rescan": "scan 123"})
+    agent.report.update(status="complete", evidence={"C2": "scan 123"}, verified=["C2"])
     await host.run_scheduled_job(job)
     assert "registry digest abcd" in agent.requests[-1].text
     assert not store.get_job(job.id).enabled
@@ -670,3 +670,26 @@ def test_ongoing_milestones_and_legacy_criteria_are_durable(tmp_path: Path) -> N
     assert JobJournal(tmp_path).verification(job) == ((), {"build": "build 27"})
     edited = store.edit_job(job.id, origin=ORIGIN, completion_criteria=["ship"])
     assert journal.verification(edited) == (("ship",), {})
+
+
+def test_partial_and_unmatched_references_cannot_complete_objective(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(
+        mode="objective", origin=ORIGIN, prompt="Test login", completion_criteria=["Real login"]
+    )
+    journal = JobJournal(tmp_path)
+    journal.start(job, "mock")
+    report = ObjectiveReport(status="partial", summary="Mock passed", evidence={"C1": "mock log"})
+    journal.finish_check(job, "mock", report, set())
+    journal.start(job, "retry")
+    report = ObjectiveReport(status="complete", summary="Done", evidence={"login test": "run 23"})
+    outcome = journal.finish_check(job, "retry", report, set())
+    assert outcome.status == "partial"
+    assert "login test: run 23" in outcome.summary
+    journal.start(job, "quiet")
+    journal.append_work("quiet", "Checked issuer logs. Real login is pending.")
+    report = ObjectiveReport(status="complete", summary="[SILENT]")
+    outcome = journal.finish_check(job, "quiet", report, set())
+    assert outcome.status == "partial"
+    assert "Checked issuer logs" in journal.history(job.id, ORIGIN)[0]["summary"]
+    assert "[SILENT]" not in outcome.summary

@@ -45,6 +45,8 @@ class ObjectiveReport(BaseModel):
 
     blocker_key: str = Field(default="", max_length=200)
 
+    verified: list[str] = Field(default_factory=list, max_length=64)
+
     next_wake_at: datetime | None = None
     wake_reason: Literal["poll", "owner_timing", "expected_event"] = "poll"
     completion_criteria: list[str] | None = None
@@ -151,6 +153,15 @@ class JobJournal:
                 "items TEXT NOT NULL, PRIMARY KEY(job,revision))"
             )
 
+            db.execute("BEGIN IMMEDIATE")
+            if "verified" not in {row[1] for row in db.execute("PRAGMA table_info(evidence)")}:
+                db.execute("ALTER TABLE evidence ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
+
+    def verified_criteria(self, job: CronJob) -> list[str]:
+        """Return criteria whose latest reference explicitly verifies the whole condition."""
+        with closing(sqlite3.connect(self.path)) as db:
+            return list(_saved_evidence(db, job.id, _revision(job), verified_only=True))
+
     def verification(self, job: CronJob) -> tuple[tuple[str, ...] | None, dict[str, str]]:
         """Return standing criteria and evidence, including those learned for older jobs."""
         with closing(sqlite3.connect(self.path)) as db:
@@ -163,7 +174,6 @@ class JobJournal:
     ) -> ObjectiveReport:
         """Commit coverage, milestone evidence and the effective outcome together."""
         revision = _revision(job)
-        report = _check_coverage(job, report, reads)
         with closing(sqlite3.connect(self.path)) as db, db:
             if job.completion_criteria is None and report.completion_criteria is not None:
                 db.execute(
@@ -171,9 +181,18 @@ class JobJournal:
                     (job.id, revision, json.dumps(report.completion_criteria)),
                 )
             criteria = _criteria(db, job, revision)
-            _update_evidence(db, job.id, revision, criteria, report)
+            if report.summary.strip() == "[SILENT]":
+                work = db.execute("SELECT work FROM checks WHERE run=?", (run,)).fetchone()
+                summary = work[0].strip() if work else ""
+                if not summary:
+                    summary = "No result summary recorded."
+                    if reads:
+                        summary += f" Read sources: {', '.join(sorted(reads))}."
+                report = report.model_copy(update={"summary": summary})
+            report = _check_coverage(job, report, reads)
+            report = _update_evidence(db, job.id, revision, criteria, report)
             if report.status == "complete":
-                evidence = _saved_evidence(db, job.id, revision)
+                evidence = _saved_evidence(db, job.id, revision, verified_only=True)
                 report = _check_completion(report, criteria, evidence)
             db.execute(
                 "UPDATE checks SET status=?,summary=?,read_tools=? WHERE run=?",
@@ -294,13 +313,13 @@ def _revision(job: CronJob) -> str:
 
 
 def _saved_evidence(
-    db: sqlite3.Connection, job: str, revision: str, *, limit: int = -1
+    db: sqlite3.Connection, job: str, revision: str, *, limit: int = -1, verified_only: bool = False
 ) -> dict[str, str]:
     return dict(
         db.execute(
             "SELECT criterion,reference FROM evidence WHERE job=? AND revision=? "
-            "ORDER BY rowid DESC LIMIT ?",
-            (job, revision, limit),
+            "AND (NOT ? OR verified) ORDER BY rowid DESC LIMIT ?",
+            (job, revision, verified_only, limit),
         )
     )
 
@@ -314,15 +333,24 @@ def _criteria(db: sqlite3.Connection, job: CronJob, revision: str) -> tuple[str,
     return tuple(json.loads(row[0])) if row else None
 
 
+def criterion_ids(criteria: Sequence[str]) -> dict[str, str]:
+    """Assign stable positions within the job's immutable criteria revision."""
+    return {f"C{index}": criterion for index, criterion in enumerate(criteria, start=1)}
+
+
 def _update_evidence(
     db: sqlite3.Connection,
     job: str,
     revision: str,
     criteria: tuple[str, ...] | None,
     report: ObjectiveReport,
-) -> None:
-    for criterion, reference in report.evidence.items():
+) -> ObjectiveReport:
+    aliases = criterion_ids(criteria or ())
+    unmatched = []
+    for key, reference in report.evidence.items():
+        criterion = aliases.get(key, key)
         if criteria and criterion not in criteria:
+            unmatched.append(f"{key}: {reference}")
             continue
         if not reference or not reference.strip():
             db.execute(
@@ -331,9 +359,18 @@ def _update_evidence(
             )
         elif report.status in {"partial", "checked", "complete", "blocked"}:
             db.execute(
-                "INSERT OR REPLACE INTO evidence VALUES(?,?,?,?)",
-                (job, revision, criterion, reference.strip()[:2000]),
+                "INSERT OR REPLACE INTO evidence(job,revision,criterion,reference,verified) "
+                "VALUES(?,?,?,?,?)",
+                (job, revision, criterion, reference.strip()[:2000], key in report.verified),
             )
+
+    if unmatched:
+        message = "Resubmit evidence with standing criterion IDs: " + "; ".join(unmatched)
+        status = "partial" if report.status == "complete" else report.status
+        return report.model_copy(
+            update={"status": status, "summary": f"{message}. {report.summary}"}
+        )
+    return report
 
 
 def _check_coverage(job: CronJob, report: ObjectiveReport, reads: set[str]) -> ObjectiveReport:

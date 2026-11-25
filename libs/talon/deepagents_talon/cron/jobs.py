@@ -14,7 +14,7 @@ import tempfile
 import threading
 import uuid
 import weakref
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
@@ -173,6 +173,7 @@ class CronJobDict(TypedDict):
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOriginDict
+    target_at: NotRequired[int | None]
     until: NotRequired[int | None]
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
@@ -195,6 +196,7 @@ class CronJobWireDict(TypedDict):
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOriginDict
+    target_at: str | None
     until: str | None
     claimed_at: str | None
     deliver_to: DeliverTo
@@ -673,6 +675,7 @@ class CronJob:
         last_status: Last run outcome.
         last_error: Last run error text.
         origin: Conversation that receives results.
+        target_at: Soft target after which work continues and reports the delay.
         until: Last instant a recurring job may run, inclusive. The job is
             deleted once it passes.
         claimed_at: When the scheduler claimed the current run, or `None` once
@@ -696,10 +699,21 @@ class CronJob:
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOrigin
+    target_at: datetime | None = field(default=None, kw_only=True)
     until: datetime | None = None
     claimed_at: datetime | None = None
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
+
+    def target_delay(self, finished: datetime) -> str:
+        """Describe the first completed check after a missed soft target."""
+        if (
+            self.target_at
+            and finished > self.target_at
+            and (self.last_run_at is None or self.last_run_at <= self.target_at)
+        ):
+            return f"Job {self.name or self.id} missed its target of {self.target_at.isoformat()}."
+        return ""
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -747,6 +761,7 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
+            **({"target_at": _to_epoch(self.target_at)} if self.target_at else {}),
             "until": _to_optional_epoch(self.until),
             "claimed_at": _to_optional_epoch(self.claimed_at),
             "deliver_to": self.deliver_to,
@@ -777,6 +792,7 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
+            "target_at": _format_optional_time(self.target_at),
             "until": _format_optional_time(self.until),
             "claimed_at": _format_optional_time(self.claimed_at),
             "deliver_to": self.deliver_to,
@@ -814,6 +830,7 @@ class CronJob:
             ),
             last_error=_optional_str_field(record, "last_error"),
             origin=CronOrigin.from_dict(record.get("origin")),
+            target_at=_from_optional_epoch(_optional_int_field(record, "target_at")),
             until=_from_optional_epoch(_optional_int_field(record, "until")),
             claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
             # Jobs saved before this field existed default to the channel.
@@ -872,6 +889,7 @@ class CronJobStore:
         origin: CronOrigin,
         name: str = "",
         repeat_times: int | None = None,
+        target_at: datetime | None = None,
         until: datetime | None = None,
         deliver_to: DeliverTo = "channel",
         skills: Sequence[str] = (),
@@ -885,6 +903,7 @@ class CronJobStore:
             origin: Conversation that receives results.
             name: Human-readable label.
             repeat_times: Optional cap for recurring jobs.
+            target_at: Soft target after which work continues.
             until: Optional last instant a recurring job may run, inclusive.
             deliver_to: Whether a thread origin's results post to its channel or thread.
             skills: Skill names to pin to each run; see `pinned_skills`.
@@ -921,6 +940,7 @@ class CronJobStore:
                 last_status=None,
                 last_error=None,
                 origin=origin,
+                target_at=None if target_at is None else _coerce_utc(target_at),
                 until=until,
                 deliver_to=deliver_to,
                 skills=pinned,
@@ -984,7 +1004,9 @@ class CronJobStore:
         schedule: CronSchedule | None = None,
         enabled: bool | None = None,
         repeat_times: int | None = None,
+        target_at: datetime | None = None,
         until: datetime | None = None,
+        clear_target: bool = False,
         clear_until: bool = False,
         deliver_to: DeliverTo | None = None,
         skills: Sequence[str] | None = None,
@@ -1000,7 +1022,9 @@ class CronJobStore:
             schedule: Optional replacement schedule.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
+            target_at: Soft target after which work continues.
             until: Optional replacement for the job's last allowed run instant.
+            clear_target: Remove the soft target.
             clear_until: Remove the job's `until` bound.
             deliver_to: Optional replacement delivery target.
             skills: Optional replacement pinned skills; an empty list unpins all.
@@ -1047,6 +1071,7 @@ class CronJobStore:
                     repeat=new_repeat,
                     enabled=job.enabled if enabled is None else enabled,
                     next_run_at=next_run_at,
+                    target_at=_edited_until(job.target_at, target_at, clear=clear_target),
                     until=new_until,
                     deliver_to=job.deliver_to if deliver_to is None else deliver_to,
                     skills=job.skills if pinned is None else pinned,
@@ -1162,6 +1187,29 @@ class CronJobStore:
             if updated is not None:
                 self._write_jobs(result)
             return updated
+
+    def claim_missed_deadlines(self, *, now: datetime) -> list[CronJob]:
+        """Retire overdue enabled jobs before any expired action can be dispatched."""
+        with self._lock:
+            jobs = self.list_jobs()
+            missed = [
+                job
+                for job in jobs
+                if (job.enabled or job.claimed_at is not None)
+                and job.until is not None
+                and now > job.until
+            ]
+            if missed:
+                ids = {job.id for job in missed}
+                self._write_jobs(
+                    [
+                        replace(job, enabled=False, next_run_at=None, claimed_at=None)
+                        if job.id in ids
+                        else job
+                        for job in jobs
+                    ]
+                )
+            return missed
 
     def discard_finished(self, *, now: datetime | None = None) -> list[CronJob]:
         """Delete jobs that will never run again, or whose `until` has passed.

@@ -318,6 +318,16 @@ Set only through the launching shell or global `~/.deepagents/.env`; a project
 `.env` cannot set it.
 """
 
+GIT_ATTRIBUTION = "DEEPAGENTS_CODE_GIT_ATTRIBUTION"
+"""Toggle git attribution of LangSmith traces (defaults to on).
+
+When enabled and tracing is active, dcode runs bounded, read-only `git`
+inspections around tools that can change a checkout, so traces record the
+repository and branch the agent actually worked on. Set to a falsy value (`0`,
+`false`, `no`, `off`, or empty) to skip these inspections entirely, for example
+in very large repositories. Also configurable as `[tracing].git_attribution`.
+"""
+
 GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
 """Apply generated goal criteria automatically in Auto mode.
 
@@ -490,11 +500,13 @@ PROVIDER_TOOL_SEARCH = "DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH"
 """Toggle native MCP tool discovery on verified endpoints (defaults to on)."""
 
 OPENAI_PROMPT_CACHE_KEY = "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY"
-"""Toggle injecting a per-thread OpenAI `prompt_cache_key` (defaults to on).
+"""Toggle injecting a per-install OpenAI `prompt_cache_key` (defaults to on).
 
-When enabled, OpenAI-provider model calls receive the active thread ID as a
-top-level `prompt_cache_key`, giving more reliable prompt-cache prefix routing
-across turns. It is attempted for every model whose provider resolves to
+When enabled, OpenAI-provider model calls receive a top-level `prompt_cache_key`
+of the form `dcode_v1:<install id>`, where the install ID is a random value
+persisted in the profile state directory. Every thread from the same install
+shares the key, so the common system-prompt prefix stays in one cache group
+across sessions. It is attempted for every model whose provider resolves to
 `openai` regardless of base URL (official API, the LangSmith gateway, and other
 OpenAI-compatible endpoints), because the field is optional and additive. Set to
 a falsy value (`0`, `false`, `no`, `off`) to opt out for endpoints that reject
@@ -702,6 +714,17 @@ rather than forcing the default). A blank value — empty or whitespace-only —
 counts as `false` because the option declares `empty_env_is_false`, so it
 overrides `config.toml` instead of falling through. Also settable via
 `[ui].terminal_progress` in config.toml. `NO_TERMINAL_ESCAPE` suppresses the
+sequence regardless.
+"""
+
+TERMINAL_STATUS = "DEEPAGENTS_CODE_TERMINAL_STATUS"
+"""Report agent status to the terminal with `OSC 7501` (Program Status Protocol).
+
+Terminals and multiplexers that support the protocol (such as Herdr) show
+whether the agent is working, waiting on you, done, or failed. Enabled by
+default; set to a falsy value (`0`, `false`, `no`, `off`, or blank) to stop
+emitting the sequence. Parsed like `TERMINAL_PROGRESS`. Also settable via
+`[ui].terminal_status` in config.toml. `NO_TERMINAL_ESCAPE` suppresses the
 sequence regardless.
 """
 

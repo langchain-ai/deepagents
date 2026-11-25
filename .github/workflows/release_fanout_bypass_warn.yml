@@ -3,8 +3,9 @@
 #
 # Mirrors the `warn-on-bypass` job in `pr_lint.yml` (for `ci:skip-title-lint`):
 # post a sticky that spells out the release-please consequence and lists every
-# managed component the PR's changed files touch. Cleanup when the label is
-# removed.
+# managed component the PR's changed files would release (files under a
+# package's `exclude-paths`, such as `tests/` and `uv.lock`, don't count).
+# Cleanup when the label is removed.
 #
 # This job is advisory: it never fails the check. The load-bearing red / green
 # decision still lives in `release_please_scope_check.yml` and
@@ -49,7 +50,7 @@ jobs:
           persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -197,7 +198,7 @@ jobs:
             const bumpWorthy = process.env.BUMP_WORTHY === 'true';
             const componentList = components.length
               ? components.map(c => `\`${c}\``).join(', ')
-              : '_none detected under managed package paths_';
+              : '_none (no release-relevant files under managed package paths)_';
             const labelList = active.map(l => `\`${l}\``).join(', ');
 
             const body = [
@@ -206,9 +207,9 @@ jobs:
               '',
               `Active bypass label(s): ${labelList}`,
               '',
-              '**Consequence:** release-please will open a **separate release PR for every managed component this PR touches**, because it scopes commits by **changed file path** (not by title scope alone).',
+              '**Consequence:** release-please will open a **separate release PR for every managed component listed below**, because it scopes commits by **changed file path** (not by title scope alone). Files under `exclude-paths` (`tests/`, `uv.lock`) are ignored.',
               '',
-              `Touched release-please component(s): ${componentList}`,
+              `Release-please component(s) this PR would release: ${componentList}`,
               '',
               bumpWorthy
                 ? 'This PR title is currently **bump-worthy** (`feat`/`fix`/visible type or `!`), so fan-out is live on merge.'
@@ -216,15 +217,11 @@ jobs:
               '',
               '### Confirm intentional, or split',
               '',
-              'Prefer:',
-              '',
-              '1. One feature/fix PR scoped to the **single** package that owns the user-facing change.',
-              '2. One `chore(deps): ...` PR for cross-package dependency / lockfile churn (`chore` is hidden and does not open release PRs).',
+              'If more than one component is listed, prefer one bump-worthy PR per package: land changes another package needs (e.g. a dependency bound in its `pyproject.toml`) in their own PR first, then the feature/fix.',
               '',
               'Remove the bypass label(s) to re-enable the blocking checks.',
               '',
               '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)',
-              '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)',
               '📖 [Reverting a merged-but-unreleased PR](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#reverting-a-merged-but-unreleased-pr)',
             ].join('\n');
 

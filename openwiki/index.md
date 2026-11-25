@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents change to its owning package, distinguish published dependency contracts from local checkout wiring, and run the narrowest relevant validation. Use the linked architecture, integration, operations, and testing guides for implementation detail.
+- [Repository Quickstart](quickstart.md) - Route a Deep Agents monorepo change to the independently released package that owns its public contract, tests, dependency metadata, and release handoff. Use package-local uv and Make workflows, and distinguish published requirements from checkout wiring and generated locks.
 
 # Directories
 

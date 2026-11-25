@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-scoped test routing and focused deterministic seams for dcode startup, configuration and MCP security, plugins, Textual rendering, Harbor evaluation adapters, partner sandboxes, and workflow contracts. Use each package Makefile as the command authority and escalate to process or model-backed tests only at the boundary under test.
+- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for dcode configuration and local context, Talon subagents and MCP/OAuth, release-note automation, and the Harbor LangGraph adapter. Use package-owned Make targets and assert observable behavior while treating warnings as failures.

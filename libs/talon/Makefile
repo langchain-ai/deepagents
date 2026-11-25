@@ -11,7 +11,7 @@ PYTEST_EXTRA ?=
 
 test: ## Run unit tests
 test tests: test_bridge
-	uv run --group test pytest --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
+	uv run --group test pytest -n auto --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
 		--timeout 10 $(COV_ARGS)
 
 test_bridge: ## Run WhatsApp bridge unit tests

@@ -1,152 +1,229 @@
 ---
 type: operations guide
-title: CI, Labels, and Workflow Security
-description: Operational contracts for reusable CI, maintainer-controlled label exceptions, package selection, ripgrep coverage, and trusted release automation.
-tags: [ci, github-actions, labels, releases, evaluations, security]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-28T08:04:17.781Z
+title: CI Gates and Labels
+description: Operate merge-facing CI, PR metadata checks, release dependency safeguards, and manual Harbor evaluation workflows. Covers acknowledgement labels, trusted boundaries, failure behavior, release publication controls, and focused tests.
+tags: [ci, github-actions, labels, releases, dependency-management, evaluations]
 sources:
-  - id: openwiki-source-68af6821b228c8c5f21685d2
-    resource: repo://.github/scripts/release/install_ripgrep.sh
-  - id: openwiki-source-c0a8cdd7847afa481defa30b
-    resource: repo://.github/scripts/tests/evals/test_unified_workflow.py
-  - id: openwiki-source-1496fd17117e4ab18f9b8ca7
-    resource: repo://.github/scripts/tests/release/test_release_notes.py
-  - id: openwiki-source-e7551201b92667a1711e431e
-    resource: repo://.github/scripts/tests/release/test_release_target_summary.py
+  - id: openwiki-source-3638ff2c170b760df159d81b
+    resource: repo://.github/actions/uv_setup/action.yml
+  - id: openwiki-source-4e1a48a53f7b34ae16b8d91f
+    resource: repo://.github/LABELS.md
+  - id: openwiki-source-9d81aa681a56a98960013750
+    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
+  - id: openwiki-source-c0c09f6fe83cf1ab6089bb24
+    resource: repo://.github/scripts/checks/ci_gate.py
+  - id: openwiki-source-f59dcf85e4ad8ca3f9f6d5de
+    resource: repo://.github/scripts/checks/curated_apply_only.py
+  - id: openwiki-source-666ffb85801f05fea2a2adbf
+    resource: repo://.github/scripts/evals/unified_prep.py
+  - id: openwiki-source-07ac367f59bbed1812fef155
+    resource: repo://.github/scripts/labeling/check_pr_scope_files.py
+  - id: openwiki-source-f87398ca371fc238611bbff7
+    resource: repo://.github/scripts/release/check_dep_freshness.py
+  - id: openwiki-source-d0bc66880aeeb0817674e1c3
+    resource: repo://.github/scripts/release/check_lockfile_release_scope.py
+  - id: openwiki-source-c01179865033a68574568db7
+    resource: repo://.github/scripts/release/check_open_release_fanout.py
+  - id: openwiki-source-d8e4ee8c2eab091950193178
+    resource: repo://.github/scripts/release/check_wheel_dep_freshness.py
+  - id: openwiki-source-92f0f267bd28e544f8eba170
+    resource: repo://.github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
+  - id: openwiki-source-5b680a0392fb5595e69fb676
+    resource: repo://.github/scripts/tests/evals/test_validate_harbor_limits.py
+  - id: openwiki-source-276657d0dcc1b71922f5e1f4
+    resource: repo://.github/scripts/tests/labeling/test_check_pr_scope_files.py
+  - id: openwiki-source-a3e73f18ddc0439259e73c17
+    resource: repo://.github/scripts/tests/release/test_check_lockfile_release_scope.py
+  - id: openwiki-source-bdbb800adcdf22c6c535f06d
+    resource: repo://.github/scripts/tests/release/test_check_open_release_fanout.py
+  - id: openwiki-source-750d05d3ff77bc37d6cb1a49
+    resource: repo://.github/scripts/tests/release/test_check_wheel_dep_freshness.py
   - id: openwiki-source-75ab344a500d6a7392581a42
     resource: repo://.github/scripts/tests/workflows/test_ci_workflow.py
-  - id: openwiki-source-62330473ce7398c9846a86ce
-    resource: repo://.github/scripts/tests/workflows/test_release_python_matrix.py
-  - id: openwiki-source-50211d57c2614659a98ae746
-    resource: repo://.github/scripts/tests/workflows/test_warnings_are_errors.py
-  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
-    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
+  - id: openwiki-source-5ec08fb431e595bde89de502
+    resource: repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
   - id: openwiki-source-60d75d0ff1b1cedd1f38db0c
     resource: repo://.github/workflows/_harbor_run.yml
   - id: openwiki-source-4d9cccca7700db7220ec055e
     resource: repo://.github/workflows/_test.yml
+  - id: openwiki-source-9f9a45e8530875c513dbc901
+    resource: repo://.github/workflows/check_dep_freshness.yml
+  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
+    resource: repo://.github/workflows/check_lockfiles.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-4541a26c837a99dc39a0ee0c
-    resource: repo://.github/workflows/release_notes.yml
-  - id: openwiki-source-46fa34397e41ebf7491c7359
-    resource: repo://.github/workflows/release-please.yml
+  - id: openwiki-source-4febfe1e2a3bf81fec4aefc9
+    resource: repo://.github/workflows/harbor.yml
+  - id: openwiki-source-c98bee1676203b5d741001df
+    resource: repo://.github/workflows/pr_lint_trailer.yml
+  - id: openwiki-source-4d4bdb4ee2c259e9a0b5b8f7
+    resource: repo://.github/workflows/pr_scope_file_check.yml
+  - id: openwiki-source-504736637a54f8573036c2df
+    resource: repo://.github/workflows/release_fanout_bypass_warn.yml
+  - id: openwiki-source-9f478a7a77ce5bdf50ca09e4
+    resource: repo://.github/workflows/release_please_fanout_watch.yml
+  - id: openwiki-source-7f3822065cb7dc086752e9d5
+    resource: repo://.github/workflows/release_please_scope_check.yml
   - id: openwiki-source-4d1d392666be6dfdd7a91a2e
     resource: repo://.github/workflows/release.yml
-  - id: openwiki-source-e20813387da065eff52a6977
-    resource: repo://.github/workflows/ripgrep_timeout_comment.yml
-  - id: openwiki-source-b85e6680825dcbd3b07ebf39
-    resource: repo://.github/workflows/sync_priority_labels.yml
   - id: openwiki-source-b6252e3f3473cd89534f2acb
     resource: repo://.github/workflows/unified_evals.yml
-generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-21T08:04:00.255Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
 ---
 
-# CI, Labels, and Workflow Security
+# CI Gates and Labels
 
-This page explains the control boundaries around CI overrides, label synchronization, release automation, and evaluation workflows. It complements [Development](development.md), the [Testing Guide](../testing/testing-guide.md), [Run Evals](../workflows/run-evals.md), and the [source map](../architecture/source-map.md). In `.github`, event entrypoints have ordinary names and `_*.yml` files are reusable `workflow_call` components; extend an existing reusable workflow or composite action instead of duplicating checkout and `uv` setup.
+CI is split between the merge-facing `🔧 CI` workflow and independent PR controls. `ci.yml` owns the branch-protection-facing `✅ CI Success` result; scope, release-fan-out, trailer, Markdown, README, and dependency-freshness workflows have their own status and must be configured as required checks if they are to block a merge. Manual Harbor and unified evaluation workflows are operational experiments, not merge gates. See [Development](development.md), [Run evaluations](../workflows/run-evals.md), and [the source map](../architecture/source-map.md).
 
-## Labels are control-plane data
+## Merge CI and the shared gate
 
-`ci:*` labels record a maintainer acknowledgement or a narrowly defined override; the PR labeler does not create them. The label taxonomy maps each label to the gate that consumes it. A new `ci:*` gate should therefore use a live API read, have its label created in the repository, and be added to the taxonomy rather than treating a label as an unreviewed configuration value.
-
-`sync_priority_labels.yml` separately derives PR priority from closing links in the PR body. It considers `Closes`, `Fixes`, and `Resolves` links, selects the highest linked-issue priority, and propagates only `priority:urgent` or `priority:high`. It removes `priority:backlog` and retired `p0`–`p4` labels instead of mapping them. Its privileged `pull_request_target` path does not check out PR code; label-writing permissions belong only to mutation jobs. Concurrency is scoped by PR, issue, or manual backfill, and recomputing the complete desired state makes the result converge despite overlapping issue events.
+`check-lockfiles` is unconditional. On non-push events `text-hygiene` runs separately for the PR or merge-group range, while path filtering selects package lint and test work for pull requests and merge groups; a push to `main` runs all package jobs. The filters include CI infrastructure and editable SDK dependencies. `talon-src` deliberately records only `libs/talon/**`, which is narrower than the Talon test filter and is used to decide whether a failed Talon job can be waived.
 
 ```mermaid
 flowchart TD
-    Trigger["PR or issue label event"] --> Links["Parse closing issue links"]
-    Links --> Read["Read labels for every linked issue"]
-    Read --> Winner["Choose highest priority"]
-    Winner --> Eligible{"Urgent or high"}
-    Eligible -->|"Yes"| Apply["Remove stale labels and apply winner"]
-    Eligible -->|"No"| Clear["Remove propagated and retired labels"]
+    Trigger["PR merge group or main push"] --> Lock["Check all lockfiles"]
+    Trigger --> Hygiene["Run text hygiene on non-push"]
+    Trigger --> Changes["Select package work"]
+    Lock --> Gate["CI Success gate"]
+    Hygiene --> Gate
+    Changes --> Package["Lint and test jobs"]
+    Package --> Gate
+    Changes --> Helpers["Helper-script tests"]
+    Helpers --> Gate
+    Gate --> Status["Required check result"]
 ```
 
-*Priority synchronization recomputes a PR's state from linked issues rather than incrementally copying the triggering event.*
+*Merge CI always includes lockfile validation; hygiene participates when it is scheduled, and selected work may be skipped without itself failing the gate.*
 
-## Reusable test worker and package selection
+`ci_success` runs with `if: always()`. It requires a successful lockfile result and successful hygiene except for hygiene's expected push-time `skipped` result. For ordinary runs it converts named `needs` results into a map and evaluates it with trusted base-ref gate logic. Only failed `lint-talon` or `test-talon` may be waived, only for a pull request that does not modify `libs/talon/**`; cancellation and every other failure remain blocking. Merge groups remain strict, whereas push cancellations are tolerated because a concurrency-preempted `main` run is expected to be replaced. The non-gating Talon advisory records waived failures and follow-up.
 
-`ci.yml` runs for pull requests, pushes to `main`, and merge-queue events. It detects changed packages and calls `_test.yml` only for the relevant package on PR and merge-group runs; pushes run every package test job. Each package filter includes its package directory, shared SDK dependencies where applicable, CI workflow files, and local actions, so automation changes get exercised. `deepagents` changes also fan out to packages that editable-install it. The workflow deliberately discovers every `libs/**/pyproject.toml` package in its contract test and requires that set to equal the `_test.yml` callers.
+The gate script is sparse-checked out from `github.base_ref || github.sha` without credentials. Consequently, a PR ordinarily cannot alter the logic that judges its own results; a PR copy is used only for the bootstrap fallback when the base lacks the script.
 
-The reusable worker accepts a working directory, quoted JSON Python-version array, optional OS-specific legs, and optional shard strings. It validates those JSON shapes inside every matrix leg before checkout, expands a non-fail-fast matrix, uses the local `uv_setup` action, synchronizes the `test` dependency group, runs `make test` on non-Windows and direct pytest on Windows, and checks that the worktree remains clean. It has only `contents: read` and `pull-requests: read`; callers can narrow but cannot expand a called workflow token.
+### Lockfiles, hygiene, and reusable tests
 
-The final `✅ CI Success` job evaluates all relevant results even when earlier jobs are skipped or fail. Lockfile validation always remains mandatory. One narrowly bounded policy exception applies on a pull request that does **not** touch `libs/talon`: failures, but not cancellations, in Talon jobs may be waived because Talon runs against `libs/code` through an editable dependency. Push and merge-group runs remain strict, and a sticky advisory records a waiver. Crucially, the gate script is sparse-checked out from the trusted base ref, not executed from the untrusted PR merge checkout; a PR cannot modify the decision logic that decides whether its checks passed. A changelog-only commit made by the trusted release bot can inherit a conclusive successful parent CI result, but an inconclusive or failed parent keeps the gate red.
+`check_lockfiles.yml` performs a credential-less checkout and invokes the checker without explicit paths, so every discovered package lockfile is evaluated regardless of path selection. For explicit paths, the checker identifies owning package directories and expands through local `[tool.uv.sources]` consumers; a failed `uv lock --check` reports the package-specific relock command.
 
-### Live warnings override fails closed
+```bash
+make -C libs hygiene
+make -C libs lock-check
+```
 
-Every package is expected to lead its pytest `filterwarnings` configuration with `error`. `_test.yml` performs a live `gh api` label lookup only for `pull_request` runs. It uses one bounded `per_page=100` request and exact label matching, because a rerun's event payload can be stale and a partial paginated response must not arm an exception. If the read fails, the step emits an error annotation and writes an empty flag: warnings remain errors. If and only if `ci:allow-warnings` is found, the worker passes `-W default` to both POSIX and Windows test commands. Command-line filters outrank package ini filters, while per-test warning marks still apply. Push and merge-group runs have no PR-label context and always enforce the normal policy.
+Do not path-filter, advisory-route, or label-bypass those controls. Lockfile validation is required for every CI event; hygiene is required whenever scheduled.
+
+The reusable `_test.yml` validates JSON matrix inputs before a non-fail-fast matrix, checks out code, configures the local `uv_setup` action, synchronizes the test group, runs platform-specific unit tests, and verifies that the worktree remains clean. PR runs read maintainer bypass labels from the live GitHub API and fail closed if that lookup fails. `ci:allow-warnings` changes warning handling to `-W default`; the narrowly scoped `ci:skip-ripgrep` release exception can tolerate a ripgrep install failure and records an artifact, without relaxing push or merge-group enforcement.
+
+### Curated release-note applies
+
+Normal package work may be skipped only for a tightly recognized release-bot curated-notes apply. The detector uses a credential-less checkout of trusted-base logic and configuration, validates bot/branch/commit/changelog conditions, and looks up exactly one latest parent `✅ CI Success` conclusion. Lookup errors, malformed data, and conclusions other than conclusive success or failure run normal work.
+
+For a recognized apply, package and helper jobs are skipped. The final gate inherits success only from a successful parent and preserves an inherited failure. A read-only best-effort diagnostic can report sanitized parent-suite failures but cannot change the result. After repair, use **Re-run all jobs**: rerunning only failed jobs retains the prior `changes` output.
+
+## Labels are acknowledgements, not hidden permissions
+
+The label taxonomy defines `ci:*` labels as a human acknowledgement or override read by a named gate; the labeler does not normally apply them. A label bypass does not erase the associated release or quality consequence.
+
+| Label | Acknowledges | Remaining consequence |
+| --- | --- | --- |
+| `ci:allow-scope-mismatch` | Intentional mismatch between title package scope and changed package directories | Release-please can still create a release PR per touched managed component. |
+| `ci:allow-lockfile-release` | Intentional multi-component release fan-out; its name predates lockfile exclusion | Each affected component can still receive a release PR. |
+| `ci:allow-warnings` | PR-only warning-as-error relaxation in reusable tests | Push and merge-group enforcement remains strict. |
+| `ci:skip-ripgrep` | Strict ripgrep-install failure for a release PR | The skipped rg-gated coverage is recorded rather than silently passed. |
+| `ci:ack-release-deps` | Review of stale dependency-minimum advice on a release PR | It does not relax built-wheel metadata validation or PyPI installation. |
+
+Other labels and their readers are catalogued in [`.github/LABELS.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/LABELS.md). A workflow that only reads a label assumes the repository has created it.
+
+## PR metadata and release fan-out gates
+
+### Title scope and changed packages
+
+`🔍 PR scope file check` compares Conventional Commit package scopes in the PR title with package directories obtained from the API file list. Its detector derives scope aliases and package identity from labeler configuration, ignores lockfile churn, and limits its release-shaped exception to a completely allowlisted set of release artifacts. A title without a declared package scope produces no mismatch; a declared scope must cover every relevant changed package.
+
+The workflow checks out detector/configuration from the PR base SHA without credentials, but takes the title and changed-file facts from the PR. It paginates `pulls.listFiles` and compares its collected count with `changed_files`; an absent or incomplete list, malformed detector/configuration output, or malformed offender data fails closed. `ci:allow-scope-mismatch` is a deliberate passing acknowledgement and receives a sticky warning about release fan-out.
+
+### Release-please fan-out
+
+`🔍 Release-please scope check` is the related pre-merge control. Its trusted-base detector reads managed component paths, component names, `exclude-paths`, and visible changelog types. It treats a breaking marker or a visible changelog type as bump-worthy, honors excluded files such as `tests/` and `uv.lock`, and reports release-relevant edits to two or more managed components. The workflow consumes API-derived changed files, fails closed when it cannot establish a safe result, and blocks fan-out unless `ci:allow-lockfile-release` acknowledges it.
+
+`⚠️ Release fan-out bypass warning` is intentionally advisory: it serializes PR updates, reads live labels to survive label-event races, and maintains a sticky warning while either fan-out acknowledgement is present. After merge, `🔍 Release-please fan-out watch` is another advisory safety net. It uses full tagged `main` history to compare each managed component with its manifest-derived release tag, reports only matching open release-please branches, and temporarily skips a component whose release tag has not yet been published.
+
+## Banned-trailer pre-merge check
+
+`🏷️ PR trailer lint` runs for opened, edited, synchronized, and reopened pull requests, with a per-PR queued concurrency group so a later event cannot race the sticky-comment update. It uses a deliberately narrow pattern shared with the `main` repository ruleset: the `Co-authored-by: ... <noreply@anthropic.com>` trailer and the `Generated with [Claude Code]` footer. It does **not** apply a broad case-insensitive match, because that would diverge from the ruleset it is intended to predict.
+
+The check scans two distinct merge surfaces:
+
+1. The prospective squash message, formed from PR title, PR number, and normalized description. A match blocks squash merging to `main`.
+2. Every individual PR commit message. This protects merge-commit and rebase-style paths even though a squash merge drops individual messages.
+
+GitHub's PR commit-list endpoint cannot reliably certify more than 250 commits. The workflow therefore caps at 250, compares listed commits with the PR's declared count, and fails closed if it is capped, if listing errors, or if a force-push race remains after three retries with refreshed PR metadata. It records failure *before* attempting the sticky comment; a comment write failure (for example, a restricted fork token or rate limit) falls back to the job summary and cannot turn a red finding green. A later clean scan best-effort marks the existing sticky warning resolved.
 
 ```mermaid
 flowchart TD
-    Event{"Pull request run"}
-    Event -->|"No"| Enforce["Run tests with warnings enforced"]
-    Event -->|"Yes"| Labels["Read live labels once"]
-    Labels --> Lookup{"Lookup succeeded"}
-    Lookup -->|"No"| Closed["Emit error and leave flag empty"]
-    Closed --> Enforce
-    Lookup -->|"Yes"| Match{"Exact allow warnings label"}
-    Match -->|"No"| Enforce
-    Match -->|"Yes"| Override["Pass -W default to tests"]
+    Event["PR event"] --> Squash["Scan title and description"]
+    Event --> List["Enumerate PR commits"]
+    List --> Complete{"Complete scan"}
+    Complete -->|"No"| Fail["Fail before reporting"]
+    Complete -->|"Yes"| Commit["Scan commit messages"]
+    Squash --> Match{"Any banned line"}
+    Commit --> Match
+    Match -->|"No"| Clear["Best effort resolve old comment"]
+    Match -->|"Yes"| Fail
+    Fail --> Report["Sticky comment or job summary"]
 ```
 
-*The warnings exception is fail-closed: inability to establish the live label state preserves the gate.*
+*Trailer lint certifies both the squash message and commit history; incomplete history is a failure rather than a clean result.*
 
-## Ripgrep: strict coverage versus advisory reporting
+## Release dependency checks
 
-The pinned installer downloads ripgrep 14.1.0 for Linux x86_64 musl, validates its SHA-256, installs `rg`, and returns nonzero for unsupported architecture or any install failure. It deliberately supplies no policy beyond that result; its callers decide whether failure blocks the job.
+`📦 Check Dependency Freshness` is a PR workflow for titles beginning `release(`. It is cancelled and replaced on a newer run for the same workflow/ref. Non-release PRs explicitly report a clean, non-indeterminate result. For a release PR it resolves the release-please component, checks out the code with full history, and runs two different safeguards before building and installing the artifact.
 
-For the Deepagents Linux leg, `_test.yml` selects exactly one install path:
+1. **Manifest freshness is advisory.** `check_dep_freshness.py` examines changed release-package `pyproject.toml` files between the PR base and head. It considers bounded runtime and optional dependencies with concrete minimums, excluding direct URLs, self references, and dependencies backed exclusively by local path/workspace `uv` sources. It queries canonical PyPI projects concurrently, ignores fully yanked releases, and by default considers a pre-release only when the declared minimum itself is a pre-release. A newer version produces annotations, a summary, and a sticky PR report with whether it fits the current upper bound; `ci:ack-release-deps` records review rather than changing resolver behavior.
+2. **The built wheel is load-bearing.** The workflow builds exactly one wheel using the target interpreter, reads its wheel metadata, and validates applicable requirements against live PyPI metadata. A direct-URL requirement, unavailable PyPI metadata, no compatible published version, incompatible Python coverage, or unpublished/lagging metadata for a repository-managed sibling fails the check. A third-party bound that only omits future, unreleased CPython minors is a warning; gaps at actual supported installation targets remain failures. The workflow then creates a target-Python virtual environment and installs the wheel with dependency resolution restricted to `https://pypi.org/simple`.
 
-- **Ordinary PR:** installation is bounded at two minutes. Only timeout statuses 124 or 137 are softened. The worker probes `rg`; if it is usable, coverage is retained and no warning is reported. Other installer errors fail the job. A true timeout with no usable binary writes a one-day `ripgrep-timeout-...` marker artifact and allows the rg-gated tests to skip.
-- **Release-sensitive PR, push, or merge group:** installation is unbounded and strict. Release-sensitive PRs are identified by a release-please branch prefix or a `release(` title. Only such a PR can resolve `ci:skip-ripgrep` live; a failed lookup resolves to `false`, so the failure stays blocking. A labeled failed install is tolerated only after an `rg --version` probe also fails. It writes the same marker artifact but does not claim ripgrep coverage.
+Freshness findings do not fail the main check. The comment manager maintains a bot-owned `<!-- dep-freshness-check -->` comment: it creates or updates the report when stale bounds are found, deletes it once clean or acknowledged, preserves a prior report when PyPI results are indeterminate, and leaves it untouched when the check crashed before producing outputs. Comment permissions are confined to this advisory job and a 403 degrades to a warning.
 
-On any runner where installation succeeded or the probe found a usable binary, the workflow exports `DEEPAGENTS_RIPGREP_EXPECTED=1`. The filesystem tests turn a subsequently missing `rg` into a failure rather than a skip; this protects the real-binary contract, including symlink containment coverage. Thus a marker means coverage was lost, not that a timeout or bypass was harmless.
+## Manual Harbor and unified evaluations
 
-`ripgrep_timeout_comment.yml` is reporting, not enforcement. It runs after completed PR CI in the base repository so it can comment on fork PRs, but does not check out or execute PR code and reads artifact **names**, not contents. It resolves the open PR, rejects stale head-SHA runs, and only manages a sticky comment that is both marked and owned by `github-actions[bot]`. It describes a release PR artifact as a bypassed strict-install failure and an ordinary PR artifact as a timeout; that distinction depends on PR kind, not a later label read. If its best-effort label read fails, the release-dispatch consequence is described as unconfirmed. An unresolvable PR is logged as a normal race rather than failing the comment job.
+### Harbor single-model dispatch
 
-```mermaid
-flowchart TD
-    Kind{"Release-sensitive run"}
-    Kind -->|"No ordinary PR"| Soft["Bound install for two minutes"]
-    Soft --> SoftTimeout{"Timed out and rg missing"}
-    SoftTimeout -->|"No"| Covered["Keep coverage or fail real error"]
-    SoftTimeout -->|"Yes"| Marker["Write lost-coverage marker"]
-    Kind -->|"Yes"| Strict["Unbounded strict install"]
-    Strict --> StrictOK{"Install or rg probe succeeds"}
-    StrictOK -->|"Yes"| Covered
-    StrictOK -->|"No unlabeled"| Block["Fail CI"]
-    StrictOK -->|"No labeled release PR"| Marker
-    Marker --> Comment["Advisory workflow comments from artifact names"]
-```
+`📊 Evals - Harbor` is manually dispatched and accepts exactly one resolved `provider:model`. The `models_override` input takes precedence over the dropdown but still must resolve to one model. It selects a registry dataset, arbitrary override, or local dataset path; chooses Docker or LangSmith sandboxing; and invokes `_harbor_run.yml` after preparation. The prep job validates the single model, `n_shards <= 200`, and per-shard concurrency `<= 4`, then derives a shard pool bounded so the pool times concurrency does not exceed 40 sandbox slots. Category is derived as context for a local path, conversation for tau3, and autonomous otherwise.
 
-*The marker-to-comment path is advisory; strict CI and release checks are the gating paths.*
+The leaf workflow owns matrix expansion, shards selected work after task selection, and aggregates artifacts by category. LangSmith snapshot prewarming is best effort and only applies to eligible single registry-dataset LangSmith runs; shard execution proceeds even if it fails. Before expensive work, a leaf checks the sandbox type, model-provider credential, LangSmith tracking key, OpenAI verifier key, and category-specific keys such as Tavily for research. It rejects unknown sandbox/provider values and unsupported native-agent/provider or branch-overlay combinations. A Harbor package override is a newline-separated set of PEP 508 specs installed together with `--reinstall --refresh`; treat it as trusted input and prefer immutable source revisions.
 
-## Release paths and trusted mutation boundaries
+### Unified multi-model experiments
 
-`release-please.yml` detects release commits on `main`, rejects malformed or unmatched detection rather than silently doing nothing, and dispatches package releases. Its dispatch job resolves the merged release PR and reads labels live before passing dangerous inputs; failed PR or label resolution is fail-closed. `ci:dcode-skip-sdk-pin` applies only to `deepagents-code`, while `ci:skip-ripgrep` controls the strict release artifact-test exception for every package. `release.yml` is manually dispatched rather than reusable because PyPI Trusted Publishing requires this route. Its read-only build stage resolves an immutable target, checks normal-release ancestry and package version at that target, and produces the supported-Python matrix used by cache-free, read-only pre-release checks.
+`📊 Evals - Unified` is also manually dispatched. Prep parses models, categories, harnesses, optional comparison branches, profile, and task filters into a flat per-model/category/shard matrix. For `full`, it enumerates live tasks using the same category map and local-dataset preparation as execution; `lite` uses its frozen subset. Unknown categories, no categories, unknown task selections, invalid native-agent/provider combinations, or native-agent branch comparisons fail during preparation rather than after spend starts. It resolves each comparison branch to a 40-character remote SHA, bounds per-model task concurrency at 40, aggregate runners at 80, the outer GitHub matrix at its configured cap, and post-pack jobs at 400. The eval job calls `_harbor_run.yml` once per model configuration with a non-fail-fast matrix and the derived runner budget.
 
-The release ripgrep step is also strict by default. Only the exact `dangerous-skip-ripgrep-check=true` dispatch input can soften an install failure; a usable existing `rg` still preserves coverage. Otherwise it records that artifacts were tested without ripgrep coverage before gated tests skip. This is an auditable acknowledgement of reduced coverage, not a successful coverage result.
+A branch comparison deliberately keeps datasets, verifiers, scoring, and the Harbor harness at the workflow revision; only the agent libraries are overlaid from a validated resolved branch SHA. This makes compared-agent differences interpretable without allowing an older branch to replace evaluation infrastructure.
 
-Curated notes are a separate trusted release-PR mutation boundary. `release_notes.yml` accepts a release PR becoming ready for review or an insider `@release-bot` comment, validates the trigger and maintainer permission, and loads its helper code from a credential-less `main` checkout. Release-PR content is fetched through the API at the validated head SHA as untrusted data: it is never checked out or executed by a write-capable job. The draft and apply jobs run in the `release-bot` environment, receive a short-lived GitHub App token only after validation, and use it for explicitly scoped comment, PR, and non-force Git Data API mutations. The model subprocess receives only its selected provider key and input/output file paths. Applying notes explicitly dispatches `release_notes_check.yml` because an App-token branch update does not emit the ordinary PR event required to refresh the merge gate.
+The downstream `usage` job is best effort and is the only analysis job given `LANGSMITH_API_KEY`; it reads usage and uploads an artifact. `combine` is also best effort after evals: it downloads leaf and usage artifacts with diagnostics, creates results/comparisons, uploads them, and serializes optional chart publication to `eval-assets`. Only that publishing job receives `contents: write`; a missing artifact or chart failure produces incomplete diagnostics rather than changing the result of paid evaluation work.
 
-## Harbor and unified evaluations
+## Package-release dispatch controls
 
-The reusable Harbor worker supports either a caller-provided flat matrix or single-dataset shard expansion, derives an effective parallel pool, and runs a non-fail-fast Harbor matrix. Its secret-bearing leaf is read-only; the aggregate job alone has `actions: write` for shard artifact download and cleanup, runs after non-cancelled work, and reports available shards without failing the paid evaluation workflow. Credential validation selects provider keys by model/category and rejects unsupported providers, sandboxes, malformed OpenRouter judge slugs, and missing requirements before execution.
+`🚀 Package Release` is a `workflow_dispatch` workflow rather than reusable, because PyPI Trusted Publishing is not supported for reusable workflows. It builds a selected package, runs pre-release checks, publishes to TestPyPI, publishes to PyPI, and then creates the GitHub release. Normal releases require an explicit 40-character release SHA reachable from `main` whose package `pyproject.toml` version equals the supplied version. `dangerous-nonmain-release` is the explicit exception: it permits a branch-contained SHA (or dispatch SHA fallback) and skips that normal version/main reachability validation.
 
-`unified_evals.yml` invokes Harbor once per prepared model matrix. Its LangSmith usage query is best effort in the `evals` environment and does not give `LANGSMITH_API_KEY` to the write-capable result-combine job. Keep provider credentials at their consuming runtime step and condition; do not promote them to workflow scope. Credential-scoping tests also lock down GitHub App token references, package-conditional integration secrets, disabled release integration wiring, the dedicated OpenWiki token sequence, and step-only topic-classifier secrets.
+Build runs with read-only permissions and records distribution checksums. TestPyPI and PyPI publishing jobs download the artifact and independently compare those checksums before using an `id-token: write` trusted-publishing permission; they do not check out source. Pre-release artifact tests use the resolved release SHA, a Python matrix derived from that package manifest, no dependency cache, and a locally built wheel. `dangerous-skip-sdk-pin-check` is limited to the Code SDK-pin comparison, while `dangerous-skip-ripgrep-check` allows an otherwise failed ripgrep install only after recording whether rg-gated artifact coverage was lost.
+
+Release notes are explicitly fail-open: a notes-job failure does not prevent an already validated PyPI publication and GitHub tag, but `mark-release` exposes the empty-body condition and recovery command. After tagging, the workflow transitions the associated pending release PR to `auto:release-tagged`, using API association first and exact-title/label fallback only when necessary. Failure to update a normal release PR label fails that final step and gives a manual recovery summary. A successful `deepagents` publish best-effort dispatches the Code SDK pin-bump workflow; this post-publish convenience cannot make the release fail.
 
 ## Focused verification
 
-Workflow contract tests execute the ripgrep install and bypass shell branches with stubbed commands, execute live-label resolution against a stubbed `gh`, and assert that the release predicate and advisory reporting predicate stay aligned. Separate tests require every discovered package to be wired into CI, compare CI matrices to `requires-python`, and enforce credential scope. Release-notes tests run the Node helper tests and statically protect trigger, trusted checkout, App-token, and mutation boundaries.
+Run executable contracts after modifying these controls:
 
 ```bash
+python -m pytest .github/scripts/tests/checks/test_ci_gate.py
+python -m pytest .github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
+python -m pytest .github/scripts/tests/labeling/test_check_pr_scope_files.py
+python -m pytest .github/scripts/tests/release/test_check_lockfile_release_scope.py
+python -m pytest .github/scripts/tests/release/test_check_dep_freshness.py
+python -m pytest .github/scripts/tests/release/test_check_wheel_dep_freshness.py
+python -m pytest .github/scripts/tests/release/test_check_open_release_fanout.py
+python -m pytest .github/scripts/tests/evals/test_validate_harbor_limits.py
 python -m pytest .github/scripts/tests/workflows/test_ci_workflow.py
-python -m pytest .github/scripts/tests/workflows/test_warnings_are_errors.py
-python -m pytest .github/scripts/tests/workflows/test_release_python_matrix.py
-python -m pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py
-python -m pytest .github/scripts/tests/release/test_release_notes.py
-python -m pytest .github/scripts/tests/release/test_release_target_summary.py
-python -m pytest .github/scripts/tests/evals/test_unified_workflow.py
+python -m pytest .github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
 ```
+
+The focused freshness tests cover prerelease policy, yanked/malformed PyPI data, local-source exclusions, advisory outputs, sticky-comment preservation, built-wheel metadata, markers and extras, sibling Python metadata, and install-flag parity with `release.yml`. The Harbor limits tests protect the dispatch resource invariants; workflow definitions remain authoritative for credential and publication boundaries.

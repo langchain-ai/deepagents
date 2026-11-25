@@ -23,9 +23,10 @@
 #   the pin on the PR branch must be behind it for any file to change.
 # - The commit regenerates `libs/code/uv.lock` so the pre-commit lock check
 #   stays green on the PR.
-# - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
-#   files inside the managed `libs/code` package would make release-please
-#   open a separate `release(deepagents-code)` PR (multi-component fan-out).
+# - The PR title is `chore(deps):` on purpose, so an automated pin bump does
+#   not cut a `deepagents-code` release on its own; the new pin ships with the
+#   next `feat`/`fix` release of the package. A bump-worthy type would release
+#   only `deepagents-code` (release-please ignores `uv.lock`), not fan out.
 # - The PR is created and updated with the Org Membership App installation
 #   token rather than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
@@ -192,7 +193,7 @@ jobs:
       - name: Generate GitHub App token
         id: app-token
         if: steps.versions.outputs.stale == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         with:
           client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}

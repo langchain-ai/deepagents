@@ -4,7 +4,8 @@
 # For more information: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
 /.github/ @mdrxy
-/libs/sdk/ @hwchase17 @sydney-runkle @ccurme
+/libs/deepagents/ @hwchase17 @sydney-runkle @ccurme
+/libs/code/ @mdrxy
 /libs/talon/ @jkennedyvz
 /libs/partners/ @eyurtsev
 /libs/partners/quickjs/ @hntrl

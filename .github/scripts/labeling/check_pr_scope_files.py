@@ -311,9 +311,9 @@ def find_offenders(
     Returns:
         Sorted list of offender objects with `package` and `dirs` keys. Empty
             when the title declares no package scopes, when no package dirs are
-            touched (for release PRs, after release-managed artifacts such as
-            `uv.lock` files are filtered out), or when every touched package is
-            covered by a declared scope.
+            touched (after `uv.lock` files and, for release PRs, other
+            release-managed artifacts are filtered out), or when every touched
+            package is covered by a declared scope.
 
     Raises:
         ValueError: If required config sections are missing or malformed.
@@ -332,6 +332,11 @@ def find_offenders(
             for file in changed
             if not is_release_file(file, release_config_path=release_config_path)
         ]
+
+    # Relocked `uv.lock` files are generated and never release a package (every
+    # package lists its `uv.lock` in release-please `exclude-paths`), so a
+    # dependency bump that relocks dependents doesn't touch their scopes.
+    changed = [file for file in changed if Path(file).name != "uv.lock"]
 
     if not changed or not declared:
         return []

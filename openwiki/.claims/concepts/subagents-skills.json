@@ -1,122 +1,264 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:0ac0a4e010745f44f00594a2b3cefac78cb740c44059d36da9cba58790544c95",
+  "pageVersion": "sha256:da08df93ed699fd8d9dd8f61671b036193a5537908b32fcc8354cc95971d3650",
   "claims": [
     {
-      "id": "claim_3955ede9d34942a89302a9aba6c32253",
-      "statement": "Dcode assembles discovered local subagents and its optional `general-purpose` worker as declarative SDK children, while passing configured `AsyncSubAgent` specifications separately to the SDK for remote Agent Protocol delegation.",
+      "id": "claim_6bdfb8742f1343cf8ba28d8db535656f",
+      "statement": "Talon's `BackgroundSubagents` detaches local `task` and remote `start_async_task` calls for ordinary conversational turns into owner-scoped in-memory jobs, blocks nested delegation and approvals in workers, enforces job and concurrency limits, and exposes only a bounded text result to the owning conversation.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
+          "resource": "repo://libs/talon/deepagents_talon/background.py",
+          "version": "repo-file-v1:sha256:c77e8ac8b4016b5dcae4ac6246f136538142129bd123f2c72a74f28bc20c2b92"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
+          "version": "repo-file-v1:sha256:82239c773f83f8b9c8ffa8e9af4066fa9799b188bba29a437158bb00b0d88d4c"
+        }
+      ]
+    },
+    {
+      "id": "claim_7fc78df2964e46a8ae9ae1919d50210d",
+      "statement": "Talon runs subagent delegation inline during scheduled turns because no later conversational turn can consume a detached result; inline calls leave no job, serializes failure or timeout as sanitized error output, queues fan-out beyond the inline concurrency ceiling, and keeps recursion blocked.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py",
+          "version": "repo-file-v1:sha256:c77e8ac8b4016b5dcae4ac6246f136538142129bd123f2c72a74f28bc20c2b92"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
+          "version": "repo-file-v1:sha256:82239c773f83f8b9c8ffa8e9af4066fa9799b188bba29a437158bb00b0d88d4c"
+        }
+      ]
+    },
+    {
+      "id": "claim_ec47e4301ac743d78f256abdcf5e0548",
+      "statement": "`create_deep_agent` routes declarative and compiled synchronous subagents to `SubAgentMiddleware`'s `task` tool, routes `AsyncSubAgent` specifications to `AsyncSubAgentMiddleware`, and can add a default synchronous `general-purpose` child when permitted by the harness profile.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:12b28893084e14972d00d1a5741c527c055b6070e1017a820e379fcc1720ddca"
+        }
+      ]
+    },
+    {
+      "id": "claim_21e1f3861374474482df6c128ac391c1",
+      "statement": "SDK local `task` calls require a tool-call ID and return a correlated result; isolated children receive a task message plus only non-excluded public state, while a declarative fork reconstructs effective parent history and inherits its prompt-producing context whereas a compiled fork excludes private state, and forked calls refuse nested delegation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:12b28893084e14972d00d1a5741c527c055b6070e1017a820e379fcc1720ddca"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
+          "version": "repo-file-v1:sha256:c745a3935591739f4ea4172d75881031e84cbe6724398e5fa94e9769beb6fa10"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py",
+          "version": "repo-file-v1:sha256:bf03b61de66d1997d305278cbd4d3200a13b691f485d547ccaf38507ff55be8f"
         }
       ]
     },
     {
-      "id": "claim_8ffaf2b76cd54d7aa43cb991f471c850",
-      "statement": "For a discovered dcode subagent, a missing or empty `model` installs `ConfigurableModelMiddleware` and follows runtime model selection; a nonempty declared model is policy-validated, attached to the child spec, and is not replaced by that middleware.",
+      "id": "claim_f65ed8969be44c1982132ba346055318",
+      "statement": "An SDK `AsyncSubAgent` is remote Agent Protocol work: its middleware returns task IDs, persists task records in `async_tasks`, and asynchronously observes unfinished tasks to inject changed outcomes into the parent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:54ab6dc0dd51165f0ce5f8ef149c7b4f94117e5ffa112cefd6016b3f221b601b"
+        }
+      ]
+    },
+    {
+      "id": "claim_7361489c00164a769f943905299918c2",
+      "statement": "Declarative SDK children inherit parent filesystem permissions and `interrupt_on` unless they override those fields, whereas compiled runnables and remote async subagents do not inherit the top-level interrupt configuration.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:12b28893084e14972d00d1a5741c527c055b6070e1017a820e379fcc1720ddca"
+        }
+      ]
+    },
+    {
+      "id": "claim_a5a55799b18f41e3a44c1f7d14daa6fb",
+      "statement": "When an explicit filesystem-tool allowlist is active, dcode injects restricted `FilesystemMiddleware` into synchronous declarative children and rejects compiled children because their middleware cannot be safely injected; remote async children use their own backend.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
-          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
+          "version": "repo-file-v1:sha256:ab8dfac669b4fba25c554d2d2f18c4db396903ce2c1961a2438831a1132a6623"
         }
       ]
     },
     {
-      "id": "claim_bd6407bc92014ef0aedb521652d33b9f",
-      "statement": "Dcode gives each synchronous declarative child its own CLI middleware stack, including nested cost tracking, truncation handling, retry, hooks and applicable approval, MCP, skill-only disclosure, memory-guard, shell-policy, and provider-search layers; setting an empty child `interrupt_on` prevents duplicate inherited SDK HITL, while remote async specs are not locally rewritten.",
+      "id": "claim_9f03eede52754c25ad5b48bfa1589980",
+      "statement": "Talon rejects fork mode and compiles local roles as fresh task-only graphs with explicitly attached tools and Talon approval/control middleware; it refuses an opaque compiled child when approval policy must be enforced inside it.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/subagents.py",
+          "version": "repo-file-v1:sha256:30a0239ab96fec0421f7bc82b76fa847cfbd665246217781dd8f1a1a407eb3a1"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_research_subagents.py",
+          "version": "repo-file-v1:sha256:5e1c821e057d552087ae131e15204875dbe6334711c92fddb1eb34493a719f94"
+        }
+      ]
+    },
+    {
+      "id": "claim_a892fbd2d32f4d1cbd81bba2e8af6e56",
+      "statement": "`SkillsMiddleware` caches a source-ordered, last-one-wins skill index in state; it exposes skill metadata first and can pin readable skill bodies before the next model call.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
+          "version": "repo-file-v1:sha256:fb910cc5a2587201378c082308dd06ead35a6b5a56def79445aa98bf98615a8d"
+        }
+      ]
+    },
+    {
+      "id": "claim_ac945dca008547d49240be7ea5ddc9d1",
+      "statement": "A successful read or pin of a skill with `metadata.include_tools` can disclose its deferred or middleware-owned tools for the next model call, anchored at the first qualifying read; the middleware records only tools actually disclosed and admits an otherwise-unregistered call only through that latest recorded include-name path.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
+          "version": "repo-file-v1:sha256:d095c3a3f310db529aa149cfc509b76a8ece7529040fc61ac4ff4040e9acead8"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
+          "version": "repo-file-v1:sha256:fb910cc5a2587201378c082308dd06ead35a6b5a56def79445aa98bf98615a8d"
+        }
+      ]
+    },
+    {
+      "id": "claim_3a3a79e81d484b95b5edc0073b60968d",
+      "statement": "Dcode orders built-in, plugin, user, project, and experimental Claude skill sources from lower to higher precedence, and logs plugin-discovery failure while continuing to add local sources.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
-          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
+          "version": "repo-file-v1:sha256:ab8dfac669b4fba25c554d2d2f18c4db396903ce2c1961a2438831a1132a6623"
         }
       ]
     },
     {
-      "id": "claim_ba9b95751b994fc7bfd9c912ce3501d9",
-      "statement": "With an explicit `--allow-fs-tools` list, dcode replaces the main filesystem middleware and injects an equivalent restriction into every synchronous declarative child; it refuses compiled subagents rather than silently bypassing the restriction, and leaves remote async agents to their own backend.",
+      "id": "claim_cb2b5f17ce1541c7b969a386cc5ed3b2",
+      "statement": "`SubAgentMiddleware` serializes a structured child response as JSON or otherwise its last non-empty AI text, and converts recognized returned or raised model and structured-output refusals into an explanatory correlated task result rather than raising that refusal through the parent task call.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
+          "version": "repo-file-v1:sha256:c745a3935591739f4ea4172d75881031e84cbe6724398e5fa94e9769beb6fa10"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
-          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py",
+          "version": "repo-file-v1:sha256:7fff704a83edd9f730ceaa4f5c95511ab67a06b36a47428161efd2bbfd96eba3"
         }
       ]
     },
     {
-      "id": "claim_dd0e1edc6a7142b8984c385e763b116d",
-      "statement": "Dcode turns a child model reply that is truncated before visible output into a parent-visible error `ToolMessage` at the `task` boundary, while retaining a partial child answer with a truncation warning.",
+      "id": "claim_e517ae3d1165467db0b2c9d78c727dd1",
+      "statement": "For a checkpointing SDK local child, `task` places the child run's `checkpoint_ns` in the correlated `ToolMessage.artifact`; compiled graphs are streamed to identify the namespace that saved, nested calls retain namespace ancestry, and no artifact is produced when no child checkpoint was saved. A `.with_retry()` wrapper is a documented limitation because it must be invoked and can report the fallback namespace rather than the successful suffixed retry namespace.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
+          "version": "repo-file-v1:sha256:c745a3935591739f4ea4172d75881031e84cbe6724398e5fa94e9769beb6fa10"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/output_truncation.py",
-          "version": "repo-file-v1:sha256:87f4c187eab0f5ddd5f10b88b494f5fd453388c10666c2c31f2eed347857302b"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_output_truncation.py",
-          "version": "repo-file-v1:sha256:73221b74f7de4719be799259ac8fd8b22176a5504b376a03c34137e4fa8ce621"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_subagents.py",
+          "version": "repo-file-v1:sha256:d4658f2cb02fbb746696fc9399f5f86c9149722ee0f2ea8bacf91a9cf6801358"
         }
       ]
     },
     {
-      "id": "claim_2bc35dcc92ba4b339361198fd9e0076d",
-      "statement": "The dcode JavaScript interpreter isolates each proxied `task` dispatch in a checkpoint namespace, persists and aggregates its owner-scoped child cost receipts after child work settles, and transfers one receipt to the outer graph so checkpoint replay and parallel fan-out do not double-charge usage.",
+      "id": "claim_bb323d6b2faf4c8e9d100350805d4671",
+      "statement": "An `AsyncSubAgent` can use experimental fork mode to launch a remote task with a snapshot of effective parent messages plus the delegated description, while isolated mode sends only that description; copying conversation does not make the remote graph inherit parent configuration, and a URL-less ASGI target can be launched only through an async parent entrypoint.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/_js_cost.py",
-          "version": "repo-file-v1:sha256:88e4956e79abac832f4fa4ff5b8aa19e57fcb8b9ca26003229d0f730f567bc0e"
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:54ab6dc0dd51165f0ce5f8ef149c7b4f94117e5ffa112cefd6016b3f221b601b"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py",
-          "version": "repo-file-v1:sha256:a75970a18221a93b515279d8c2001e9bf7a76feef78e84b93e1170c29db2b019"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:205d068b3f29b1775ff5491578a489ad97668777d0ff59dc387f3a0c05c2329c"
         }
       ]
     },
     {
-      "id": "claim_0c0887f2338f4c7391762f31b6ca18a3",
-      "statement": "`MCPProviderToolSearchMiddleware` defers only designated MCP tools on supported native OpenAI Responses or Anthropic routes, leaves execution and approval registrations intact, falls back to eager tools otherwise, and strips incompatible native search blocks from history before a model request.",
+      "id": "claim_b0feaef12a7444919177cea253e99830",
+      "statement": "Talon exposes owner-scoped job controls: listings suppress unchanged polls and repeated listed results, inspection returns only bounded metadata/activity and receipts, and messaging is a bounded cooperative inbox available only to Talon-built local workers that is consumed before their next model request.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/provider_tool_search.py",
-          "version": "repo-file-v1:sha256:b440a559b98cc0c009dfd0af0c14f2cf75dee26c49fc423ba605d73a1b1556d0"
+          "resource": "repo://libs/talon/deepagents_talon/background.py",
+          "version": "repo-file-v1:sha256:c77e8ac8b4016b5dcae4ac6246f136538142129bd123f2c72a74f28bc20c2b92"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_provider_tool_search.py",
-          "version": "repo-file-v1:sha256:99feefd32aaf3a368f3bce8bf5ecbe6cbc846a94861e0f52e207f443f534d98c"
+          "resource": "repo://libs/talon/deepagents_talon/subagent_control.py",
+          "version": "repo-file-v1:sha256:7edefacb94b86f7d957b4834efbd50104b6a7991d778f2674146ef1cab609f0e"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
+          "version": "repo-file-v1:sha256:82239c773f83f8b9c8ffa8e9af4066fa9799b188bba29a437158bb00b0d88d4c"
         }
       ]
     },
     {
-      "id": "claim_dc3fdc9323e24528b8fee4144e527f82",
-      "statement": "Talon validates MCP `skillOnly` as a boolean; a skill-only MCP tool is hidden until its skill is read or pinned unless eager, and after disclosure it still passes through Talon's approval and authorization paths. Reloading MCP configuration reclassifies the available tools for an existing runtime.",
+      "id": "claim_9b3775279b4948aca291fca2397b056b",
+      "statement": "`DeepAgentRuntime` constructs `BackgroundSubagents` with a positive `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS` worker limit and an optional `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT`, while the middleware keeps detached workers and scheduled inline calls under separate concurrency and timeout policies.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/tests/unit_tests/test_skill_mcp.py",
-          "version": "repo-file-v1:sha256:6e6c5ad7e9a7c6fbb3b64bff1bc1a4423eb5ca1c6f8442a5a80f58e1bfae7de1"
+          "resource": "repo://libs/talon/deepagents_talon/background.py",
+          "version": "repo-file-v1:sha256:c77e8ac8b4016b5dcae4ac6246f136538142129bd123f2c72a74f28bc20c2b92"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:f2efa1fe81d240a8ce43bb7139d1a34bed02983a3d8c7d64079c32bfe4c94178"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
+          "version": "repo-file-v1:sha256:82239c773f83f8b9c8ffa8e9af4066fa9799b188bba29a437158bb00b0d88d4c"
+        }
+      ]
+    },
+    {
+      "id": "claim_e66c6b5e91a442579582442290bb178e",
+      "statement": "Tool disclosure uses provider-native inline blocks at the stable post-read conversation anchor when the model profile supports mid-conversation tools, preserving the cached prefix; otherwise disclosed tools are bound into the request tool list, and provider-rejected schemas are withheld from both the model and the dispatch record.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
+          "version": "repo-file-v1:sha256:d095c3a3f310db529aa149cfc509b76a8ece7529040fc61ac4ff4040e9acead8"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_tool_disclosure.py",
+          "version": "repo-file-v1:sha256:6b59b9a62f7e8ec3929b6562addc06015342123e29cb968c74cefeb4927f1eff"
+        }
+      ]
+    },
+    {
+      "id": "claim_3567c76c5b7342abb9812b1c8cad4a5f",
+      "statement": "Talon keeps conversational background completion separate from delivery: only the owner sees pending results, results are acknowledged after a successful main turn, discarded replies can requeue consumed IDs, and repeated failed deliveries are dropped after three attempts.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/background.py",
+          "version": "repo-file-v1:sha256:c77e8ac8b4016b5dcae4ac6246f136538142129bd123f2c72a74f28bc20c2b92"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
+          "version": "repo-file-v1:sha256:82239c773f83f8b9c8ffa8e9af4066fa9799b188bba29a437158bb00b0d88d4c"
+        }
+      ]
+    },
+    {
+      "id": "claim_38475ab712ae4020afe3f763ac912506",
+      "statement": "Talon's delegation and fresh-worker contracts treat capability inventories and delegated findings as untrusted evidence: fresh roles are read-only, report unavailable capabilities instead of inventing access, and do not gain authority to change scope, destinations, access, or approval controls.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/subagents.py",
+          "version": "repo-file-v1:sha256:30a0239ab96fec0421f7bc82b76fa847cfbd665246217781dd8f1a1a407eb3a1"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_research_subagents.py",
+          "version": "repo-file-v1:sha256:5e1c821e057d552087ae131e15204875dbe6334711c92fddb1eb34493a719f94"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-28T08:04:17.781Z"
+    "at": "2026-11-24T08:04:12.461Z"
   }
 }

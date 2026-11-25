@@ -38,6 +38,18 @@ body:
           required: true
         - label: I included a minimal reproducible example and steps to reproduce.
           required: true
+  - type: dropdown
+    id: discovery
+    attributes:
+      label: How did you discover this issue?
+      description: Select one. If you select "Other", please explain in the Description field below.
+      multiple: false
+      options:
+        - While building or running a project that uses Deep Agents
+        - Through source-code inspection or automated scanning, rather than use in a project
+        - Other — please explain
+    validations:
+      required: true
   - type: checkboxes
     id: package
     attributes:

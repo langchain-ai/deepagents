@@ -229,9 +229,20 @@ function providerRequest(provider, model, key, source) {
 // notes are incomplete.
 const NORMAL_FINISH = { openai: 'stop', anthropic: 'end_turn', google_genai: 'STOP' };
 
+// The characters the repo's `fix-smartquotes` and `fix-spaces` hooks rewrite
+// (texthooks defaults, .pre-commit-config.yaml). Models write typographic quotes
+// freely, and an applied draft carrying one fails the release PR's text-hygiene
+// check, which no maintainer edit can fix without invalidating the draft.
+const TYPOGRAPHIC = [
+  [/[\u2018\u2019\u201B\u275B\u275C\uFF07]/g, "'"],
+  [/[\u201C\u201D\u201F\u275D\u275E\uFF02\u{1F676}\u{1F677}]/gu, '"'],
+  [/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' '],
+];
+
 function normalizeEntry(entry, provider) {
   if (/[\r\n]/.test(entry)) throw new Error(`The ${provider} model returned a multiline entry`);
-  const note = pullRequestLinks(entry.trim());
+  const plain = TYPOGRAPHIC.reduce((text, [pattern, ascii]) => text.replace(pattern, ascii), entry);
+  const note = pullRequestLinks(plain.trim());
   const destinations = [
     ...[...note.matchAll(/\]\(\s*([^)\s]+)[^)]*\)/g)].map(match => match[1]),
     ...[...note.matchAll(/<([^<>\s]+)>/g)].map(match => match[1]),
@@ -334,8 +345,9 @@ function responseText(provider, payload) {
 // repository-qualified number so the two forms compare equal.
 const GITHUB_LINK = /https:\/\/github\.com\/([^/\s()<>]+)\/([^/\s()<>]+)\/(?:issues|pull)\/(\d+)/g;
 // release-please appends each commit's PR as a `([#N](url))` suffix. An issue
-// that a commit closes is also linked (`closes [#N](url)`), but it is not a PR,
-// so only the suffix form makes a link required.
+// that a commit references is also linked (`refs [#N](url)`; `closes [#N](url)`
+// before release-please 17.10.4), but it is not a PR, so only the suffix form
+// makes a link required.
 const PULL_REQUEST_SUFFIX = new RegExp(`\\(\\[#\\d+\\]\\(${GITHUB_LINK.source}\\)\\)`, 'g');
 
 function linkRefs(text, pattern = GITHUB_LINK) {

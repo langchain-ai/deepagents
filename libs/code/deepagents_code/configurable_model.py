@@ -202,6 +202,12 @@ _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
 `AnthropicPromptCachingMiddleware`) that are not accepted by other providers and
 must be stripped on cross-provider swap."""
 
+_OPENAI_PROMPT_CACHE_KEY_PREFIX = "dcode_v1"
+"""Versioned namespace for the injected OpenAI `prompt_cache_key`.
+
+Bump the version when a system-prompt overhaul should start new cache groups.
+"""
+
 _FIREWORKS_SESSION_AFFINITY_HEADER = "x-session-affinity"
 """Fireworks prompt-cache affinity header populated from the active thread ID."""
 
@@ -257,12 +263,33 @@ def _with_fireworks_session_settings(
     return {**model_settings, **updated}
 
 
+def _openai_prompt_cache_key() -> str:
+    """Build the OpenAI `prompt_cache_key` shared by every thread of this install.
+
+    OpenAI recommends one key per user that stays the same across that user's
+    sessions, and a separate key per session or thread only when it needs its
+    own cache accounting. Every dcode thread starts with the same system-prompt
+    and tool prefix, so a per-thread key would split that shared prefix across
+    keys and make each new thread pay for it again. The key is the versioned
+    prefix plus the random, anonymous install ID (see `install_id`).
+
+    Performs blocking file I/O the first time per process; async callers should
+    offload.
+
+    Returns:
+        A key of the form `dcode_v1:<install id>`.
+    """
+    from deepagents_code.install_id import get_install_id
+
+    return f"{_OPENAI_PROMPT_CACHE_KEY_PREFIX}:{get_install_id()}"
+
+
 def _with_openai_prompt_cache_key(
-    model: object, model_settings: dict[str, Any], thread_id: str
+    model: object, model_settings: dict[str, Any], cache_key: str
 ) -> dict[str, Any] | None:
     """Return model settings with an OpenAI `prompt_cache_key` added if needed.
 
-    Adds `thread_id` as a top-level `prompt_cache_key` when the model and the
+    Adds `cache_key` as a top-level `prompt_cache_key` when the model and the
     current invocation settings do not already carry one. Callers decide
     eligibility (provider check + `models.openai_prompt_cache_key` opt-out)
     before invoking this helper.
@@ -290,7 +317,7 @@ def _with_openai_prompt_cache_key(
         isinstance(model_kwargs, Mapping) and "prompt_cache_key" in model_kwargs
     ):
         return None
-    return {**model_settings, "prompt_cache_key": thread_id}
+    return {**model_settings, "prompt_cache_key": cache_key}
 
 
 def _resolve_openai_prompt_cache_key_enabled() -> bool:
@@ -381,7 +408,7 @@ def _build_overrides(
     ctx: CLIContextSchema,
     model_result: ModelResult | None,
     *,
-    openai_prompt_cache_key: bool,
+    openai_prompt_cache_key: str | None,
 ) -> ModelRequest:
     """Build the overridden request from a (possibly resolved) model result.
 
@@ -397,8 +424,8 @@ def _build_overrides(
         ctx: Runtime CLI context carrying the requested overrides.
         model_result: The resolved model result from `create_model`, or `None`
             when no model swap was requested.
-        openai_prompt_cache_key: Whether OpenAI `prompt_cache_key` injection is
-            enabled (the resolved `models.openai_prompt_cache_key` opt-out).
+        openai_prompt_cache_key: The OpenAI `prompt_cache_key` to inject, or
+            `None` when the `models.openai_prompt_cache_key` opt-out is set.
 
     Returns:
         The original request when no overrides apply, otherwise a new request
@@ -415,10 +442,10 @@ def _build_overrides(
     if model_params:
         overrides["model_settings"] = {**request.model_settings, **model_params}
 
-    # Inject the provider's prompt-cache routing hint from the active thread.
-    # Only one provider path applies per call; both share the fetch/guard/log
-    # tail below. `overrides.get` is side-effect-free, so resolving `settings`
-    # before the provider check is equivalent to doing it inside each branch.
+    # Inject the provider's prompt-cache routing hint. Only one provider path
+    # applies per call; both share the fetch/guard/log tail below.
+    # `overrides.get` is side-effect-free, so resolving `settings` before the
+    # provider check is equivalent to doing it inside each branch.
     effective_model = new_model if new_model is not None else request.model
     if ctx.thread_id:
         settings = overrides.get("model_settings", request.model_settings)
@@ -431,9 +458,9 @@ def _build_overrides(
             updated_settings = _with_fireworks_session_settings(settings, ctx.thread_id)
             injected = "Fireworks session settings"
         elif _is_openai_model(effective_model):
-            if openai_prompt_cache_key:
+            if openai_prompt_cache_key is not None:
                 updated_settings = _with_openai_prompt_cache_key(
-                    effective_model, settings, ctx.thread_id
+                    effective_model, settings, openai_prompt_cache_key
                 )
                 injected = "OpenAI prompt_cache_key"
             else:
@@ -448,8 +475,8 @@ def _build_overrides(
             injected = ""
         if updated_settings is not None:
             overrides["model_settings"] = updated_settings
-            # The thread ID is a sensitive session identifier, so it is kept out
-            # of the log line; the line firing at all confirms injection ran.
+            # Thread and install IDs are identifiers, so they are kept out of
+            # the log line; the line firing at all confirms injection ran.
             logger.debug("Injected %s", injected)
 
     if not overrides:
@@ -522,7 +549,7 @@ def _model_creation_kwargs(
 def _apply_overrides(
     request: ModelRequest,
     *,
-    openai_prompt_cache_key: bool,
+    openai_prompt_cache_key: str | None,
     cli_max_retries: int | None,
     strict_model_resolution: bool = False,
     construction_model_result: ModelResult | None = None,
@@ -537,8 +564,8 @@ def _apply_overrides(
 
     Args:
         request: The incoming model request from the middleware chain.
-        openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
-            opt-out, threaded through to `_build_overrides`.
+        openai_prompt_cache_key: The OpenAI `prompt_cache_key` to inject, or
+            `None` when opted out; threaded through to `_build_overrides`.
         cli_max_retries: Explicit CLI retry count retained across model switches.
         strict_model_resolution: Whether model construction failures should propagate.
         construction_model_result: Construction-time workspace model metadata.
@@ -609,7 +636,7 @@ def _apply_overrides(
 async def _apply_overrides_async(
     request: ModelRequest,
     *,
-    openai_prompt_cache_key: bool,
+    openai_prompt_cache_key: str | None,
     cli_max_retries: int | None,
     strict_model_resolution: bool = False,
     construction_model_result: ModelResult | None = None,
@@ -618,8 +645,8 @@ async def _apply_overrides_async(
 
     Args:
         request: The incoming model request from the middleware chain.
-        openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
-            opt-out, threaded through to `_build_overrides`.
+        openai_prompt_cache_key: The OpenAI `prompt_cache_key` to inject, or
+            `None` when opted out; threaded through to `_build_overrides`.
         cli_max_retries: Explicit CLI retry count retained across model switches.
         strict_model_resolution: Whether model construction failures should propagate.
         construction_model_result: Construction-time workspace model metadata.
@@ -910,16 +937,17 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             persist_model_state: Whether completed calls should write private
                 resume metadata. Subagent instances disable this because they do
                 not own the parent thread's resume state.
-            openai_prompt_cache_key: Whether to inject a per-thread OpenAI
-                `prompt_cache_key`. Left as `None` (the default) it is resolved
-                once here from `models.openai_prompt_cache_key` and cached, so no
-                per-call read happens. The one-time `config.toml` read assumes
-                current callers construct the middleware off the
-                blockbuster-guarded server loop (the server path offloads
-                `create_cli_agent` via `asyncio.to_thread`); if that assumption
-                is ever broken the read would trip `BlockingError`, which
-                `_resolve_openai_prompt_cache_key_enabled` re-raises rather than
-                masks. Pass an explicit bool to bypass the config read (mainly
+            openai_prompt_cache_key: Whether to inject the per-install OpenAI
+                `prompt_cache_key` (see `_openai_prompt_cache_key`). Left as
+                `None` (the default) it is resolved once here from
+                `models.openai_prompt_cache_key` and cached, so no per-call read
+                happens. When enabled, the key is also built once here. The
+                one-time `config.toml` and install-ID reads assume current
+                callers construct the middleware off the blockbuster-guarded
+                server loop (the server path offloads `create_cli_agent` via
+                `asyncio.to_thread`); if that assumption is ever broken the read
+                would trip `BlockingError`, which is re-raised rather than
+                masked. Pass an explicit bool to bypass the config read (mainly
                 for tests).
             cli_max_retries: Explicit `--max-retries` value to retain across
                 runtime model switches.
@@ -933,11 +961,12 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         self._model_result = model_result
         self._cli_max_retries = cli_max_retries
         self._strict_model_resolution = strict_model_resolution
-        self._openai_prompt_cache_key = (
+        enabled = (
             _resolve_openai_prompt_cache_key_enabled()
             if openai_prompt_cache_key is None
             else openai_prompt_cache_key
         )
+        self._openai_prompt_cache_key = _openai_prompt_cache_key() if enabled else None
 
     def wrap_model_call(
         self,

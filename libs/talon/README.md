@@ -27,7 +27,7 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home's `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
 ## Checkpoint backends
 
@@ -253,7 +253,7 @@ A new message in a conversation cancels the active turn, records an interruption
 
 ## Local Agent Activity Logs
 
-Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. “Thinking” events report model-call lifecycle activity and do not expose hidden chain-of-thought.
+Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. "Thinking" events report model-call lifecycle activity and do not expose hidden chain-of-thought.
 
 ## Tool Approvals
 
@@ -272,15 +272,14 @@ not. There are no patterns or per-agent policy files. The defaults are:
 }
 ```
 
-`ask_for_help` always requires an approval prompt when enabled, independently of
-this policy, because it sends the question to another model provider.
-
 Native and container startup create these defaults when the file is missing and
 preserve existing configuration. `send_message` prompts before an agent progress
 update, including one with Slack mentions. It does not gate the final reply or
 host-generated messages. Existing policy files retain their settings; add
-`"send_message": true` to an existing `tools.json` to opt in. Unspecified tools
-default to `false`; listing, searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
+`"send_message": true` to an existing `tools.json` to opt in. Local session sends (`message_claude_session`,
+`message_codex_session`, and `message_dcode_session`) prompt by default, including
+with existing policy files. Set an individual send tool to `false` to skip its
+prompt. Other unspecified tools default to `false`; listing, searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
 availability or authorization. There is no migration from the old approval settings.
 
 Read `get_tool_approvals` before editing:
@@ -322,9 +321,14 @@ persist its parent directory rather than bind-mounting a single `tools.json`:
 updates use atomic file replacement. These controls are not a sandbox boundary.
 A shell running as the same UID can bypass the tool API and edit the file directly;
 filesystem isolation must be enforced separately. Talon-built local subagents inherit
-this policy for their attached tools. Local tool gates do not enforce policy inside
-opaque remote or precompiled graphs: `start_async_task` gates delegation, not the
-remote graph's internal calls.
+this policy for their attached tools. Delegation to embedding-supplied precompiled
+subagents is refused whenever any tool approval is enabled, including the default
+policy: Talon cannot verify their internal tool calls or retrofit approval middleware.
+The parent conversation and policy-management tools remain available. Supply a fresh
+subagent definition with explicit tools instead. Precompiled subagents can run when
+no approvals are enabled. Local tool gates do not enforce policy
+inside opaque remote graphs: `start_async_task` gates delegation, not the remote
+graph's internal calls.
 
 ## WhatsApp
 
@@ -538,7 +542,7 @@ normally. The destination is fixed by the host, and sending is disabled once the
 originating turn finishes or is superseded. Runs without a channel cannot send updates.
 
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
-`/mcp-reload`, `/context-doctor`, `/model`, and `/smart-model`), and using MCP configuration and OAuth through chat. Help does
+`/mcp-reload`, `/context-doctor`, `/model`, and `/effort`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
 
 Send `/context-doctor` to estimate the token cost of the configured system prompt,
@@ -560,26 +564,6 @@ The chat's context is sized for the selected model, so switching to a model with
 larger or smaller context window changes when history is compacted. Scheduled jobs
 and subagents keep their own models. The model is built the first time a chat
 selects it, so a model that cannot be loaded is reported when you switch to it.
-
-To let Talon ask a stronger model for one-off advice, set
-`DEEPAGENTS_TALON_HELP_MODEL=<provider>:<model-id>` alongside its provider credentials,
-or send `/smart-model <provider:model>` as an operator. `/smart-model` shows the
-assistant-wide selection, `/smart-model off` disables consultations, and
-`/smart-model default` restores the environment default. The choice persists across
-chats and restarts; unlike `/model`, it does not change the conversation's model.
-The command selects from models Talon can discover using its configured credentials;
-it cannot change provider URLs or API keys. An operator who uses two OpenAI endpoints
-must configure routing in the inference proxy or provider environment directly.
-When enabled, this adds `ask_for_help(question)` to the main agent only. The tool sends just the question and a fixed instruction to the
-configured model, not the chat history, tools, or filesystem. Only an operator's
-main conversation can use it, and a channel approval prompt is always required
-before the question leaves Talon; channels without approval support and scheduled
-runs cannot use it. Inspect the exact question before approving: the agent can
-include private content in it, and the destination provider receives that content.
-The response is advice, not an instruction to run tools. With no environment
-default or saved selection, the tool is omitted. The configured provider must be
-installed and credentialed; configuration and provider errors surface when the tool
-is called.
 
 Commands work as ordinary message text on every channel, and are case-insensitive
 with an optional `@bot` suffix. On Discord they are additionally registered as
@@ -725,7 +709,21 @@ edits; `list_subagents` shows launch-time additions.
 `task` launches local subagents and `start_async_task` launches remote subagents.
 In a chat conversation both return immediately. The user can continue chatting while
 the main agent uses `list_subagents` to inspect work and `cancel_subagent` to cancel
-it. When work finishes, its result is passed to the main agent for processing on the
+it. `inspect_subagent(task_id, limit=10)` returns recent timestamped model/tool lifecycle
+metadata and message receipts, without tool payloads or model reasoning. It retains
+50 events and 20 message receipts per worker. Remote and precompiled workers expose
+lifecycle events only.
+
+`message_subagent(task_id, message)` queues guidance for a Talon-built local worker's
+next model step, preserving its task context and approval restrictions. Messages are
+limited to 2,000 characters; a full inbox rejects new messages rather than dropping
+queued ones. The returned receipt starts as `queued`; inspection reports `consumed`
+once the instruction is added to the worker's conversation, not an acknowledgment
+that it was followed. Messages do not interrupt an in-flight model request or tool;
+use `cancel_subagent` for a hard stop. Remote and precompiled workers do not support
+messaging. All management tools are scoped to the owning conversation.
+
+When work finishes, its result is passed to the main agent for processing on the
 next idle turn, then the main agent replies to the channel.
 
 Workers and pending results live only in memory and are discarded on restart.
@@ -742,7 +740,8 @@ and limits each run to one hour. Completed results are capped at 64,000 characte
 A scheduled run is already unattended, so it does not delegate in the background.
 Both tools run the subagent to completion and return its result, and the run acts on
 that result in the turn that asked for it; there is no follow-up turn and no separate
-delivery. `list_subagents` and `cancel_subagent` are hidden from a scheduled run,
+delivery. Background management tools (`list_subagents`, `inspect_subagent`,
+`message_subagent`, and `cancel_subagent`) are hidden from a scheduled run,
 which owns no background work to inspect. Subagents launched in one assistant message
 still run concurrently, and a scheduled run no longer competes with chat for the four
 worker slots.
@@ -899,5 +898,6 @@ make test
 
 ## Resources
 
+- [Changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/talon/CHANGELOG.md) — Release history
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

@@ -12,6 +12,8 @@
 #   - `release(...)` PR titles pass only when every changed file matches a
 #     release-please generated/version-file pattern. Release-please PRs can touch
 #     those files across package dirs.
+#   - `uv.lock` files are ignored for every title: relocking a dependent doesn't
+#     change what it publishes, and release-please excludes them too.
 #   - Apply the `ci:allow-scope-mismatch` label when another mismatch is intentional.
 #     The check re-runs on `labeled`/`unlabeled`, leaves an informational sticky
 #     note, and passes while the label is present.
@@ -87,7 +89,7 @@ jobs:
           persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -297,7 +299,7 @@ jobs:
                 'Touched package dir(s) not covered by those scopes:',
                 offenderLines,
                 '',
-                '**Release-please consequence:** if this PR title is bump-worthy (`feat`/`fix`/etc.), release-please scopes by **changed file path**, not the title scope — so it can still open a **separate release PR for every managed component this PR touches**, even when the title names only one package. Prefer splitting into one package-scoped feature/fix PR and one `chore(deps):` PR for cross-package churn.',
+                '**Release-please consequence:** if this PR title is bump-worthy (`feat`/`fix`/etc.), release-please scopes by **changed file path**, not the title scope — so it can still open a **separate release PR for every managed component this PR touches**, even when the title names only one package. Files under `exclude-paths` (`tests/`, `uv.lock`) are ignored, so relocking another package does not release it.',
                 '',
                 'Remove the label to re-enable the block.',
                 '',
@@ -324,10 +326,7 @@ jobs:
               '',
               'Edit the PR title scope so it covers the changed package directory (for example, use `fix(code): ...` for `libs/code/**`), or move the files so they match the declared scope.',
               '',
-              'If this is a feature plus incidental cross-package dependency/lock churn, split into:',
-              '',
-              '1. One feature/fix PR scoped to the single package that owns the user-facing change.',
-              '2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does not open release PRs).',
+              'Relocked `uv.lock` files are already ignored here. If another package\'s `pyproject.toml` or source changes, land that in its own PR first.',
               '',
               '### If intentional',
               '',

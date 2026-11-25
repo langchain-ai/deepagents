@@ -236,28 +236,16 @@ class ModelNotAllowedError(ModelConfigError):
         self.context = context
 
 
-class NoCredentialsConfiguredError(ModelConfigError):
-    """Raised when no credentials are configured for any default-resolvable provider.
+class NoModelConfiguredError(ModelConfigError):
+    """Raised when neither a permitted default nor a recent model is saved."""
 
-    Distinct from `MissingCredentialsError` (which targets a specific provider
-    the user has selected): this fires from `_get_default_model_spec()` when
-    auto-detection finds no usable credentials at all. Callers (the deferred-
-    start path in the TUI and CLI) `isinstance`-check this type to recover by
-    launching the TUI with model creation deferred, rather than string-matching
-    the formatted message.
-    """
+
+class NoCredentialsConfiguredError(ModelConfigError):
+    """Legacy startup error for missing credentials, retained for compatibility."""
 
 
 class NoAllowedModelCredentialsError(NoCredentialsConfiguredError):
-    """Raised when `models.allowed` is active but none of its models can auth.
-
-    A `NoCredentialsConfiguredError` so existing deferred-start recovery keeps
-    working, but distinguishable because the recovery differs: adding *any*
-    credential fixes the base case, while here only a credential for a provider
-    named in the allowlist helps. Handlers that would otherwise silently retry
-    surface this message instead, so `/auth` never accepts a key and then
-    appears to do nothing.
-    """
+    """Legacy allowed-model credential error, retained for compatibility."""
 
 
 class UnknownProviderError(ModelConfigError):
@@ -1026,17 +1014,16 @@ source, model class, and request endpoint all differ. See
 
 CODEX_MODELS: frozenset[str] = frozenset(
     {
-        "gpt-5.6-luna",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2",
+        "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
     }
 )
-"""Curated allowlist of models the Codex (ChatGPT OAuth) backend serves.
+"""Curated lineup from https://developers.openai.com/codex/models.
 
 The provider mirrors `openai` profiles, but only models in this set are
 exposed under `openai_codex`. The Codex backend serves a narrower lineup than
@@ -1497,6 +1484,56 @@ OPENAI_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
 """Capability fallbacks from https://developers.openai.com/api/docs/models/gpt-6.1-terra."""
 
 
+GOOGLE_GENAI_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "gemini-4-neon": {
+        "name": "Gemini 4 Neon",
+        "max_input_tokens": 1_048_576,
+        "max_output_tokens": 65_536,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": True,
+        "pdf_inputs": True,
+        "video_inputs": True,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "tool_choice": True,
+        "structured_output": True,
+        "temperature": False,
+        "image_url_inputs": True,
+        "image_tool_message": True,
+        "reasoning_effort_levels": ["low", "medium", "high"],
+        "reasoning_effort_default": "high",
+    },
+}
+"""Capability fallbacks matching the `langchain-google-genai` 4.5.1 profile.
+
+`xhigh` is omitted until `langchain-google-vertexai` allows `google-genai` 3.x,
+which `langchain-google-genai` 4.5+ requires to accept that level.
+"""
+
+
+OPENROUTER_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "google/gemini-4-neon": {
+        "name": "Gemini 4 Neon",
+        "max_input_tokens": 1_048_576,
+        "max_output_tokens": 65_536,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": True,
+        "video_inputs": True,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "structured_output": True,
+        "attachment": True,
+        "temperature": True,
+        "tool_call_streaming": True,
+    },
+}
+"""Capability fallbacks until `langchain-openrouter` ships a Gemini 4 Neon profile."""
+
+
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
@@ -1561,6 +1598,10 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         fallbacks = {
             "langchain_anthropic.data._profiles": ANTHROPIC_MODEL_PROFILE_FALLBACKS,
             "langchain_openai.data._profiles": OPENAI_MODEL_PROFILE_FALLBACKS,
+            "langchain_google_genai.data._profiles": (
+                GOOGLE_GENAI_MODEL_PROFILE_FALLBACKS
+            ),
+            "langchain_openrouter.data._profiles": OPENROUTER_MODEL_PROFILE_FALLBACKS,
         }.get(module_path, {})
         if fallbacks:
             profiles = {
@@ -3393,11 +3434,10 @@ class ModelConfig:
     - `None` -- no policy is active; every model is allowed.
     - `()` -- a policy is active and permits **nothing**. Model construction
       and default resolution both fail closed.
-    - non-empty -- only these entries are permitted, in preference order
-      (`_get_default_model_spec` walks the tuple in declaration order). An
-      entry is either an exact `provider:model` spec or a `provider:*`
-      wildcard permitting every model from that provider; a wildcard is never
-      selected as a default itself, but models it admits remain candidates.
+    - non-empty -- only these entries are permitted. An entry is either an
+      exact `provider:model` spec or a `provider:*` wildcard permitting every
+      model from that provider. The policy constrains model selection without
+      selecting a default.
 
     Test `is None`, never truthiness: `if not config.allowed_models` conflates
     "unrestricted" with "deny all" and inverts the policy.

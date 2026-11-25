@@ -23,6 +23,7 @@ from deepagents_code.hooks.models.domain import (
     PostToolUseFailureDecision,
     PreCompactDecision,
     PreToolUseDecision,
+    PreToolUseEvent,
     SessionEndDecision,
     SessionStartDecision,
     StopDecision,
@@ -45,6 +46,7 @@ from deepagents_code.hooks.models.wire import (
     SubagentStopSpecificOutput,
     UserPromptSubmitSpecificOutput,
 )
+from deepagents_code.hooks.tools import to_wire_tool_input
 from deepagents_code.hooks.validate_terminal_sequence import validate_terminal_sequence
 
 if TYPE_CHECKING:
@@ -54,6 +56,24 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.runner import HandlerResult
 
 _PERMISSION_RANK = {"none": 0, "allow": 1, "ask": 2, "deny": 3}
+# Diagnostic codes from `runner.py`, `engine.py`, and this module that mean a
+# handler failed. `onError: "deny"` acts only on these; warnings such as
+# `stderr_truncated` and `unsupported_field` are excluded on purpose. Add new
+# failure codes here, or that failure will not deny.
+_HOOK_FAILURE_CODES = frozenset(
+    {
+        "invalid_command",
+        "launch_failed",
+        "timeout",
+        "io_failed",
+        "stdout_truncated",
+        "nonzero_exit",
+        "invalid_output",
+        "malformed_json",
+        "mismatched_output",
+        "projection_failed",
+    }
+)
 MAX_STOP_CONTINUATIONS = 8
 
 _UNSUPPORTED_SESSION_START_FIELDS = (
@@ -76,6 +96,7 @@ class _Reduction:
     permission: PermissionEffect = field(
         default_factory=lambda: PermissionEffect(behavior="none")
     )
+    updated_command: str | None = None
     continue_loop: bool = False
     suppress_original_prompt: bool = False
 
@@ -100,6 +121,8 @@ def reduce_hook_results(
     plain_output_policy = get_event_spec(invocation.event.event).plain_output_policy
     for result in results:
         state.diagnostics.extend(result.diagnostics)
+        # Only diagnostics from this handler may trigger its deny-on-error.
+        diagnostic_start = len(state.diagnostics)
         if result.plain_output is not None:
             if plain_output_policy is PlainOutputPolicy.CONTEXT:
                 state.context.append(result.plain_output)
@@ -114,6 +137,19 @@ def reduce_hook_results(
                 )
         if result.output is not None:
             _merge_output(invocation, state, result.handler_id, result.output)
+        if result.deny_on_error and invocation.event.event is HookEvent.PRE_TOOL_USE:
+            errors = (*result.diagnostics, *state.diagnostics[diagnostic_start:])
+            failure = next(
+                (item for item in errors if item.code in _HOOK_FAILURE_CODES), None
+            )
+            if failure is not None:
+                _merge_permission(
+                    state,
+                    PermissionEffect(
+                        behavior="deny",
+                        reason=f"Hook {result.handler_id} failed: {failure.message}",
+                    ),
+                )
     return _decision(invocation, state)
 
 
@@ -328,7 +364,7 @@ def _merge_user_prompt_submit(
 @_merge_specific.register
 def _merge_pre_tool_use(
     specific: PreToolUseSpecificOutput,
-    _invocation: HookInvocation,
+    invocation: HookInvocation,
     state: _Reduction,
     handler_id: str,
 ) -> None:
@@ -343,9 +379,26 @@ def _merge_pre_tool_use(
         )
         behavior = None
     if specific.updated_input is not None:
-        _diagnose_unsupported_updated_input(state, handler_id)
-        if behavior in {"allow", "ask"}:
-            behavior = None
+        event = invocation.event
+        command = specific.updated_input.get("command")
+        if (
+            isinstance(event, PreToolUseEvent)
+            and event.call.name == "execute"
+            and event.call.mcp_server is None
+            and all(
+                key == "command"
+                or (key, value)
+                in to_wire_tool_input(event.call.name, event.call.args).items()
+                for key, value in specific.updated_input.items()
+            )
+            and isinstance(command, str)
+            and command.strip()
+        ):
+            state.updated_command = command
+        else:
+            _diagnose_unsupported_updated_input(state, handler_id)
+            if behavior in {"allow", "ask"}:
+                behavior = None
     if behavior is not None:
         _merge_permission(
             state,
@@ -513,6 +566,7 @@ def _decision(invocation: HookInvocation, state: _Reduction) -> HookDecision:
         return PreToolUseDecision(
             event=event,
             permission=state.permission,
+            updated_command=state.updated_command,
             context=state.context,
             **common,
         )

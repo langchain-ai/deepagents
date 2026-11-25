@@ -11,7 +11,7 @@ from langgraph.store.sqlite.aio import AsyncSqliteStore
 from deepagents_talon.history_adapters import QUERY_EMBEDDING
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncGenerator, Sequence
 
     import aiosqlite
     from langgraph.store.base import Result, SearchOp
@@ -38,7 +38,7 @@ class _HistorySqliteStore(AsyncSqliteStore):
 @asynccontextmanager
 async def sqlite_store(
     config: TalonConfig, *, profile: EmbeddingProfile | None = None, generation: str = ""
-) -> AsyncIterator[AsyncSqliteStore]:
+) -> AsyncGenerator[AsyncSqliteStore]:
     """Open one vector generation, including deletion without an embedding client."""
     path = config.history_generation_path(generation)
     index = profile.index if profile else None

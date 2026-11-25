@@ -115,7 +115,10 @@ from deepagents_code._ask_user_types import (
     AskUserRowSummary,
 )
 from deepagents_code._cli_context import CLIContext
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._constants import (
+    SYSTEM_MESSAGE_PREFIX,
+    TASK_INTERRUPTED_MESSAGE_SOURCE,
+)
 from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -2300,7 +2303,15 @@ async def execute_task_textual(
                     # than only once it returns. Consume the event whatever came
                     # of it: a duplicate of a request the message stream already
                     # recorded is still ours, not input for the handlers below.
-                    if not is_main_agent and _session_stats.is_model_usage_event(data):
+                    if is_main_agent and _session_stats.is_summarization_started_event(
+                        data
+                    ):
+                        if not summarization_in_progress:
+                            summarization_in_progress = True
+                            if adapter._set_spinner:
+                                await adapter._set_spinner("Offloading")
+                        continue
+                    if _session_stats.is_model_usage_event(data):
                         try:
                             from deepagents_code.config import runtime_state
 
@@ -4550,7 +4561,7 @@ async def _handle_interrupt_cleanup(
             `thread_id` in `config` (a contract violation rather than a
             transient remote failure).
     """
-    from langchain_core.messages import HumanMessage
+    from langchain_core.messages import HumanMessage, add_notification_metadata
 
     # Clear active message immediately so it won't block pruning.
     # If we don't do this, the store still thinks it's active and protects
@@ -4663,9 +4674,12 @@ async def _handle_interrupt_cleanup(
         # server-side tracing policy can distinguish the recovery write.
         with tracing_context(enabled=False):
             if recover_interrupted_turn:
-                cancellation_msg = HumanMessage(
-                    content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
-                    "Previous operation was cancelled."
+                cancellation_msg = add_notification_metadata(
+                    HumanMessage(
+                        content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
+                        "Previous operation was cancelled."
+                    ),
+                    source=TASK_INTERRUPTED_MESSAGE_SOURCE,
                 )
                 messages = [cancellation_msg]
                 if interrupted_msg:

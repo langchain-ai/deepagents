@@ -60,7 +60,7 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
 
     Args:
         status: One of `ok` / `unauthenticated` / `awaiting_reconnect` /
-            `error` / `disabled`.
+            `error` / `disabled` / `untrusted`.
         glyphs: Active `Glyphs` table (Unicode or ASCII).
 
     Returns:
@@ -74,6 +74,8 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
         return glyphs.circle_empty
     if status == "disabled":
         return glyphs.pause
+    if status == "untrusted":
+        return glyphs.warning
     if status == "error":
         return glyphs.error
     assert_never(status)
@@ -82,15 +84,15 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
 def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     """Map a server `status` onto a semantic theme color.
 
-    `ok` -> success (green); `unauthenticated` -> warning (yellow);
-    `error` -> error (red); `disabled` -> muted. Returning the theme's
+    `ok` -> success (green); `unauthenticated` and `untrusted` -> warning
+    (yellow); `error` -> error (red); `disabled` -> muted. Returning the theme's
     hex string lets callers pass the value to `Content.styled()` or
     `Content.assemble()` so a theme switch recolors the indicator
     without code changes.
 
     Args:
         status: One of `ok` / `unauthenticated` / `awaiting_reconnect` /
-            `error` / `disabled`.
+            `error` / `disabled` / `untrusted`.
         colors: Active theme palette (typically from `theme.get_theme_colors`).
 
     Returns:
@@ -104,6 +106,8 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
         return colors.warning
     if status == "disabled":
         return colors.muted
+    if status == "untrusted":
+        return colors.warning
     if status == "error":
         return colors.error
     assert_never(status)
@@ -166,8 +170,8 @@ def _sort_servers_for_display(
     the next action visible without scrolling on configs with many `ok`
     servers.
     """
-    priority = {"unauthenticated": 0, "awaiting_reconnect": 1}
-    return sorted(server_info, key=lambda s: priority.get(s.status, 2))
+    priority = {"unauthenticated": 0, "awaiting_reconnect": 1, "untrusted": 2}
+    return sorted(server_info, key=lambda s: priority.get(s.status, 3))
 
 
 def _can_start_login(server: MCPServerInfo) -> bool:
@@ -496,6 +500,17 @@ def _render_server_header(
             name,
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
+            (f" — {error_text}", dim_style) if error_text else "",
+        )
+    if server.status == "untrusted":
+        error_text = sanitize_control_chars(
+            server.error or "", max_length=_INLINE_TEXT_LIMIT
+        )
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            name,
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} needs approval", indicator_color),
             (f" — {error_text}", dim_style) if error_text else "",
         )
     assert_never(server.status)
@@ -1315,7 +1330,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             placeholder = (
                 "Loading MCP tools..."
                 if self._connecting
-                else ("No MCP servers configured.\nUse `--mcp-config` to load servers.")
+                else "No MCP servers configured."
             )
             scroll.mount(Static(placeholder, classes="mcp-empty"))
             return

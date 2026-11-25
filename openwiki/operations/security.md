@@ -1,56 +1,44 @@
 ---
 type: security operations guide
 title: Security and Trust Boundaries
-description: Operational boundaries for Deep Agents tools, local execution, dcode workspace trust, extensions and MCP, ACP approvals, Talon channels, credentials, and plugins.
+description: Operational guidance for host-shell authority and cleanup, filesystem policy, dcode trust, MCP/OAuth safety, and Talon hooks, subagents, channel admission, and unattended work.
 tags: [security, operations, trust-boundaries, sandboxing, approvals, credentials, mcp]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
 sources:
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-f188d13aef04b643ced86520
-    resource: repo://libs/acp/tests/unit_tests/test_execute_permissions.py
-  - id: openwiki-source-3e5d1f5822b632090a155a7e
-    resource: repo://libs/code/deepagents_code/_repository_bounds.py
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-7f6b98925b5f1ba065df3a04
-    resource: repo://libs/code/deepagents_code/config.py
-  - id: openwiki-source-3b8cd1fe0dfb6ca543e059b2
-    resource: repo://libs/code/deepagents_code/extensions/runtime.py
-  - id: openwiki-source-0793010c72a4d07e67bc5b35
-    resource: repo://libs/code/deepagents_code/hooks/trust.py
-  - id: openwiki-source-a97cce048cd7efd394ae7dca
-    resource: repo://libs/code/deepagents_code/mcp_auth.py
-  - id: openwiki-source-faa6ae4d79960dbb4f1d3aeb
-    resource: repo://libs/code/deepagents_code/plugins/manifest.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-8896ee5af2462c92e51bfb6e
+    resource: repo://libs/code/deepagents_code/local_context.py
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
-  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
-    resource: repo://libs/talon/deepagents_talon/pairing.py
-  - id: openwiki-source-267468fe937003d4716fe6c2
-    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-  - id: openwiki-source-23775c3de52f3ab95a13cb8b
-    resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-2d1f686d24d8182f60108ae7
+    resource: repo://libs/talon/deepagents_talon/subagents.py
+  - id: openwiki-source-df8e616d4a20b5878bc1a05e
+    resource: repo://libs/talon/tests/test_mcp_auth.py
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
+  - id: openwiki-source-a4cc4beb110c42a169caf195
+    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
+  - id: openwiki-source-8de0ff38635f214c7268d8e7
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-24T08:04:12.461Z
 ---
 
 # Security and Trust Boundaries
 
-Deep Agents has a **trust-the-LLM** security model: an agent can exercise every authority exposed by its tools and backend. Prompts, repository files, tool output, MCP responses, and messages received through a channel can all be hostile instructions or data. Do not use model behavior as a security control; put confidentiality, execution, network, and filesystem limits at the tool, backend/sandbox, operating-system identity, and credential boundaries.
+Deep Agents uses a **trust-the-LLM** model: an agent can exercise the authority that its configured tools and backend expose. Treat prompts, repository content, tool output, MCP responses, and channel messages as untrusted inputs, not as an authorization boundary. Put limits at the tool, backend or sandbox, OS identity, network, and credential layers.
 
-## Start with execution authority
+## Execution and filesystem authority
 
-`LocalShellBackend` is not a sandbox. It runs commands on the local host with `shell=True`, the launching user's authority, and the configured working directory. Its `virtual_mode` constrains filesystem-tool path interpretation only; it does not constrain shell access to absolute paths, network connections, child processes, or inherited environment. Its default is a fresh environment unless `inherit_env=True`, so operators should pass only the required environment variables rather than inherit secrets wholesale.
-
-Use `LocalShellBackend` only for trusted local-development contexts. For untrusted input, shared hosts, or production execution, use a genuinely isolated `BaseSandbox` implementation or a backend without host execution, and separately constrain mounts, process identity, egress, resource quotas, and credentials. HITL can review a mediated `execute` call, but it does not turn host execution into confinement.
+`LocalShellBackend` executes commands on the host without sandboxing or isolation. `virtual_mode` restricts filesystem-tool path handling, not shell commands, and inherited environment is opt-in. Use a genuinely isolated backend for untrusted input, shared hosts, or production: approval can authorize a call, but cannot confine a host shell.
 
 ```mermaid
 flowchart TD
@@ -59,24 +47,43 @@ flowchart TD
     Policy --> Local["LocalShellBackend"]
     Policy --> Sandbox["Isolated sandbox backend"]
     Local --> Host["Host user authority"]
+    Timeout["Timeout or cancellation"] --> Cleanup["Best effort process cleanup"]
+    Local --> Cleanup
+    Cleanup --> Host
     Sandbox --> Limits["Sandbox identity mounts and egress"]
 ```
 
-*Tool approval is an authorization decision; only the selected backend establishes the execution boundary.*
+*Tool approval decides whether a mediated action proceeds; the selected backend defines its execution boundary, while timeout and cancellation trigger cleanup rather than containment.*
 
-### Filesystem policy is mediated, ordered policy
+### Local-shell lifecycle and cleanup
 
-`FilesystemPermission` classifies built-in filesystem tools as read or write and applies the **first matching** glob rule for that operation; no match currently allows the call. `allow`, `deny`, and `interrupt` respectively proceed, return an error, or become an approval interrupt. Permission patterns must be absolute and may not contain `..` or `~`.
+A command is launched through `subprocess.Popen(..., shell=True)` with stdin disconnected, the backend working directory, its constructed environment, and captured stdout/stderr. The default timeout is 120 seconds; output is bounded after collection. These operational limits make a failed command observable, but do not restrict what a running host command can access or do.
 
-For `FilesystemBackend`, including one reached through `CompositeBackend`, the middleware checks both the requested path and its symlink-resolved target; a deny on either blocks the operation, and a failure to resolve under a nonempty policy becomes an error. Deletion is stricter: recursive or descendant deletion is rejected when it overlaps a denied pattern. These controls apply to filesystem tools, not direct backend calls or arbitrary shell commands.
+On POSIX, each command starts in a new session, so timeout, interruption, and default `aexecute()` cancellation try to send `SIGKILL` to that command's process group, drain and close captured pipes, and briefly reap the shell. A child that creates its own session or process group—for example via `setsid`—is outside that group; `nohup` alone is not. On Windows there is no new group: cleanup kills only the direct shell, and descendants may survive or keep inherited output pipes open. In either case a cleanup failure is reported as a timeout that warns the command may still be running; do not blindly retry an operation with external effects.
 
-The coding agent's read-only repository inspection boundary is separate from general filesystem policy. `RepositoryBounds` permits only `ls`, `read_file`, `glob`, and `grep`; rejects traversal and non-contained absolute paths; canonicalizes containment for local filesystem and sandbox backends to stop symlink escape; and caps listing, read, and rendered-result volume. Backend errors produce bounded unavailable errors rather than granting access or crashing the subagent. This is appropriate for repository-reading subagents, not a general authorization layer for a shell.
+Async cancellation signals a worker thread and waits only a short cleanup grace period. If cleanup outlives it, the future is retained and its eventual failure is logged without command arguments; cancellation still returns to the caller. Overriding `execute()` takes the legacy thread-delegation path and does not receive this built-in cancellation cleanup. Treat cancellation, process killing, output limits, and timeout responses as availability and hygiene mechanisms—not as a security boundary or proof that a command, descendant, or side effect stopped.
 
-## dcode: a checkout does not authorize its configuration
+### Filesystem middleware
 
-Treat project configuration as code supplied by the checkout. In server mode, dcode explicitly identifies project-scoped MCP configuration, sandbox setup commands, project Python extensions, and extension paths as execution-granting policy that the server must resolve for the workspace rather than accept as a client assertion. A thread is bound to canonical workspace identity and policy. On each request the server re-resolves policy, rejects drift, and refuses a bound thread if an extension-trust grant has disappeared rather than silently rebuilding with altered authority.
+Filesystem rules classify the built-in `ls`, `read_file`, `glob`, and `grep` tools as reads and `write_file`, `edit_file`, and `delete` as writes. Rules are evaluated in order with **first-match** semantics and an allow default. Patterns must be absolute and cannot contain `..` or `~`; rule effects are allow, deny, or approval interrupt.
 
-When a session switches to a different project, dcode drops launch-project MCP configuration, sandbox setup, explicit extension paths, and project-MCP trust rather than carrying them into the new checkout. Extension trust is re-read for the target. This prevents one trusted checkout from lending its startup authority to another directory.
+For a local `FilesystemBackend`, including one selected by a `CompositeBackend`, the middleware evaluates both the requested path and its resolved target. A deny on either blocks the tool call; with a nonempty policy, a resolution failure is denied. Recursive deletion additionally checks whether the target overlaps a denied pattern. This applies to mediated filesystem tools, not arbitrary shell commands or direct backend use.
+
+`RepositoryBounds` is a distinct read-only inspection boundary for coding subagents. It fails closed to `ls`, `read_file`, `glob`, and `grep`; applies lexical and canonical containment checks against traversal and symlink escape where possible; bounds result volume; and turns backend failures into bounded unavailable errors. It is not a general shell authorization mechanism.
+
+## dcode server and workspace trust
+
+### Sanitize the child server environment
+
+The dcode launcher creates the `langgraph dev` child environment from the current process, removes project-dotenv-loaded values, then strips dynamic-loader, interpreter/path, shell-startup, askpass, and Node startup variables. It also removes LangGraph cloud/auth and LangSmith tenant/control-plane credentials, sets `LANGGRAPH_AUTH_TYPE=noop`, and disables the control-plane key. The default bind is loopback and the internal server uses an ephemeral port.
+
+`PYTHONPATH` deserves separate treatment: the launcher removes it before the server interpreter starts so an inherited untrusted-project path cannot shadow imports. It carries the launch value in a private bootstrap variable that the approval-gated agent shell can later restore; pre-existing carrier variables are discarded. The launcher similarly replaces its LangSmith carrier from captured bootstrap state. Persistent or scoped restart overrides cannot alter the selected profile, profile marker, Python-path carrier, or LangSmith carrier.
+
+Treat a production deployment's network and route authentication as deployment responsibilities. The generated built-in dcode configuration opts custom HTTP routes into LangGraph's route-auth layer when an auth backend is configured, but its ordinary production launcher uses noop auth and relies on its loopback bind.
+
+### A checkout is not permission to execute its configuration
+
+Project MCP configuration, sandbox setup, extension paths, and project extensions are directory-scoped execution grants which the server—not a client—must resolve. A bound workspace policy is re-resolved per request; if a recorded extension-trust grant disappears, including because the trust store cannot be read, dcode refuses the thread. Switching outside the launch project drops launch-project MCP configuration, sandbox setup, explicit extension paths, and project MCP trust, then reads extension trust for the target project.
 
 ```mermaid
 sequenceDiagram
@@ -85,57 +92,76 @@ sequenceDiagram
     participant Workspace as Canonical workspace
     Client->>Server: request with workspace context
     Server->>Workspace: resolve identity and project policy
-    Server->>Server: bind or validate policy fingerprint
+    Server->>Server: bind or validate policy
     alt policy changed or trust revoked
         Server-->>Client: reject request
     else policy remains valid
-        Server->>Server: build or use graph
+        Server->>Server: use graph
     end
 ```
 
-*The server, not a client-provided path or prior session, owns project-scoped authority resolution.*
+*Project-scoped authority is resolved by the server for the canonical workspace, rather than inherited from a client path or previous checkout.*
 
-### Hooks, dotenv, extensions, sandbox setup, and MCP
+Project dotenv files are untrusted. dcode denies values that can relocate the trust root or cause code execution through loaders, interpreter/path settings, shell startup, askpass, or Git configuration; `startup.read_project_dotenv` cannot itself be set by dotenv. Keep secrets in operator-controlled configuration.
 
-Project hooks require workspace trust. The trust store keys entries by canonical workspace root, serializes mutation with thread and file locks, writes atomically with restrictive permissions where supported, and refuses to overwrite malformed or unreadable stores. Session grants are content-bound to the hook-file fingerprint and are re-evaluated when the working directory changes. Headless use can require an explicit grant rather than reuse persisted interactive trust.
+Hooks use canonical workspace-root trust, atomically and restrictively persisted under locks; their session grants are tied to the current hook-file fingerprint. Resolution or fingerprint failures fail closed. Python extensions require experimental extensions, extension loading, and applicable project trust before trusted project sources can execute factories and register capabilities. Installed plugin Python declarations must remain existing `.py` files under the plugin root and have a nonempty version, but installation is still an operator trust decision because manifests can supply MCP and hooks.
 
-Project `.env` files are untrusted. dcode prevents dotenv files from injecting profile relocation, dynamic-linker, interpreter/path, shell-startup, askpass, and Git configuration/command variables. `startup.read_project_dotenv` is itself protected from dotenv injection, so a project cannot decide whether its own dotenv file is read. Keep secrets in operator-controlled profile/configuration locations, not in a repository `.env`; the denylist reduces known startup attacks but does not make repository configuration trustworthy.
+## MCP and OAuth boundaries
 
-Project Python extensions execute arbitrary Python and load only when experimental extensions and extension loading are enabled, the project policy is not `never`, and a one-run grant, `always` policy, or persisted project trust authorizes the project extension directory. User-configured paths, CLI paths, and discovered installed plugins are separate sources; operators must treat every enabled source as executable code. Extension failures are isolated and reported, but successful registrations can add tools, middleware, and backend routes.
+An MCP server is an authority boundary: stdio starts a local command, while remote MCP can receive sensitive data and return hostile tool descriptions or content. Review command, arguments, URL, headers, OAuth configuration, scopes, allowed tools, and expected egress before enabling one.
 
-Project MCP servers are skipped until project trust is granted and may still be disabled by user policy. An approved stdio server can execute a local command and an approved remote server can receive sensitive requests, so validation or interpolation is not a reduction in authority. Review commands, URLs, arguments, environment/header values, OAuth settings, tool scopes, and data egress before granting trust. Sandbox setup is likewise deployment code, not repository metadata to run by default.
+Talon loads only well-formed named server entries; it expands `${VAR}` references from runtime or process environment and validates string fields. It supports `stdio`, `sse`, and streamable HTTP transports. Stdio environment values cannot set startup-hijacking variables such as `LD_PRELOAD`, `PYTHONPATH`, or shell initialization variables. Remote OAuth cannot be combined with an explicit `Authorization` header. Tool loading is bounded to 30 seconds, failed servers are reported as unavailable rather than contributing tools, and an optional allowlist or denylist filters a server's exposed tools.
 
-Operator-installed plugin manifests may contribute MCP definitions, hooks, and—when experimental support is enabled—Python extension files. Manifest path components are resolved inside the plugin root and Python entries must be existing `.py` files; a Python extension also needs a nonempty plugin version. Those checks constrain declaration shape and path escape, but installation remains the trust event: only install plugins from sources that the operator is prepared to execute with dcode's authority.
+OAuth login is intentionally interactive. Without a terminal or current Talon conversation authorization handler, an OAuth-required scheduled job or background subagent fails with instructions to authorize from chat or run `deepagents-talon mcp login <server>`; it does not create a prompt with no accountable recipient. Channel device-code authorization binds the server name, tool invocation, and expiry to its flow.
 
-## Credentials: persist carefully and do not confuse storage hardening with isolation
+Talon's OAuth transport validates public HTTPS endpoints with SSRF protection, ignores proxy environment settings, does not follow redirects, bounds DNS resolution, requests, discovery, and response size, and revalidates metadata endpoints before using them. Device-flow endpoints must match the authorization-server origin; normal OAuth metadata is checked for an issuer match and each endpoint is independently revalidated. These controls prevent a discovered endpoint from becoming an arbitrary internal-network request; they do not establish trust in a public remote service.
 
-MCP OAuth access and refresh tokens are secrets. In dcode, token storage uses a profile state directory and validates server names before using them in filenames; token identity incorporates the server URL and optional client ID. Token writes use restrictive file modes and atomic replacement, while refresh locking coordinates concurrent processes. Do not log `OAuthToken` objects: their representation can expose bearer and refresh tokens.
+MCP status and configuration errors are also untrusted prompt inputs. dcode omits `untrusted` project servers from the model-facing inventory, and sanitizes, single-lines, and bounds displayed server errors and tracing-project names before placing them in the system prompt. This result framing limits prompt-injection and formatting exposure in that particular prompt path; it neither authenticates an MCP server nor contains one that has already been enabled.
 
-Talon persists MCP credentials in `~/.deepagents/mcp-tokens` with owner-only directory/file modes, locking, and atomic replace. It retains an old refresh token when a refresh response omits one, as OAuth permits. This is persistence hardening—not a confidentiality boundary against Talon's default shell backend, which can read accessible absolute paths. Store credentials outside agent workspaces, run under a dedicated account, and do not expose that account's shell to untrusted senders.
+dcode token storage derives safe paths from server identity and warns that token representations must not be logged. Talon token storage uses owner-only directories/files, locking, and atomic replacement, preserves an existing refresh token when a refresh response omits one, and warns that filesystem hardening is not confidentiality isolation from its default shell backend. Store tokens outside agent workspaces and run Talon under an account appropriate to the authority those tokens convey.
 
-Talon also protects OAuth metadata discovery as a network boundary: discovery uses HTTPS-only, proxy-ignoring, redirect-disabled SSRF-safe transport with bounded DNS/HTTP work and a 64 KiB response limit. Operators should still authorize the MCP server itself and its scopes; safe discovery does not make the remote service trusted.
+## Talon runtime, hooks, subagents, admission, and unattended work
 
-## ACP approval scope
+### Assistant-owned command hooks
 
-The ACP server translates graph interrupts into a client permission request. `Approve` and `Reject` apply once. Its “always” choice is intentionally narrower for `execute`: the server stores a canonical JSON representation of the **complete arguments** together with the session context—working directory, mode, model, and session identity. A changed command, arguments, context, or session requires another review; reordered JSON object keys do not. Invalid/non-serializable requests cannot receive reusable permission, and forgetting a session discards its grants.
+Talon loads `hooks.json` from the resolved assistant home once at the start of each turn, not from the workspace. It opens that exact file with `O_NOFOLLOW`, requires a regular file, and builds a snapshot with `workspace_trusted=False` and no project hooks. A missing file simply disables hooks; unreadable or invalid content produces diagnostics and an empty effective configuration rather than treating workspace configuration as trusted. Configuration changes therefore apply on a later turn, not midway through an existing turn.
 
-For non-`execute` tool calls, ACP's session “always” allowance is by tool name. Review the graph's `interrupt_on` configuration as well as client behavior: permissions only cover calls that actually interrupt, and auto-approved plan updates are a separate special case.
+The shared hook runtime supports Talon's `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, and `Stop` server events. It validates that each hook interrupt belongs to the active snapshot, thread, and prompt and caches each invocation response. A `PreToolUse` denial prevents that call and suppresses an unnecessary approval interrupt, but a hook `allow` does **not** bypass Talon's operator-controlled tool approval. Hook commands are executable authority from the assistant home: protect that directory and review `hooks.json` as carefully as any other local command configuration. Hook denial and tool approval remain mediation decisions, not host containment.
 
-## Talon: admitting a sender grants powerful access
+### Fresh subagents and inherited control plane
 
-A Talon channel message is an external input boundary. Pairing is available for Discord, Slack, and Telegram. An unknown direct-message sender receives an eight-character, one-hour pairing code tied to its provider, sender ID, and conversation. Only operator surfaces—`/pair approve <code>` or the pairing CLI—can consume that code; paired senders cannot operate `/pair` or alter approval policy. The pairing store uses locking and atomic replacement, rejects symlinks and oversized/non-regular data, and fails closed on unreadable or invalid records.
+Talon compiles local subagents with a fresh context: no parent history or skills are inherited, and `fork` mode is unsupported. A fresh graph receives only its configured tools plus an explicit per-task addition selected from the parent catalog; duplicate or unknown requested tool names are rejected. It gets Talon's MCP middleware, cooperative subagent-control middleware, and only the enabled approval entries for tools actually attached. Talon refuses to run a precompiled local subagent whenever an approval policy exists because it cannot enforce that policy inside the opaque graph; use a fresh agent with explicit tools instead.
 
-Pairing is high impact: a paired sender is admitted in chats the bot can see, with the Talon operator's configured credentials and host access. Use it only after out-of-band identity verification, scope channel exposure narrowly, revoke promptly, and treat a pairing-store failure as an access incident to repair—not a reason to bypass admission checks.
+When parent hooks are active, each fresh child gets a child hook adapter that retains the turn's snapshot but creates independent thread and prompt identities, agent identity, invocation responses, and transcript scope. Its graph handles hook interrupts with a bounded resume loop, emits no child `Stop` event, and returns unresolved approval interrupts to the caller. Subagent findings and embedded instructions are untrusted evidence; they cannot prove approval or expand the main agent's authority.
 
-Talon approval policy is an operator-owned, exact-name map. Enabled names produce approve/reject interrupts; unspecified tools do not prompt. The policy file is bounded, read without following symlinks, hashes its exact bytes as a revision, and is updated through compare-and-swap. `update_tool_approvals` requires the operator context and saves a change for the **next invocation**; the current invocation retains its immutable snapshot. Setting an entry to `false` disables prompting for that tool, so it is not an authorization grant and must be reviewed as a reduction in oversight.
+Talon's default backend is still `LocalShellBackend`, but its child environment is deliberately reconstructed rather than inherited. It admits only a small runtime-oriented allowlist plus `LC_` keys, forces a fixed safe `PATH`, and removes loader/shell/Python hijack variables, LangSmith/LangChain settings, and keys whose names indicate credentials or tokens. This reduces incidental secret and startup-state exposure; it does not sandbox the host filesystem, process, or network.
 
-## Operating checklist and focused tests
+Unknown direct-message senders require a time-limited pairing code bound to provider, sender, and conversation. Only operator surfaces can approve it. A paired sender receives the operator's configured credentials and host access but cannot administer pairing or tool-approval policy; verify identity out of band and revoke promptly.
 
-1. **Classify the authority before enabling a feature.** Is it a host shell, sandbox, filesystem tool, extension, hook, MCP server, channel sender, or credential? Apply controls at that component, not in the prompt.
-2. **Default to isolated execution.** Do not put untrusted repository or channel input in reach of `LocalShellBackend`, inherited secrets, unrestricted egress, or a privileged OS user.
-3. **Require explicit project trust.** Review and grant hooks, MCP, sandbox setup, and project extensions per canonical workspace. Re-bind/restart when policy or trust changes; do not preserve authority across project switches.
-4. **Make approval scope visible.** Use HITL for sensitive calls, know whether “always” means exact command or tool type, and remember that approval neither confines a shell nor delegates authority to a child or remote service.
-5. **Protect state and revoke safely.** Restrict state directories, protect OAuth and pairing stores, avoid secret logging, verify paired senders out of band, and use policy revisions/CAS instead of blind writes.
-6. **Exercise the boundary tests.** Run `libs/code/tests/unit_tests/hooks/test_trust.py` for canonical and fail-closed hook trust, `libs/acp/tests/unit_tests/test_execute_permissions.py` for exact ACP execution approvals, and Talon pairing/approval unit tests under `libs/talon/tests/unit_tests/` when changing those paths.
+Talon tool approval policy is an exact-name, revisioned immutable invocation snapshot. Enabled entries create approval interrupts; updates require operator context and a compare-and-swap revision, and take effect only for the next invocation. An absent or `false` entry does not create an approval gate, so policy edits can reduce oversight and need the same operational review as any authorization change.
 
-See [Backends](/openwiki/concepts/backends.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [filesystem tools](/openwiki/concepts/tools-filesystem.md), [MCP integration](/openwiki/integrations/mcp.md), [sandbox partners](/openwiki/integrations/sandbox-partners.md), [Talon](/openwiki/integrations/talon.md), and [running a dcode session](/openwiki/workflows/run-dcode-session.md).
+### Unattended delegation and result exposure
+
+A cron fire and a background-result delivery turn are **unattended**. For delivery, `TalonHost` supplies no tool-approval or authorization handler and disables the question handler; the runtime independently treats `trigger: "cron"` and `background_delivery` as non-operator contexts. It auto-rejects a cron approval interrupt and auto-rejects a background-delivery interrupt when a caller injects an approval handler. Thus metadata or a handler passed through a lower-level invocation cannot turn an unattended turn into an operator-authorized one.
+
+A detached attended-chat worker is different from a delivery turn, but has the same no-prompt rule. It runs in a copied context so it can retain required history and cron-origin scope, then explicitly clears the authorization handler and `APPROVAL_OPERATOR`, uses a new task thread ID, and forbids nested delegation. An approval interrupt is converted to `Subagent needs tool approval; the protected action has not run.` rather than being retained for a conversation that may have ended. Workers are in-memory and conversation-owned: their completed text is later injected as data only into the owning main conversation, where the host may start the unattended delivery turn.
+
+Cron delegation does **not** create such a worker. While `_SCHEDULED_TURN` is set, `task` and `start_async_task` run inline, return their result to the same graph turn, and leave no job to inspect, cancel, or deliver later. Talon hides those meaningless worker-management tools and changes the delegation guidance accordingly. Inline calls use a separate four-slot semaphore, queue rather than consume the attended-worker capacity, and default to a ten-minute per-delegation limit; an outer scheduled run is bounded to 30 minutes. Nested delegation remains refused. These are scheduling and availability controls, not a containment boundary for a capability already granted to the subagent backend or tools.
+
+Both paths turn timeout and ordinary failures into bounded safe result text instead of allowing an exception to escape and retry the graph. The generic failure result does not expose tool arguments or provider exception payloads; recognized HTTP failures provide only a status-class hint. Detached and inline results expose answer text only—excluding non-text reasoning blocks—and cap it at 64,000 characters. Preserve this failure conversion: an escaping inline deadline could cause graph retry to relaunch sibling delegation calls. Operators should pre-authorize only the exact unattended capabilities required, design effects to be safe under cancellation and retry, and never regard prompt suppression, approval denial, result filtering, or interpreter isolation as a substitute for backend, tool, OS, network, or credential authority boundaries.
+
+Scheduled work is repaired after its outer timeout; revoking the paired sender that created a job stops that sender's scheduled run. Time bounds and denial prevent an unattended call from proceeding, but do not contain an action that has already been granted authority.
+
+## ACP and operating checklist
+
+ACP persistent execution approval is scoped to canonical full tool-argument JSON and the current session context. Changed commands, arguments, contexts, or sessions require review; invalid requests cannot receive reusable permission. This narrow reuse rule applies to `execute`; verify the graph's `interrupt_on` configuration for every other sensitive tool.
+
+1. **Choose the backend first.** Do not expose untrusted repository or channel input to a host shell, privileged OS account, inherited secrets, or unrestricted egress.
+2. **Operate host-shell cleanup as best effort.** On POSIX avoid programs that detach into their own session; on Windows assume descendants can survive. Treat a timeout warning as an incident signal and make effects idempotent before retrying.
+3. **Use path policy as tool mediation, not confinement.** Test requested paths, symlink targets, and recursive deletion; keep shell authority separately constrained.
+4. **Grant execution configuration explicitly.** Review dcode checkout hooks, extensions, sandbox setup, and MCP per canonical workspace. Separately protect Talon's assistant-home `hooks.json`; Talon intentionally does not load workspace hooks.
+5. **Treat MCP configuration and OAuth as deployment authority.** Restrict stdio commands and remote scopes, protect token state, and never log token objects.
+6. **Require a human for human decisions.** Pair senders out of band, keep approval policy operator-owned, use fresh subagents with explicit tools where policy must apply, and ensure cron/background tasks auto-deny gated actions rather than prompting an unrelated channel.
+7. **Exercise focused tests after boundary changes.** Relevant coverage includes `libs/deepagents/tests/unit_tests/backends/test_local_shell_backend.py`, `libs/talon/tests/unit_tests/test_hooks.py`, `libs/code/tests/unit_tests/test_server_helpers.py`, `libs/acp/tests/unit_tests/test_execute_permissions.py`, Talon's `test_tool_approval_batch.py` and `test_questions.py`, plus `libs/talon/tests/test_mcp_auth.py`, `libs/talon/tests/unit_tests/test_background.py`, and `libs/talon/tests/unit_tests/test_research_subagents.py`. The latter two cover cleared worker authorization, approval-to-non-execution conversion, result text handling, and fresh subagent attachment boundaries.
+
+See [Code agent architecture](/openwiki/architecture/code-agent.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [Talon channel admission](/openwiki/concepts/talon-channel-admission.md), and [MCP integration](/openwiki/integrations/mcp.md).

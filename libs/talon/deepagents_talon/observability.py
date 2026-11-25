@@ -5,6 +5,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -20,7 +21,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import BaseMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from uuid import UUID
 
     from langchain_core.outputs import LLMResult
@@ -56,6 +57,35 @@ _ACTIVITY_PREVIEW_DEPTH = 5
 _ACTIVITY_PREVIEW_ITEMS = 20
 _ACTIVITY_PREVIEW_VALUES = 100
 _ACTIVITY_TRUNCATION_MARKER = "…[truncated]"
+
+
+USER_INTERRUPTED = "talon:user-interrupted"
+
+
+class UserInterruptionCallback(AsyncCallbackHandler):
+    """Record user cancellation feedback only for the interrupted root."""
+
+    async def on_chain_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        """Distinguish explicitly requested cancellation from other failures."""
+        if parent_run_id is not None or not isinstance(error, asyncio.CancelledError):
+            return
+        if error.args != (USER_INTERRUPTED,):
+            return
+        try:
+            from langsmith.run_trees import get_cached_client  # noqa: PLC0415
+
+            await asyncio.to_thread(
+                get_cached_client().create_feedback, run_id, "user_interrupted", score=1
+            )
+        except Exception:  # noqa: BLE001  # Observability must not prevent cancellation.
+            logging.getLogger(__name__).warning("Could not record user interruption feedback")
 
 
 class AgentActivityCallback(AsyncCallbackHandler):
@@ -362,7 +392,7 @@ def langsmith_trace_context(
     assistant_id: str,
     conversation_id: str,
     metadata: Mapping[str, object],
-) -> Iterator[None]:
+) -> Generator[None]:
     """Open a LangSmith tracing context for a single agent run when configured.
 
     Args:

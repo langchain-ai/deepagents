@@ -18,7 +18,7 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.exceptions import ContextOverflowError, ModelInvalidRequestError
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage, get_notification_metadata
 from langchain_core.messages.content import ContentBlock
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
@@ -1582,6 +1582,9 @@ class TestBinaryContentOffload:
         other = b"\x89PNG\r\n\x1a\n another image"
         (tmp_path / "a.png").write_bytes(_OFFLOAD_PNG)
         (tmp_path / "b.png").write_bytes(other)
+        # Pre-create `blobs/` so the concurrent uploads don't race on creating it. On Windows,
+        # `realpath` can keep the `\\?\` prefix when the parent appears mid-resolution (#6756).
+        (tmp_path / "blobs").mkdir()
         checkpointer = InMemorySaver()
         config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
         reads = [{"name": "read_file", "args": {"file_path": f"/{name}"}, "id": f"call_{name}", "type": "tool_call"} for name in ("a.png", "b.png")]
@@ -4698,7 +4701,6 @@ def test_summarization_clips_vanilla_tool_batch_on_overflow() -> None:
         assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
 
 
-@pytest.mark.filterwarnings(r"ignore:The middleware `RubricMiddleware` is in beta\..*")
 class TestRubricMiddlewareEndToEnd:
     """End-to-end tests for `RubricMiddleware` wired into `create_deep_agent`.
 
@@ -4825,6 +4827,7 @@ class TestRubricMiddlewareEndToEnd:
         injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE]
         assert len(injected) == 1
         assert injected[0].name == RUBRIC_GRADER_MESSAGE_SOURCE
+        assert get_notification_metadata(injected[0]) == {"source": RUBRIC_GRADER_MESSAGE_SOURCE}
         assert "add tests" in injected[0].content
         assert "no tests" in injected[0].content
 

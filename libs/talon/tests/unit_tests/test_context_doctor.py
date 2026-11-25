@@ -9,10 +9,12 @@ from deepagents.backends import FilesystemBackend
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 
 from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_talon.context_doctor import _usage
 from deepagents_talon.host import TalonHost
+from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY
 from deepagents_talon.runtime import DeepAgentRuntime
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config, _wait_for_request
@@ -54,14 +56,14 @@ async def test_fresh_report_reads_configured_sources_without_writing_state(runti
     assert "AGENTS.md memory (1 files)" in report
     assert "Skills index (1 loaded)" in report
     assert "research" in report
-    assert "All (including MCP) tool schemas" in report
+    assert "Initial tool schemas" in report
     assert "TOTAL injected before conversation" in report
     assert "private" not in report
     assert str(tmp_path) not in report
     assert not (await runtime._graph.aget_state({"configurable": {"thread_id": "chat"}})).values
 
 
-async def test_report_uses_current_thread_checkpoint_and_cached_memory(runtime):
+async def test_report_uses_current_thread_checkpoint_and_current_memory(runtime, tmp_path):
     config = {"configurable": {"thread_id": "chat"}}
     await runtime._graph.aupdate_state(
         config,
@@ -73,13 +75,21 @@ async def test_report_uses_current_thread_checkpoint_and_cached_memory(runtime):
                     usage_metadata={"input_tokens": 1234, "output_tokens": 3, "total_tokens": 1237},
                 ),
             ],
-            "memory_contents": {"cached": "cached private memory"},
+            "memory_contents": {"cached": "cached private memory", "other": "obsolete preference"},
             "skills_metadata": [],
         },
     )
     before = await runtime._graph.aget_state(config)
     report = await runtime.context_doctor("chat")
+    (tmp_path / "assistant" / "memory.md").write_text("updated preference " * 1000)
+    updated = await runtime.context_doctor("chat")
     after = await runtime._graph.aget_state(config)
+
+    assert await runtime._context_diagnostics._memory(
+        {"memory_contents": {"cached": "obsolete preference"}}
+    ) == {str(tmp_path / "assistant" / "memory.md"): "updated preference " * 1000}
+    assert "AGENTS.md memory (1 files)" in report
+    assert updated != report
 
     assert "1,234" in report
     assert "Skills index (0 loaded)" in report
@@ -106,6 +116,40 @@ async def test_report_reflects_reloaded_tools(runtime):
     after = await runtime.context_doctor("chat")
     assert before != after
     assert "Large tool schema" not in after
+
+
+async def test_report_counts_mcp_schemas_only_when_eager(runtime, monkeypatch):
+    @tool
+    def lookup() -> str:
+        """Look something up."""
+        raise AssertionError
+
+    lookup.metadata = {MCP_TOOL_METADATA_KEY: True}
+    lookup.description = "Large tool schema. " * 1000
+
+    async def reload_tools():
+        return [lookup]
+
+    runtime.reload_tools = reload_tools
+    await runtime.reload_mcp_configuration()
+    eager = await runtime.context_doctor("chat")
+    model = ChatOpenAI(model="gpt-5.4", api_key="test")
+    monkeypatch.setattr(runtime.models, "resolve", lambda _spec: model)
+    deferred = await runtime.context_doctor("chat", model="openai:gpt-5.4")
+
+    def estimate(report, row):
+        return int(
+            next(line for line in report.splitlines() if line.startswith(row))
+            .split("~")[1]
+            .split()[0]
+            .replace(",", "")
+        )
+
+    assert "deferred MCP tools: 1" in deferred
+    assert "deferred" not in eager
+    saved = estimate(eager, "Initial tool schemas") - estimate(deferred, "Initial tool schemas")
+    assert saved > len(lookup.description) // 4
+    assert estimate(eager, "TOTAL injected") - estimate(deferred, "TOTAL injected") == saved
 
 
 def test_usage_counts_effective_conversation_after_compaction():

@@ -112,11 +112,18 @@ hi 2
 
 ### Timeouts and memory
 
-Each call has a per-call wall-clock timeout (default 5 s). Breaching it produces:
+Each call has a per-call VM execution timeout (default 5 s). It counts only time
+spent running JavaScript: time spent awaiting host calls such as `tools.*` or
+`task()` is not counted, so it does not bound an `eval`'s total wall-clock
+duration. Breaching it produces:
 
 ```xml
 <error type="Timeout">...</error>
 ```
+
+`timeout=None` disables the deadline. Avoid it unless the host enforces its own
+limit that can stop execution, such as a process kill or workflow timeout: a
+runaway `eval` then runs forever, and asyncio cancellation cannot stop it.
 
 The runtime has a shared memory limit across every context under it (default 64 MiB). OOM surfaces as:
 
@@ -250,30 +257,29 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 - Each PTC-exposed tool gets a QuickJS host-function bridge registered under a generated `__tools_*` global symbol. The bridge is async, so the guest sees `tools.x(...)` as returning a `Promise`.
 - `globalThis.tools` is rebuilt every turn from the currently-exposed name set. So if an upstream middleware filters tools on a per-turn basis, the `tools` namespace follows along.
 - When the bridge invokes a tool, it forwards the `ToolRuntime` and runnable config captured from the outer `eval` call — so the tool sees graph `state`, `store`, `context`, callbacks, and a synthesized child `tool_call_id`. (Subagent dispatch has its own top-level `task(...)` primitive — see [Dispatching subagents](#dispatching-subagents-task) — and is not routed through the `tools` namespace.)
-- PTC calls participate in the standard LangGraph tool lifecycle. With v3 event streaming, they appear on `run.tool_calls` just like ordinary tool calls, including output deltas emitted through `ToolRuntime.emit_output_delta`:
+- PTC calls participate in the standard LangGraph tool lifecycle. With `stream_mode="tools"`, they appear in the stream just like ordinary tool calls, including output deltas emitted through `ToolRuntime.emit_output_delta`:
 
 ```python
-run = agent.stream_events(
+for event in agent.stream(
     {"messages": [{"role": "user", "content": "Research and summarize this"}]},
-    version="v3",
-)
-
-for call in run.tool_calls:
-    print(call.tool_name, call.tool_call_id)
-    for delta in call.output_deltas:
-        print(delta)
+    stream_mode="tools",
+):
+    if event["event"] == "tool-started":
+        print(event["tool_name"], event["tool_call_id"])
+    elif event["event"] == "tool-output-delta":
+        print(event["delta"])
 ```
 
 This visibility does not route PTC calls through `ToolNode` or add per-call human-in-the-loop approval; the configured PTC allowlist remains the security boundary. The inner calls are not added as synthetic graph messages.
 
-- Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place.
+- Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place. A `Command`'s dict `update` is applied to agent state, except `messages`, and later `tools.*` calls in the same eval read it. A `Command` that eval cannot apply fails it; see `UnsupportedCommand` below.
 
 ## Configuration reference
 
 ```python
 CodeInterpreterMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
-    timeout=5.0,                     # per-call seconds
+    timeout=5.0,                     # per-call VM seconds; None disables the deadline
     max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
@@ -290,9 +296,10 @@ CodeInterpreterMiddleware(
 | Type | Cause |
 | --- | --- |
 | `SyntaxError`, `TypeError`, `ReferenceError`, ... | User-code error. Re-surfaces the JS error name verbatim. |
-| `Timeout` | Call exceeded `timeout=`. |
+| `Timeout` | Call exceeded `timeout=` (only when a deadline is set). |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
+| `UnsupportedCommand` | A `tools.*` call returned a `Command` that sets `goto`, `graph`, or `resume`, or whose update is not a dict. Nothing from that result is written. |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
 
@@ -304,5 +311,6 @@ MIT. See [`LICENSE`](LICENSE)
 
 ## Resources
 
+- [Changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/partners/quickjs/CHANGELOG.md) — Release history
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

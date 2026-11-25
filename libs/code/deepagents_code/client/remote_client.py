@@ -12,7 +12,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code.client.session_cost import SessionCostTracker
 
@@ -612,6 +612,18 @@ class RemoteAgent:
         """
         return self._cost_tracker(_require_thread_id(config)).snapshot()
 
+    def get_cached_side_cost(self, config: Mapping[str, Any]) -> float:
+        """Read the side-question and thread-naming spend included in the total.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            Last known side-request spend in USD, or `0.0` before any is reported.
+        """
+        side = self._cost_tracker(_require_thread_id(config)).side_breakdown
+        return side["total_cost_usd"] if side is not None else 0.0
+
     async def aget_session_cost(
         self,
         config: Mapping[str, Any],
@@ -705,6 +717,7 @@ class RemoteAgent:
         context: Mapping[str, Any],
         fulfill_hook: Callable[[object], Awaitable[dict[str, object]]],
         handoff: bool = False,
+        offload_trigger: Literal["manual", "idle"] = "manual",
     ) -> OffloadResult:
         """Request server-owned offload and fulfill its hook callbacks.
 
@@ -714,6 +727,8 @@ class RemoteAgent:
             fulfill_hook: Client hook executor for server requests.
             handoff: Summarize every message for a new thread without
                 compacting the source thread.
+            offload_trigger: Why this offload runs, recorded in the
+                summarizer's trace metadata as `dcode_offload_trigger`.
 
         Returns:
             Typed offload result from the server operation.
@@ -742,6 +757,7 @@ class RemoteAgent:
             self._ownership_headers(self._prepare_mutation(config))
         )
         operation_context["workspace"] = workspace
+        operation_context["offload_trigger"] = offload_trigger
         # The operation reads and writes thread state over HTTP, so the thread's
         # live row must exist first. Checkpoint persistence and registration are
         # separate on the dev server (see `aensure_thread`), so a resumed thread
@@ -1577,9 +1593,13 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     tool_calls = data.get("tool_calls", [])
     usage_metadata = data.get("usage_metadata")
     response_metadata = data.get("response_metadata", {})
+    additional_kwargs = data.get("additional_kwargs")
 
     kwargs: dict[str, Any] = {
         "content": content,
+        "additional_kwargs": (
+            additional_kwargs if isinstance(additional_kwargs, dict) else {}
+        ),
         "id": data.get("id"),
         "response_metadata": response_metadata,
         "chunk_position": data.get("chunk_position"),

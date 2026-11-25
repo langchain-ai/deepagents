@@ -1,11 +1,11 @@
 ---
 type: plugin lifecycle concept
 title: dcode Plugin Marketplaces and Lifecycle
-description: dcode plugins are marketplace-selected, versioned cached extensions that contribute skills, MCP servers, and hooks. This page describes source and manifest compatibility, installation and update state, reload behavior, integrity controls, and failure isolation.
+description: dcode plugins are marketplace-selected extensions installed into a managed, versioned cache. This page explains marketplace discovery, manifests, persistent lifecycle state, updates, runtime loading, reload boundaries, and operational safeguards.
 tags: [dcode, plugins, marketplaces, lifecycle, extensions, mcp, skills, hooks]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-27T08:05:40.296Z
+    at: 2026-11-03T08:04:09.572Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -31,91 +31,102 @@ sources:
     resource: repo://libs/code/deepagents_code/plugins/store.py
   - id: openwiki-source-9e8c8ac7a863295a36c34ee9
     resource: repo://libs/code/tests/unit_tests/plugins/test_broken_install.py
+  - id: openwiki-source-1b2d72c108e8f28565c78f78
+    resource: repo://libs/code/tests/unit_tests/plugins/test_default_marketplace.py
   - id: openwiki-source-3a86b75aef82efb4e1c2e384
     resource: repo://libs/code/tests/unit_tests/plugins/test_plugin_updates.py
   - id: openwiki-source-626bef5a770ea28b80dc541a
     resource: repo://libs/code/tests/unit_tests/plugins/test_plugins_p0.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
 ---
 
 # dcode Plugin Marketplaces and Lifecycle
 
-A dcode plugin is an installed, enabled extension identified as `{plugin-name}@{marketplace-name}`. A marketplace is only a catalog and source resolver; dcode copies each installed plugin to a managed cache and discovers runtime components from that cache. This separation makes an installed version stable even when a local marketplace or remote repository changes. Plugins currently contribute **skills**, **MCP configuration**, and **Hooks v2** documents. `agents/` and `commands/` directories are recognized as unsupported rather than loaded. See [Subagents, Skills, and Delegation](/openwiki/concepts/subagents-skills.md) and [MCP Integration](/openwiki/integrations/mcp.md).
+A dcode plugin is an installed extension whose canonical ID is `{name}@{marketplace}`. A marketplace is a catalog and source resolver, not the runtime location: dcode resolves an entry, validates it, and copies it into a managed cache before enabling and discovering it. Consequently, an installed plugin remains tied to its cached version even when a source directory or repository changes. Plugins contribute **skills**, **MCP configuration**, and **Hooks v2** documents; `agents/` and `commands/` directories are recognized as unsupported rather than loaded. See [Subagents, Skills, and Delegation](/openwiki/concepts/subagents-skills.md) and [MCP Integration](/openwiki/integrations/mcp.md).
 
 ## Lifecycle at a glance
 
 ```mermaid
 flowchart TD
-    Add["Add marketplace source"] --> Materialize["Load local source or managed remote cache"]
-    Materialize --> Record["Persist marketplace record"]
-    Record --> Select["Select plugin name at marketplace"]
-    Select --> Resolve["Resolve source and validate manifest"]
-    Resolve --> Cache["Copy to versioned plugin cache"]
-    Cache --> InstallRecord["Register install path and version"]
-    InstallRecord --> Enabled["Enable plugin and create data directory"]
-    Enabled --> Reload["Reload discovers enabled cached plugins"]
-    Reload --> Components["Skills MCP and hooks adapters"]
-    Enabled --> Check["Check marketplace version"]
-    Check --> Manual["Available update or explicit update"]
-    Check --> OptIn["Manifest autoUpdate installs update"]
-    Manual --> Reload
-    OptIn --> Reload
+    Add["Add or browse marketplace"] --> Catalog["Load catalog and resolve plugin source"]
+    Catalog --> Validate["Validate manifest and component inventory"]
+    Validate --> Cache["Copy to versioned managed cache"]
+    Cache --> Record["Register install path and version"]
+    Record --> Enable["Enable plugin and prepare data directory"]
+    Enable --> Reload["Reload discovers enabled cached plugins"]
+    Reload --> Runtime["Skills MCP and hooks adapters"]
+    Enable --> UpdateCheck["Compare installed version with marketplace"]
+    UpdateCheck --> Available["Record available update"]
+    UpdateCheck --> AutoInstall["Install opted in update"]
+    Available --> Explicit["Explicit update installs selected version"]
+    AutoInstall --> Reload
+    Explicit --> Reload
 ```
 
-*Marketplace selection, managed cache installation, enablement, and subsequent reload are distinct lifecycle stages.*
+*The catalog, cached installation, enablement, update decision, and runtime reload are separate stages.*
 
-## Marketplace sources and catalog format
+## Marketplace discovery and source boundaries
 
-Use `dcode plugin marketplace add <source>` (or its `plugins` alias) to register a catalog; the CLI also exposes marketplace listing/removal and plugin `list`, `install`, `reinstall`, `update`, `enable`, `disable`, and `uninstall` operations. A source may be a local directory, a local `.json` file, GitHub shorthand (`owner/repo` with optional `@ref`/`#ref`), an SSH or HTTPS Git URL, or an HTTPS URL to a marketplace JSON document. Plain HTTP is rejected. Git source refreshes use shallow clone with submodules and no interactive credential prompt; URL downloads and redirects must remain HTTPS. URLs displayed in CLI output and errors redact embedded credentials and sensitive query or path values.
+The `dcode plugin` command (also `dcode plugins`) provides marketplace `list`, `add`, and `remove`, plus plugin `list`, `install`, `reinstall`, `update`, `enable`, `disable`, and `uninstall`. Add a source with `dcode plugin marketplace add <source>`.
 
-A directory marketplace searches, in order, `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`, and `.agents/plugins/api_marketplace.json`. Its document must be a JSON object with a whitespace-free marketplace `name` (which cannot contain `@`) and a `plugins` array. Bad individual entries are skipped with warnings, while a missing or structurally invalid catalog fails the marketplace load. Each entry has a validated `name`, optional display metadata, and a source:
+A default `langchain-plugins` marketplace points at `langchain-ai/langchain-plugins`. It is an implicit record until explicitly removed or overridden: startup and enabled-plugin discovery do not fetch it or create state. Browsing a missing default catalog fetches it on demand; offline browsing reports that it is not cached, and a concurrent mutation causes a retryable busy error rather than waiting. Removing the default persists the opt-out, while saving a record with the same name overrides the default.
 
-- A string or `{ "source": "local", "path": "..." }` is a marketplace-relative local plugin path. `metadata.pluginRoot` can set the base directory.
-- `{ "source": "github", "repo": "owner/repo", "ref": "...", "path": "..." }`, `{ "source": "git-subdir", "url": "...", ... }`, and `{ "source": "url", "url": "...", ... }` materialize a Git repository; `path` selects a subdirectory.
+A supplied marketplace source can be:
 
-Repository materialization uses an opaque hash cache key, so a cache name does not reveal source credentials, and replacement clones are validated before replacing the prior cache. Direct marketplace JSON URLs cache only the catalog: they are rejected if entries require local relative files (or unsupported remote entry forms), because no sibling source tree is available. Local and marketplace-relative paths are containment-checked: absolute paths, `..`, Windows absolute forms, and symlink-resolved escapes are rejected.
+- a local directory or `.json` file;
+- GitHub shorthand such as `owner/repo`, optionally with `@ref` or `#ref`;
+- an SSH or HTTPS Git repository, optionally with a ref; or
+- an HTTPS URL that returns a marketplace JSON document.
 
-## Plugin manifest and compatible components
+Plain HTTP is rejected. Git uses a noninteractive, shallow clone with shallow submodules; managed repository and URL catalog caches use opaque hashes so cache paths do not disclose credentials. URL downloads and redirects must remain HTTPS, and credentials and sensitive URL query or path values are redacted in user-facing source/error text. Remote-cache replacement is staged and validated before it replaces the previous cache.
 
-dcode accepts `plugin.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`, in that order. No manifest is also permitted: the marketplace entry supplies the fallback name, but such an install is unversioned. A present manifest must be a JSON object with a nonempty, whitespace-free name; otherwise it prevents installation or causes that discovered plugin to be skipped.
+A directory catalog is searched at `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`, then `.agents/plugins/api_marketplace.json`. Its JSON object needs a whitespace-free `name` without `@` and a `plugins` array. A malformed catalog fails to load; malformed individual entries instead become warnings and are skipped. Entries may name a marketplace-relative local source (with optional `metadata.pluginRoot`) or use `github`, `git-subdir`, or `url` repository source objects with optional ref and subdirectory path.
 
-The manifest may provide `version`, `displayName`, `skills`, `mcpServers`, and `hooks`. Component path fields accept a string or strings and must begin with `./`; they are resolved inside the plugin root. `mcpServers` and `hooks` can instead be inline objects. The component inventory also discovers conventional `skills/` (or root `SKILL.md` when no skills directory/path is selected), `.mcp.json`, and `hooks/hooks.json`. Missing, unreadable, or out-of-root declared components are omitted with warnings rather than escaping the plugin boundary.
+Every marketplace-relative and plugin-relative path is containment-checked. Absolute paths, `..`, Windows absolute forms, and paths that resolve outside their root—including through symlinks—are rejected. A direct catalog URL caches only that JSON file, so it rejects local relative entries and unsupported remote entry forms that need an unavailable sibling source tree.
 
-The dcode extension namespace is `extensions.com.langchain.deepagents.code`. Its `autoUpdate: true` is a per-plugin opt-in. Experimental `pythonExtensions` can name existing in-root `.py` files, but only when experimental mode is enabled and the plugin declares a nonempty version. The inventory reports `agents/` and `commands/` as unsupported; it does not execute or expose them.
+## Plugin manifests and inventory
 
-## Installed state, enablement, and reload
+A plugin can use `plugin.json`, `.claude-plugin/plugin.json`, or `.codex-plugin/plugin.json`, in that precedence order. A missing manifest is allowed when the marketplace entry supplies the fallback name, but that plugin is unversioned. If present, the manifest must be a JSON object with a valid nonempty, whitespace-free name.
 
-The persistent state has complementary responsibilities:
+The manifest supports `version`, `displayName`, `skills`, `mcpServers`, and `hooks`. Path-valued component declarations may be one string or a list, must start with `./`, and resolve inside the plugin root. MCP and hook declarations can instead be inline objects. The inventory additionally considers conventional `skills/`, a root `SKILL.md` when no skills directory/path takes precedence, `.mcp.json`, and `hooks/hooks.json`. Missing, unreadable, or out-of-root component declarations are omitted with warnings.
 
-| State | Meaning |
+`extensions.com.langchain.deepagents.code.autoUpdate: true` is a per-plugin automatic-update opt-in. Experimental `pythonExtensions` names existing, in-root `.py` files only when experimental mode is enabled and the plugin declares a nonempty version. The inventory reports, but does not execute, `agents/` and `commands/`.
+
+## State, installation, enablement, and reload
+
+The durable records separate concerns:
+
+| Location | Responsibility |
 | --- | --- |
-| `plugin_marketplaces.json` | Catalog source type, original source, materialized location, and optional Git ref, keyed by marketplace name. |
-| `installed_plugins.json` | The current install path and manifest version for each plugin ID. |
-| `plugin_state.json` | The set of enabled plugin IDs. |
-| `plugin_updates.json` | Non-installed available versions, used to avoid repeating update notifications. |
-| Plugin storage `cache/` | Managed copies at `cache/{marketplace}/{plugin}/{version}` using sanitized, hash-suffixed filesystem names. |
-| Plugin storage `data/` | A separate writable directory per plugin ID; it is created when enablement or a component needing it requires it. |
+| `plugin_marketplaces.json` | Marketplace source type, source, materialized location, and optional ref. |
+| `installed_plugins.json` | Registered cache path and manifest version per plugin ID. |
+| `plugin_state.json` | Enabled plugin IDs. |
+| `plugin_updates.json` | Available but not installed versions, for notification deduplication. |
+| Plugin storage `cache/` | Managed copies at `cache/{marketplace}/{plugin}/{version}`. |
+| Plugin storage `data/` | Separate writable directory for each plugin ID. |
 
-Plugin storage defaults beneath dcode's configuration directory and can be relocated with `DEEPAGENTS_CODE_PLUGIN_CACHE_DIR`; persistent records live under dcode's state directory. `install_plugin()` validates and copies the resolved source, strips an included `.git` directory, registers the copy and version, enables it, and creates its data directory. Enablement is deliberately separate from installation: enabling an unknown install fails, disabling preserves the installed copy, and uninstalling disables the plugin, removes its record, and removes its registered cache directory. Removing a marketplace uninstalls all its installed or enabled plugins; it deletes only managed remote marketplace cache locations, never a local source directory.
+Plugin storage defaults beneath the dcode configuration directory and can be relocated using `DEEPAGENTS_CODE_PLUGIN_CACHE_DIR`; state files live under dcode's state directory. Cache and data path segments are sanitized and hash-suffixed. The data directory is created on enablement and also lazily by MCP or hook loading when required.
 
-An install, reinstall, update, enable, or disable changes future discovery. It does not retrofit the already assembled runtime: the install/reinstall and update CLI responses tell the user to run `/reload` to activate the change. A reload discovers only enabled IDs, loads their registered cache roots, parses the manifest, and builds component inventories.
+Installation resolves the marketplace entry, validates its manifest and inventory, copies the source to the versioned cache (removing an included `.git` directory), records that cache path/version, enables the ID, and ensures its data directory. Enabling an unknown installation fails; disabling preserves the cache. Uninstall disables the plugin, removes its install record, and removes its registered cache. Marketplace removal uninstalls associated installed or enabled plugins, deletes managed remote marketplace cache locations, and never deletes a local marketplace source.
 
-## Runtime integration and namespacing
+Reinstall is a repair operation: it always refreshes the cache, but preserves the enabled state and plugin data directory. Any install, reinstall, update, enablement, or disablement changes subsequent discovery, not an already assembled runtime. The install, reinstall, and successful update CLI responses explicitly instruct the operator to run `/reload` before changed components are applied.
 
-Enabled plugin skills are inserted after built-in skills and before user and project skill directories. They retain the plugin ID as a namespace, producing lowercase names such as `plugin@marketplace:review` (and intermediate directory segments for nested skills), so identically named skills from different plugins do not collide.
+## Runtime integration
 
-Plugin MCP input comes from discovered `.mcp.json`/declared MCP files and then inline manifest `mcpServers`, with inline entries winning on name conflicts. Every MCP server is renamed to a safe `plugin__...__...` name derived from the full plugin ID and declared server name. Configuration values are substituted with plugin root, plugin data, and optionally project directory; a relative MCP `cwd` is made relative to the plugin root and plugin environment values are added. Hooks similarly accept file and inline documents, associate each with its plugin identity and substitution environment, and report diagnostics through the hook loader.
+Reload-time discovery reads only enabled IDs and their registered cache roots. It parses each manifest and builds an inventory independently, allowing healthy plugins to load when a sibling is invalid or missing. Skills are inserted after built-in sources and before user/project sources. Plugin skill names are lowercased and qualified by the full plugin ID, with nested skill directories adding `:` segments; this prevents collisions between plugins.
+
+Plugin MCP configuration is loaded from inventory files first and inline `mcpServers` second, so inline definitions win name conflicts. Each declared server gets a safe, plugin-scoped name of the form `plugin__...__...`. Values can substitute plugin root, plugin data, and project directory; relative MCP `cwd` is made relative to the plugin root and plugin environment values are supplied. Hooks likewise combine discovered file documents and inline manifest hooks, retaining plugin identity and substitution environment and producing diagnostics through the hook loader.
+
+A missing registered cache directory becomes a `BrokenPluginInstall`, rather than a generic discovery failure. The user-facing repair message does not reveal the path; the path remains in debug diagnostics. Discovery consumers for skills, MCP, hooks, and plugin management can run independently, so broken-install notices are claimed once per process. A successful reinstall releases that claim. MCP and hook adapters also isolate plugin-specific failures so one plugin cannot suppress other plugin configuration.
 
 ## Updates and operator control
 
-`plugins.auto_update` defaults to true and is configurable through `[plugins].auto_update` or `DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE`; it controls the background check, not unconditional installation. After the first prompt, the automatic check skips offline operation and returns immediately if another plugin mutation holds the lock. It refreshes remote marketplaces, considers enabled installed **versioned** plugins, and compares the marketplace manifest version with the recorded version. Unversioned plugins are deliberately not updated because replacing their shared cache during a session is unsafe.
+`plugins.auto_update` defaults to true and can be set through `[plugins].auto_update` or `DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE`. It enables the automatic check; it does not mean every plugin installs automatically. The check returns without work when offline, globally disabled, or unable to acquire the mutation lock. It refreshes remote marketplaces and considers enabled, installed plugins with a recorded version. Unversioned plugins are skipped so a shared runtime cache is not replaced during a session.
 
-Only a changed plugin manifest with `extensions.com.langchain.deepagents.code.autoUpdate: true` is installed automatically. Other differing versions are recorded as available and surfaced once; a failed comparison retains a previously saved availability record so recovery does not re-notify it. `dcode plugin update [plugin_id ...]` works for installed targets (all installed when omitted), includes local marketplaces, and either installs updates or, with `--check`, only reports them. Successful explicit updates clear their recorded available state and require `/reload` to apply.
+When the marketplace manifest has a different version, only a manifest opting into `autoUpdate` is installed automatically. Other updates are persisted as available. The persisted value suppresses repeat notifications, and a failed refresh/comparison retains a prior availability record so recovery does not re-announce it. `dcode plugin update [plugin_id ...]` targets specified installed IDs or all installed IDs when omitted, includes local marketplaces, and installs updates unless `--check` is used. A successful explicit update clears its availability record and requires `/reload` to take effect.
 
-## Consistency, security, and failure expectations
+## Consistency and operational expectations
 
-All mutating lifecycle operations share a reentrant cross-thread/process `filelock` at the plugin storage root. State writers use a same-directory temporary file followed by replace. Cache copies and Git clones similarly populate and validate a temporary directory, swap it into place with a backup/rollback path, and register the installation only after the replacement succeeds. Strict mutation reads reject unreadable, malformed, or unsupported-version state instead of silently overwriting it; tolerant discovery reads degrade invalid state to empty data with a warning.
+Mutating lifecycle operations are serialized by a reentrant cross-process file lock. JSON state is written to a same-directory temporary file and atomically replaced. Plugin copies and repository clones are built in temporary directories and swap with backup/rollback handling; the install record is written only after cache replacement succeeds. Strict mutation reads reject unreadable, malformed, wrongly shaped, or unsupported-version state rather than overwriting it. Non-strict discovery reads warn and fall back to empty data.
 
-Discovery is intentionally isolated per enabled plugin. An invalid ID, absent install record, unreadable cache root, bad manifest, or inventory failure does not abort siblings. A missing registered directory is distinguished as a `BrokenPluginInstall`, with repair guidance to reinstall or disable; the broken-path detail stays in debug diagnostics. Multiple consumers independently discover plugins for skills, MCP, hooks, and management, so broken-install notices are claimed only once per process and a successful reinstall releases the claim. MCP and hook adapters also isolate their own discovery/load failures so plugin trouble does not take down unrelated configuration or other plugins.
-
-Focused tests exercise the observable contracts: missing cache files leave healthy siblings usable and reinstall preserves enablement and plugin data; malformed replacement copies leave the old install, registry, and enablement intact; update checks distinguish notification-only and manifest-opted automatic updates; and tests cover external-path/symlink containment plus credential redaction.
+Focused tests cover the contracts that matter operationally: default-marketplace registration stays offline until browse, default removal persists, and lock contention does not stall browsing; failed cache replacement preserves the old installation, registry, and enablement; update checks distinguish notification-only updates from manifest-opted automatic installs; and missing cached files leave healthy siblings usable while reinstall preserves enablement and plugin data. Tests also exercise containment against external/symlinked component paths and credential redaction.

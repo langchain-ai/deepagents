@@ -1,177 +1,149 @@
 ---
 type: architecture
 title: Deep Agents Code Architecture
-description: How dcode separates terminal presentation from local agent execution, establishes server-authoritative workspace policy and durable sessions, and exposes interactive, headless, ACP, plugin, MCP, and Textual rendering seams.
-tags: [dcode, deepagents, cli, agent-runtime, workspace, persistence, tracing, plugins, mcp]
+description: dcode separates client interaction from the server-hosted Deep Agents graph. This page describes execution surfaces, Hooks v2 ownership and interrupt resumption, terminal program-status reporting, and server-authoritative model selection.
+tags: [dcode, deepagents, agent-server, hooks, terminal-ui, headless, acp, program-status, model-catalog]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-27T08:05:40.296Z
+    at: 2026-11-18T08:03:59.609Z
 sources:
-  - id: openwiki-source-6f5b1b7a043ee1d414708793
-    resource: repo://libs/code/ARCHITECTURE.md
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-4d4186e9d62fb4abe495cdd0
+    resource: repo://libs/code/deepagents_code/acp.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
+  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
+    resource: repo://libs/code/deepagents_code/client/remote_client.py
+  - id: openwiki-source-a56bc888b2c3520dd1147a79
+    resource: repo://libs/code/deepagents_code/hooks/client.py
+  - id: openwiki-source-15ae143d10ab05659f6fac9c
+    resource: repo://libs/code/deepagents_code/hooks/interrupt.py
+  - id: openwiki-source-aa3e9529d99dae1ecc1669fa
+    resource: repo://libs/code/deepagents_code/hooks/loading.py
+  - id: openwiki-source-86b89dcd6cd128907bd5792c
+    resource: repo://libs/code/deepagents_code/hooks/runtime.py
+  - id: openwiki-source-95960a358c0efd2540b626cf
+    resource: repo://libs/code/deepagents_code/hooks/server_middleware.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-7e241f30f5c7753642ea34d5
+    resource: repo://libs/code/deepagents_code/model_api.py
+  - id: openwiki-source-5afb93f98c34330c27609db2
+    resource: repo://libs/code/deepagents_code/model_catalog.py
+  - id: openwiki-source-ece74ecc87a2bc395b3ce368
+    resource: repo://libs/code/deepagents_code/model_metadata.py
   - id: openwiki-source-ea1089f0d7536fbc96c64866
     resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-cf7f7450a5cfdd089091e7f9
-    resource: repo://libs/code/deepagents_code/plugins/adapters/mcp.py
-  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
-    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
-  - id: openwiki-source-f62a1859e5c63ecaf13a021a
-    resource: repo://libs/code/deepagents_code/plugins/models.py
-  - id: openwiki-source-ebbe611973759feaeaf0ff85
-    resource: repo://libs/code/deepagents_code/tui/widgets/final_markdown/__init__.py
-  - id: openwiki-source-2d48ace0a6c78376ff8a66a6
-    resource: repo://libs/code/deepagents_code/tui/widgets/final_markdown/_widget.py
-  - id: openwiki-source-757c2a7976ead67a5fbe1e5c
-    resource: repo://libs/code/deepagents_code/tui/widgets/messages.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
+  - id: openwiki-source-e910f60434eab1ae29c9c630
+    resource: repo://libs/code/deepagents_code/program_status.py
+  - id: openwiki-source-e9a7ab29b270179f4eea7107
+    resource: repo://libs/code/deepagents_code/tui/widgets/model_selector.py
+  - id: openwiki-source-49979ea2511a33d679dbbf04
+    resource: repo://libs/code/tests/unit_tests/hooks/test_server_lifecycle.py
+  - id: openwiki-source-9e2836fc0f978f6fd8407320
+    resource: repo://libs/code/tests/unit_tests/test_app_program_status.py
+  - id: openwiki-source-e012c5898b6bc6cb1317467d
+    resource: repo://libs/code/tests/unit_tests/test_model_catalog.py
+  - id: openwiki-source-669a6d1361755f2deb4515d2
+    resource: repo://libs/code/tests/unit_tests/test_model_metadata.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-18T08:03:59.609Z" }
 ---
 
 # Deep Agents Code Architecture
 
-`deepagents-code` (`dcode`) is a reference terminal coding agent built on the `deepagents` SDK harness. It packages terminal presentation, tools, skills, approvals, persistence, and optional sandboxed execution around that harness. Its main boundary is intentional: the client presents and requests; the local server constructs and executes the agent.
+`deepagents-code` (`dcode`) is a terminal coding agent around a Deep Agents/LangGraph runtime. The important boundary is not simply local versus remote code: the **client** owns interaction, hook configuration and execution, while the **server graph** owns agent lifecycle positions, tools, checkpoints, and the point at which a decision must affect execution. A client communicates its frozen hook configuration as context; the server uses that context only to decide which lifecycle boundaries to interrupt.
 
-## Runtime ownership and launch
+## Execution surfaces and ownership
 
-Normal interactive and headless sessions use separate processes:
+| Surface | Process and presentation | Agent execution and interaction |
+|---|---|---|
+| Interactive CLI | Textual `DeepAgentsApp` and a loopback agent server | The app presents stream events, approval/question UI, hook notices, and status. The server constructs and runs the graph. |
+| Headless CLI (`-n`) | One console-oriented client process plus server session | `run_non_interactive()` streams one task, fulfills server-owned hook interrupts, and exits with an operational exit code. |
+| ACP | In-process stdio ACP server | ACP builds a graph per ACP session and wraps it with `_AutoGraph` to persist trusted Auto-mode control state and inject prompt metadata. |
 
-- The **terminal client** owns Textual presentation, keyboard input, approval interaction, and the `RemoteAgent` transport wrapper. Headless mode uses the same remote route but renders the stream to a console.
-- The **agent server** is a local `langgraph dev` process. It owns the provider model, tools and MCP sessions, skills, backend resources, compiled graph, checkpoints, and server-side operations.
+All surfaces use the graph middleware assembled by `create_cli_agent()`. The main graph receives `ServerHooksMiddleware` after approval middleware, so `PreToolUse` is evaluated before approval routing. The same middleware is added to subagents, but with `emit_stop=False`: subagent tools still get pre/post hooks while only the parent `task` boundary emits the main-agent `Stop` event. MCP timeout middleware is inside the hook wrapper, allowing `PostToolUseFailure` to observe timeouts as failed results.
 
-`RemoteAgent` lazily creates a LangGraph `RemoteGraph`, binds or retrieves a server-validated workspace per thread, and includes its returned descriptor in graph stream context. It fails rather than making a workspace-dependent request without configured workspace state. The client therefore does not construct a provider model for a remote session.
+## Hooks v2: configuration is client-owned, lifecycle position is server-owned
+
+A `HooksRuntime` is created for one client session. It freezes a validated `HooksSnapshot`, a transcript store and engine, resolved workspace trust, a presenter, and a fulfillment ledger. It materializes transcript files only on the client before executing matching command handlers; the graph never receives client-local hook configuration or transcript paths.
+
+Configuration is merged in precedence/reduction order: trusted project `.deepagents/hooks.json`, user `~/.deepagents/hooks.json`, then enabled-plugin documents. Project configuration is excluded unless the workspace is trusted. Every source is validated and incorporated into a canonical snapshot hash; enabled server events and that `snapshot_id` are projected into per-run graph context. Moving to a new working directory or reloading reconstructs the runtime and re-resolves trust, so a grant for one project does not travel to another.
+
+The event capability table divides work deliberately:
+
+- **Client-owned events**—such as `SessionStart`, `UserPromptSubmit`, `SessionEnd`, `PermissionRequest`, and `Notification`—are invoked by the client lifecycle coordinator and can add context, stop client processing, make permission decisions, or present notices.
+- **Server-owned events**—`PreCompact`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SubagentStart`, and `SubagentStop`—are emitted at graph-safe lifecycle boundaries by `ServerHooksMiddleware`. They are enabled only when the client supplied both a snapshot ID and the corresponding event name, avoiding an interrupt round trip for unconfigured events.
+
+Project hooks can execute commands, so headless and CI runs do **not** inherit an interactive persisted grant. They load project hooks only with `--trust-project-hooks`; interactive startup may prompt and remember a project grant.
 
 ```mermaid
 sequenceDiagram
-    participant CLI as dcode CLI
-    participant Launcher as Server manager
-    participant Server as LangGraph server
-    participant App as Terminal app
-    participant Store as SQLite store
-    CLI->>Launcher: prespawn local server
-    Launcher->>Server: start generated runtime
-    App->>Launcher: adopt start after first paint
-    Launcher->>Server: health poll and graph readiness
-    Launcher-->>App: RemoteAgent and process owner
-    App->>Server: bind thread workspace
-    Server->>Store: persist binding
-    App->>Server: stream input with workspace context
-    Server->>Store: checkpoint state
-    Server-->>App: streamed events and interrupts
+    participant Client as dcode client
+    participant Runtime as HooksRuntime
+    participant Graph as server graph
+    participant Hook as command handler
+    Client->>Runtime: freeze snapshot and server event names
+    Client->>Graph: stream with snapshot context
+    Graph->>Graph: reach enabled lifecycle boundary
+    Graph-->>Client: hook invocation interrupt
+    Client->>Runtime: validate and fulfill request
+    Runtime->>Hook: execute projected invocation
+    Hook-->>Runtime: handler output
+    Runtime-->>Client: reduced decision
+    Client->>Graph: matching resume value
+    Graph->>Graph: validate response and continue
 ```
 
-*The subprocess may boot while the application imports, but only a health-checked, graph-ready server is handed to the terminal app.*
+*Server middleware chooses the lifecycle boundary; the client executes handlers and resumes the paused graph with a typed decision.*
 
-### Generated server runtime and readiness handoff
+### Interrupt and resume invariants
 
-`ServerConfig` is the client-to-server contract. The launcher writes serialized `DEEPAGENTS_CODE_SERVER_*` values and the server reconstructs them with `from_env`; relative paths are normalized because the child uses a generated working directory. Security-sensitive validation fails closed: a shell allow-list is absent or nonempty, and an explicit filesystem allowlist is nonempty and contains `read_file`.
+The interrupt wire envelope has a fixed `hook_invocation` discriminator and a validated versioned request. The server derives a deterministic invocation ID from the thread, hook snapshot, prompt, event, and logical event identity. The client checks that the request snapshot matches its runtime, then deduplicates fulfillment by `(snapshot_id, invocation_id)`: concurrent or repeated delivery shares one handler execution and cached response. On resume, the server verifies both invocation and snapshot ID before accepting the decision.
 
-The launcher creates a temporary workspace and writes `checkpointer.py`, `pyproject.toml`, and `langgraph.json`. The generated checkpointer obtains the persistent sessions database path from the server environment, installs dcode's compatibility patch, and yields an owned SQLite saver. `langgraph.json` registers the built-in `agent` graph and dcode's custom authenticated HTTP application; offload is an HTTP operation rather than another addressable graph.
+The session gate is checkpointed at the start of an independent turn. On every resume the server compares the current `hooks_snapshot_id` and configured server-event set to that checkpointed gate; a changed context aborts rather than applying a decision under different hook policy. Malformed response *shape* is logged and reduced to a neutral decision, but an answer for a different invocation or snapshot is fatal.
 
-`ServerProcess` starts `langgraph dev` on an ephemeral loopback port. It first polls `/ok`, then separately requests the `agent` graph, deliberately forcing lazy graph construction before `RemoteAgent` handoff. Startup failure or cancellation reaps the child from `finally`; an abandoned unsandboxed start has a shortened grace period, while a sandboxed build retains normal graceful shutdown so server-side cleanup can run.
+This division also covers operations outside ordinary graph streaming. The server offload route returns one hook request at a time; the client fulfills it and sends an accumulated map of responses on the next request. The operation replays from the top and reuses answers keyed by deterministic ID, rather than re-running an already answered hook. This is essential for `PreCompact` and offload operations that cross normal graph interrupt boundaries.
 
-Interactive startup overlaps work without changing ownership. `PrespawnedServer` spawns before the app module finishes loading, pauses before health checking, and is adopted by the app after its paint gate releases it. If no caller adopts it, `aclose` cancels or reaps the start.
+### What the middleware changes
 
-`DeepAgentsApp` composes the chat scroll area, startup tip, goal panel, input, and docked status bar. Its mount path is deliberately light, starts import prewarming and the server only after refresh, and schedules nonessential setup after first paint. After prewarming, it constructs a `TextualUIAdapter` that is only a callback bridge—rendering, approvals, status, cache/accounting, skill trust, subagent, and Auto-mode events—while the agent is supplied later for execution. The two-line status bar maintains separate hook and agent messages and stops its shared connection/busy spinner on unmount.
+`PreToolUse` runs after a model proposes calls and before downstream approval. It can deny a call, explicitly allow it, request the existing HITL approval path, add context, or replace a local `execute` command. A denial becomes an error `ToolMessage` and prevents tool execution. Explicit allow/deny decisions are checkpointed per tool-call ID so normal approval does not prompt again; an undecided call continues through normal approval. Duplicate provider tool-call IDs never receive a trusted explicit-allow marker.
 
-## Execution surfaces
+After a tool result is committed, the middleware stores a duration keyed by call ID in private checkpointed state. At the next `before_model` safe boundary it emits `PostToolUse` or `PostToolUseFailure`, may rewrite the committed `ToolMessage`, and removes the pending entry with a reducer tombstone. `task` calls additionally bracket the subagent with `SubagentStart` and `SubagentStop`; private hook state is stripped from subagent result merges so parallel subagents cannot corrupt parent hook bookkeeping.
 
-### Interactive Textual client
+At a natural main-agent end, `Stop` may feed hook feedback back as a `HumanMessage` and jump to `model`. A continuation counter is checkpointed, passed to the event, and reset when the loop ends. Subagent graphs do not emit this parent `Stop`. Hook inputs are omitted from tracing by default.
 
-The interactive client receives streamed graph events through the adapter and keeps the Textual message pump responsive. Server construction, heavy imports, discovery, and other startup work are placed in workers or threads instead of blocking the first frame. Textual owns visual state and user decisions; server-side policy and graph execution remain remote.
+## Normal, headless, and ACP implications
 
-The answer renderer has a deliberate live/final seam. During streaming, `AssistantMessage` mounts Textual `Markdown` and feeds a `MarkdownStream`: the first fragment is visible immediately, subsequent fragments are coalesced and throttled to protect input responsiveness. On completion or replacement it swaps the whole reply to one `FinalMarkdown` widget. `FinalMarkdown` reproduces Textual Markdown block layout but holds rows in one widget, caches layouts by width, folds long fence lines, and preserves selectable text; this avoids a long completed transcript retaining a widget for every markdown block, list item, and table cell. Because this mirrors private Textual behavior, upgrades need focused revalidation.
+The Textual app owns a `HooksManager` and attaches its presenter to notices and a delayed footer-status slot. It applies the runtime's snapshot ID/event names to the graph context, projects rendered messages into the hook transcript, and fulfills hook interrupts received in agent streaming. Its offload and handoff calls pass the same fulfillment function, preserving hook behavior when compaction is server-operated.
 
-### Headless single-task mode
+Headless execution creates the same manager with a fixed one-turn identity, displays hook notices on the console and hook progress on the spinner, and applies the snapshot context before streaming. It collects hook interrupts separately from ordinary approval interrupts, executes them, and resumes the graph with both response maps. Permission hooks intentionally prevent automatic approval from bypassing the hook decision. It drains legacy fire-and-forget hooks during teardown, while Hooks v2 lifecycle execution is awaited at the applicable boundary.
 
-`cli_main` dispatches `-n` to one headless task; otherwise it launches the Textual app. A headless task creates the agent with `interactive=False`, runs the remote stream through a console loop, and exits with the resulting status. Shell execution is disabled unless a shell allow-list is configured; an explicit allow-list gates shell commands, while `all` allows them. A wall-clock `--timeout` cancels the task and exits 124, as does the headless HITL iteration limit; Ctrl-C exits 130. Teardown drains pending hook tasks and releases any held thread lease.
+ACP's `_AutoGraph` is a distinct in-process adapter. For every streamed ACP request it persists `ApprovalMode.AUTO` under the session's key, adds trusted prompt metadata to the final human message when present, and supplies an Auto `CLIContextSchema`. It does not create a Textual hook runtime or a terminal status reporter; integrations that require Hooks v2 must provide the corresponding hook context and fulfillment behavior at their own graph boundary. See [ACP integration](/openwiki/integrations/acp.md) and [Hooks lifecycle](/openwiki/concepts/hooks-lifecycle.md).
 
-### ACP stdio mode
+## Terminal program status
 
-ACP is an intentionally different, **in-process** stdio surface. It opens a persistent checkpointer, builds an agent for each ACP session, fences session configuration with thread leases, and releases leases and MCP sessions when the ACP server exits. It resolves the model before serving, assembles builtin and MCP tools, and creates an in-memory store only for Auto mode. An Auto wrapper retains trusted approval state and adds prompt metadata before graph streaming while delegating graph-state operations to the underlying graph. See [ACP integration](/openwiki/integrations/acp.md).
+Terminal status is independent of the agent-server protocol. `program_status.py` implements the Program Status Protocol with `OSC 7501` records for terminals or multiplexers that support it. `ProgramStatus` validates legal state/field combinations, record-ID grammar, progress bounds, and state-specific `kind`; text is converted to one sanitized line, byte-truncated without breaking UTF-8, then base64 encoded. Reporting is best effort: invalid records and writer failures are dropped rather than breaking the agent, and `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` applies through the shared terminal writer.
 
-## Workspace binding is authorization
+`ProgramStatusReporter` is thread-safe, suppresses duplicate per-record sequences, and normally registers an `atexit` clear after its first successful report. Its `clear()` operation removes a record and its descendants, or every record at the root. Interactive `DeepAgentsApp` owns an `AgentStatusTracker`, starts at `idle`, and clears records when the app exits. The tracker gives the newest outstanding blocker precedence over work and prior outcome, then reports `working`, `done`, `error`, or `idle`; prompts map to `blocked` with `permission`, `question`, or `auth`. Starting new work clears an old outcome, while changing or clearing a transcript drops its transcript-mounted blockers.
 
-A workspace is durable, server-authoritative thread state, not the client process's current directory. The client may send only a session-policy claim and fingerprint. The server canonicalizes the target directory, rejects claimed project fields, verifies the claim against its own resolved session policy, then persists or verifies the authoritative workspace payload with the thread binding.
+Headless CLI has different terminal semantics. It sends `working` before `run_non_interactive()`, uses a reporter with `clear_on_exit=False`, and reports `done` for success or `error` for failure just before exit so the terminal can retain a terminal result. Ctrl-C or an unknown exit produces `clear`; a timeout reports error and carries its timeout reason. Neither surface sends the protocol support query, avoiding startup latency or a false negative on a slow terminal.
 
-```mermaid
-flowchart TD
-    Request["workspace request"] --> Resolve["canonicalize directory and resolve policy"]
-    Resolve --> Claim{"session claim matches"}
-    Claim -->|no| Refuse["409 conflict"]
-    Claim -->|yes| Project{"project fields claimed"}
-    Project -->|yes| Refuse
-    Project -->|no| Bind["persist or verify thread binding"]
-    Bind --> Check["validate or build workspace runtime"]
-    Check --> Context["return descriptor for graph context"]
-```
+## Server-authoritative model transport
 
-*The client transports a claim and descriptor; only server-resolved policy can become a durable binding.*
+The model picker remains deliberately separate from hook execution. Model metadata crosses the process boundary as validated provider-independent JSON: the server serves cached launch metadata at `GET /dcode/model`, resolves thread-bound proposals in its workspace environment, and the client applies metadata without constructing a provider model.
 
-For graph execution with an execution context, `make_graph` requires a nonempty thread ID and workspace context, validates it against the durable binding, then selects the workspace runtime. Directory switching fails closed: when target-project equivalence is unavailable, resolution drops launch-project MCP configuration, sandbox setup, and extension paths, then rereads target extension trust.
+The private workspace-bound `POST /dcode/threads/{thread_id}/models` endpoint validates catalog requests, verifies the thread workspace, and discovers the catalog in the server's saved model environment; it applies workspace profile overrides only for the main purpose. `ModelCatalog` carries only strict presentation and readiness data: scalar whitelisted profile fields with override provenance, provider readiness and labels without credential values, allowed-model policy, and the retained current spec; arbitrary profile extensions and constructor data do not cross the process boundary.
 
-A policy fingerprint captures workspace identity and execution-access policy, so policy drift refuses the thread. A runtime fingerprint captures model, prompt, parameters, and runtime-only settings; it can change without invalidating a compatible binding and causes runtime selection or rebuild instead. Workspace runtimes are lock-protected and cached to prevent duplicate MCP discovery, sandbox creation, and `atexit` registrations; graph and offload share the runtime and composite backend. A configured sandbox is process-wide and reserved to its first workspace.
+When connected to a server, the app delegates main and auxiliary picker catalog loading to `RemoteAgent.aget_model_catalog()` with the current thread, while the auxiliary path explicitly uses `purpose="auxiliary"`; local discovery is retained only as a disconnected bootstrap fallback. A server-backed `ModelSelectorScreen` renders catalog-supplied policy, profiles, readiness, and installation metadata while keeping local preferences, and it avoids local provider discovery and inference: unknown explicit providers remain unknown and ambiguous IDs are deferred to inference-host resolution. See [Profiles and models](/openwiki/concepts/profiles-models.md).
 
-See [Configuration layering](/openwiki/concepts/config-layering.md).
+## Change and test guidance
 
-## Plugin and MCP extension boundary
-
-Plugins are installed and enabled marketplace artifacts, identified as `name@marketplace`. Discovery produces validated plugin instances with a root, per-plugin writable data directory, manifest-derived component paths, and an inventory of supported skills, MCP files, and hook files. Unsupported plugin `agents/` and `commands/` directories are inventoried rather than loaded. Discovery tolerates individual broken entries; an enabled plugin whose install directory is missing is reported separately, and shared consumers claim that repair notice once per process.
-
-Plugin adapters, rather than the plugin manager itself, translate validated content into runtime inputs:
-
-- The MCP adapter loads plugin `.mcp.json` layers before manifest `mcpServers`, so a manifest entry wins an intra-plugin name conflict. It namespaces every resulting server name with the plugin identity, creates the plugin data directory when needed, and emits ordinary MCP configuration layers for the standard merge/load path. ACP explicitly passes those layers into its MCP tool resolver.
-- `PluginSkillsMiddleware` wraps the SDK skills middleware without changing the SDK source API. It recursively discovers nested plugin skill directories and qualifies names as `plugin_id:path:skill` before the last-one-wins merge. Reading a selected skill remains constrained to trusted roots and fails rather than reading an unchecked path.
-
-Thus plugins contribute declarative MCP, skills, hooks, and declared Python extensions at existing trust and loading boundaries; they do not receive a privileged parallel tool-execution path. See [Plugins](/openwiki/concepts/plugins.md) and [MCP integration](/openwiki/integrations/mcp.md).
-
-## Persistence and server-lifetime behavior
-
-The generated server uses the persistent sessions SQLite database for LangGraph checkpoints and durable thread metadata/workspace bindings. A restarted dev server can retain checkpoint state while its live HTTP thread record is recreated idempotently. The remote cost tracker keeps main-task and side-question subtotals independently, rejects stale lower main-task totals, and combines them only for presentation.
-
-Two guarded compatibility patches improve server behavior without changing external queue or checkpoint semantics:
-
-- The custom-checkpointer adapter forwards delta-history reads to an inner saver only when it overrides the base method; otherwise the base history walk remains in effect.
-- During HTTP lifespan, dcode may patch the in-memory LangGraph run queue so a completed `Runs.put` wakes a waiting `Runs.next`. The stock claim operation, order, and thread locking remain intact; shape checks, idempotence, and a 0.5-second fallback turn an upstream mismatch into a no-op.
-
-Tracing is also process-lifetime server state because LangSmith caches environment and a default client. The first workspace reserves tracing settings and different later settings are refused. The runtime override runs only known untraced `traceable` setup/end bookkeeping inline; other calls retain LangSmith's normal thread hop.
-
-## Cleanup and operational invariants
-
-`server_session` owns headless server lifetime: its `finally` cleans MCP resources and stops the child. `ServerProcess.stop()` is idempotent and concurrency-safe; a generation counter prevents an asynchronous restart from undoing a terminal stop.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Spawned
-    Spawned --> Ready: health and graph ready
-    Spawned --> Reaping: startup failure or cancellation
-    Ready --> Reaping: session exit or stop
-    Ready --> Restarting: restart request
-    Restarting --> Spawned: cleanup completed
-    Reaping --> Stopped
-    Stopped --> [*]
-```
-
-*Cancelled startup and ordinary session shutdown converge on reaping; terminal stop cannot be undone by a concurrent restart.*
-
-On POSIX, the child has its own session/process group and a parent-owned pipe. EOF after client death makes the bootstrap guard terminate the server and enforce a hard-kill timeout, even if interpreter teardown stalls. Explicit teardown signals the dedicated group with `SIGTERM`, then group `SIGKILL`, reaching descendants. Windows uses a new console group and Ctrl+Break with terminate fallback, but hard escalation kills only the root process handle; descendants can remain.
-
-## Change guidance and focused tests
-
-- Put provider, tool, tracing, backend, workspace-policy, and extension-trust changes at the server graph/config boundary, not in Textual widgets.
-- Treat `workspace_config` as a claim, preserve the policy/runtime fingerprint split, and retain single-workspace sandbox ownership.
-- Keep a cancellation-safe owner for every process, session manager, lease, sandbox, prebuild task, or extension; preserve graph-readiness handoff and platform-specific escalation.
-- For a Textual upgrade, test the streamed-to-final markdown transition, height parity, selection, theme changes, and code-fence folding. Do not assume `FinalMarkdown` is insulated from Textual internals.
-- For headless changes, retain the shell-default denial, exit-code behavior, hook drain, and lease release. For plugin changes, retain plugin IDs/namespacing and route MCP/skill content through their adapters instead of bypassing trust or standard loading.
-
-`test_app.py` exercises app startup, `ServerReady`, restart, and final-answer integration behavior. `test_non_interactive.py` exercises headless approval and launch plumbing. `test_server_manager.py` covers generated runtime wiring, claims, cancellation, and sandbox grace; focused compatibility tests cover the checkpointer adapter, run-queue wakeup, and LangSmith override. Widget tests under `tui/widgets/test_final_markdown.py` and `test_messages.py` cover the renderer seam. For an operator flow, see [Run a dcode session](/openwiki/workflows/run-dcode-session.md) and [Testing guide](/openwiki/testing/testing-guide.md).
+- Do not move hook command execution into server middleware. The server must own the exact lifecycle boundary, while the client owns trusted configuration, local transcripts, presentation, and handler processes.
+- Preserve snapshot identity, deterministic invocation IDs, client fulfillment deduplication, and server validation on resume. A retry must not execute a decision-producing hook twice or apply it to a different policy snapshot.
+- Keep server hook state private but checkpointed. Post-tool results must be committed before post hooks run, and subagent result merges must not leak private hook channels.
+- Keep `PreToolUse` before approval routing and preserve the distinction between explicit hook allow, deny, ask, and no opinion. Headless auto-approval must not bypass permission hooks.
+- Treat OSC output as cosmetic and best effort. Preserve protocol validation, duplicate suppression, interactive clear-on-exit, and headless retained final status.
+- Focus tests on real-graph pre-tool denial and resume, response mismatch handling, duplicate fulfillment, offload replay, post-tool cleanup, and parallel-subagent private-state isolation. For status, test state precedence, prompt blocking/unblocking, queued turns, terminal preference opt-out, interactive clearing, and headless final outcomes.

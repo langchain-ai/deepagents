@@ -35,6 +35,9 @@ jobs:
   detect-release-commit:
     name: Block empty commits and detect merged release PR
     runs-on: ubuntu-latest
+    # Normally ~20 s. Without a limit, a stuck clone holds this job, and
+    # everything after it, for GitHub's 6-hour default.
+    timeout-minutes: 10
     outputs:
       release-commit: ${{ steps.check-releases.outputs.release-commit }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
@@ -49,10 +52,13 @@ jobs:
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
       # Full history: the empty-commit guard walks the second parent of
-      # repo-hotfix merge commits.
+      # repo-hotfix merge commits. The steps only read commits and file
+      # lists, so skip file contents; the rare rename check fetches the
+      # few it needs on demand.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
 
       - name: Reject empty commits
@@ -695,9 +701,13 @@ jobs:
       pr: ${{ steps.release.outputs.pr }}
       prs: ${{ steps.release.outputs.prs }}
     steps:
+      # Full history without file contents: run.mjs walks commits with
+      # `git log --name-only`, which needs commits and trees but no blobs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
 
       # Release-please only discovers PRs with the canonical pending label.
       # Normalization must succeed before it runs, or it can update an existing
@@ -709,21 +719,65 @@ jobs:
             const normalize = require('./.github/scripts/release/normalize-release-labels.js');
             await normalize(github, context.repo.owner, context.repo.repo);
 
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
-        id: release
+      # Runs release-please from a pinned, patched npm package instead of
+      # googleapis/release-please-action. See .github/release-please/README.md.
+      - name: "📦 Setup pnpm"
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          package_json_file: .github/release-please/package.json
+
+      - name: "🟢 Setup Node"
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
+        with:
+          node-version: "24"
+
+      # pnpm applies `patchedDependencies` from pnpm-workspace.yaml during
+      # install and fails if a patch no longer applies. `--ignore-scripts`
+      # keeps dependency install scripts out of a job with a write token.
+      - name: Install release-please
+        run: pnpm install --dir .github/release-please --frozen-lockfile --ignore-scripts
+
+      - name: Run release-please
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/release-please/run.mjs
+
+  # Labeling runs beside `update-lockfiles` instead of inside `release-please`,
+  # so the ~8 s of label API calls stay off the path to the lockfile refresh and
+  # release-notes dispatch. Nothing later in this workflow reads these labels.
+  label-release-prs:
+    name: Label release PRs
+    # Same dependency and skip-gate handling as `update-lockfiles` below; see
+    # the comment there (#5161/#5169).
+    needs: [detect-release-commit, guard-pending-release, release-please]
+    if: |
+      !cancelled() &&
+      needs.detect-release-commit.result == 'success' &&
+      needs.guard-pending-release.result == 'success' &&
+      needs.release-please.result == 'success' &&
+      needs.release-please.outputs.prs != '[]' &&
+      needs.release-please.outputs.prs != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
       # shared labelPR() helper so labeling logic stays in one place.
       - name: Label release PRs
-        if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          RELEASE_PRS: ${{ steps.release.outputs.prs }}
+          RELEASE_PRS: ${{ needs.release-please.outputs.prs }}
         with:
           script: |
             let prs;
@@ -786,10 +840,15 @@ jobs:
       matrix:
         pr: ${{ fromJson(needs.release-please.outputs.prs) }}
     steps:
+      # Full history and tags (blobs fetched on demand): the Dependencies step
+      # diffs `pyproject.toml` against the package's previous release tag.
       - name: Checkout release branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.pr.headBranchName }}
+          fetch-depth: 0
+          fetch-tags: true
+          filter: blob:none
 
       # Use the composite action rather than calling setup-uv directly: it is
       # the single place the uv `version:` pin lives, and `bump_uv_pin.yml`
@@ -804,9 +863,20 @@ jobs:
           # makes setup-uv's post-job save throw. See `check_lockfiles.yml`.
           enable-cache: "false"
 
-      - name: Update lockfiles
+      - name: Update lockfiles and dependency notes
         id: update-lockfiles
+        env:
+          RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
+          PR_TITLE: ${{ matrix.pr.title }}
         run: |
+          # Writes the release's dependency range changes into its CHANGELOG.md
+          # section (see update_changelog_dependencies.py). Fails open with a
+          # warning, so it never blocks the lockfile update.
+          update_dependencies() {
+            uv run --no-project python .github/scripts/release/update_changelog_dependencies.py \
+              --component "${RELEASE_BRANCH#release-please--branches--main--components--}" \
+              --version "${PR_TITLE##*: }"
+          }
           regenerate() {
             git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
               dir=$(dirname "$lockfile")
@@ -819,20 +889,31 @@ jobs:
             done
           }
           regenerate
+          update_dependencies
 
       - name: Commit and push
         # Retry on push rejection. Concurrent release-please runs (one per push to
         # main) all update the same release branch, so a stale local checkout can
         # lose the push race ("cannot lock ref ...: is at X but expected Y"). On
         # rejection: fetch the new tip, reset, re-run `uv lock` against it, and
-        # retry. `uv lock` is deterministic on a given pyproject.toml, so this
-        # converges — and if the rebased state already has the right lockfiles
+        # retry. `uv lock` and the Dependencies update are deterministic on a
+        # given branch state, so this converges — and if the rebased state already has the right lockfiles
         # (another run won), the diff is empty and we exit cleanly.
         env:
           RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
+          PR_TITLE: ${{ matrix.pr.title }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Writes the release's dependency range changes into its CHANGELOG.md
+          # section (see update_changelog_dependencies.py). Fails open with a
+          # warning, so it never blocks the lockfile update.
+          update_dependencies() {
+            uv run --no-project python .github/scripts/release/update_changelog_dependencies.py \
+              --component "${RELEASE_BRANCH#release-please--branches--main--components--}" \
+              --version "${PR_TITLE##*: }"
+          }
 
           regenerate() {
             git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
@@ -846,7 +927,7 @@ jobs:
           }
 
           stage_and_commit() {
-            git add "**/uv.lock"
+            git add "**/uv.lock" "**/CHANGELOG.md"
             if git diff --staged --quiet; then
               return 1
             fi
@@ -873,6 +954,7 @@ jobs:
             git fetch origin "${RELEASE_BRANCH}"
             git reset --hard FETCH_HEAD
             regenerate
+            update_dependencies
             if ! stage_and_commit; then
               echo "Lockfile already up-to-date on remote after rebase; nothing to push"
               exit 0

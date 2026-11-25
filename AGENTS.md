@@ -25,6 +25,17 @@ Do not add dependencies unless required. When adding one, justify its maintenanc
 
 Use inline `# noqa: RULE` with a justification for individual exceptions. Reserve `[tool.ruff.lint.per-file-ignores]` for categorical policies that apply to a whole class of files, such as tests not requiring docstrings. Do not hide a single violation with a file-wide ignore. If you cannot justify a suppression, the code is probably the problem. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#suppressing-ruff-rules) for worked examples.
 
+## Opening issues
+
+Before opening an issue on a user's behalf, suggest a reasonable priority from the existing repository labels and ask the user to confirm it:
+
+- `priority:triage`: no one has reviewed it; a maintainer should review and assign priority.
+- `priority:backlog`: not now.
+- `priority:medium`: planned, likely this sprint or next.
+- `priority:high`: important; will do now.
+
+Also ask whether it should be assigned to the user or someone else; if someone else, confirm who. Wait for their answers before creating the issue, apply the confirmed priority label, and use the confirmed assignee.
+
 ## PR conventions
 
 ### Titles and scope
@@ -36,7 +47,7 @@ Follow Conventional Commits and include a scope. Allowed types and scopes are de
 - Do not put Linear issue-closing markers in titles; put issue relationships in the PR body.
 - For version-branch syncs, use `chore(repo): sync main into vX.Y`; `release` is a type, not a scope.
 - PRs should generally leave `README.md` files unchanged, including root and package READMEs. Only modify them when explicitly requested or necessary to correct information made inaccurate by the PR; avoid incidental README edits.
-- Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
+- Keep each bump-worthy PR to published-file changes (source, `pyproject.toml`) in one releasable package. Relocking other packages' `uv.lock` in the same PR is fine; release-please ignores lockfiles and `tests/`. Land another package's `pyproject.toml` or source change in its own PR first. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [dependency bump in a package with path dependents](.github/RELEASING.md#dependency-bump-in-a-package-with-path-dependents).
 
 ### Branch naming
 

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from langchain.tools import ToolRuntime  # noqa: TC002  # `@tool` resolves the injected `runtime` annotation at runtime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, get_notification_metadata
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -104,6 +104,7 @@ def test_named_skills_follow_the_users_message_in_list_order(tmp_path: Path, mod
             },
         ),
     ]
+    assert [get_notification_metadata(m) for m in skills] == [{"source": "pinned_skill"}] * 2
 
 
 def test_pin_is_stored_once_and_left_out_of_the_result(tmp_path: Path) -> None:

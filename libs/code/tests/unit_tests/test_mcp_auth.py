@@ -2426,6 +2426,34 @@ class TestFindOauthChallenge:
 class TestFormatLoginFailure:
     """Tests for the token-safe summary helper used in app + CLI logs."""
 
+    @pytest.mark.parametrize("client", [httpx, httpx2])
+    @pytest.mark.parametrize("kind", ["timeout", "connect", "forbidden"])
+    def test_nested_transport_failure_has_safe_guidance(
+        self, client, kind: str
+    ) -> None:
+        sentinel = "SECRET_OAUTH_PAYLOAD"
+        request = client.Request("POST", f"https://example.com/token?secret={sentinel}")
+        if kind == "forbidden":
+            error = client.HTTPStatusError(
+                sentinel,
+                request=request,
+                response=client.Response(403, request=request),
+            )
+            expected = "Authorization was rejected"
+        elif kind == "timeout":
+            error = client.ReadTimeout(sentinel, request=request)
+            expected = "timed out"
+        else:
+            error = client.ConnectError(sentinel, request=request)
+            expected = "Could not connect"
+        exc = ExceptionGroup(sentinel, [ExceptionGroup(sentinel, [error])])
+        assert format_login_failure(exc) == "ExceptionGroup -> [ExceptionGroup]"
+        summary = format_login_failure(exc, include_login_hint=True)
+        assert expected in summary
+        assert "retry login" in summary
+        assert sentinel not in summary
+        assert "example.com" not in summary
+
     def test_returns_reauth_message_for_nested_reauth_error(self) -> None:
         """ExceptionGroup wrapping `MCPReauthRequiredError` surfaces its message."""
         exc = ExceptionGroup(
@@ -2450,7 +2478,52 @@ class TestFormatLoginFailure:
         exc = FakeMcpError(sentinel)
         summary = format_login_failure(exc)
         assert sentinel not in summary
-        assert "FakeMcpError" in summary
+        assert summary == "FakeMcpError"
+        login_summary = format_login_failure(exc, include_login_hint=True)
+        assert "Retry login" in login_summary
+        assert sentinel not in login_summary
+
+    @pytest.mark.parametrize("wrapped", [False, True])
+    def test_slack_disabled_app_has_safe_remediation(self, *, wrapped: bool) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        error = MCPError(
+            code=-32000,
+            message=(
+                "App is not enabled for Slack MCP server access. "
+                "Please enable it here: "
+                "https://api.slack.com/apps/A0CCRHL9PGS/app-assistant"
+            ),
+            data={"access_token": "TOKEN_PAYLOAD_DO_NOT_LEAK"},
+        )
+        exc = ExceptionGroup("TOKEN_PAYLOAD_DO_NOT_LEAK", [error]) if wrapped else error
+        summary = format_login_failure(exc)
+        assert "Ask an app owner" in summary
+        assert "Slack Model Context Protocol (MCP) Server" in summary
+        assert "https://api.slack.com/apps/A0CCRHL9PGS/app-assistant" in summary
+        assert "retry login" in summary
+        assert "TOKEN_PAYLOAD_DO_NOT_LEAK" not in summary
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "TOKEN_PAYLOAD_DO_NOT_LEAK",
+            (
+                "App is not enabled for Slack MCP server access. "
+                "Please enable it here: https://evil.test/apps/A123/app-assistant"
+            ),
+            (
+                "App is not enabled for Slack MCP server access. "
+                "Please enable it here: "
+                "https://api.slack.com/apps/A123/app-assistant?token=SECRET"
+            ),
+        ],
+    )
+    def test_unknown_mcp_errors_do_not_expose_messages(self, message: str) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        summary = format_login_failure(MCPError(code=-32000, message=message))
+        assert summary == "MCPError"
 
     def test_preserves_message_for_config_errors(self) -> None:
         """Config errors are pre-handshake and token-free, so keep the message.

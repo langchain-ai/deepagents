@@ -3008,6 +3008,36 @@ class TestModeColorsDrift:
 class TestQueuedUserMessageModeRendering:
     """Test `QueuedUserMessage` renders mode-specific prefix indicators (dimmed)."""
 
+    @pytest.mark.parametrize("trigger", ["", "!", "!!", "/"])
+    @pytest.mark.parametrize("width", [24, 80])
+    async def test_long_token_wraps_beside_prompt(
+        self, trigger: str, width: int
+    ) -> None:
+        body = "https://example.com/" + "a" * 140 + " trailing text\nnext line"
+        widget = QueuedUserMessage(trigger + body)
+        app = App()
+        async with app.run_test(size=(width, 24)) as pilot:
+            await app.mount(widget)
+            await pilot.pause()
+            from textual.style import Style as TStyle
+            from textual.visual import RenderOptions
+
+            rendered = _render_content(widget)
+            options = RenderOptions(lambda _: TStyle.null(), {})
+            lines = [
+                strip.text
+                for strip in rendered.render_strips(
+                    widget.content_size.width, None, TStyle.null(), options
+                )
+            ]
+            prefix = widget._prefix_and_body()[0][0]
+            assert lines[0].startswith(prefix + "https://")
+            assert all(line.startswith("  ") for line in lines[1:])
+            assert "".join("".join(line[2:].split()) for line in lines) == "".join(
+                body.split()
+            )
+            assert widget.content_size.height == len(lines)
+
 
 class TestStripPromptPrefix:
     """Unit tests for `_strip_prompt_prefix` selection trimming."""
@@ -4204,8 +4234,77 @@ class _LiveToolGroupTwoEditsApp(App[None]):
         yield t2
 
 
+class TestToolGroupProgressDelay:
+    @pytest.mark.parametrize("tool_name", ["grep", "glob", "web_search", "read_file"])
+    async def test_progress_waits_but_completed_work_appears_immediately(
+        self, monkeypatch: pytest.MonkeyPatch, tool_name: str
+    ) -> None:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        clock = MagicMock(return_value=100.0)
+        monkeypatch.setattr("deepagents_code.tui.widgets.messages.monotonic", clock)
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            fast = ToolCallMessage(tool_name, {"pattern": "fast"})
+            slow = ToolCallMessage(tool_name, {"pattern": "slow"})
+            await pilot.app.mount(fast, slow)
+            summary.add_member(fast)
+            summary.add_member(slow)
+            assert not summary.display
+
+            fast.set_success("done")
+            clock.return_value = 101.9
+            summary._tick()
+            assert summary.display
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "ing " not in rendered.plain
+            completed_text = rendered.plain
+
+            clock.return_value = 102.0
+            summary._tick()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "ing " in rendered.plain
+            assert completed_text[2:] in rendered.plain
+
+            slow.set_success("done")
+            summary.close()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "ing " not in rendered.plain
+
+    async def test_fast_group_never_shows_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.messages.monotonic", lambda: 100.0
+        )
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+            summary.add_member(tool)
+            assert not summary.display
+            tool.set_success("done")
+            summary.close()
+            assert summary.display
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+            assert "Running" not in rendered.plain
+
+
 class TestLiveToolGroupSummary:
     """Eager/live group: collapsed from the start, running -> ran transition."""
+
+    @pytest.fixture(autouse=True)
+    def immediate_progress(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.messages.ToolGroupSummary._PROGRESS_REVEAL_DELAY_SECONDS",
+            0.0,
+        )
 
     async def test_live_line_reads_targets_not_just_names(self) -> None:
         """The live path collapses repeats, and re-renders when one finishes.

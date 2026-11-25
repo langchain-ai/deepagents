@@ -1,15 +1,17 @@
 # Post-merge safety net for accidental release-please fan-out.
 #
 # Why this exists:
-#   Pre-merge gates (`release_please_scope_check.yml`, etc.) should catch most
-#   multi-component / lockfile-only fan-outs, but bypass labels and race windows
-#   still happen. When release-please opens a `release(<component>):` PR for a
-#   package whose only unreleased path changes on main are lockfiles, this job
-#   sticky-comments that release PR within minutes and fails the advisory check
-#   so someone notices before release time.
+#   release-please ignores files under a package's `exclude-paths` (`tests/`,
+#   `uv.lock`), so it should never open a release PR for a package whose only
+#   changes since its last release are excluded files. When an open
+#   `release(<component>):` PR's package has no release-relevant changes on main
+#   since its last release tag, something went wrong: a change was later
+#   reverted, the PR predates an exclusion, or a release-please upgrade dropped
+#   `.github/release-please/patches/exclude-files.patch`. This job sticky-comments
+#   that release PR and fails the advisory check so someone notices before
+#   release time.
 #
-#   Recovery recipes it links:
-#     - .github/RELEASING.md#lockfile-churn-fan-out
+#   Recovery recipe it links:
 #     - .github/RELEASING.md#reverting-a-merged-but-unreleased-pr
 #
 # Triggers:
@@ -41,7 +43,7 @@ concurrency:
 
 jobs:
   watch:
-    name: "flag lockfile-only open release PRs"
+    name: "flag open release PRs with no release-relevant changes"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # workflow_run fires for every conclusion; only act on successful release-
@@ -62,11 +64,11 @@ jobs:
           persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
-      - name: "Detect lockfile-only unreleased components"
+      - name: "Detect components with no release-relevant changes"
         id: detect
         run: |
           set -euo pipefail
@@ -91,7 +93,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Detector offenders: $(cat offenders.json)"
 
-      - name: "Comment on open lockfile-only release PRs"
+      - name: "Comment on open release PRs with no release-relevant changes"
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OFFENDERS: ${{ steps.detect.outputs.offenders }}
@@ -141,7 +143,7 @@ jobs:
               const pr = byComponent.get(off.component);
               if (!pr) {
                 core.info(
-                  `Component ${off.component} is lockfile-only unreleased but has no open release PR; skipping comment.`
+                  `Component ${off.component} has no release-relevant changes and no open release PR; nothing to flag.`
                 );
                 continue;
               }
@@ -149,7 +151,7 @@ jobs:
             }
 
             if (flagged.length === 0) {
-              core.info('No open lockfile-only release PRs to flag.');
+              core.info('No open release PRs without release-relevant changes.');
               return;
             }
 
@@ -161,23 +163,21 @@ jobs:
             }
 
             for (const { off, pr } of flagged) {
-              const files = Array.isArray(off.files)
+              const files = Array.isArray(off.files) && off.files.length
                 ? off.files.map(f => `\`${f}\``).join(', ')
-                : '_unknown_';
+                : '_none_';
               const body = [
                 STICKY_MARKER,
-                '⚠️ **Possible accidental release fan-out.**',
+                '⚠️ **Possible accidental release.**',
                 '',
-                `Open release PR for \`${off.component}\`, but on \`main\` the only changes under \`${off.path}\` since the last released tag (\`${off.baseline}\`${off.version ? `, version ${off.version}` : ''}) are lockfiles: ${files}.`,
+                `Open release PR for \`${off.component}\`, but on \`main\` nothing under \`${off.path}\` that release-please counts has changed since the last released tag (\`${off.baseline}\`${off.version ? `, version ${off.version}` : ''}). Changed files, all under \`exclude-paths\`: ${files}.`,
                 '',
-                'release-please scopes by path and has no "this is just a lockfile" notion — a bump-worthy commit that only churned this package\'s `uv.lock` still opens this release PR.',
+                'release-please skips commits whose files are all under the package\'s `exclude-paths` (`tests/`, `uv.lock`). Likely causes: a change that was reverted, a release PR opened before the exclusion existed, or `.github/release-please/patches/exclude-files.patch` no longer applied.',
                 '',
                 '### Options',
                 '',
                 '- **If unintentional:** revert or hide the offending commit (see [Reverting a Merged-but-Unreleased PR](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#reverting-a-merged-but-unreleased-pr)); closing this PR alone will not stick.',
-                '- **If intentional:** proceed with the release (e.g. deliberate leaf-package security bump).',
-                '',
-                '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)',
+                '- **If intentional:** proceed with the release.',
               ].join('\n');
 
               try {
@@ -193,14 +193,14 @@ jobs:
                     owner, repo, issue_number: pr.number, body,
                   });
                 }
-                core.warning(`Flagged release PR #${pr.number} (${off.component}) as lockfile-only fan-out.`);
+                core.warning(`Flagged release PR #${pr.number} (${off.component}): no release-relevant changes.`);
               } catch (e) {
                 core.warning(`Could not comment on PR #${pr.number}: ${e.message}`);
               }
             }
 
             core.setFailed(
-              `Flagged ${flagged.length} open release PR(s) with lockfile-only unreleased deltas: ` +
+              `Flagged ${flagged.length} open release PR(s) with no release-relevant changes: ` +
               flagged.map(f => f.off.component).join(', ') +
-              '. See sticky comments on those PRs and .github/RELEASING.md#lockfile-churn-fan-out.'
+              '. See the sticky comments on those PRs.'
             );

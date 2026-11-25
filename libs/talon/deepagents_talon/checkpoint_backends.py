@@ -13,7 +13,7 @@ from deepagents_talon.history_drivers import load_driver
 from deepagents_talon.store_records import finish
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncGenerator, Callable
 
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
@@ -23,7 +23,7 @@ type CheckpointFactory = Callable[[str], AbstractAsyncContextManager[BaseCheckpo
 
 
 @asynccontextmanager
-async def open_checkpointer(config: TalonConfig) -> AsyncIterator[BaseCheckpointSaver]:
+async def open_checkpointer(config: TalonConfig) -> AsyncGenerator[BaseCheckpointSaver]:
     """Open the configured checkpointer, defaulting to the local SQLite database.
 
     Args:
@@ -56,7 +56,7 @@ def _checkpoint_factory(scheme: str) -> CheckpointFactory:
 
 
 @asynccontextmanager
-async def _sqlite(uri: str) -> AsyncIterator[BaseCheckpointSaver]:
+async def _sqlite(uri: str) -> AsyncGenerator[BaseCheckpointSaver]:
     parsed = urlsplit(uri)
     if parsed.netloc or not parsed.path or parsed.path == "/":
         msg = "DEEPAGENTS_TALON_CHECKPOINT_URI requires a SQLite file path without a host"
@@ -76,7 +76,7 @@ def _remote_database(uri: str) -> str:
 
 
 @asynccontextmanager
-async def _postgres(uri: str) -> AsyncIterator[BaseCheckpointSaver]:
+async def _postgres(uri: str) -> AsyncGenerator[BaseCheckpointSaver]:
     _remote_database(uri)
     driver = load_driver("langgraph.checkpoint.postgres.aio", "postgres", "Checkpointer requires")
     async with AsyncExitStack() as stack:
@@ -87,7 +87,7 @@ async def _postgres(uri: str) -> AsyncIterator[BaseCheckpointSaver]:
 
 
 @asynccontextmanager
-async def _mongodb(uri: str) -> AsyncIterator[BaseCheckpointSaver]:
+async def _mongodb(uri: str) -> AsyncGenerator[BaseCheckpointSaver]:
     database = _remote_database(uri)
     driver = load_driver("langgraph.checkpoint.mongodb", "mongodb", "Checkpointer requires")
     pymongo = load_driver("pymongo", "mongodb", "Checkpointer requires")

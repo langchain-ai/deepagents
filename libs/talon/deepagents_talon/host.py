@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
 import signal
 import tempfile
 from collections import defaultdict
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -63,7 +64,6 @@ from deepagents_talon.interfaces import (
     ProgressMessageHandler,
     ReactionChannelAdapter,
     SendResult,
-    SmartModelRuntime,
     ThreadedChannelAdapter,
     ToolApprovalDecision,
     ToolApprovalRequest,
@@ -79,7 +79,12 @@ from deepagents_talon.media import (
     extract_markdown_media,
     outbound_channel_media,
 )
-from deepagents_talon.observability import langsmith_trace_context, log_event, stable_log_ref
+from deepagents_talon.observability import (
+    USER_INTERRUPTED,
+    langsmith_trace_context,
+    log_event,
+    stable_log_ref,
+)
 from deepagents_talon.pairing import (
     APPROVED_NOTICE,
     PairedSender,
@@ -89,7 +94,8 @@ from deepagents_talon.pairing import (
     run_pair_command,
     sender_jobs,
 )
-from deepagents_talon.speech import transcribe_voice_message
+from deepagents_talon.questions import Answer, QuestionSession
+from deepagents_talon.speech import _is_voice_message, transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -97,6 +103,7 @@ if TYPE_CHECKING:
     from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob, CronOrigin
+    from deepagents_talon.questions import Question, QuestionHandler
     from deepagents_talon.speech import VoiceTranscriber
 
 SignalHandler = Callable[[int, FrameType | None], object] | int | None
@@ -109,7 +116,6 @@ _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
 _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _MODEL_COMMAND = chat_commands.MODEL
-_SMART_MODEL_COMMAND = chat_commands.SMART_MODEL
 _EFFORT_COMMAND = chat_commands.EFFORT
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
 _PAIR_COMMAND = chat_commands.PAIR
@@ -133,17 +139,6 @@ _MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
 _MODEL_LOAD_FAILURE_MESSAGE = "Could not load that model. Check Talon logs."
 _MODEL_SAVE_FAILURE_MESSAGE = "Could not save the model selection. Check Talon logs."
 _MODEL_LIST_FAILURE_MESSAGE = "Could not list available models. Check Talon logs."
-_SMART_MODEL_UNAVAILABLE_MESSAGE = "Smart model switching is unavailable."
-_SMART_MODEL_OPERATOR_ONLY_MESSAGE = "Only an operator can change the smart model."
-_SMART_MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
-_SMART_MODEL_LOAD_FAILURE_MESSAGE = "Could not load that model. Check Talon logs."
-_SMART_MODEL_SAVE_FAILURE_MESSAGE = "Could not save the smart model selection. Check Talon logs."
-_SMART_MODEL_ROLLBACK_FAILURE_MESSAGE = (
-    "Could not save or restore the smart model selection. Check Talon logs."
-)
-_SMART_MODEL_HELP_MESSAGE = (
-    "Send /smart-model <provider:model>, /smart-model off, or /smart-model default."
-)
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
@@ -173,6 +168,40 @@ _EMOJI_SKIN_TONES = frozenset(
         "\U0001f3ff",
     }
 )
+
+
+def _is_model_unavailable(error: BaseException) -> bool:
+    """Recognize provider model-access failures through chained exceptions."""
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        if _provider_model_unavailable(error):
+            return True
+        cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        if cause is None:
+            return False
+        error = cause
+    return False
+
+
+def _provider_model_unavailable(error: BaseException) -> bool:
+    """Inspect SDK error bodies without importing optional provider packages."""
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("error", body)
+    if not isinstance(detail, dict):
+        return False
+    for cls in type(error).__mro__:
+        provider = cls.__module__.split(".")[0]
+        if provider == "openai" and cls.__name__ == "NotFoundError":
+            return detail.get("code") == "model_not_found"
+        if provider == "anthropic" and cls.__name__ in {"NotFoundError", "BadRequestError"}:
+            details = detail.get("details", body.get("details"))
+            return detail.get("type") == "not_found_error" or (
+                isinstance(details, dict) and details.get("error_code") == "model_not_available"
+            )
+    return False
 
 
 class ScheduledRunRevokedError(RuntimeError):
@@ -249,6 +278,13 @@ class _PendingToolApproval:
 
 
 @dataclass(slots=True)
+class _PendingQuestions:
+    future: asyncio.Future[tuple[Answer, ...] | None]
+    session: QuestionSession
+    sender_id: str
+
+
+@dataclass(slots=True)
 class _PendingAuthorization:
     future: asyncio.Future[str]
     binding: AuthorizationBinding
@@ -310,9 +346,8 @@ class TalonHost:
         self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
         self._model_selections = _load_model_selections(config.model_state_path)
         self._effort_selections = _load_model_selections(config.effort_state_path)
-        self._smart_model_override = _load_smart_model_override(config.smart_model_state_path)
-        self._smart_model_lock = asyncio.Lock()
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
+        self._pending_questions: dict[str, _PendingQuestions] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
@@ -328,8 +363,20 @@ class TalonHost:
         self._stopped = asyncio.Event()
         self._running = False
 
+    async def _agent_failure_message(self, conversation_id: str) -> str:
+        check = getattr(self.agent, "has_tool_activity", None)
+        try:
+            if callable(check) and await check(conversation_id):
+                return (
+                    "Something went wrong after tools ran. Actions may have partially completed. "
+                    "Check the results before retrying, and check Talon logs."
+                )
+        except Exception:  # noqa: BLE001  # State inspection must not hide the original failure.
+            logger.warning("Could not inspect failed turn state", exc_info=True)
+        return _AGENT_FAILURE_MESSAGE
+
     @asynccontextmanager
-    async def _conversation_lock(self, conversation_root: str) -> AsyncIterator[None]:
+    async def _conversation_lock(self, conversation_root: str) -> AsyncGenerator[None]:
         """Serialize one conversation's work and forget it once nothing is left.
 
         Args:
@@ -353,7 +400,7 @@ class TalonHost:
                     self._forget_idle_conversation(conversation_id)
 
     @asynccontextmanager
-    async def _history_lock(self, scope: tuple[str, str]) -> AsyncIterator[None]:
+    async def _history_lock(self, scope: tuple[str, str]) -> AsyncGenerator[None]:
         lock = self._history_locks.setdefault(scope, asyncio.Lock())
         async with lock:
             yield
@@ -371,6 +418,7 @@ class TalonHost:
             or conversation_id in self._blocked
             or conversation_id in self._background_routes
             or conversation_id in self._pending_tool_approvals
+            or conversation_id in self._pending_questions
             or conversation_id in self._pending_authorizations
             or conversation_id in self._authorization_flows
             or conversation_id in self._terminal_authorizations
@@ -397,13 +445,6 @@ class TalonHost:
             return
 
         self.config.ensure_home()
-        if self._smart_model_override is not None and isinstance(self.agent, SmartModelRuntime):
-            spec = self._smart_model_override.get("model")
-            try:
-                if not await self.agent.select_smart_model(spec):
-                    logger.warning("Saved smart model is unavailable; retaining runtime default")
-            except Exception:  # noqa: BLE001
-                logger.warning("Could not restore saved smart model", exc_info=True)
         await self.agent.start()
         started: list[ChannelAdapter] = []
         scheduler: CronScheduler | None = None
@@ -519,11 +560,33 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
+        questions = self._pending_questions.get(self._agent_conversation_id(conversation_root))
+        if (
+            questions is not None
+            and message.sender_id == questions.sender_id
+            and command is None
+            and _is_voice_message(message)
+        ):
+            message = await transcribe_voice_message(self.voice_transcriber, message)
+        else:
+            questions = None
         scope = (_channel_key(channel, provider), _history_chat(message, provider))
         async with self._history_lock(scope):
             self._history_roots[conversation_root] = scope
             async with self._conversation_lock(conversation_root):
                 agent_conversation_id = self._agent_conversation_id(conversation_root)
+                if questions is not None and (
+                    self._pending_questions.get(agent_conversation_id) is not questions
+                    or questions.future.done()
+                ):
+                    await send_with_retry(
+                        lambda: channel.send_message(
+                            channel_conversation_id,
+                            "That question closed while your voice reply was being transcribed. "
+                            "Please send your reply again if it still applies.",
+                        )
+                    )
+                    return
 
                 if await self._handle_conversation_command(
                     channel,
@@ -546,6 +609,11 @@ class TalonHost:
                 ):
                     return
 
+                questions = self._pending_questions.get(agent_conversation_id)
+                if questions is not None and not questions.future.done():
+                    await self._handle_question_reply(channel, message, questions)
+                    return
+
                 await self._replace_agent_turn(
                     _BackgroundRoute(
                         channel=channel,
@@ -554,6 +622,7 @@ class TalonHost:
                         conversation_id=agent_conversation_id,
                         provider=provider,
                     ),
+                    user_interrupted=True,
                 )
 
     async def _handle_conversation_command(
@@ -595,9 +664,6 @@ class TalonHost:
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         elif command == _MODEL_COMMAND:
             reply = await self._model_command(channel, message)
-            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
-        elif command == _SMART_MODEL_COMMAND:
-            reply = await self._smart_model_command(channel, message)
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         elif command == _EFFORT_COMMAND:
             reply = await self._effort_command(channel, message)
@@ -646,7 +712,7 @@ class TalonHost:
     ) -> str:
         """Stop a revoked sender's work in every chat and pause the jobs they created."""
         outcomes = [
-            await self._cancel_conversation_tasks(conversation_id)
+            await self._cancel_conversation_tasks(conversation_id, user_interrupted=False)
             for conversation_id in self._conversations_of(channel_key, revoked)
         ]
         stopped = sum(outcome is not _CancelOutcome.NONE for outcome in outcomes)
@@ -704,9 +770,13 @@ class TalonHost:
         else:
             try:
                 async with asyncio.timeout(10):
-                    report = await self.agent.context_doctor(
-                        self._agent_conversation_id(conversation_root)
-                    )
+                    audit = self.agent.context_doctor
+                    thread = self._agent_conversation_id(conversation_root)
+                    model = self._model_selections.get(_GLOBAL_MODEL_KEY)
+                    if model and "model" in inspect.signature(audit).parameters:
+                        report = await audit(thread, model=model)
+                    else:
+                        report = await audit(thread)
             except Exception:  # noqa: BLE001  # Diagnostics must not disclose runtime errors.
                 logger.debug("Context diagnostics failed", exc_info=True)
                 report = "Could not build context diagnostics. Please try again."
@@ -788,64 +858,6 @@ class TalonHost:
         self._effort_selections = selections
         return f"Reasoning effort for {spec}: {argument}. Applies across chats from the next turn."
 
-    async def _smart_model_command(self, channel: ChannelAdapter, message: ChannelMessage) -> str:
-        """Show or switch the assistant's one-off help model."""
-        if not isinstance(self.agent, SmartModelRuntime):
-            return _SMART_MODEL_UNAVAILABLE_MESSAGE
-        argument = _command_argument(message.text)
-        if not argument:
-            current = self.agent.smart_model or "off"
-            return f"Smart model: {current}. {_SMART_MODEL_HELP_MESSAGE}"
-        if not _is_operator(channel, message):
-            return _SMART_MODEL_OPERATOR_ONLY_MESSAGE
-        if argument not in {"default", "off"} and (
-            ":" not in argument or any(char.isspace() for char in argument)
-        ):
-            return _SMART_MODEL_UNKNOWN_MESSAGE
-        spec = (
-            self.config.env.get(
-                "DEEPAGENTS_TALON_HELP_MODEL",
-                os.environ.get("DEEPAGENTS_TALON_HELP_MODEL", ""),
-            ).strip()
-            or None
-            if argument == "default"
-            else None
-            if argument == "off"
-            else argument
-        )
-        return await self._switch_smart_model(
-            spec, None if argument == "default" else {"model": spec}
-        )
-
-    async def _switch_smart_model(
-        self, spec: str | None, override: dict[str, str | None] | None
-    ) -> str:
-        async with self._smart_model_lock:
-            agent = cast("SmartModelRuntime", self.agent)
-            previous = agent.smart_model
-            try:
-                if not await agent.select_smart_model(spec):
-                    return _SMART_MODEL_UNKNOWN_MESSAGE
-            except Exception:  # noqa: BLE001
-                logger.warning("Could not load smart model", exc_info=True)
-                return _SMART_MODEL_LOAD_FAILURE_MESSAGE
-            try:
-                _write_json_state(self.config.smart_model_state_path, override or {})
-            except OSError:
-                logger.warning("Could not save smart model selection", exc_info=True)
-                try:
-                    if await agent.select_smart_model(previous):
-                        return _SMART_MODEL_SAVE_FAILURE_MESSAGE
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "Could not restore smart model after save failure", exc_info=True
-                    )
-                else:
-                    logger.warning("Previous smart model is unavailable after save failure")
-                return _SMART_MODEL_ROLLBACK_FAILURE_MESSAGE
-            self._smart_model_override = override
-            return f"Smart model now uses {spec or 'off'} across chats."
-
     async def _reload_mcp_configuration(
         self,
         channel: ChannelAdapter,
@@ -894,7 +906,9 @@ class TalonHost:
             env=self.config.env,
         )
 
-    async def _replace_agent_turn(self, route: _BackgroundRoute) -> None:
+    async def _replace_agent_turn(
+        self, route: _BackgroundRoute, *, user_interrupted: bool = False
+    ) -> None:
         conversation_id = route.conversation_id
         channel = route.channel
         message = route.message
@@ -906,7 +920,9 @@ class TalonHost:
         active = self._tasks.get(conversation_id)
         recovery_degraded = False
         if active is not None and not active.done():
-            outcome = await self._cancel_active(conversation_id, active, recover=True)
+            outcome = await self._cancel_active(
+                conversation_id, active, recover=True, user_interrupted=user_interrupted
+            )
             if outcome is _CancelOutcome.TIMEOUT:
                 await send_with_retry(
                     lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
@@ -1075,6 +1091,9 @@ class TalonHost:
             return await send_with_retry(lambda: send_progress(text))
 
         breakout_handler = self._breakout_handler(route, turn, lambda: active and not unattended)
+        question_handler = self._question_handler(
+            channel, message, turn, (lambda: active) if not unattended else None
+        )
 
         try:
             result = await self._invoke_agent(
@@ -1111,12 +1130,19 @@ class TalonHost:
                 tool_approval_operator=operator,
                 message_handler=message_handler,
                 breakout_handler=breakout_handler,
+                question_handler=question_handler,
                 model=turn.model,
                 effort=turn.effort,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
-        except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
-            result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
+        except Exception as error:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
+            text = await self._agent_failure_message(agent_conversation_id)
+            if _is_model_unavailable(error):
+                text = (
+                    f"Model {turn.model or getattr(self.agent, 'default_model', 'default')} "
+                    "is unavailable. Send /model default or choose another model with /model."
+                )
+            result = AgentResult(text=text)
         finally:
             active = False
             self._clear_authorization(agent_conversation_id)
@@ -1411,6 +1437,7 @@ class TalonHost:
         message_handler: ProgressMessageHandler | None = None,
         model: str | None = None,
         breakout_handler: BreakoutHandler | None = None,
+        question_handler: QuestionHandler | None = None,
         effort: str | None = None,
     ) -> AgentResult:
         metadata = {
@@ -1435,6 +1462,7 @@ class TalonHost:
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,
                         breakout_handler=breakout_handler,
+                        question_handler=question_handler,
                         model=model,
                         effort=effort,
                     ),
@@ -1562,11 +1590,15 @@ class TalonHost:
             message = "Stopped current run."
         await send_with_retry(lambda: channel.send_message(target_conversation_id, message))
 
-    async def _cancel_conversation_tasks(self, conversation_id: str) -> _CancelOutcome:
+    async def _cancel_conversation_tasks(
+        self, conversation_id: str, *, user_interrupted: bool = True
+    ) -> _CancelOutcome:
         task = self._tasks.get(conversation_id)
         outcome = _CancelOutcome.NONE
         if task is not None and not task.done():
-            outcome = await self._cancel_active(conversation_id, task, recover=True)
+            outcome = await self._cancel_active(
+                conversation_id, task, recover=True, user_interrupted=user_interrupted
+            )
         if isinstance(self.agent, BackgroundRuntime):
             had_workers = conversation_id in self.agent.background.owners()
             if not await self.agent.background.cancel(conversation_id):
@@ -1582,9 +1614,10 @@ class TalonHost:
         task: asyncio.Task[None],
         *,
         recover: bool,
+        user_interrupted: bool = False,
     ) -> _CancelOutcome:
         self._generations[conversation_id] += 1
-        task.cancel()
+        task.cancel(USER_INTERRUPTED if user_interrupted else None)
         deadline = asyncio.get_running_loop().time() + _CANCEL_TIMEOUT_SECONDS
         try:
             done, _ = await asyncio.wait({task}, timeout=_CANCEL_TIMEOUT_SECONDS)
@@ -1680,6 +1713,10 @@ class TalonHost:
             if not pending.future.done():
                 pending.future.cancel()
         self._pending_tool_approvals.clear()
+        for questions in self._pending_questions.values():
+            if not questions.future.done():
+                questions.future.cancel()
+        self._pending_questions.clear()
         for pending in self._pending_authorizations.values():
             if not pending.future.done():
                 pending.future.cancel()
@@ -1966,6 +2003,8 @@ class TalonHost:
         reply_conversation_id: str,
         sender_id: str | None,
     ) -> ToolApprovalDecision:
+        if not sender_id:
+            return "reject"
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ToolApprovalDecision] = loop.create_future()
         pending = _PendingToolApproval(
@@ -2023,6 +2062,66 @@ class TalonHost:
 
         if not pending.future.done():
             pending.future.set_result(decision)
+
+    def _question_handler(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        turn: _Turn,
+        is_active: Callable[[], bool] | None,
+    ) -> QuestionHandler | None:
+        if is_active is None or message.sender_id is None:
+            return None
+
+        async def handle(questions: Sequence[Question]) -> tuple[Answer, ...] | None:
+            if not is_active() or self._generations[turn.conversation_id] != turn.generation:
+                return None
+            return await self._ask_questions(
+                channel, questions, conversation_id=turn.conversation_id, message=message
+            )
+
+        return handle
+
+    async def _ask_questions(
+        self,
+        channel: ChannelAdapter,
+        questions: Sequence[Question],
+        *,
+        conversation_id: str,
+        message: ChannelMessage,
+    ) -> tuple[Answer, ...] | None:
+        if message.sender_id is None:
+            return None
+        pending = _PendingQuestions(
+            future=asyncio.get_running_loop().create_future(),
+            session=QuestionSession(questions),
+            sender_id=message.sender_id,
+        )
+        self._pending_questions[conversation_id] = pending
+        try:
+            result = await _send_question_message(channel, message, pending.session.prompt())
+            if not result.success:
+                return None
+            return await pending.future
+        finally:
+            if self._pending_questions.get(conversation_id) is pending:
+                del self._pending_questions[conversation_id]
+
+    async def _handle_question_reply(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        pending: _PendingQuestions,
+    ) -> None:
+        if message.sender_id != pending.sender_id:
+            text = "Only the person who started this run can answer these questions."
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
+            return
+        step = pending.session.reply(message.text)
+        result = await _send_question_message(channel, message, step.message)
+        if (step.status != "asking" or not result.success) and not pending.future.done():
+            answered = step.status == "submitted"
+            pending.future.set_result(pending.session.result if answered else None)
 
     def _handle_tool_approval_reaction(
         self,
@@ -2392,6 +2491,14 @@ async def _typing_refresh_loop(channel: ChannelAdapter, conversation_id: str) ->
         await asyncio.sleep(_TYPING_REFRESH_SECONDS)
 
 
+async def _send_question_message(
+    channel: ChannelAdapter, message: ChannelMessage, text: str
+) -> SendResult:
+    if not is_direct_message(message) and await _channel_provider(channel) in {"slack", "discord"}:
+        text += "\n\nMention the bot in every reply, including `back` and `cancel`."
+    return await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
+
+
 async def _channel_provider(channel: ChannelAdapter) -> str | None:
     """Return the channel provider for origin metadata, if available."""
     try:
@@ -2412,6 +2519,8 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
         tool_name = name if isinstance(name, str) and name else "unknown"
         lines.append(f"{index}. `{tool_name}`")
         args = action.get("args")
+        if tool_name == "update_mcp_server":
+            args = _mcp_approval_args(args)
         if isinstance(args, dict) and args:
             lines.append(f"Args: `{_json_preview(args)}`")
         elif args not in (None, {}, []):
@@ -2423,6 +2532,19 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
     else:
         lines.append("Reply `👍` / `approve` to run or `👎` / `deny` to skip.")
     return "\n".join(lines)
+
+
+def _mcp_approval_args(value: object) -> object:
+    """Summarize stored MCP values, retaining field paths and mixed-list positions."""
+    if value == "<redacted>":
+        return "<kept>"
+    if isinstance(value, dict):
+        return {key: _mcp_approval_args(item) for key, item in value.items()}
+    if isinstance(value, list):
+        if value and all(item == "<redacted>" for item in value):
+            return f"({len(value)} stored values preserved)"
+        return [_mcp_approval_args(item) for item in value]
+    return value
 
 
 def _json_preview(value: object) -> str:
@@ -2450,33 +2572,6 @@ def _load_conversation_resets(path: Path) -> dict[str, int]:
         msg = f"invalid conversation state in {path}"
         raise RuntimeError(msg)
     return state
-
-
-def _load_smart_model_override(path: Path) -> dict[str, str | None] | None:
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        msg = f"failed to load smart model selection from {path}"
-        raise RuntimeError(msg) from exc
-    if state == {}:
-        return None
-    if (
-        not isinstance(state, dict)
-        or set(state) != {"model"}
-        or (
-            state["model"] is not None
-            and (
-                not isinstance(state["model"], str)
-                or ":" not in state["model"]
-                or any(char.isspace() for char in state["model"])
-            )
-        )
-    ):
-        msg = f"invalid smart model selection in {path}"
-        raise RuntimeError(msg)
-    return {"model": state["model"]}
 
 
 def _load_model_selections(path: Path) -> dict[str, str]:

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from deepagents_talon.background import BackgroundSubagents
     from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
+    from deepagents_talon.questions import QuestionHandler
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +140,8 @@ class AgentRequest:
             tool approval interrupts over the originating channel.
         message_handler: Optional callback for progress updates to the originating chat.
         breakout_handler: Optional host callback for independent channel tasks.
+        question_handler: Optional callback that asks the turn's sender clarifying
+            questions over the originating chat and waits for the answers.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
         model: `provider:model` spec the conversation selected with `/model`, or
@@ -170,6 +173,9 @@ class AgentRequest:
         compare=False,
     )
     breakout_handler: BreakoutHandler | None = field(
+        default=None, kw_only=True, repr=False, compare=False
+    )
+    question_handler: QuestionHandler | None = field(
         default=None, kw_only=True, repr=False, compare=False
     )
     model: str | None = field(default=None, kw_only=True)
@@ -335,11 +341,12 @@ class AgentRuntime(Protocol):
 class ContextDoctorRuntime(Protocol):
     """Optional runtime capability for read-only context diagnostics."""
 
-    async def context_doctor(self, conversation_id: str) -> str:
+    async def context_doctor(self, conversation_id: str, *, model: str | None = None) -> str:
         """Audit the current conversation without invoking the model.
 
         Args:
             conversation_id: Host-resolved agent thread to inspect.
+            model: Selected model spec, if the host has an override.
 
         Returns:
             Context token estimates, without prompt or conversation contents.
@@ -367,18 +374,6 @@ class ModelSelectableRuntime(Protocol):
             Whether `spec` is a selectable model. A model that is selectable but
             cannot be built raises instead.
         """
-
-
-@runtime_checkable
-class SmartModelRuntime(Protocol):
-    """Optional runtime capability for the assistant-wide one-off help model."""
-
-    @property
-    def smart_model(self) -> str | None:
-        """Current helper model, or None when consultations are disabled."""
-
-    async def select_smart_model(self, spec: str | None) -> bool:
-        """Validate and activate a helper model for subsequent turns."""
 
 
 @runtime_checkable

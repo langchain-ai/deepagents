@@ -3,19 +3,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
+from unittest.mock import Mock
 
 import httpx
 import pytest
 from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+from langchain_core.tracers.langchain import wait_for_all_tracers
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+from langsmith import tracing_context
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
-from deepagents_talon.background import HIDDEN_ASYNC_TOOLS
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -26,13 +32,12 @@ from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
     DeepAgentRuntime,
     _is_retryable,
+    _split_path_env,
     _status_code,
 )
-from deepagents_talon.tool_approvals import ToolApprovalStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from langgraph.types import Command
 
@@ -287,52 +292,6 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     } <= tool_names
 
 
-async def test_runtime_requires_approval_for_async_subagent_tools(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-    async_subagent = {
-        "name": "researcher",
-        "description": "Research tasks",
-        "graph_id": "agent",
-    }
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-
-    store = ToolApprovalStore(tmp_path / "tools.json")
-    snapshot = store.ensure()
-    store.update({"custom_tool": True, "start_async_task": False}, snapshot.revision)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        subagents=cast("Any", [async_subagent]),
-        approval_store=store,
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-    )
-
-    await runtime.start()
-
-    assert captured["subagents"][0] == async_subagent
-    assert captured["interrupt_on"] == {
-        name: {"allowed_decisions": ["approve", "reject"]}
-        for name in (
-            "custom_tool",
-            "update_tool_approvals",
-            "delete_conversations",
-            "update_mcp_server",
-            "send_message",
-        )
-    }
-    # The other async task tools never reach the model, so gating them could not fire.
-    assert HIDDEN_ASYNC_TOOLS.isdisjoint(captured["interrupt_on"])
-
-
 async def test_runtime_merges_local_and_async_subagents(
     tmp_path: Path,
 ) -> None:
@@ -468,51 +427,6 @@ async def test_runtime_rejects_invalid_local_subagent_definitions(
 
     assert not captured
     assert "invalid name, description, or model" in caplog.text
-
-
-@pytest.mark.parametrize("obsolete_value", ["", " , ", "bash, execute,custom/mcp"])
-async def test_runtime_uses_file_policy_and_ignores_obsolete_environment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    obsolete_value: str,
-) -> None:
-    captured: dict[str, Any] = {}
-    store = ToolApprovalStore(tmp_path / "tools.json")
-    snapshot = store.ensure()
-    store.update({"sample_tool": True, "execute": False}, snapshot.revision)
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    monkeypatch.setenv("DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS", obsolete_value)
-    monkeypatch.setenv("DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE", "true")
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        approval_store=store,
-        env={
-            "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS": obsolete_value,
-            "DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE": "true",
-        },
-    )
-
-    await runtime.start()
-
-    assert captured["interrupt_on"] == {
-        name: {"allowed_decisions": ["approve", "reject"]}
-        for name in (
-            "sample_tool",
-            "update_tool_approvals",
-            "delete_conversations",
-            "update_mcp_server",
-            "start_async_task",
-            "send_message",
-        )
-    }
 
 
 async def test_runtime_uses_configured_workspace_for_default_backend(
@@ -719,7 +633,6 @@ async def test_runtime_applies_configured_context_size_and_adds_compact_tool(
     await runtime.start()
 
     assert captured["init_args"] == ("anthropic:claude-sonnet-4-6",)
-    assert captured["init_kwargs"] == {}
     assert model.profile == {"max_input_tokens": 75_000, "tool_calling": True}
     assert captured["model"] is model
     assert captured["compact_model"] is model
@@ -864,6 +777,8 @@ async def test_runtime_rejects_invalid_recursion_limit_env() -> None:
 
 async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint() -> None:
     graph = RecoverableGraph()
+    graph.config["tags"] = ["existing"]
+    graph.config["metadata"] = {"existing": "value"}
     runtime = DeepAgentRuntime(
         model="test:model",
         include_web_tools=False,
@@ -876,7 +791,15 @@ async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint
 
     assert graph.update is not None
     config, values = graph.update
-    assert config is graph.config
+    assert config["configurable"] == graph.config["configurable"]
+    assert "existing" in config["tags"]
+    assert config["metadata"]["existing"] == "value"
+    assert "run_name" not in graph.config
+    assert config["run_name"] == "talon_interrupt_recovery"
+    assert "deepagents-talon" in config["tags"]
+    assert any(tag.startswith("assistant:") for tag in config["tags"])
+    assert "talon:interrupt-recovery" in config["tags"]
+    assert config["metadata"]["conversation_id"] == "chat"
     messages = values["messages"]
     assert len(messages) == 1
     assert messages[0].type == "human"
@@ -1419,3 +1342,237 @@ async def test_agent_tools_inspection_does_not_block_the_event_loop(
         await runtime.stop()
 
     assert ticks > 1
+
+
+@pytest.mark.parametrize("separator", [",", ";", os.pathsep])
+def test_split_path_env_trims_and_expands_entries(separator: str) -> None:
+    raw = f"  ~/skills {separator} {separator} Users/john/skills/ {separator} "
+
+    assert _split_path_env(raw) == [str(Path.home() / "skills"), "Users/john/skills"]
+
+
+@pytest.mark.parametrize("raw", [None, "", "  ", ", ,", "; ;"])
+def test_split_path_env_empty_entries(raw: str | None) -> None:
+    assert _split_path_env(raw) == []
+
+
+def test_split_path_env_separator_precedence() -> None:
+    assert _split_path_env("first,second;third") == ["first,second", "third"]
+    assert _split_path_env("first:second,third") == ["first:second", "third"]
+
+
+def test_runtime_resolves_comma_separated_skills(tmp_path, monkeypatch, caplog) -> None:
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    relative = Path("Users/john/.deepagents/talon-local/skills")
+    relative.mkdir(parents=True)
+    missing = tmp_path / "missing"
+    file = tmp_path / "file"
+    file.touch()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=tmp_path / "assistant",
+        env={
+            "DEEPAGENTS_TALON_SKILLS_DIRS": f" {shared}, {relative}/, {missing}, {file}, {shared}"
+        },
+    )
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.runtime"):
+        sources = runtime._resolve_skills()
+
+    assert sources == [str(tmp_path / "assistant" / "skills"), str(shared), str(relative)]
+    assert len(caplog.records) == 2
+    assert str(missing) in caplog.text
+    assert str(file) in caplog.text
+
+
+def test_runtime_resolves_comma_separated_memory_files(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    existing = tmp_path / "existing.md"
+    existing.write_text("remember this", encoding="utf-8")
+    new = Path("memory/new.md")
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        env={"DEEPAGENTS_TALON_MEMORY_PATHS": f" {existing}, {new}, "},
+    )
+
+    assert runtime._resolve_memory() == [str(existing), str(new)]
+    assert existing.read_text(encoding="utf-8") == "remember this"
+    assert new.is_file()
+    assert new.read_text(encoding="utf-8") == ""
+
+
+def test_split_path_env_preserves_absolute_and_relative_skills_paths() -> None:
+    assert _split_path_env(
+        "/Users/john/.agents/skills/,Users/john/.deepagents/talon-local/skills/"
+    ) == ["/Users/john/.agents/skills", "Users/john/.deepagents/talon-local/skills"]
+
+
+async def test_recovery_trace_has_named_root_and_conversation_metadata(monkeypatch) -> None:
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", lambda _state: {"messages": []})
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    with tracing_context(enabled=False):
+        await graph.ainvoke(
+            {"messages": [("user", "hello")]}, {"configurable": {"thread_id": "chat"}}
+        )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={
+            "AGENT_ASSISTANT_ID": "assistant",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_API_KEY": "key",
+        },
+    )
+    runtime._graph = graph
+    client = Mock()
+    monkeypatch.setattr("langsmith.run_trees.get_cached_client", lambda: client)
+    with tracing_context(enabled=True, client=client):
+        await runtime.recover_interrupted("chat")
+
+    await asyncio.to_thread(wait_for_all_tracers)
+    runs = [call.kwargs for call in client.create_run.call_args_list]
+    roots = [run for run in runs if not run.get("parent_run_id")]
+    assert len(roots) == 1
+    assert roots[0]["name"] == "talon_interrupt_recovery"
+    assert set(roots[0]["tags"]) >= {
+        "deepagents-talon",
+        "assistant:assistant",
+        "talon:interrupt-recovery",
+    }
+    assert roots[0]["extra"]["metadata"]["conversation_id"] == "chat"
+    state = await graph.aget_state({"configurable": {"thread_id": "chat"}})
+    assert state.values["messages"][-1].content.startswith("[SYSTEM] Task interrupted")
+
+
+@pytest.mark.parametrize("tracing", [False, True])
+@pytest.mark.parametrize("failures", [0, 2, 3])
+async def test_retry_traces_group_attempts_by_final_outcome(monkeypatch, tracing, failures) -> None:
+    attempts = 0
+    sleep = Mock()
+
+    async def backoff(delay):
+        sleep(delay)
+
+    async def respond(_state):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= failures:
+            msg = f"connection reset {attempts}"
+            raise ConnectionError(msg)
+        return {"messages": [("assistant", "done")]}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", respond)
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        max_retries=3,
+        env={"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "key"} if tracing else {},
+    )
+    runtime._graph = builder.compile()
+    client = Mock()
+    monkeypatch.setattr("langsmith.run_trees.get_cached_client", lambda: client)
+    monkeypatch.setattr("deepagents_talon.runtime.asyncio.sleep", backoff)
+    with tracing_context(
+        enabled=tracing,
+        client=client,
+        tags=["deepagents-talon", "trigger:channel"],
+        metadata={"conversation_id": "chat", "message_id": "message"},
+    ):
+        if failures == 3:
+            with pytest.raises(ConnectionError, match="connection reset 3"):
+                await runtime._invoke_payload_with_retries({}, "chat", None)
+        else:
+            state = await runtime._invoke_payload_with_retries({}, "chat", None)
+            assert state["messages"][-1].content == "done"
+
+    await asyncio.to_thread(wait_for_all_tracers)
+    assert attempts == min(failures + 1, 3)
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2][: attempts - 1]
+    runs = [call.kwargs for call in client.create_run.call_args_list]
+    if not tracing:
+        assert not runs
+        return
+    roots = [run for run in runs if not run.get("parent_run_id")]
+    assert len(roots) == 1
+    root = roots[0]
+    assert root["name"] == "talon_turn"
+    assert set(root["tags"]) >= {"deepagents-talon", "trigger:channel"}
+    assert root["extra"]["metadata"]["message_id"] == "message"
+    children = [run for run in runs if run.get("parent_run_id") == root["id"]]
+    assert len(children) == attempts
+    assert {run["name"] for run in children} == {"LangGraph"}
+    assert sorted(run["extra"]["metadata"]["retry_attempt"] for run in children) == list(
+        range(1, attempts + 1)
+    )
+    final = next(
+        call.kwargs
+        for call in client.update_run.call_args_list
+        if call.kwargs.get("run_id") == root["id"]
+    )
+    assert final["extra"]["metadata"]["retry_attempts"] == attempts - 1
+    if failures == 3:
+        assert "connection reset 3" in final["error"]
+    else:
+        assert not final.get("error")
+        assert final["outputs"]["messages"][-1].content == "done"
+
+
+async def test_retry_preserves_checkpointed_user_message_and_completed_tool() -> None:
+    actions: list[str] = []
+    failed = False
+
+    def model(state: MessagesState) -> dict[str, list[AIMessage]]:
+        nonlocal failed
+        if state["messages"][-1].type == "human":
+            return {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "complete_action", "args": {}, "id": "action"}],
+                    )
+                ]
+            }
+        if not failed:
+            failed = True
+            msg = "connection reset by peer"
+            raise ConnectionError(msg)
+        return {"messages": [AIMessage(content="done")]}
+
+    def complete_action() -> str:
+        """Complete the requested action."""
+        actions.append("completed")
+        return "completed"
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("model", model)
+    builder.add_node("tools", ToolNode([complete_action]))
+    builder.add_edge(START, "model")
+    builder.add_conditional_edges("model", tools_condition)
+    builder.add_edge("tools", "model")
+    graph = builder.compile(checkpointer=InMemorySaver())
+    runtime = DeepAgentRuntime(model="test:model", include_web_tools=False)
+    runtime._graph = graph
+
+    with tracing_context(enabled=False):
+        result = await runtime._invoke_with_retries("perform action", "chat", None)
+        state = await graph.aget_state({"configurable": {"thread_id": "chat"}})
+
+    assert isinstance(result, dict)
+    assert result["messages"][-1].content == "done"
+    assert [m.content for m in state.values["messages"] if m.type == "human"] == ["perform action"]
+    assert actions == ["completed"]
+
+
+@pytest.mark.parametrize("text", ["blocked by gateway policies", "Blocked by Gateway Policies"])
+def test_gateway_policy_429_is_not_retryable(text: str) -> None:
+    assert not _is_retryable(StatusError(429, text))
+    assert _is_retryable(StatusError(429, "rate limit exceeded"))

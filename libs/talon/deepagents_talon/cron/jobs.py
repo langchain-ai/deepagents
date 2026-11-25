@@ -93,6 +93,8 @@ _SCHEDULE_KINDS: tuple[str, ...] = ("one_shot", "recurring")
 _SCHEDULE_FORMS: tuple[str, ...] = ("interval", "at", "daily", "cron")
 _DELIVER_TO: tuple[str, ...] = ("thread", "channel")
 MAX_PINNED_SKILLS = 8
+_MAX_HANDOFFS = 10
+_MAX_HANDOFF_LENGTH = 2000
 _SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 
@@ -183,6 +185,7 @@ class CronJobDict(TypedDict):
     required_sources: NotRequired[list[str]]
     completion_criteria: NotRequired[list[str]]
     read_sources: NotRequired[list[str]]
+    handoffs: NotRequired[list[str]]
 
 
 class CronJobWireDict(TypedDict):
@@ -691,6 +694,7 @@ class CronJob:
         mode: Repeat a procedure or pursue an objective.
         run_requested: Run once at the next tick, preserving the recurring schedule.
         read_sources: Owner-confirmed read boundaries for scheduled checks.
+        handoffs: Recent context supplied from the owner's chat, oldest first.
     """
 
     id: str
@@ -715,6 +719,7 @@ class CronJob:
     required_sources: tuple[str, ...] = field(default=(), kw_only=True)
     completion_criteria: tuple[str, ...] | None = field(default=None, kw_only=True)
     read_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
+    handoffs: tuple[str, ...] = field(default=(), kw_only=True)
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -775,6 +780,7 @@ class CronJob:
                 else {}
             ),
             **({"read_sources": list(self.read_sources)} if self.read_sources is not None else {}),
+            **({"handoffs": list(self.handoffs)} if self.handoffs else {}),
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -856,6 +862,7 @@ class CronJob:
             if "run_requested" in record
             else False,
             required_sources=tuple(_string_list(record, "required_sources")),
+            handoffs=tuple(_string_list(record, "handoffs")),
             completion_criteria=tuple(_string_list(record, "completion_criteria"))
             if "completion_criteria" in record
             else None,
@@ -1050,6 +1057,7 @@ class CronJobStore:
         schedule: CronSchedule | None = None,
         enabled: bool | None = None,
         run_now: bool = False,
+        handoff: str | None = None,
         required_sources: Sequence[str] | None = None,
         completion_criteria: Sequence[str] | None = None,
         read_sources: Sequence[str] | None = None,
@@ -1072,6 +1080,7 @@ class CronJobStore:
             completion_criteria: Replacement finish criteria, or an empty list for ongoing work.
             read_sources: Replace the read boundaries for scheduled goal checks.
             run_now: Queue an extra run at the next scheduler tick.
+            handoff: Append context from the owner's chat for subsequent objective runs.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement for the job's last allowed run instant.
@@ -1124,6 +1133,7 @@ class CronJobStore:
                 _validate_objective_requirements(job.mode, required_sources, completion_criteria)
                 updated = replace(
                     job,
+                    handoffs=_append_handoff(job, handoff),
                     required_sources=job.required_sources
                     if required_sources is None
                     else tuple(required_sources),
@@ -1785,6 +1795,21 @@ def _in_scope(job: CronJob, origin: CronOrigin) -> bool:
             and job.origin.conversation_id == origin.conversation_id
         )
     return _origin_scope(job.origin) == _origin_scope(origin)
+
+
+def _append_handoff(job: CronJob, note: str | None) -> tuple[str, ...]:
+    if note is None:
+        return job.handoffs
+    if job.mode != "objective":
+        msg = "Handoffs apply only to objective jobs."
+        raise CronJobError(msg)
+    note = note.strip()
+    if not note or len(note) > _MAX_HANDOFF_LENGTH:
+        msg = f"A handoff must contain 1 to {_MAX_HANDOFF_LENGTH} characters."
+        raise CronJobError(msg)
+    if job.handoffs and job.handoffs[-1] == note:
+        return job.handoffs
+    return (*job.handoffs, note)[-_MAX_HANDOFFS:]
 
 
 def _validate_objective_requirements(

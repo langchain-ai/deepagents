@@ -2611,6 +2611,10 @@ def _objective_prompt(job: CronJob, journal: JobJournal) -> str:
     criteria, evidence = journal.verification(job)
     return (
         f"Pursue this objective privately: {job.prompt}\n"
+        f"Context handed off from the owner's chat (oldest first): {json.dumps(job.handoffs)}. "
+        "Reuse referenced artifacts, results and active work when they still apply. Check what "
+        "changed before repeating a completed step. Evaluate findings against the standing "
+        "criteria and perform this run's required reads. "
         f"UTC now: {datetime.now(UTC).isoformat()}. For each unfinished objective, include "
         "next_wake_at, an ISO 8601 timestamp with timezone for the next useful check. "
         "Set wake_reason to owner_timing for an explicit owner cadence, expected_event for a "

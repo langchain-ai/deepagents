@@ -10,6 +10,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 
+from deepagents_talon.background import _SCHEDULED_TURN
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, record_job_work
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
@@ -214,6 +215,56 @@ async def test_background_goal_isolation_history_and_notification_policy(tmp_pat
     finally:
         agent.released.set()
         await host.stop()
+
+
+async def test_owner_handoff_reaches_next_run_with_prior_evidence(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(
+        prompt="Verify the release",
+        mode="objective",
+        origin=ORIGIN,
+        completion_criteria=["build", "sign"],
+    )
+    journal = JobJournal(tmp_path)
+    journal.start(job, "first")
+    journal.finish_check(
+        job,
+        "first",
+        ObjectiveReport(status="partial", summary="Built", evidence={"build": "run 29"}),
+        set(),
+    )
+    origin = ORIGIN
+    tools = {t.name: t for t in CronTools(store=store, origin=lambda: origin).as_langchain_tools()}
+    update = {"job_id": job.id, "handoff": "Signing fixture is in tests/signing.", "run_now": True}
+    with _SCHEDULED_TURN.set(True):
+        assert "error" in tools["edit_job"].invoke(update)
+    for other in (replace(ORIGIN, sender_id="bob"), replace(ORIGIN, conversation_id="sibling")):
+        origin = other
+        assert "error" in tools["edit_job"].invoke(update)
+    origin = ORIGIN
+    finding = "Existing build artifacts are in dist/build-29."
+    saved = tools["edit_job"].invoke({"job_id": job.id, "handoff": finding})
+    assert not saved["run_requested"]
+    assert store.get_job(job.id).next_run_at == job.next_run_at
+    assert tools["edit_job"].invoke(update)["run_requested"]
+    store.finish_objective(job)  # A run started before the handoff can no longer close it.
+    reopened = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    claimed = reopened.advance_next_run(job.id)
+    assert claimed is not None
+    agent = _WorkingGoalAgent()
+    agent.released.set()
+    channel = RecordingChannel("slack")
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    host.scheduler = PersistentCronScheduler(
+        store=reopened,
+        run_job=host.run_scheduled_job,
+        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
+    )
+    await host.run_scheduled_job(claimed)
+    assert finding in agent.requests[-1].text
+    assert update["handoff"] in agent.requests[-1].text
+    assert "run 29" in agent.requests[-1].text
+    assert reopened.get_job(job.id).prompt == "Verify the release"
 
 
 async def test_invalid_read_scope_pauses_until_owner_repairs_scope(tmp_path: Path) -> None:

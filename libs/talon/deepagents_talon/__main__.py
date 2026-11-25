@@ -316,6 +316,7 @@ async def _run_model_host(
 ) -> None:
     from deepagents_talon.archive_saver import ConversationSaver  # noqa: PLC0415
     from deepagents_talon.checkpoint_backends import open_checkpointer  # noqa: PLC0415
+    from deepagents_talon.cron.journal import JobJournal  # noqa: PLC0415
     from deepagents_talon.history_backends import open_history  # noqa: PLC0415
 
     async with (
@@ -328,6 +329,7 @@ async def _run_model_host(
             checkpointer=ConversationSaver(checkpointer, archive=archive),
             sandbox=sandbox,
         )
+        cron_store.journal = JobJournal(archive.records.store, config.assistant_id)
         await _run_host_with_agent(args, config, cron_store, channels, agent)
 
 

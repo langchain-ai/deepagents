@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from zoneinfo import ZoneInfo
 
+    from deepagents_talon.cron.journal import JobJournal
+
 logger = logging.getLogger(__name__)
 
 CRON_STORE_VERSION = 1
@@ -931,6 +933,7 @@ class CronJobStore:
             assistant_id: Owning assistant namespace.
             cron_dir: Directory that contains `jobs.json`.
         """
+        self.journal: JobJournal | None = None
         self.assistant_id = assistant_id
         self.cron_dir = cron_dir.resolve()
         self.path = self.cron_dir / "jobs.json"

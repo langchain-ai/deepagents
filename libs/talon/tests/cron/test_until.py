@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from langgraph.store.memory import InMemoryStore
 
 from deepagents_talon.cron import (
     CronJob,
@@ -315,9 +316,9 @@ async def test_expired_paused_job_with_an_error_is_pruned_after_retention(tmp_pa
 async def test_missed_deadline_reports_last_recorded_work_without_running(tmp_path) -> None:
     store = _store(tmp_path)
     job = _hourly_until(store, NOON + timedelta(hours=1))
-    journal = JobJournal(store.cron_dir)
-    journal.start(job, "run-1")
-    journal.append_work("run-1", "Verified the backup.")
+    store.journal = journal = JobJournal(InMemoryStore(), "test")
+    (await journal.start(job, "run-1"))
+    (await journal.append_work("run-1", "Verified the backup."))
     runner = _Runner()
     notices: list[str] = []
 

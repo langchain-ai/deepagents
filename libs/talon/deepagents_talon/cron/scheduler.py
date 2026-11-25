@@ -12,7 +12,6 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from deepagents_talon.cron.jobs import CronJob, CronJobStore
-from deepagents_talon.cron.journal import JobJournal
 from deepagents_talon.observability import log_event
 
 logger = logging.getLogger(__name__)
@@ -118,7 +117,11 @@ class PersistentCronScheduler:
 
     async def _report_expiration(self, job: CronJob) -> None:
         try:
-            history = JobJournal(self.store.cron_dir).history(job.id, job.origin, limit=1)
+            history = (
+                await self.store.journal.history(job.id, job.origin, limit=1)
+                if self.store.journal
+                else []
+            )
             text = f"Job {job.id} missed its deadline. Scheduled work stopped."
             if history:
                 row = history[0]

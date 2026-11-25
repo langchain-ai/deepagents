@@ -2,35 +2,38 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import sqlite3
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
+from deepagents_talon.store_records import StoreRecords, digest
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Sequence
-    from pathlib import Path
+    from collections.abc import Awaitable, Callable, Generator, Sequence
+
+    from langgraph.store.base import BaseStore
 
     from deepagents_talon.cron.jobs import CronJob, CronOrigin
 
 
-_SAVE_WORK: ContextVar[Callable[[str], None] | None] = ContextVar("job_save_work", default=None)
+_SAVE_WORK: ContextVar[Callable[[str], Awaitable[None]] | None] = ContextVar(
+    "job_save_work", default=None
+)
 _NOTE_LIMIT = 2000
 
 
 @tool
-def record_job_work(note: str) -> str:
+async def record_job_work(note: str) -> str:
     """Checkpoint verified work, evidence references, and the next step during a job run."""
     save = _SAVE_WORK.get()
     if save is None:
         return "Available only during a scheduled job run."
-    save(note)
+    await save(note)
     if len(note) > _NOTE_LIMIT:
         return "Work saved with its middle truncated. Checkpoint any missing reference separately."
     return "Work saved to job history."
@@ -122,150 +125,112 @@ def _normalize_report(data: dict[str, object]) -> None:
 class JobJournal:
     """Store bounded check summaries independently of the scheduler's job list."""
 
-    def __init__(self, directory: Path) -> None:
-        """Open the assistant's local journal, creating it on first use."""
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.path = directory / "job-history.sqlite3"
-        self.path.touch(mode=0o600, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS checks ("
-                "run TEXT PRIMARY KEY, job TEXT NOT NULL, name TEXT NOT NULL, "
-                "channel TEXT NOT NULL, "
-                "chat TEXT NOT NULL, owner TEXT NOT NULL, started TEXT DEFAULT CURRENT_TIMESTAMP, "
-                "status TEXT NOT NULL, summary TEXT NOT NULL, "
-                "work TEXT NOT NULL DEFAULT '', read_tools TEXT NOT NULL DEFAULT '')"
-            )
-            db.execute("CREATE INDEX IF NOT EXISTS job_checks ON checks(channel, chat, owner, job)")
+    def __init__(self, store: BaseStore, assistant_id: str) -> None:
+        """Share the configured history backend in a separate journal namespace."""
+        self.records = StoreRecords(store, ("talon", assistant_id, "job-history"))
 
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS blockers (job TEXT PRIMARY KEY, "
-                "key TEXT NOT NULL, notice TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)"
-            )
-
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS evidence (job TEXT, revision TEXT, criterion TEXT, "
-                "reference TEXT NOT NULL, PRIMARY KEY(job,revision,criterion))"
-            )
-
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS criteria (job TEXT, revision TEXT, "
-                "items TEXT NOT NULL, PRIMARY KEY(job,revision))"
-            )
-
-            db.execute("BEGIN IMMEDIATE")
-            if "verified" not in {row[1] for row in db.execute("PRAGMA table_info(evidence)")}:
-                db.execute("ALTER TABLE evidence ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
-
-    def verification(
+    async def verification(
         self, job: CronJob
     ) -> tuple[tuple[str, ...] | None, dict[str, dict[str, str | bool]]]:
-        """Return standing criteria and evidence, including those learned for older jobs."""
-        with closing(sqlite3.connect(self.path)) as db:
-            revision = _revision(job)
-            criteria = _criteria(db, job, revision)
-            rows = db.execute(
-                "SELECT criterion,reference,verified FROM evidence WHERE job=? AND revision=? "
-                "ORDER BY rowid DESC LIMIT ?",
-                (job.id, revision, -1 if criteria else 12),
-            )
-            return criteria, {
-                key: {"reference": ref, "verified": bool(verified)} for key, ref, verified in rows
-            }
+        """Read criteria and evidence for the current objective revision."""
+        async with self.records.access():
+            state = await self.records.get(_revision_key(job)) or {}
+            return _progress(job, state)
 
-    def finish_check(
+    async def finish_check(
         self, job: CronJob, run: str, report: ObjectiveReport, reads: set[str]
     ) -> ObjectiveReport:
-        """Commit coverage, milestone evidence and the effective outcome together."""
-        revision = _revision(job)
-        with closing(sqlite3.connect(self.path)) as db, db:
-            if job.completion_criteria is None and report.completion_criteria is not None:
-                db.execute(
-                    "INSERT OR IGNORE INTO criteria VALUES(?,?,?)",
-                    (job.id, revision, json.dumps(report.completion_criteria)),
-                )
-            criteria = _criteria(db, job, revision)
+        """Commit the effective outcome and evidence in one recoverable mutation."""
+        async with self.records.access():
+            row = await self.records.get(run)
+            if row is None or row["job"] != job.id:
+                msg = "Unknown scheduled run"
+                raise ValueError(msg)
+            key = _revision_key(job)
+            state = await self.records.get(key) or {}
+            if report.completion_criteria is not None:
+                state.setdefault("criteria", report.completion_criteria)
+            criteria, evidence = _progress(job, state)
             if report.summary.strip() == "[SILENT]":
-                work = db.execute("SELECT work FROM checks WHERE run=?", (run,)).fetchone()
-                summary = work[0].strip() if work else ""
-                if not summary:
-                    summary = "No result summary recorded."
-                    if reads:
-                        summary += f" Read sources: {', '.join(sorted(reads))}."
-                report = report.model_copy(update={"summary": summary})
-            report = _check_coverage(job, report, reads)
-            report = _update_evidence(db, job.id, revision, criteria, report)
+                fallback = "No result summary recorded."
+                if reads:
+                    fallback += f" Read sources: {', '.join(sorted(reads))}."
+                report = report.model_copy(update={"summary": str(row["work"]).strip() or fallback})
+            report = _update_evidence(evidence, criteria, _check_coverage(job, report, reads))
             if report.status == "complete":
-                evidence = {
-                    row[0]
-                    for row in db.execute(
-                        "SELECT criterion FROM evidence WHERE job=? AND revision=? AND verified",
-                        (job.id, revision),
-                    )
-                }
-                report = _check_completion(report, criteria, evidence)
-            db.execute(
-                "UPDATE checks SET status=?,summary=?,read_tools=? WHERE run=?",
-                (report.status, report.summary[:4000], ", ".join(sorted(reads))[:2000], run),
+                verified = {k for k, v in evidence.items() if v["verified"]}
+                report = _check_completion(report, criteria, verified)
+            row.update(
+                status=report.status,
+                summary=report.summary[:4000],
+                read_tools=", ".join(sorted(reads))[:2000],
             )
-        return report
+            state["evidence"] = evidence
+            await self.records.commit([(key, state), (run, row)])
+            return report
 
-    def blocker_key(self, job: str) -> str:
-        """Return the current blocker identity for the next isolated check."""
-        with closing(sqlite3.connect(self.path)) as db:
-            row = db.execute("SELECT key FROM blockers WHERE job=?", (job,)).fetchone()
-            return row[0] if row else ""
+    async def blocker_key(self, job: str) -> str:
+        """Read the pending blocker identity."""
+        async with self.records.access():
+            row = await self.records.get("blocker:" + job) or {}
+            return str(row.get("key", ""))
 
-    def notice(self, job: CronJob, report: ObjectiveReport) -> str:
-        """Keep one notice pending until delivered, or until progress clears the blocker."""
-        with closing(sqlite3.connect(self.path)) as db, db:
+    async def notice(self, job: CronJob, report: ObjectiveReport) -> str:
+        """Keep one blocker notice pending until delivery or progress."""
+        key = "blocker:" + job.id
+        async with self.records.access():
+            row = await self.records.get(key)
             if report.status != "blocked":
-                if report.status in {"checked", "partial", "complete"}:
-                    db.execute("DELETE FROM blockers WHERE job=?", (job.id,))
+                if row and report.status in {"checked", "partial", "complete"}:
+                    await self.records.commit([(key, None)])
                 return ""
+            identity = (
+                report.blocker_key.strip() or report.notice.strip() or report.summary
+            ).casefold()
+            if row and row["key"] == identity:
+                return "" if row.get("delivered") else str(row["notice"])
             notice = (
                 report.notice.strip()
                 or f"Job {job.name} is blocked. Ask for its saved check results."
             )
-            key = (report.blocker_key.strip() or report.notice.strip() or report.summary).casefold()
-            db.execute(
-                "INSERT INTO blockers(job,key,notice) VALUES(?,?,?) ON CONFLICT(job) "
-                "DO UPDATE SET key=excluded.key,notice=excluded.notice,delivered=0 "
-                "WHERE blockers.key != excluded.key",
-                (job.id, key, notice),
-            )
-            row = db.execute(
-                "SELECT notice FROM blockers WHERE job=? AND delivered=0", (job.id,)
-            ).fetchone()
-            return row[0] if row else ""
+            await self.records.commit([(key, {"key": identity, "notice": notice})])
+            return notice
 
-    def mark_delivered(self, job: str, notice: str) -> None:
-        """Acknowledge a blocker only after the channel accepted its message."""
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute("UPDATE blockers SET delivered=1 WHERE job=? AND notice=?", (job, notice))
+    async def mark_delivered(self, job: str, notice: str) -> None:
+        """Acknowledge the matching pending notice."""
+        key = "blocker:" + job
+        async with self.records.access():
+            row = await self.records.get(key)
+            if row and row["notice"] == notice:
+                await self.records.commit([(key, {**row, "delivered": True})])
 
-    def start(self, job: CronJob, run: str) -> None:
-        """Record the start before doing work, including when the host subsequently exits."""
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute(
-                "INSERT INTO checks(run,job,name,channel,chat,owner,status,summary) "
-                "VALUES(?,?,?,?,?,?,'started','No outcome recorded yet.')",
-                (
-                    run,
-                    job.id,
-                    job.name,
-                    job.origin.channel or "",
-                    job.origin.conversation_id,
-                    job.origin.sender_id or "",
-                ),
-            )
+    async def start(self, job: CronJob, run: str) -> None:
+        """Link a new run into the owner's history before executing it."""
+        owner = _owner_key(job.origin)
+        async with self.records.access():
+            if await self.records.get(run):
+                msg = "Scheduled run already exists"
+                raise ValueError(msg)
+            head = await self.records.get(owner) or {}
+            row = {
+                "job": job.id,
+                "name": job.name,
+                "owner": owner,
+                "previous": head.get("run"),
+                "started": datetime.now(UTC).isoformat(),
+                "status": "started",
+                "summary": "No outcome recorded yet.",
+                "work": "",
+                "read_tools": "",
+            }
+            await self.records.commit([(run, row), (owner, {"run": run})])
 
     @contextmanager
     def capture_work(self, run: str) -> Generator[None]:
         """Bind checkpoints to the executing check without exposing a writable job ID."""
 
-        def save(note: str) -> None:
-            self.append_work(run, note)
+        async def save(note: str) -> None:
+            await self.append_work(run, note)
 
         token = _SAVE_WORK.set(save)
         try:
@@ -273,27 +238,31 @@ class JobJournal:
         finally:
             _SAVE_WORK.reset(token)
 
-    def append_work(self, run: str, note: str) -> None:
+    async def append_work(self, run: str, note: str) -> None:
         """Keep a bounded note, preserving the next step at the end of long checkpoints."""
         if len(note) > _NOTE_LIMIT:
             marker = "\n[truncated]\n"
             head = _NOTE_LIMIT // 2
             note = note[:head] + marker + note[-(_NOTE_LIMIT - head - len(marker)) :]
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute(
-                "UPDATE checks SET work=substr(work || ?,-4000) WHERE run=? AND status='started'",
-                ("\n" + note, run),
-            )
+        async with self.records.access():
+            row = await self.records.get(run)
+            if row and row["status"] == "started":
+                row["work"] = (str(row["work"]) + "\n" + note)[-4000:]
+                await self.records.commit([(run, row)])
 
-    def finish(self, run: str, status: str, summary: str, *, reads: Sequence[str] = ()) -> None:
-        """Persist the last known outcome for this host-generated run ID."""
-        with closing(sqlite3.connect(self.path)) as db, db:
-            db.execute(
-                "UPDATE checks SET status=?, summary=?, read_tools=? WHERE run=?",
-                (status, summary[:4000], ", ".join(reads)[:2000], run),
-            )
+    async def finish(
+        self, run: str, status: str, summary: str, *, reads: Sequence[str] = ()
+    ) -> None:
+        """Persist the last known outcome."""
+        async with self.records.access():
+            row = await self.records.get(run)
+            if row:
+                row.update(
+                    status=status, summary=summary[:4000], read_tools=", ".join(reads)[:2000]
+                )
+                await self.records.commit([(run, row)])
 
-    def history(
+    async def history(
         self,
         job: str | None,
         origin: CronOrigin,
@@ -302,42 +271,47 @@ class JobJournal:
         limit: int = 10,
         before_run: str | None = None,
     ) -> list[dict[str, str]]:
-        """Return one bounded page, newest first, within the originating owner's thread."""
-        with closing(sqlite3.connect(self.path)) as db:
-            db.row_factory = sqlite3.Row
-            rows = db.execute(
-                "SELECT job, name, started, status, summary, work, read_tools "
-                "FROM checks WHERE channel=? "
-                "AND chat=? AND owner=? AND (? IS NULL OR job=?) "
-                "AND (? IS NULL OR rowid < (SELECT rowid FROM checks WHERE run=?)) "
-                "ORDER BY rowid DESC LIMIT ? OFFSET ?",
-                (
-                    origin.channel or "",
-                    origin.conversation_id,
-                    origin.sender_id or "",
-                    job,
-                    job,
-                    before_run,
-                    before_run,
-                    limit,
-                    max(0, offset),
-                ),
+        """Return newest matching checks in the requesting owner's thread."""
+        owner = _owner_key(origin)
+        async with self.records.access():
+            head = await self.records.get(before_run or owner) or {}
+            cursor = (
+                head.get("previous")
+                if before_run and head.get("owner") == owner
+                else head.get("run")
             )
-            return [dict(row) for row in rows]
+            result = []
+            while cursor and len(result) < limit:
+                row = await self.records.get(str(cursor))
+                if not row or row["owner"] != owner:
+                    break
+                if job is None or row["job"] == job:
+                    if offset > 0:
+                        offset -= 1
+                    else:
+                        result.append(
+                            {k: str(v) for k, v in row.items() if k not in {"owner", "previous"}}
+                        )
+                cursor = row.get("previous")
+            return result
 
 
-def _revision(job: CronJob) -> str:
+def _owner_key(origin: CronOrigin) -> str:
+    return "owner:" + digest(origin.channel or "", origin.conversation_id, origin.sender_id or "")
+
+
+def _revision_key(job: CronJob) -> str:
     instructions = [job.prompt, job.completion_criteria, job.required_sources, job.read_sources]
-    return hashlib.sha256(json.dumps(instructions).encode()).hexdigest()
+    return "progress:" + digest(job.id, _owner_key(job.origin), json.dumps(instructions))
 
 
-def _criteria(db: sqlite3.Connection, job: CronJob, revision: str) -> tuple[str, ...] | None:
-    if job.completion_criteria is not None:
-        return job.completion_criteria
-    row = db.execute(
-        "SELECT items FROM criteria WHERE job=? AND revision=?", (job.id, revision)
-    ).fetchone()
-    return tuple(json.loads(row[0])) if row else None
+def _progress(
+    job: CronJob, state: dict[str, object]
+) -> tuple[tuple[str, ...] | None, dict[str, dict[str, str | bool]]]:
+    criteria = job.completion_criteria
+    if criteria is None and isinstance(state.get("criteria"), list):
+        criteria = tuple(cast("list[str]", state["criteria"]))
+    return criteria, cast("dict[str, dict[str, str | bool]]", state.get("evidence", {}))
 
 
 def criterion_ids(criteria: Sequence[str]) -> dict[str, str]:
@@ -346,9 +320,7 @@ def criterion_ids(criteria: Sequence[str]) -> dict[str, str]:
 
 
 def _update_evidence(
-    db: sqlite3.Connection,
-    job: str,
-    revision: str,
+    evidence: dict[str, dict[str, str | bool]],
     criteria: tuple[str, ...] | None,
     report: ObjectiveReport,
 ) -> ObjectiveReport:
@@ -360,16 +332,12 @@ def _update_evidence(
             unmatched.append(f"{key}: {reference}")
             continue
         if not reference or not reference.strip():
-            db.execute(
-                "DELETE FROM evidence WHERE job=? AND revision=? AND criterion=?",
-                (job, revision, criterion),
-            )
+            evidence.pop(criterion, None)
         elif report.status in {"partial", "checked", "complete", "blocked"}:
-            db.execute(
-                "INSERT OR REPLACE INTO evidence(job,revision,criterion,reference,verified) "
-                "VALUES(?,?,?,?,?)",
-                (job, revision, criterion, reference.strip()[:2000], key in report.verified),
-            )
+            evidence[criterion] = {
+                "reference": reference.strip()[:2000],
+                "verified": key in report.verified,
+            }
 
     if unmatched:
         message = "Resubmit evidence with standing criterion IDs: " + "; ".join(unmatched)

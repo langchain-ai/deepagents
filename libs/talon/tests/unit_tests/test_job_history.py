@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
+from langgraph.store.memory import InMemoryStore
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport
@@ -36,7 +37,7 @@ def test_unchanged_polls_back_off_until_progress_or_timed_event() -> None:
     assert report.next_wake(dict(previous, status="partial"), now, None) == proposed
 
 
-def test_malformed_reference_preserves_valid_progress_across_checks(tmp_path: Path) -> None:
+async def test_malformed_reference_preserves_valid_progress_across_checks(tmp_path: Path) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     job = store.create_job(
         prompt="Verify build and release",
@@ -44,8 +45,9 @@ def test_malformed_reference_preserves_valid_progress_across_checks(tmp_path: Pa
         origin=ORIGIN,
         completion_criteria=["build", "release"],
     )
-    journal = JobJournal(tmp_path)
-    journal.start(job, "first")
+    backend = InMemoryStore()
+    journal = JobJournal(backend, "test")
+    (await journal.start(job, "first"))
     report = ObjectiveReport.from_reply(
         json.dumps(
             {
@@ -56,14 +58,17 @@ def test_malformed_reference_preserves_valid_progress_across_checks(tmp_path: Pa
             }
         )
     )
-    assert journal.finish_check(job, "first", report, set()).status == "partial"
-    assert JobJournal(tmp_path).verification(job)[1] == {
+    assert (await journal.finish_check(job, "first", report, set())).status == "partial"
+    assert (await JobJournal(backend, "test").verification(job))[1] == {
         "build": {"reference": "run 29", "verified": False}
     }
-    assert "Supply text references for release" in journal.history(job.id, ORIGIN)[0]["summary"]
+    assert (
+        "Supply text references for release"
+        in (await journal.history(job.id, ORIGIN))[0]["summary"]
+    )
 
 
-def test_blocked_run_saves_verified_milestones_after_required_reads(tmp_path: Path) -> None:
+async def test_blocked_run_saves_verified_milestones_after_required_reads(tmp_path: Path) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     job = store.create_job(
         prompt="Verify the build and release",
@@ -72,59 +77,62 @@ def test_blocked_run_saves_verified_milestones_after_required_reads(tmp_path: Pa
         completion_criteria=["build", "release"],
         required_sources=["path:/builds"],
     )
-    journal = JobJournal(tmp_path)
+    backend = InMemoryStore()
+    journal = JobJournal(backend, "test")
     report = ObjectiveReport(
         status="blocked", summary="Release awaits signing.", evidence={"build": "build 29"}
     )
     for run, reads in [("first", set()), ("second", {"path:/builds"})]:
-        journal.start(job, run)
-        assert journal.finish_check(job, run, report, reads).status == "blocked"
-        assert JobJournal(tmp_path).verification(job)[1] == (
+        (await journal.start(job, run))
+        assert (await journal.finish_check(job, run, report, reads)).status == "blocked"
+        assert (await JobJournal(backend, "test").verification(job))[1] == (
             {"build": {"reference": "build 29", "verified": False}} if reads else {}
         )
 
 
-def test_ongoing_milestones_and_legacy_criteria_are_durable(tmp_path: Path) -> None:
+async def test_ongoing_milestones_and_legacy_criteria_are_durable(tmp_path: Path) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     job = store.create_job(mode="objective", origin=ORIGIN, prompt="Maintain detections")
-    journal = JobJournal(tmp_path)
+    backend = InMemoryStore()
+    journal = JobJournal(backend, "test")
     for run, criteria in [("first", []), ("second", ["build"])]:
-        journal.start(job, run)
+        (await journal.start(job, run))
         report = ObjectiveReport(
             status="complete",
             summary="Passed",
             completion_criteria=criteria,
             evidence={"build": "build 27"},
         )
-        assert journal.finish_check(job, run, report, set()).status == "partial"
-    assert JobJournal(tmp_path).verification(job) == (
+        assert (await journal.finish_check(job, run, report, set())).status == "partial"
+    assert (await JobJournal(backend, "test").verification(job)) == (
         (),
         {"build": {"reference": "build 27", "verified": False}},
     )
     edited = store.edit_job(job.id, origin=ORIGIN, completion_criteria=["ship"])
-    assert journal.verification(edited) == (("ship",), {})
+    assert (await journal.verification(edited)) == (("ship",), {})
 
 
-def test_partial_and_unmatched_references_cannot_complete_objective(tmp_path: Path) -> None:
+async def test_partial_and_unmatched_references_cannot_complete_objective(tmp_path: Path) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     job = store.create_job(
         mode="objective", origin=ORIGIN, prompt="Test login", completion_criteria=["Real login"]
     )
-    journal = JobJournal(tmp_path)
-    journal.start(job, "mock")
+    backend = InMemoryStore()
+    journal = JobJournal(backend, "test")
+    (await journal.start(job, "mock"))
     report = ObjectiveReport(status="partial", summary="Mock passed", evidence={"C1": "mock log"})
-    journal.finish_check(job, "mock", report, set())
-    journal.start(job, "retry")
+    (await journal.finish_check(job, "mock", report, set()))
+    (await journal.start(job, "retry"))
     report = ObjectiveReport(status="complete", summary="Done", evidence={"login test": "run 23"})
-    outcome = journal.finish_check(job, "retry", report, set())
+    outcome = await journal.finish_check(job, "retry", report, set())
     assert outcome.status == "partial"
     assert "login test: run 23" in outcome.summary
-    journal.start(job, "quiet")
-    journal.append_work("quiet", "Checked issuer logs. Real login is pending.")
+    (await journal.start(job, "quiet"))
+    (await journal.append_work("quiet", "Checked issuer logs. Real login is pending."))
     report = ObjectiveReport(status="complete", summary="[SILENT]")
-    outcome = journal.finish_check(job, "quiet", report, set())
+    outcome = await journal.finish_check(job, "quiet", report, set())
     assert outcome.status == "partial"
-    assert "Checked issuer logs" in journal.history(job.id, ORIGIN)[0]["summary"]
+    assert "Checked issuer logs" in (await journal.history(job.id, ORIGIN))[0]["summary"]
     assert "[SILENT]" not in outcome.summary
 
 

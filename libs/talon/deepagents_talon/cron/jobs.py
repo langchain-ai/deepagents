@@ -79,6 +79,7 @@ _SCHEDULE_FORMS_HELP = (
     "or 'cron */15 9-17 * * mon-fri America/New_York'"
 )
 
+JobMode = Literal["routine", "objective"]
 JobStatus = Literal["ok", "error"]
 ScheduleKind = Literal["one_shot", "recurring"]
 ScheduleForm = Literal["interval", "at", "daily", "cron"]
@@ -92,6 +93,8 @@ _SCHEDULE_KINDS: tuple[str, ...] = ("one_shot", "recurring")
 _SCHEDULE_FORMS: tuple[str, ...] = ("interval", "at", "daily", "cron")
 _DELIVER_TO: tuple[str, ...] = ("thread", "channel")
 MAX_PINNED_SKILLS = 8
+_MAX_HANDOFFS = 10
+_MAX_HANDOFF_LENGTH = 2000
 _SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 
@@ -178,6 +181,13 @@ class CronJobDict(TypedDict):
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
+    mode: NotRequired[JobMode]
+    run_requested: NotRequired[bool]
+    required_sources: NotRequired[list[str]]
+    completion_criteria: NotRequired[list[str]]
+    read_sources: NotRequired[list[str]]
+    context_notes: NotRequired[list[str]]
+    owner_context_revision: NotRequired[int]
 
 
 class CronJobWireDict(TypedDict):
@@ -201,6 +211,7 @@ class CronJobWireDict(TypedDict):
     claimed_at: str | None
     deliver_to: DeliverTo
     skills: list[str]
+    mode: JobMode
 
 
 class CronStoreDict(TypedDict):
@@ -684,6 +695,11 @@ class CronJob:
         deliver_to: Where results post when the origin is a channel thread:
             `channel` posts to the parent channel, `thread` replies in the thread.
         skills: Skill names whose full instructions load into each run.
+        mode: Repeat a procedure or pursue an objective.
+        run_requested: Run once at the next tick, preserving the recurring schedule.
+        read_sources: Owner-confirmed read boundaries for scheduled checks.
+        handoffs: Sender-labeled context notes, oldest first.
+        owner_context_revision: Changes when the owner supplies new context.
     """
 
     id: str
@@ -704,6 +720,13 @@ class CronJob:
     claimed_at: datetime | None = None
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
+    mode: JobMode = field(default="routine", kw_only=True)
+    run_requested: bool = field(default=False, kw_only=True)
+    required_sources: tuple[str, ...] = field(default=(), kw_only=True)
+    completion_criteria: tuple[str, ...] | None = field(default=None, kw_only=True)
+    read_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
+    handoffs: tuple[str, ...] = field(default=(), kw_only=True, compare=False)
+    owner_context_revision: int = field(default=0, kw_only=True)
 
     def target_delay(self, finished: datetime) -> str:
         """Describe the first completed check after a missed soft target."""
@@ -736,7 +759,7 @@ class CronJob:
             if self.until is not None and current > self.until:
                 break
             runs.append(current)
-            if self.schedule.kind == "one_shot":
+            if self.mode == "objective" or self.schedule.kind == "one_shot":
                 break
             current = self.schedule.next_after(current, previous=current)
         return runs
@@ -766,6 +789,21 @@ class CronJob:
             "claimed_at": _to_optional_epoch(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
+            "mode": self.mode,
+            **({"run_requested": True} if self.run_requested else {}),
+            **({"required_sources": list(self.required_sources)} if self.required_sources else {}),
+            **(
+                {"completion_criteria": list(self.completion_criteria)}
+                if self.completion_criteria is not None
+                else {}
+            ),
+            **({"read_sources": list(self.read_sources)} if self.read_sources is not None else {}),
+            **({"context_notes": list(self.handoffs)} if self.handoffs else {}),
+            **(
+                {"owner_context_revision": self.owner_context_revision}
+                if self.owner_context_revision
+                else {}
+            ),
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -797,6 +835,7 @@ class CronJob:
             "claimed_at": _format_optional_time(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
+            "mode": self.mode,
         }
 
     @classmethod
@@ -840,6 +879,24 @@ class CronJob:
             ),
             # Jobs saved before this field existed pin no skills.
             skills=pinned_skills(_list_field(record, "skills")),
+            mode=cast(
+                "JobMode",
+                _optional_literal_field(record, "mode", ("routine", "objective")) or "routine",
+            ),
+            run_requested=_bool_field(record, "run_requested")
+            if "run_requested" in record
+            else False,
+            required_sources=tuple(_string_list(record, "required_sources")),
+            handoffs=tuple(_string_list(record, "context_notes"))
+            if "context_notes" in record
+            else tuple(f"Owner: {note}" for note in _string_list(record, "handoffs")),
+            owner_context_revision=_optional_int_field(record, "owner_context_revision") or 0,
+            completion_criteria=tuple(_string_list(record, "completion_criteria"))
+            if "completion_criteria" in record
+            else None,
+            read_sources=tuple(_string_list(record, "read_sources"))
+            if "read_sources" in record
+            else None,
         )
 
 
@@ -885,7 +942,7 @@ class CronJobStore:
         self,
         *,
         prompt: str,
-        schedule: CronSchedule,
+        schedule: CronSchedule | None = None,
         origin: CronOrigin,
         name: str = "",
         repeat_times: int | None = None,
@@ -893,13 +950,16 @@ class CronJobStore:
         until: datetime | None = None,
         deliver_to: DeliverTo = "channel",
         skills: Sequence[str] = (),
+        mode: JobMode = "routine",
+        required_sources: Sequence[str] | None = None,
+        completion_criteria: Sequence[str] | None = None,
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
 
         Args:
             prompt: Prompt passed to the agent when the job fires.
-            schedule: Job schedule.
+            schedule: Routine schedule or optional first wake for an objective.
             origin: Conversation that receives results.
             name: Human-readable label.
             repeat_times: Optional cap for recurring jobs.
@@ -907,6 +967,9 @@ class CronJobStore:
             until: Optional last instant a recurring job may run, inclusive.
             deliver_to: Whether a thread origin's results post to its channel or thread.
             skills: Skill names to pin to each run; see `pinned_skills`.
+            required_sources: Sources whose use must be observed, without granting access.
+            completion_criteria: Finite verification criteria, or an empty list for ongoing work.
+            mode: Repeat a procedure or choose the next action toward an objective.
             now: Creation time override for deterministic tests.
 
         Returns:
@@ -919,17 +982,31 @@ class CronJobStore:
         pinned = pinned_skills(skills)
         with self._lock:
             current = _coerce_utc(now)
+            if schedule is None and mode != "objective":
+                msg = "A routine needs a schedule."
+                raise CronJobError(msg)
+            next_run_at = _first_run_at(schedule, current) if schedule else current
+            if schedule is None or mode == "objective":
+                # Persist a retry before dispatch in case the run never returns a valid wake.
+                schedule = CronSchedule.parse("every 1h")
             repeat = CronRepeat(times=repeat_times)
             if schedule.kind == "one_shot" and repeat_times is not None:
                 msg = "repeat cap is only valid for recurring jobs"
                 raise CronJobError(msg)
             until = None if until is None else _coerce_utc(until)
-            next_run_at = _first_run_at(schedule, current)
             _check_until(schedule, next_run_at, until)
+            job_id = uuid.uuid4().hex[:12]
+            if mode == "objective" and not prompt.strip():
+                msg = "An objective job needs an objective."
+                raise CronJobError(msg)
+            if mode == "objective" and (not origin.sender_id or not origin.channel):
+                msg = "Objective jobs need a channel and identified sender."
+                raise CronJobError(msg)
+            _validate_objective_requirements(mode, required_sources, completion_criteria)
             job = CronJob(
-                id=uuid.uuid4().hex[:12],
+                id=job_id,
                 assistant_id=self.assistant_id,
-                name=name,
+                name=name or (prompt.strip().splitlines()[0][:100] if mode == "objective" else ""),
                 prompt=prompt,
                 schedule=schedule,
                 repeat=repeat,
@@ -944,6 +1021,11 @@ class CronJobStore:
                 until=until,
                 deliver_to=deliver_to,
                 skills=pinned,
+                mode=mode,
+                required_sources=tuple(required_sources or ()),
+                completion_criteria=None
+                if completion_criteria is None
+                else tuple(completion_criteria),
             )
             jobs = [*self.list_jobs(), job]
             self._write_jobs(jobs)
@@ -961,7 +1043,7 @@ class CronJobStore:
         jobs = self._read_jobs()
         if origin is None:
             return jobs
-        return [job for job in jobs if _same_origin_scope(job.origin, origin)]
+        return [job for job in jobs if _in_scope(job, origin)]
 
     def due_jobs(self, *, now: datetime | None = None) -> list[CronJob]:
         """Return enabled jobs due at or before `now`.
@@ -977,7 +1059,9 @@ class CronJobStore:
             [
                 job
                 for job in self.list_jobs()
-                if job.enabled and job.next_run_at is not None and job.next_run_at <= current
+                if job.enabled
+                and job.next_run_at is not None
+                and (job.run_requested or job.next_run_at <= current)
             ],
             key=lambda job: cast("datetime", job.next_run_at),
         )
@@ -1003,6 +1087,10 @@ class CronJobStore:
         prompt: str | None = None,
         schedule: CronSchedule | None = None,
         enabled: bool | None = None,
+        run_now: bool = False,
+        required_sources: Sequence[str] | None = None,
+        completion_criteria: Sequence[str] | None = None,
+        read_sources: Sequence[str] | None = None,
         repeat_times: int | None = None,
         target_at: datetime | None = None,
         until: datetime | None = None,
@@ -1020,6 +1108,10 @@ class CronJobStore:
             name: Optional replacement label.
             prompt: Optional replacement prompt.
             schedule: Optional replacement schedule.
+            required_sources: Replacement sources to verify.
+            completion_criteria: Replacement finish criteria, or an empty list for ongoing work.
+            read_sources: Replace the read boundaries for scheduled goal checks.
+            run_now: Queue an extra run at the next scheduler tick.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             target_at: Soft target after which work continues.
@@ -1047,13 +1139,21 @@ class CronJobStore:
             current = _coerce_utc(now)
             result: list[CronJob] = []
             for job in jobs:
-                if job.id != job_id or not _same_origin_scope(job.origin, origin):
+                if job.id != job_id or not _in_scope(job, origin):
                     result.append(job)
                     continue
+                if run_now and (
+                    not (job.enabled if enabled is None else enabled) or job.next_run_at is None
+                ):
+                    msg = "Resume the job before requesting a run."
+                    raise CronJobError(msg)
+                if read_sources is not None and job.mode != "objective":
+                    msg = "Read grants apply only to objective jobs."
+                    raise CronJobError(msg)
                 next_run_at = (
                     _first_run_at(schedule, current) if schedule is not None else job.next_run_at
                 )
-                new_schedule = schedule or job.schedule
+                new_schedule = job.schedule if job.mode == "objective" else schedule or job.schedule
                 new_repeat = job.repeat
                 if repeat_times is not None:
                     if new_schedule.kind != "recurring":
@@ -1063,8 +1163,17 @@ class CronJobStore:
                 new_until = _edited_until(job.until, until, clear=clear_until)
                 if next_run_at is not None:
                     _check_until(new_schedule, next_run_at, new_until)
+                _validate_objective_requirements(job.mode, required_sources, completion_criteria)
                 updated = replace(
                     job,
+                    required_sources=job.required_sources
+                    if required_sources is None
+                    else tuple(required_sources),
+                    completion_criteria=job.completion_criteria
+                    if completion_criteria is None
+                    else tuple(completion_criteria),
+                    read_sources=job.read_sources if read_sources is None else tuple(read_sources),
+                    run_requested=(run_now or job.run_requested) and enabled is not False,
                     name=job.name if name is None else name,
                     prompt=job.prompt if prompt is None else prompt,
                     schedule=new_schedule,
@@ -1101,7 +1210,7 @@ class CronJobStore:
             removed: CronJob | None = None
             result: list[CronJob] = []
             for job in jobs:
-                if job.id == job_id and _same_origin_scope(job.origin, origin):
+                if job.id == job_id and _in_scope(job, origin):
                     removed = job
                     continue
                 result.append(job)
@@ -1136,18 +1245,91 @@ class CronJobStore:
                 if job.id != job_id:
                     result.append(job)
                     continue
-                if not job.enabled or job.next_run_at is None or job.next_run_at > current:
+                if (
+                    not job.enabled
+                    or job.next_run_at is None
+                    or (job.next_run_at > current and not job.run_requested)
+                ):
                     result.append(job)
                     continue
                 if _is_expired(job, current):
                     result.append(replace(job, enabled=False, next_run_at=None))
                     expired = True
                     continue
-                claimed = _advance_claimed_job(job, current)
+                if (
+                    job.run_requested
+                    and job.next_run_at > current
+                    and job.schedule.kind == "recurring"
+                ):
+                    claimed = replace(job, run_requested=False, claimed_at=current)
+                else:
+                    claimed = _advance_claimed_job(replace(job, run_requested=False), current)
                 result.append(claimed)
             if claimed is not None or expired:
                 self._write_jobs(result)
             return claimed
+
+    def send_job_context(
+        self, job_id: str, note: str, *, origin: CronOrigin, sender_job: str | None = None
+    ) -> None:
+        """Append owner or peer context to an objective in the owner's thread."""
+        note = note.strip()
+        if not note or len(note) > _MAX_HANDOFF_LENGTH:
+            msg = f"A note must contain 1 to {_MAX_HANDOFF_LENGTH} characters."
+            raise CronJobError(msg)
+        with self._lock:
+            target = self.get_job(job_id, origin=origin)
+            if target is None or target.mode != "objective":
+                msg = "No matching objective in this thread."
+                raise CronJobError(msg)
+            label = "Owner"
+            if sender_job is not None:
+                sender = self.get_job(sender_job, origin=origin)
+                if sender is None or sender.mode != "objective" or sender.id == job_id:
+                    msg = "Peer context must come from another objective in this thread."
+                    raise CronJobError(msg)
+                label = f"Objective {sender.id}"
+            entry = f"{label}: {note}"
+            if target.handoffs[-1:] == (entry,):
+                return
+            jobs = self.list_jobs()
+            jobs[jobs.index(target)] = replace(
+                target,
+                handoffs=(*target.handoffs, entry)[-_MAX_HANDOFFS:],
+                owner_context_revision=target.owner_context_revision + int(sender_job is None),
+            )
+            self._write_jobs(jobs)
+
+    def apply_objective_result(
+        self, snapshot: CronJob, *, complete: bool = False, wake: datetime | None = None
+    ) -> bool:
+        """Apply a scheduling decision and report whether the run is still current."""
+        with self._lock:
+            jobs = self.list_jobs()
+            if snapshot.mode != "objective" or snapshot not in jobs:
+                return False
+            index = jobs.index(snapshot)
+            current = jobs[index]
+            if complete:
+                updated = replace(current, enabled=False, next_run_at=None)
+            elif wake is not None and snapshot.enabled:
+                wake = _coerce_utc(wake)
+                if wake <= _coerce_utc() or (snapshot.until is not None and wake > snapshot.until):
+                    return True
+                updated = replace(current, next_run_at=wake)
+            else:
+                return True
+            jobs[index] = updated
+            self._write_jobs(jobs)
+            return True
+
+    def pause_objective(self, snapshot: CronJob) -> bool:
+        """Pause an inaccessible objective only while the failing instructions are current."""
+        with self._lock:
+            if snapshot.mode != "objective" or self.get_job(snapshot.id) != snapshot:
+                return False
+            self.edit_job(snapshot.id, origin=snapshot.origin, enabled=False)
+            return True
 
     def mark_job_run(
         self,
@@ -1390,6 +1572,8 @@ def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:
         return replace(job, repeat=repeat, enabled=False, next_run_at=None)
 
     next_run_at = job.schedule.next_after(now, previous=job.next_run_at)
+    if job.mode == "objective" and job.until is not None and now < job.until:
+        next_run_at = min(next_run_at, job.until)
     if job.until is not None and next_run_at > job.until:
         return replace(job, repeat=repeat, enabled=False, next_run_at=None)
     return replace(job, repeat=repeat, next_run_at=next_run_at)
@@ -1687,8 +1871,39 @@ def _positive_int(value: str) -> int:
     return number
 
 
-def _same_origin_scope(left: CronOrigin, right: CronOrigin) -> bool:
-    return left.channel == right.channel and _origin_scope(left) == _origin_scope(right)
+def _in_scope(job: CronJob, origin: CronOrigin) -> bool:
+    if job.origin.channel != origin.channel:
+        return False
+    if job.mode == "objective":
+        return bool(
+            origin.sender_id
+            and job.origin.sender_id == origin.sender_id
+            and job.origin.conversation_id == origin.conversation_id
+        )
+    return _origin_scope(job.origin) == _origin_scope(origin)
+
+
+def _validate_objective_requirements(
+    mode: JobMode, sources: Sequence[str] | None, criteria: Sequence[str] | None
+) -> None:
+    if mode != "objective" and (sources is not None or criteria is not None):
+        msg = "Only objectives accept required sources and completion criteria."
+        raise CronJobError(msg)
+    for source in sources or ():
+        if not (source.startswith("path:/") or (source.startswith("tool:") and source[5:].strip())):
+            msg = "Use tool:<name> or path:<absolute path> for each required source."
+            raise CronJobError(msg)
+    if any(not criterion.strip() for criterion in criteria or ()):
+        msg = "Completion criteria must be nonempty."
+        raise CronJobError(msg)
+
+
+def _string_list(record: _Record, key: str) -> list[str]:
+    values = _list_field(record, key)
+    if not all(isinstance(value, str) for value in values):
+        msg = f"Expected strings in {key}."
+        raise CronJobError(msg)
+    return cast("list[str]", values)
 
 
 def _origin_scope(origin: CronOrigin) -> str:
@@ -1748,20 +1963,14 @@ def _format_time(value: datetime) -> str:
 
 
 def _decode_store(raw: bytes, *, path: Path) -> list[CronJob]:
-    """Decode the store file, treating anything unreadable as an empty store.
-
-    A malformed file must not raise: `_read_jobs` sits under the scheduler's
-    tick loop, which has no exception handler, so a throw here would silently
-    kill the ticker for the life of the process. Returning empty degrades to
-    "no jobs scheduled" and lets the next write heal the file, at the cost of
-    dropping whatever could not be read -- hence the loud log.
+    """Decode the store file and log malformed data.
 
     Args:
         raw: File contents.
         path: Store path, for diagnostics.
 
     Returns:
-        Parsed jobs, or an empty list if the file cannot be read.
+        Parsed jobs, or an empty list for malformed data.
     """
     try:
         data = json.loads(raw)

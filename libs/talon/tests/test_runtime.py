@@ -8,12 +8,13 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from langgraph.checkpoint.memory import InMemorySaver
@@ -32,6 +33,8 @@ from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
     DeepAgentRuntime,
     _is_retryable,
+    _rate_limit_delay,
+    _RateLimitRecovery,
     _split_path_env,
     _status_code,
 )
@@ -1576,3 +1579,168 @@ async def test_retry_preserves_checkpointed_user_message_and_completed_tool() ->
 def test_gateway_policy_429_is_not_retryable(text: str) -> None:
     assert not _is_retryable(StatusError(429, text))
     assert _is_retryable(StatusError(429, "rate limit exceeded"))
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Retry-After": "2"}, 2),
+        ({"Retry-After": "Thu, 01 Jan 1970 00:00:12 GMT"}, 2),
+        ({"Retry-After": "bad", "x-ratelimit-reset-requests": "1m2s"}, 62),
+        ({"x-ratelimit-reset-requests": "2s", "x-ratelimit-reset-tokens": "2500ms"}, 2.5),
+        ({"Retry-After": "2", "x-ratelimit-reset-tokens": "1m"}, 2),
+        ({"Retry-After": "NaN", "x-ratelimit-reset-tokens": "inf"}, 11),
+        ({"Retry-After": "-1"}, 11),
+        ({}, 11),
+    ],
+)
+def test_rate_limit_delay(headers, expected, monkeypatch) -> None:
+    monkeypatch.setattr("deepagents_talon.runtime.time.time", lambda: 10)
+    monkeypatch.setattr("deepagents_talon.runtime.random.SystemRandom.uniform", lambda *_: 1)
+    error = httpx.HTTPStatusError(
+        "limited",
+        request=httpx.Request("POST", "https://example.test"),
+        response=httpx.Response(429, headers=headers),
+    )
+    assert _rate_limit_delay(error, 1) == expected
+
+
+@pytest.mark.parametrize("name", ["RateLimitError", "OpenAIRateLimitError", "StatusError"])
+async def test_rate_limit_recovery_honors_headers(name, monkeypatch) -> None:
+    error = StatusError(429) if name == "StatusError" else type(name, (Exception,), {})("limited")
+    error.response = httpx.Response(429, headers={"Retry-After": "2"})
+    handler = AsyncMock(side_effect=[error, error, "done"])
+    sleep = AsyncMock()
+    monkeypatch.setattr("deepagents_talon.runtime.asyncio.sleep", sleep)
+
+    assert await _RateLimitRecovery().awrap_model_call(None, handler) == "done"
+    assert [call.args[0] for call in sleep.call_args_list] == [2, 2]
+
+
+async def test_rate_limit_fallback_exhaustion_does_not_restart_graph(monkeypatch) -> None:
+    error = StatusError(429)
+    handler = AsyncMock(side_effect=error)
+    sleep = AsyncMock()
+    monkeypatch.setattr("deepagents_talon.runtime.asyncio.sleep", sleep)
+    monkeypatch.setattr("deepagents_talon.runtime.random.SystemRandom.uniform", lambda *_: 1)
+
+    async def respond(_state):
+        return await _RateLimitRecovery().awrap_model_call(None, handler)
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("model", respond)
+    builder.add_edge(START, "model")
+    builder.add_edge("model", END)
+    runtime = DeepAgentRuntime(model="test:model", env={})
+    runtime._graph = builder.compile()
+    with pytest.raises(StatusError):
+        await runtime._invoke_payload_with_retries({}, "chat", None)
+    assert handler.await_count == 6
+    assert [call.args[0] for call in sleep.call_args_list] == [6, 11, 21, 41, 61]
+
+
+@pytest.mark.parametrize("text", ["request failed", "blocked by gateway policies"])
+async def test_rate_limit_does_not_wait_past_budget_or_retry_gateway_policy(text, monkeypatch):
+    error = StatusError(429, text)
+    error.response = httpx.Response(
+        429, headers={"Retry-After": "301" if text == "request failed" else "2"}
+    )
+    handler = AsyncMock(side_effect=error)
+    sleep = AsyncMock()
+    monkeypatch.setattr("deepagents_talon.runtime.asyncio.sleep", sleep)
+    with pytest.raises(StatusError):
+        await _RateLimitRecovery().awrap_model_call(None, handler)
+    sleep.assert_not_awaited()
+    assert handler.await_count == 1
+
+
+async def test_rate_limit_wait_is_cancellable(monkeypatch):
+    waiting = asyncio.Event()
+
+    async def sleep(_delay):
+        waiting.set()
+        await asyncio.Event().wait()
+
+    handler = AsyncMock(side_effect=StatusError(429))
+    monkeypatch.setattr("deepagents_talon.runtime.asyncio.sleep", sleep)
+    task = asyncio.create_task(_RateLimitRecovery().awrap_model_call(None, handler))
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert handler.await_count == 1
+
+
+async def test_rate_limit_elapsed_budget_bounds_inflight_retry(monkeypatch):
+    error = StatusError(429)
+    calls = 0
+
+    async def handler(_request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise error
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("deepagents_talon.runtime._RATE_LIMIT_SECONDS", 0.01)
+    monkeypatch.setattr("deepagents_talon.runtime._rate_limit_delay", lambda *_: 0)
+    with pytest.raises(StatusError):
+        await _RateLimitRecovery().awrap_model_call(None, handler)
+    assert calls == 2
+
+
+async def test_runtime_rate_limit_recovery_preserves_completed_tool(monkeypatch, tmp_path):
+    class ToolModel(FakeMessagesListChatModel):
+        def bind_tools(self, _tools: object, **_kwargs: object) -> ToolModel:
+            return self
+
+    model = ToolModel(
+        responses=[
+            AIMessage(
+                content="", tool_calls=[{"name": "complete_action", "args": {}, "id": "action"}]
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    generate = model._agenerate
+    failures = 0
+    actions = []
+
+    async def limited(*args: Any, **kwargs: Any):
+        nonlocal failures
+        if model.i == 1 and failures < 2:
+            failures += 1
+            error = StatusError(429)
+            error.response = httpx.Response(429, headers={"Retry-After": "2"})
+            raise error
+        return await generate(*args, **kwargs)
+
+    def complete_action() -> str:
+        """Complete the requested action."""
+        actions.append("completed")
+        return "completed"
+
+    monkeypatch.setattr(ToolModel, "_agenerate", lambda _self, *a, **kw: limited(*a, **kw))
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_kw: model
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("deepagents_talon.runtime.asyncio.sleep", sleep)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        tools=[complete_action],
+        assistant_dir=tmp_path,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        max_retries=1,
+        env={},
+    )
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest("chat", "complete the action"))
+        assert result.text == "done"
+        assert actions == ["completed"]
+        assert [call.args[0] for call in sleep.call_args_list] == [2, 2]
+    finally:
+        await runtime.stop()

@@ -10,10 +10,14 @@ import contextlib
 import contextvars
 import json
 import logging
+import math
 import os
+import random
 import re
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from functools import partial
 from http import HTTPStatus
 from pathlib import Path
@@ -32,6 +36,7 @@ from deepagents.middleware.summarization import (
 )
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.messages import HumanMessage
@@ -132,7 +137,6 @@ if TYPE_CHECKING:
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import AgentState, InterruptOnConfig
-    from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.callbacks import AsyncCallbackHandler
     from langchain_core.language_models import BaseChatModel
     from langgraph.types import Checkpointer
@@ -144,6 +148,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_RECURSION_LIMIT = 500
 DEFAULT_MAX_RETRIES = 3
+_RATE_LIMIT_ATTEMPTS = 6
+_RATE_LIMIT_SECONDS = 300
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
@@ -347,8 +353,8 @@ class DeepAgentRuntime:
             checkpointing so turns in the same conversation share chat history.
         include_web_tools: Whether to attach built-in web tools to external research.
         recursion_limit: Per-invocation graph recursion limit.
-        max_retries: Retries for transient provider, parse, context-limit, and
-            transport errors.
+        max_retries: Attempts for transient provider, parse, context-limit, and
+            transport errors, excluding separately bounded model rate limits.
         max_continuations: Number of continuation nudges after empty responses.
         env: Environment values for model, path, and backend settings.
             `DEEPAGENTS_TALON_VERBOSITY` selects silent (1, default), sparse (2), or
@@ -533,6 +539,7 @@ class DeepAgentRuntime:
             SelectedModelSummarization(default_model, self.backend),
             ModelSelectionMiddleware(),
             ProgressMessages(),
+            _RateLimitRecovery(),
         ]
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
         # after_model runs in reverse order: hooks must resolve before approval.
@@ -1285,7 +1292,7 @@ class DeepAgentRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if not _is_retryable(exc) or attempt + 1 >= self.max_retries:
+                if _is_rate_limit(exc) or not _is_retryable(exc) or attempt + 1 >= self.max_retries:
                     raise
                 last_exc = exc
                 backoff = min(2**attempt, 10)
@@ -2097,6 +2104,93 @@ def _skill_entry(child: os.DirEntry[str]) -> tuple[str, int, int] | None:
     except OSError:
         return None
     return (path, stat.st_mtime_ns, stat.st_size)
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    return "blocked by gateway policies" not in str(exc).lower() and (
+        _status_code(exc) == HTTPStatus.TOO_MANY_REQUESTS
+        or any(
+            cls.__name__ in {"RateLimitError", "OpenAIRateLimitError"} for cls in type(exc).__mro__
+        )
+    )
+
+
+def _retry_after(value: str) -> float | None:
+    try:
+        delay = float(value)
+    except ValueError:
+        try:
+            date = parsedate_to_datetime(value)
+            delay = date.timestamp() - time.time() if date.tzinfo is not None else -1
+        except ValueError, TypeError, OverflowError:
+            return None
+    return delay if math.isfinite(delay) and delay >= 0 else None
+
+
+def _reset_delay(value: str) -> float | None:
+    if re.fullmatch(r"(?:\d+(?:\.\d+)?(?:ms|s|m|h))+", value):
+        units = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
+        delay = sum(
+            float(number) * units[unit]
+            for number, unit in re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h)", value)
+        )
+        return delay if math.isfinite(delay) else None
+    return _retry_after(value)
+
+
+def _rate_limit_delay(exc: Exception, attempt: int) -> float:
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if isinstance(headers, Mapping):
+        values = {str(key).lower(): str(value).strip() for key, value in headers.items()}
+        if (delay := _retry_after(values.get("retry-after", ""))) is not None:
+            return delay
+        resets = [
+            delay
+            for name in ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens")
+            if (delay := _reset_delay(values.get(name, ""))) is not None
+        ]
+        if resets:
+            return max(resets)
+    return min(60, 5 * 2**attempt) + random.SystemRandom().uniform(0, 3)
+
+
+class _RateLimitRecovery(AgentMiddleware):
+    """Retry provider rate limits without replaying graph steps."""
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Honor provider timing within a separate bounded retry budget."""
+        last_error: Exception | None = None
+        budget = asyncio.timeout(None)
+        try:
+            async with budget:
+                for attempt in range(_RATE_LIMIT_ATTEMPTS):
+                    try:
+                        return await handler(request)
+                    except Exception as exc:
+                        if not _is_rate_limit(exc) or attempt + 1 >= _RATE_LIMIT_ATTEMPTS:
+                            raise
+                        last_error = exc
+                        if budget.when() is None:
+                            budget.reschedule(
+                                asyncio.get_running_loop().time() + _RATE_LIMIT_SECONDS
+                            )
+                        delay = _rate_limit_delay(exc, attempt)
+                        if asyncio.get_running_loop().time() + delay >= cast(
+                            "float", budget.when()
+                        ):
+                            raise
+                        logger.warning("Provider rate limit; retrying in %.2fs: %s", delay, exc)
+                        await asyncio.sleep(delay)
+        except TimeoutError:
+            if budget.expired() and last_error is not None:
+                raise last_error from None
+            raise
+        msg = "rate-limit retry loop exited unexpectedly"
+        raise RuntimeError(msg)
 
 
 def _is_retryable(exc: Exception) -> bool:

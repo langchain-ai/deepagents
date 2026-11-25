@@ -16,6 +16,7 @@ from deepagents_talon.cron import (
     CronTools,
 )
 from deepagents_talon.cron.jobs import parse_until
+from deepagents_talon.cron.journal import JobJournal
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
 
 NOON = datetime(2026, 1, 1, 12, tzinfo=UTC)
@@ -314,6 +315,9 @@ async def test_expired_paused_job_with_an_error_is_pruned_after_retention(tmp_pa
 async def test_missed_deadline_reports_last_recorded_work_without_running(tmp_path) -> None:
     store = _store(tmp_path)
     job = _hourly_until(store, NOON + timedelta(hours=1))
+    journal = JobJournal(store.cron_dir)
+    journal.start(job, "run-1")
+    journal.append_work("run-1", "Verified the backup.")
     runner = _Runner()
     notices: list[str] = []
 
@@ -332,6 +336,7 @@ async def test_missed_deadline_reports_last_recorded_work_without_running(tmp_pa
     assert len(notices) == 1
     assert job.id in notices[0]
     assert "deadline" in notices[0]
+    assert "Last recorded work: Verified the backup." in notices[0]
 
 
 async def test_soft_target_reports_delay_and_resumes_after_six_missed_checks(tmp_path) -> None:

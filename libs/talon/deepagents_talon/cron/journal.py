@@ -14,7 +14,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Generator, Sequence
     from pathlib import Path
 
     from deepagents_talon.cron.jobs import CronJob, CronOrigin
@@ -261,7 +261,7 @@ class JobJournal:
             )
 
     @contextmanager
-    def capture_work(self, run: str) -> Iterator[None]:
+    def capture_work(self, run: str) -> Generator[None]:
         """Bind checkpoints to the executing check without exposing a writable job ID."""
 
         def save(note: str) -> None:

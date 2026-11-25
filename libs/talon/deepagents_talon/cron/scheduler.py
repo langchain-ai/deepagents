@@ -122,7 +122,8 @@ class PersistentCronScheduler:
             text = f"Job {job.id} missed its deadline. Scheduled work stopped."
             if history:
                 row = history[0]
-                text += f" Last recorded work: {row['summary'] or row['work'] or row['status']}"
+                checkpoint = row["work"].strip() if row["status"] == "started" else ""
+                text += f" Last recorded work: {checkpoint or row['summary'] or row['status']}"
             if job.claimed_at:
                 text += " The previous run was interrupted. Its effects need verification."
             await self.deliver_result(job, text)

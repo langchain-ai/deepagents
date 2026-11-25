@@ -79,11 +79,12 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-fable-5-2": "Claude Fable 5.2",
     "anthropic:claude-opus-5-5": "Claude Opus 5.5",
     "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
-    "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
     "baseten:deepseek-ai/DeepSeek-V4.1-Flash-1017": "DeepSeek V4.1 Flash 1017",
     "baseten:meta-models/muse-spark-open": "Muse Spark Open",
     "baseten:moonshotai/Kimi-K3.1-Pro": "Kimi K3.1 Pro",
-    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
+    "baseten:nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B": (
+        "Nemotron 3.5 Super VL 120B A12B"
+    ),
     "baseten:zai-org/GLM-5.3": "GLM 5.3",
     "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",
     "fireworks:accounts/fireworks/models/deepseek-v4p1-flash-1017": (
@@ -98,6 +99,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "google_genai:gemini-4-argon": "Gemini 4 Argon",
     "google_genai:gemini-4-carbon": "Gemini 4 Carbon",
     "google_genai:gemini-4-hydrogen": "Gemini 4 Hydrogen",
+    "google_genai:gemini-4-neon": "Gemini 4 Neon",
     "meta:muse-spark-1.3": "Muse Spark 1.3",
     "ollama:deepseek-v4-pro:0813-cloud": "DeepSeek V4 Pro 0813",
     "ollama:deepseek-v4.1-flash:1017-cloud": "DeepSeek V4.1 Flash 1017",
@@ -126,6 +128,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:google/gemini-4-argon": "Gemini 4 Argon",
     "openrouter:google/gemini-4-carbon": "Gemini 4 Carbon",
     "openrouter:google/gemini-4-hydrogen": "Gemini 4 Hydrogen",
+    "openrouter:google/gemini-4-neon": "Gemini 4 Neon",
     "openrouter:meta/muse-spark-open": "Muse Spark Open",
     "openrouter:minimax/minimax-m3.1-flash": "MiniMax M3.1 Flash",
     "openrouter:mistralai/mistral-large-4-0": "Mistral Large 4",

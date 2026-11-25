@@ -5,7 +5,7 @@ PTC exposes the agent's LangChain tools inside the JavaScript REPL as
 N serial tool calls, the model writes one `eval` that loops / parallelises
 / chains tools in-code:
 
-    const [a, b] = await Promise.all([
+    const [a, b] = await Promise.allSettled([
         tools.search({query: "foo"}),
         tools.search({query: "bar"}),
     ]);
@@ -24,7 +24,6 @@ The host functions that actually invoke each tool live on the slot in
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from dataclasses import dataclass, replace
@@ -36,14 +35,16 @@ from langchain_core.tools.base import (
     _is_injected_arg_type,
     get_all_basemodel_annotations,
 )
+from langgraph._internal._constants import CONF, CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.prebuilt.tool_node import _get_all_injected_args
+from langgraph.types import Command
 from quickjs_rs import Undefined
 
 from langchain_quickjs import _prompt
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Set as AbstractSet
 
     from deepagents.backends.protocol import BackendProtocol
     from langgraph.prebuilt import ToolRuntime
@@ -161,12 +162,17 @@ def _raise_on_invalid_ptc_tools(tools: Sequence[BaseTool]) -> None:
         raise ValueError(msg)
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
+def render_ptc_prompt(
+    tools: Sequence[BaseTool],
+    *,
+    tool_name: str = "eval",
+    deferred: AbstractSet[str] = frozenset(),
+) -> str:
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
     _raise_on_invalid_ptc_tools(tools)
-    return _prompt.render_ptc_prompt(tools, tool_name=tool_name)
+    return _prompt.render_ptc_prompt(tools, tool_name=tool_name, deferred=deferred)
 
 
 class PTCCallBudgetExceededError(RuntimeError):
@@ -290,12 +296,13 @@ def inject_tool_args(
     injected = _get_all_injected_args(tool)
     if not injected or outer_runtime is None:
         return enriched
+    state = _fresh_state(outer_runtime)
 
     # Build a ToolRuntime matching the outer one but with a fresh
     # tool_call_id. `type(outer_runtime)` rather than a literal import
     # so the shape stays in lockstep with whatever langgraph ships.
     derived = type(outer_runtime)(
-        state=outer_runtime.state,
+        state=state,
         tool_call_id=tool_call_id,
         config=outer_runtime.config,
         context=outer_runtime.context,
@@ -313,15 +320,100 @@ def inject_tool_args(
         for arg_name, state_field in injected.state.items():
             if state_field:
                 enriched[arg_name] = (
-                    outer_runtime.state.get(state_field)
-                    if isinstance(outer_runtime.state, dict)
-                    else getattr(outer_runtime.state, state_field, None)
+                    state.get(state_field)
+                    if isinstance(state, dict)
+                    else getattr(state, state_field, None)
                 )
             else:
-                enriched[arg_name] = outer_runtime.state
+                enriched[arg_name] = state
     if injected.store and outer_runtime.store is not None:
         enriched[injected.store] = outer_runtime.store
     return enriched
+
+
+def _fresh_state(outer_runtime: Any) -> Any:
+    """Read the eval step's state with earlier PTC writes applied.
+
+    Same channel read `ToolNode` uses to hydrate tool state, so a tool sees
+    what earlier `tools.*` calls in this eval wrote.
+    """
+    read = outer_runtime.config.get(CONF, {}).get(CONFIG_KEY_READ)
+    if read is None:
+        return outer_runtime.state
+    return read(list(read.args[1]), fresh=True)
+
+
+class UnsupportedCommandError(RuntimeError):
+    """A `tools.*` call returned a `Command` that eval cannot apply.
+
+    Uncaught by the script, it becomes the eval's `UnsupportedCommand` error.
+    """
+
+
+def _unsupported_command(command: Command) -> str | None:
+    """Describe what eval cannot apply in `command`, or `None` when it can."""
+    fields = {
+        "goto": bool(command.goto),
+        "graph": command.graph is not None,
+        "resume": command.resume is not None,
+    }
+    routing = [name for name, is_set in fields.items() if is_set]
+    if routing:
+        return f"Command({', '.join(f'{name}=...' for name in routing)})"
+    if not isinstance(command.update, dict | None):
+        return f"Command(update=...) as {type(command.update).__name__}"
+    return None
+
+
+def _command_updates(function_name: str, result: object) -> list[dict[str, Any]]:
+    """Collect the state update of every `Command` in a `tools.*` result.
+
+    `messages` are left out: they belong to the synthetic PTC tool call,
+    which has no matching tool call in history. JS sees their content.
+
+    Raises:
+        UnsupportedCommandError: A `Command` sets `goto`, `graph`, or
+            `resume`, or its update is not a dict.
+    """
+    entries = result if isinstance(result, list) else [result]
+    commands = [entry for entry in entries if isinstance(entry, Command)]
+    for command in commands:
+        if returned := _unsupported_command(command):
+            msg = (
+                f"{function_name} returned {returned}; "
+                "only Command(update={...}) with a dict is supported inside eval."
+            )
+            raise UnsupportedCommandError(msg)
+    updates = [
+        {
+            key: value
+            for key, value in (command.update or {}).items()
+            if key != "messages"
+        }
+        for command in commands
+    ]
+    return [update for update in updates if update]
+
+
+def send_state_updates(outer_runtime: Any, function_name: str, result: object) -> None:
+    """Write `Command` updates from a PTC call as channel writes on the eval's step.
+
+    Every `Command` is checked before any update is written.
+
+    Raises:
+        UnsupportedCommandError: A `Command` in `result` cannot be applied
+            inside eval.
+    """
+    updates = _command_updates(function_name, result)
+    send = (
+        outer_runtime.config.get(CONF, {}).get(CONFIG_KEY_SEND)
+        if outer_runtime is not None
+        else None
+    )
+    if send is None:
+        return
+    for update in updates:
+        send(list(update.items()))
 
 
 def uses_injected_tool_call_id(tool: Any) -> bool:
@@ -335,28 +427,31 @@ def uses_injected_tool_call_id(tool: Any) -> bool:
     )
 
 
-def bridge_symbol_name(tool_name: str) -> str:
-    """Build a stable, JS-safe global symbol for one PTC bridge."""
-    # Keep only identifier-safe characters and salt with a short hash to
-    # avoid collisions when different source names sanitize similarly.
-    normalized = "".join(
-        c if c.isalnum() or c in {"_", "$"} else "_" for c in tool_name
+TOOLS_CALL = "__tools_call"
+TOOLS_NAMES = "__tools_names"
+
+
+def render_tools_namespace() -> str:
+    """Return JS that defines `globalThis.tools` as a proxy over the host.
+
+    Python owns the tool map: a call is `__tools_call(name, input)` and the
+    installed names come from `__tools_names()`, so changing the tool set
+    never touches the guest. Any other name, including inherited
+    `Object.prototype` members, reads from a plain object.
+    """
+    call = json.dumps(TOOLS_CALL)
+    names = json.dumps(TOOLS_NAMES)
+    return (
+        f"{{ const fn = (name) => (input) => globalThis[{call}](name, input);"
+        " const has = (name) => typeof name === 'string'"
+        f" && globalThis[{names}]().includes(name);"
+        " globalThis.tools = new Proxy({}, {"
+        " get(target, name) {"
+        " return has(name) ? fn(name) : Reflect.get(target, name); },"
+        " has(_, name) { return has(name); },"
+        f" ownKeys() {{ return globalThis[{names}](); }},"
+        " getOwnPropertyDescriptor(_, name) {"
+        " return has(name) ? { value: fn(name), enumerable: true,"
+        " configurable: true, writable: false } : undefined; },"
+        " }); } undefined"
     )
-    if not normalized or normalized[0].isdigit():
-        normalized = f"_{normalized}"
-    digest = hashlib.sha256(tool_name.encode("utf-8")).hexdigest()[:8]
-    return f"__tools_{normalized}_{digest}"
-
-
-def render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
-    """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = ["globalThis.tools = {};"]
-    for tool_name, bridge_symbol in sorted(bridges.items()):
-        quoted_tool_name = json.dumps(tool_name)
-        quoted_bridge_symbol = json.dumps(bridge_symbol)
-        statements.append(
-            "globalThis.tools"
-            f"[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
-        )
-    statements.append("undefined")
-    return " ".join(statements)

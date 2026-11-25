@@ -3,9 +3,6 @@ type: composite-action integration
 title: GitHub Action Integration
 description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the composite action contract, published CLI boundary, state lifecycle, safeguards, verification, and release safety.
 tags: [github-actions, dcode, deepagents-code, automation, memory, mcp, sandbox]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-19T08:04:44.778Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -27,7 +24,10 @@ sources:
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-19T08:04:44.778Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-25T08:04:06.996Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 ---
 
 # GitHub Action Integration
@@ -128,11 +128,25 @@ The action pipes combined output to `tee` but captures `PIPESTATUS[0]`, so a suc
 
 ## Published CLI and release contract
 
-The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. The current source package is `deepagents-code` `0.2.11`, requires Python `>=3.14,<3.15`, and declares an exact `deepagents==0.7.40` runtime dependency. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change.
+The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`.
 
-`deepagents-code` is a release-managed PyPI package. The release workflow maps it to `libs/code`, builds from a resolved exact release SHA, and stamps that SHA into its build through `DEEPAGENTS_CODE_BUILD_COMMIT`; this keeps the distribution and eventual tag tied to the same source tree. Before publishing, the release checks that the code package's exact SDK pin is at least the workspace SDK version unless an operator explicitly enables `dangerous-skip-sdk-pin-check`. That bypass is for an intentional older pin, not routine release use.
+### Installer-visible package contract
 
-For normal releases, release-please creates a package release PR after releasable changes on `main`; merging it dispatches the package-release workflow. The release workflow builds, performs pre-release checks and Test PyPI validation, publishes to PyPI, then creates the GitHub release. A manual dispatch requires a package, version, and normally an exact `release-sha`; the workflow verifies that the selected commit declares the requested version and is reachable from `main`. Do not move or recreate a tag for a version already published to PyPI: one version must continue to identify one artifact.
+The source currently declares `deepagents-code` `0.2.14`. A normal package installation must satisfy its Python constraint, `>=3.14,<3.15`, and receives the exact runtime dependency `deepagents==0.7.41`; these are the constraints that matter to `uvx` and therefore to action consumers. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change. Pin `cli_version` to a release compatible with the job environment and the flags supplied to the action.
+
+### Editable repository development is different
+
+The source checkout's `[tool.uv.sources]` maps `deepagents` and several integration packages to editable sibling directories. That mapping supports repository development and tests; it is not published package metadata and does not alter what the action's `uvx --from deepagents-code` installation resolves. In particular, do not infer the action's SDK from an editable checkout: keep the released exact SDK pin current when Code relies on SDK functionality, and validate the distribution path when changing this boundary.
+
+### Release process and integrity safeguards
+
+`deepagents-code` is a release-managed PyPI package. The release workflow maps it to `libs/code`, resolves and checks out an exact release SHA, and stamps that SHA into its build through `DEEPAGENTS_CODE_BUILD_COMMIT`; this keeps the distribution and eventual tag tied to the same source tree. Before publishing, the release checks that the code package's exact SDK pin is at least the workspace SDK version unless an operator explicitly enables `dangerous-skip-sdk-pin-check`. That bypass is for an intentional older pin, not routine release use.
+
+For normal releases, release-please creates a package release PR after releasable changes on `main`; merging it dispatches the package-release workflow. The workflow builds from the validated SHA, runs pre-release checks, publishes the built artifact to TestPyPI, then publishes the same artifact to PyPI before creating the GitHub release and tag. A manual dispatch requires a package, version, and normally an exact `release-sha`; the workflow verifies that the selected commit declares the requested version and is reachable from `main`.
+
+The workflow fails closed if it cannot determine whether that exact package version is already on PyPI, and rejects a version that is already published. It records checksums in the unprivileged build job and verifies the downloaded artifact against them before both TestPyPI and PyPI publication. Publishing is isolated in jobs with the `release` environment and OIDC `id-token: write`, while the build job has only read permissions. These boundaries reduce the opportunity for build-time code or an altered artifact to use publishing credentials.
+
+Do not move or recreate a tag for a version already published to PyPI: one version must continue to identify one artifact. On a successful release, the workflow tags the GitHub release at the resolved release SHA and transitions the corresponding release PR from its pending label to `auto:release-tagged`.
 
 ## Verification and safe changes
 

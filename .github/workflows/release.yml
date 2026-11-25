@@ -599,6 +599,10 @@ jobs:
 
   test-pypi-publish:
     name: 🧪 Publish to TestPyPI
+    # Trusted publishers on (Test)PyPI are bound to this environment, so an OIDC
+    # token minted outside it cannot publish. The environment only allows `main`
+    # and `v[0-9]*` maintenance branches.
+    environment: release
     needs:
       - build
       - pre-release-checks
@@ -768,10 +772,6 @@ jobs:
         run: |
           uv venv
           INSTALL_ARGS=(dist/*.whl)
-          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
-          if [ "$PKG_NAME" = "deepagents-talon" ]; then
-            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
-          fi
           # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
           # `uv pip`; unset it so the install targets the `.venv` above.
           env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
@@ -800,10 +800,6 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           INSTALL_ARGS=(dist/*.whl)
-          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
-          if [ "$PKG_NAME" = "deepagents-talon" ]; then
-            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
-          fi
           # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
           # `uv pip`; unset it so the install targets the existing `.venv`.
           env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
@@ -903,6 +899,10 @@ jobs:
   publish:
     name: 🚀 Publish to PyPI
     # Publishes the package to PyPI
+    # Trusted publishers on (Test)PyPI are bound to this environment, so an OIDC
+    # token minted outside it cannot publish. The environment only allows `main`
+    # and `v[0-9]*` maintenance branches.
+    environment: release
     needs:
       - build
       - test-pypi-publish

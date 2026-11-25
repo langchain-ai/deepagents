@@ -7297,17 +7297,20 @@ def create_model(
 
     _set_configured_model_metadata(model, model_name, resolved_provider)
 
-    if provider in {"anthropic", "openai"}:
+    if provider in {"anthropic", "openai", "google_genai", "openrouter"}:
         from deepagents_code.model_config import (
             ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+            GOOGLE_GENAI_MODEL_PROFILE_FALLBACKS,
             OPENAI_MODEL_PROFILE_FALLBACKS,
+            OPENROUTER_MODEL_PROFILE_FALLBACKS,
         )
 
-        fallbacks = (
-            ANTHROPIC_MODEL_PROFILE_FALLBACKS
-            if provider == "anthropic"
-            else OPENAI_MODEL_PROFILE_FALLBACKS
-        )
+        fallbacks = {
+            "anthropic": ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+            "openai": OPENAI_MODEL_PROFILE_FALLBACKS,
+            "google_genai": GOOGLE_GENAI_MODEL_PROFILE_FALLBACKS,
+            "openrouter": OPENROUTER_MODEL_PROFILE_FALLBACKS,
+        }[provider]
         fallback = fallbacks.get(model_name)
         if fallback:
             upstream = getattr(model, "profile", None)

@@ -22,7 +22,7 @@ classifiers = [
 version = "0.0.7"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "deepagents>=0.7.40,<0.8.0",
+    "deepagents>=0.7.41,<0.8.0",
     "runloop-api-client",
 ]
 
@@ -45,7 +45,7 @@ test = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.20,<0.16.0",
     "ty>=0.0.54,<1.0.0",
-    "langchain-tests>=1.1.9",
+    "langchain-tests>=1.2.0",
 ]
 
 [tool.uv.sources]

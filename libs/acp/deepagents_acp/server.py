@@ -20,6 +20,7 @@ from acp import (
 )
 from acp.exceptions import RequestError
 from acp.schema import (
+    AcpMcpServer,
     AgentCapabilities,
     AgentMessageChunk,
     AgentPlanUpdate,
@@ -79,10 +80,10 @@ if TYPE_CHECKING:
 SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
 """Compatibility alias for the optional ACP `SessionConfigOption` wrapper."""
 
-McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
+McpServer: TypeAlias = HttpMcpServer | SseMcpServer | AcpMcpServer | McpServerStdio
 """Type alias for ACP MCP server configuration variants."""
 
-_MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
+_MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, AcpMcpServer, McpServerStdio)
 """Runtime MCP server classes used to detect legacy positional `new_session` calls."""
 
 _ACP_MODE_METADATA_KEY = "acp_mode"
@@ -386,7 +387,7 @@ class AgentServerACP(ACPAgent):
             config_options=config_options,
         )
 
-    async def load_session(
+    async def load_session(  # ty: ignore[invalid-method-override]  # Keep our public positional order; the ACP router calls by keyword
         self,
         cwd: str,
         session_id: str,
@@ -422,7 +423,7 @@ class AgentServerACP(ACPAgent):
             config_options=self._build_config_options(session_id) or None,
         )
 
-    async def set_session_mode(
+    async def set_session_mode(  # ty: ignore[invalid-method-override]  # Keep our public positional order; the ACP router calls by keyword
         self,
         mode_id: str,
         session_id: str,
@@ -955,7 +956,7 @@ class AgentServerACP(ACPAgent):
             self._agent = self._agent_factory(context)
         self._agent_session_id = session_id
 
-    async def prompt(  # noqa: C901, PLR0912, PLR0915  # Complex streaming protocol handler with many branches
+    async def prompt(  # noqa: C901, PLR0912, PLR0915  # ty: ignore[invalid-method-override]  # Complex streaming handler; keeps public positional order, ACP calls by keyword
         self,
         prompt: list[
             TextContentBlock

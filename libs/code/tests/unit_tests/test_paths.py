@@ -261,7 +261,10 @@ assert sources and all(source.scope is MCPConfigScope.PROJECT for source in sour
 tools, manager, servers = asyncio.run(
     resolve_and_load_mcp_tools(trust_project_mcp=None, project_context=context)
 )
-assert not servers, f"untrusted project server loaded: {servers!r}"
+# Skipped servers are still reported, but only as awaiting approval.
+assert all(s.status == "untrusted" for s in servers), (
+    f"untrusted project server loaded: {servers!r}"
+)
 assert not tools, f"untrusted project tools loaded: {tools!r}"
 assert manager is None
 print(PATHS.profile.root)

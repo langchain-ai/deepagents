@@ -369,6 +369,71 @@ def test_registry_closes_idle_mid_turn_slot_but_not_a_running_eval(
     registry.release(busy)
 
 
+async def test_registry_keeps_slot_of_cancelled_eval_until_js_stops(
+    registry: _Registry,
+) -> None:
+    registry._max_slots = 1
+    config = _SlotConfig(timeout=1.0)
+    runaway = _get(registry, "thread-a", config)
+    runaway.eval_sync("1")  # build the Runtime before timing anything
+
+    async def run() -> None:
+        slot = await registry.aacquire("thread-a", config)
+        try:
+            await slot.eval_async("while (true) {}")
+        finally:
+            registry.release(slot)
+
+    task = asyncio.create_task(run())
+    while not runaway.eval_running:  # noqa: ASYNC110  # set on the worker thread
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Another thread evaluating must not wait on the runaway slot's close.
+    other = await asyncio.wait_for(registry.aacquire("thread-b", config), 0.5)
+    registry.release(other)
+    assert _thread_ids(registry) == ["thread-a", "thread-b"]
+
+
+async def test_close_context_waits_out_a_cancelled_tool_call(
+    registry: _Registry,
+) -> None:
+    started = threading.Event()
+
+    async def _slow() -> str:
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        finally:
+            await asyncio.sleep(0.1)  # still unwinding when the turn ends
+        return "ok"
+
+    tool = StructuredTool.from_function(
+        name="slow", description="Sleeps.", coroutine=_slow
+    )
+    slot = _get(registry, "thread-a")
+    slot.eval_sync("1")  # build the Runtime before timing anything
+    task = asyncio.create_task(
+        slot.eval_async(
+            "try { await tools.slow({}) } finally { globalThis.cleaned = true }",
+            tools=[tool],
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Ending the turn right away must not close the Context under the JS
+    # still unwinding on the worker.
+    await registry.aclose_context("thread-a", _CONFIG)
+    while slot.eval_running:  # noqa: ASYNC110  # cleared on the worker thread
+        await asyncio.sleep(0.01)
+    assert (await slot.eval_async("cleaned")).result == "true"
+
+
 # ---------------------------------------------------------------------------
 # Error formatting
 # ---------------------------------------------------------------------------

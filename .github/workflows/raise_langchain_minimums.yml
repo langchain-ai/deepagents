@@ -32,9 +32,14 @@
 # - The PR body lists every raised bound, and — when a PyPI lookup or a manifest
 #   rewrite failed — says explicitly what was *not* raised, so a partial run
 #   never reads as a complete one.
-# - The PR title is `chore(deps):` on purpose: a bump-worthy type touching
-#   files inside a managed package would make release-please open a separate
-#   release PR (multi-component fan-out).
+# - The PR title is `chore(deps):` on purpose. An `all` run raises floors in
+#   several managed packages' `pyproject.toml`, so a bump-worthy type would
+#   open a release PR for each (multi-component fan-out). A single-package run
+#   would release only that package (release-please ignores `uv.lock`); it
+#   stays `chore` so automated floor raises never cut a release on their own.
+#   They stay visible anyway: on each release PR, `release-please.yml` diffs
+#   the package's `pyproject.toml` and lists the raised floors under
+#   `### Dependencies` in that version's CHANGELOG.md entry.
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.

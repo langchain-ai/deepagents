@@ -3,9 +3,12 @@
 import asyncio
 from unittest.mock import patch
 
+import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
+from langgraph.errors import GraphInterrupt, ParentCommand
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
@@ -343,6 +346,16 @@ class TestFilesystemMiddlewareAsync:
 
         assert result.status == "error"
         assert result.content == "Error: glob failed: path traversal not allowed"
+
+    @pytest.mark.parametrize("error", [GraphInterrupt(), ParentCommand(Command())], ids=["interrupt", "parent_command"])
+    async def test_glob_propagates_graph_control_flow_async(self, error: Exception) -> None:
+        """An interrupt or parent command raised in the backend aglob propagates instead of becoming a tool error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        with patch.object(backend, "aglob", side_effect=error), pytest.raises(type(error)):
+            await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
 
     async def test_glob_backend_timeouterror_not_misreported_as_glob_timeout_async(self):
         """A `TimeoutError` raised inside the backend aglob must not be reported as a glob-pattern timeout."""

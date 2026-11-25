@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:cead3f49fb3f596ec071afc85c384d188a364678d7ac0f24837e1473adfed44c",
+  "pageVersion": "sha256:d8d9247b18d9117cc0d189f5ec4c85ab0f3cb8e3e64905745763efbeccd7d70b",
   "claims": [
     {
       "id": "claim_7ce7ccaf2fa6412faab4fe07f8d3609b",
-      "statement": "The default DeepAgentState messages channel uses DeltaChannel with the message-delta reducer; the reducer coerces raw inputs, updates or removes messages by ID, honors remove-all, and handles absent replay state as empty.",
+      "statement": "DeepAgentState is declared in graph.py and makes messages a DeltaChannel using LangGraph's imported _messages_delta_reducer with snapshot_frequency=50; Deep Agents selects this default schema but does not own a local message reducer.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/_messages_reducer.py",
-          "version": "repo-file-v1:sha256:4539763f8d47a4894fac9998d68b3fe0aa7eb369425f8dab08fc7cf9650aa681"
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L12-L31",
+          "version": "repo-lines-v1:sha256:3a684e955bb4a7a59d4aeb9b80ef6a6fff674879628fd071f1548e8e0f4bb1b0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiM2E5MzU5M2MwNDY4YWVhODFmZjc0MWVjYWMyOTEyY2I3YTJjOTRlMTM3ZjZkM2U5YzQ1NTUyNmY5Y2M3NzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5MTMxMjI4YjRiYjg5MTQyNzQzNWNjNmRlMDZmMjM2NGM0ZTliMzIxNWM0NmQ3YzMzYmM5NDNkYzlmMGM0ZmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ1MjQ5NGM5ODI2ZDYyMGY1YjYzOTMyOTY3OTg1MmNhMzczMGQzZWYyMjU0ZTM5MDdmMTIzZDM4Y2UyZjFjMmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxNWFkYjg2OGQ2MmQ3MGNkMmE0MmVhNWYxZWU1OWMwZmQzMjczZTJiMThiNDMyYjNlMTZhMTE5NDM4MjA1ZGUifQ"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d266ce645cbc773854d6b086049a597dd2accb70461e6545f61d6076c43310f0"
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L77-L80",
+          "version": "repo-lines-v1:sha256:4bbbabe96a41c95879541efc08647bc83bd85f03ca923dd6aab4aaefa29cd1d8:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmZkNWUxZjQ2NzNiZGRlN2Y5MTMxNTkxZDRhYzk5ZjBlNGFiMTY2NTNkMGJlOTBkYWJiYTQ0N2Q4ZTgzMDRmMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjVlOTJlNzJiMTg3NTA4ODRmNWFhNTA2ODMzZTc4YWI5OGIyMmZjODNiODUyNWY2YWZkMzZiY2Y1YzBiMDU0OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjIwMDk3ZTRhYTUwMDY4YmExNTdmOWEyNzM5ZmFkODY5OTVlMWUwY2RjY2RhZGM1ODk3YzIwMzRjNzRkM2VmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTYxNjIwMTk2NGExOTdmYWE3NzM4N2JhNzA0Yzg3ZTZiNjI0YmFkMzBkODEzOTg3ZDY4ZjUyN2MwYjcyOTAwNyJ9"
         }
       ]
     },
@@ -343,6 +343,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-14T08:03:44.053Z"
+    "at": "2026-11-20T08:04:05.944Z"
   }
 }

@@ -2,6 +2,14 @@
 
 # Deep Agents Changelog
 
+## [0.7.41](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.40...deepagents==0.7.41) (2026-11-20)
+
+### Bug Fixes
+
+- Fixed message-channel handling by using LangGraph's `_messages_delta_reducer` ([#7819](https://github.com/langchain-ai/deepagents/pull/7819)).
+- Removed an incorrect claim that unread files cause an error ([#7823](https://github.com/langchain-ai/deepagents/pull/7823)).
+- Removed redundant backend information from the `execute` tool description ([#7862](https://github.com/langchain-ai/deepagents/pull/7862)).
+
 ## [0.7.40](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.39...deepagents==0.7.40) (2026-11-18)
 
 ### Bug Fixes

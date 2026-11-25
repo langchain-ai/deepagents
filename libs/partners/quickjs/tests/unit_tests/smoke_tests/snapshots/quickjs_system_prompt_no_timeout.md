@@ -80,8 +80,9 @@ scope (see "Reuse what earlier evals left in scope" below).
 
 #### Fan out with bounded concurrency
 
-Dispatch independent work in parallel with `Promise.all`. Batches around 10 are
-a conservative recommendation, not a required limit; use larger batches when
+Dispatch independent work in parallel with `Promise.allSettled`, so one failed
+dispatch doesn't lose the rest of the batch. Batches around 10 are a
+conservative recommendation, not a required limit; use larger batches when
 appropriate for the workload and its admission controls. The bridge enforces
 a per-REPL cap of 32 concurrent subagent calls; excess
 calls wait for capacity.
@@ -92,7 +93,7 @@ const batchSize = 10;
 const reviewed = [];
 for (let i = 0; i < files.length; i += batchSize) {
   const batch = files.slice(i, i + batchSize);
-  reviewed.push(...(await Promise.all(batch.map(async (file) => {
+  const outcomes = await Promise.allSettled(batch.map(async (file) => {
     const result = await task({
       description: "Read " + file + " and review it for SQL injection. " +
         "Cite line numbers.",
@@ -117,8 +118,12 @@ for (let i = 0; i < files.length; i += batchSize) {
       },
     });
     return { file, ...result };
-  }))));
+  }));
+  reviewed.push(...outcomes.map((outcome, j) => outcome.status === "fulfilled"
+    ? outcome.value
+    : { file: batch[j], error: String(outcome.reason) }));
 }
+reviewed;
 ```
 
 #### Explore with your own tools first, then distribute
@@ -157,12 +162,13 @@ path if it is large). Assemble the results in JS.
 
 #### Compose multiple stages
 
-Filter the array in JS between passes. For example: first ask subagents for a
-cheap classification, filter to the risky items, then dispatch deeper reviews
-only for those items.
+Filter the fulfilled results in JS between passes. For example: first ask
+subagents for a cheap classification, filter to the risky items, then dispatch
+deeper reviews only for those items. Keep failed dispatches next to their
+inputs so they can be reported or retried.
 
 ```javascript
-const tagged = await Promise.all(files.map((file) =>
+const tagged = await Promise.allSettled(files.map((file) =>
   task({
     description: "Read " + file + " and classify it as handler, util, " +
       "test, or config.",
@@ -172,16 +178,21 @@ const tagged = await Promise.all(files.map((file) =>
       properties: { kind: { type: "string" }, risky: { type: "boolean" } },
       required: ["kind", "risky"],
     },
-  }).then((tag) => ({ file, ...tag }))
+  })
 ));
 
-const riskyHandlers = tagged.filter((it) => it.kind === "handler" && it.risky);
-const deepReviews = await Promise.all(riskyHandlers.map((it) =>
+const failed = files.filter((_, i) => tagged[i].status === "rejected");
+const riskyHandlers = files.filter((_, i) => tagged[i].status === "fulfilled" &&
+  tagged[i].value.kind === "handler" && tagged[i].value.risky);
+const reviews = await Promise.allSettled(riskyHandlers.map((file) =>
   task({
-    description: "Deep security review of " + it.file + ". Cite line numbers.",
+    description: "Deep security review of " + file + ". Cite line numbers.",
     subagentType: "reviewer",
-  }).then((review) => ({ ...it, review }))
+  })
 ));
+const deepReviews = reviews.map((outcome, i) =>
+  ({ file: riskyHandlers[i], ...outcome }));
+({ deepReviews, failed });
 ```
 
 #### Return results via the last expression, not `console.log`
@@ -213,19 +224,22 @@ Re-typing prior results as a fresh literal wastes tokens and drifts from what
 actually ran.
 
 ```javascript
-// An earlier eval bound this:
-//   const auditResults = await Promise.all(files.map(/* ...audit... */));
+// An earlier eval bound these:
+//   const auditOutcomes = await Promise.allSettled(files.map(/* ...audit... */));
 
-// A later eval — reference it; do NOT paste the findings back in as a literal:
-const findings = auditResults.flatMap((r) =>
-  r.findings.map((f) => ({ ...f, file: r.file }))
+// A later eval — reference them; do NOT paste the findings back in as a literal:
+const findings = auditOutcomes.flatMap((outcome, i) =>
+  outcome.status === "fulfilled"
+    ? outcome.value.findings.map((f) => ({ ...f, file: files[i] }))
+    : []
 );
-const verified = await Promise.all(findings.map((f) =>
+const verified = await Promise.allSettled(findings.map((f) =>
   task({
     description: "Verify this finding: " + f.evidence,
     subagentType: "verifier",
-  }).then((v) => ({ ...f, ...v }))
+  })
 ));
+verified.map((outcome, i) => ({ finding: findings[i], ...outcome }));
 ```
 
 #### When the user asks for a "workflow"

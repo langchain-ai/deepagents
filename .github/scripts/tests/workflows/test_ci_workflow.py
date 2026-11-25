@@ -348,7 +348,14 @@ def test_curated_apply_only_requires_bot_commit_and_green_parent_ci() -> None:
 
     helper_job = workflow["jobs"]["check-release-options"]
     assert helper_job["needs"] == "changes"
-    assert helper_job["if"] == "needs.changes.outputs.curated-apply-only != 'true'"
+    assert helper_job["if"].startswith(
+        "needs.changes.outputs.curated-apply-only != 'true' &&"
+    )
+    # PRs path-gate the helper suite; push and merge_group always run it.
+    assert (
+        "github.event_name != 'pull_request' || "
+        "needs.changes.outputs.release-scripts == 'true'"
+    ) in helper_job["if"]
     assert workflow["jobs"]["ci_success"]["if"] == "always()"
 
 

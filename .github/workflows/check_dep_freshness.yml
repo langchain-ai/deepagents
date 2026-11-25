@@ -111,16 +111,12 @@ jobs:
       - name: "🌐 Install wheel with dependencies from PyPI"
         if: steps.release-pr.outputs.is_release == 'true'
         env:
-          PACKAGE_NAME: ${{ steps.target.outputs.package_name }}
           PYTHON_VERSION: ${{ steps.target.outputs.python_version }}
           VENV_PATH: ${{ runner.temp }}/release-install-venv
           WHEEL_PATH: ${{ steps.wheel.outputs.path }}
         run: |
           uv venv --python "$PYTHON_VERSION" "$VENV_PATH"
           INSTALL_ARGS=(--index-url "https://pypi.org/simple" "$WHEEL_PATH")
-          if [ "$PACKAGE_NAME" = "deepagents-talon" ]; then
-            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
-          fi
           # setup-uv exports UV_PYTHON for the version it installed (3.15),
           # which overrides VIRTUAL_ENV and makes `uv pip` demand a 3.15 venv
           # even though the release package targets $PYTHON_VERSION.

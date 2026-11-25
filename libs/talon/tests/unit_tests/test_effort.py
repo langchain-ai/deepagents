@@ -33,10 +33,8 @@ if TYPE_CHECKING:
 
 
 BASETEN_DEEPSEEK_MODELS = (
-    "deepseek-ai/DeepSeek-V4-Flash-0731",
     "deepseek-ai/DeepSeek-V4-Pro",
-    "deepseek-ai/DeepSeek-V4-Pro-0813",
-    "deepseek-ai/DeepSeek-V4.1-Flash",
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017",
     "deepseek-ai/DeepSeek-V4.1-Flash-Fast",
 )
 
@@ -59,7 +57,7 @@ class EffortAgent(SelectableAgent):
         "baseten:zai-org/GLM-5.3-Flash",
         "openai:baseten/zai-org/GLM-5.3-Flash",
         "deepseek:deepseek-flash",
-        "baseten:deepseek-ai/DeepSeek-V4-Pro-0813",
+        "baseten:deepseek-ai/DeepSeek-V4-Pro",
     ],
 )
 async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path, spec: str) -> None:
@@ -178,8 +176,8 @@ def test_baseten_deepseek_efforts_and_provider_payload(name: str, prefix: str, m
     monkeypatch.setattr("deepagents_talon.effort.supported_efforts_for_model", lambda _spec: ())
     spec = f"{prefix}{name}"
     levels = ("none", "low", "high", "max")
-    if name == "deepseek-ai/DeepSeek-V4-Flash-0731":
-        levels = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    if name == "deepseek-ai/DeepSeek-V4.1-Flash-1017":
+        levels = ("none", "low", "medium", "high", "xhigh", "max")
     assert effort_levels(spec) == levels
     provider = "baseten" if prefix == "baseten:" else "openai"
     model = init_chat_model(
@@ -198,7 +196,7 @@ def test_baseten_deepseek_efforts_and_provider_payload(name: str, prefix: str, m
         assert "extra_body" not in payload
     with pytest.raises(ValueError, match="Unsupported"):
         effort_settings(spec, "on")
-    if name != "deepseek-ai/DeepSeek-V4-Flash-0731":
+    if name != "deepseek-ai/DeepSeek-V4.1-Flash-1017":
         with pytest.raises(ValueError, match="Unsupported"):
             effort_settings(spec, "xhigh")
 

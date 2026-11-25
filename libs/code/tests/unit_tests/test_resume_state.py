@@ -310,6 +310,36 @@ class TestCostDisplayCallbacks:
             "detailed usage metadata was unavailable."
         ) in summary
 
+    def test_cost_summary_attributes_side_request_spend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Side questions and thread naming explain spend absent from the stream."""
+        from unittest.mock import Mock
+
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.32,
+        )
+        app = DeepAgentsApp(thread_id="thread-1")
+        remote = Mock()
+        remote.get_cached_side_cost.return_value = 0.35
+        monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+        app._reset_thread_usage(1.0, side_cost_usd=0.25)
+        app._thread_stats = stats
+        # The graph charged $0.32 and naming charged $0.10 since the load.
+        app._set_session_cost(1.42)
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $1.42" in summary
+        assert "Side questions and thread names: $0.10" in summary
+        assert "openai:gpt-5.5: $0.32" in summary
+        assert "detailed usage metadata was unavailable" not in summary
+
     async def test_checkpoint_reconcile_never_writes_cost(self) -> None:
         """The client reads the graph's total; it never back-fills the channel."""
         from unittest.mock import AsyncMock

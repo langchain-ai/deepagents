@@ -47,7 +47,8 @@ _JOB_HELP = f"""{SCHEDULE_HELP}
 Check the returned `upcoming` run times and fix the schedule if they disagree with the request."""
 
 _CREATE_DESCRIPTION = f"""Schedule a self-contained prompt to run later in this conversation.
-Use routine for a procedure or objective when Talon should choose the next action.
+Use routine for a procedure or objective when Talon should own an outcome across runs.
+Include the owner's authorized actions, deliverable destination and limits in the standing prompt.
 Routines require a schedule. For objectives, omit it to start now or specify the first check.
 For objectives, copy each verifiable finish condition into completion_criteria; use [] for
 ongoing work. List explicitly required reads as required_sources (tool:<name> or path:<absolute

@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -80,16 +80,38 @@ class ObjectiveReport(BaseModel):
 
     @classmethod
     def from_reply(cls, text: str) -> ObjectiveReport:
-        """Keep an unstructured result as an unverified note for later inspection."""
+        """Recover usable fields from JSON reports and retain unstructured replies as notes."""
         payload = text.strip()
         if payload.startswith(("```json\n", "```\n")) and payload.endswith("```"):
             payload = payload.split("\n", 1)[1][:-3].strip()
         try:
-            return cls.model_validate_json(payload)
-        except ValidationError:
+            data = json.loads(payload)
+            if isinstance(data, dict):
+                _normalize_report(data)
+            return cls.model_validate(data)
+        except ValueError, RecursionError:
             return cls(
                 status="unverified", summary=text.strip()[:4000] or "No work summary returned."
             )
+
+
+def _normalize_report(data: dict[str, object]) -> None:
+    """Keep display and scheduling errors from discarding verified milestone references."""
+    if data.get("wake_reason") is None:
+        data.pop("wake_reason", None)
+    if isinstance(summary := data.get("summary"), dict) and summary:
+        data["summary"] = json.dumps(summary, ensure_ascii=False)[:4000]
+    evidence = data.get("evidence")
+    if not isinstance(evidence, dict):
+        return
+    invalid = [key for key, ref in evidence.items() if ref is not None and not isinstance(ref, str)]
+    if invalid:
+        for key in invalid:
+            del evidence[key]
+        if data.get("status") == "complete":
+            data["status"] = "partial"
+        if isinstance(summary := data.get("summary"), str):
+            data["summary"] = f"Supply text references for {', '.join(invalid)}. {summary}"[:4000]
 
 
 class JobJournal:
@@ -297,7 +319,7 @@ def _update_evidence(
                 "DELETE FROM evidence WHERE job=? AND revision=? AND criterion=?",
                 (job, revision, criterion),
             )
-        elif report.status in {"partial", "checked", "complete"}:
+        elif report.status in {"partial", "checked", "complete", "blocked"}:
             db.execute(
                 "INSERT OR REPLACE INTO evidence VALUES(?,?,?,?)",
                 (job, revision, criterion, reference.strip()[:2000]),
@@ -313,7 +335,12 @@ def _check_coverage(job: CronJob, report: ObjectiveReport, reads: set[str]) -> O
     else:
         return report
     status = "blocked" if report.status == "blocked" else "unverified"
-    return report.model_copy(update={"status": status, "summary": f"{gap} {report.summary}"})
+    retractions = {
+        key: value for key, value in report.evidence.items() if not (value or "").strip()
+    }
+    return report.model_copy(
+        update={"status": status, "summary": f"{gap} {report.summary}", "evidence": retractions}
+    )
 
 
 def _check_completion(

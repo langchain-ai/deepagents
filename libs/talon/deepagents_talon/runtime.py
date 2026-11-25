@@ -1404,7 +1404,7 @@ class DeepAgentRuntime:
         if self.cron_store is not None:
             parts.append(
                 "Use create_job for scheduled work. A routine repeats the specified procedure. "
-                "An objective chooses its next action and wake time after each run. "
+                "An objective carries out available authorized work and schedules its next wake. "
                 "Use list_jobs to show all jobs with mode, latest result and next run. "
                 "Use get_job_history for evidence and progress. Save changes to standing "
                 "instructions with edit_job. To run an existing job now, set run_now on edit_job. "

@@ -488,6 +488,50 @@ def test_unchanged_polls_back_off_until_progress_or_timed_event() -> None:
     assert report.next_wake(dict(previous, status="partial"), now, None) == proposed
 
 
+def test_malformed_reference_preserves_valid_progress_across_checks(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(
+        prompt="Verify build and release",
+        mode="objective",
+        origin=ORIGIN,
+        completion_criteria=["build", "release"],
+    )
+    journal = JobJournal(tmp_path)
+    journal.start(job, "first")
+    report = ObjectiveReport.from_reply(
+        json.dumps(
+            {
+                "status": "complete",
+                "summary": {"result": "Inspected both runs."},
+                "wake_reason": None,
+                "evidence": {"build": "run 29", "release": {"notes": "needs verification"}},
+            }
+        )
+    )
+    assert journal.finish_check(job, "first", report, set()).status == "partial"
+    assert JobJournal(tmp_path).verification(job)[1] == {"build": "run 29"}
+    assert "Supply text references for release" in journal.history(job.id, ORIGIN)[0]["summary"]
+
+
+def test_blocked_run_saves_verified_milestones_after_required_reads(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(
+        prompt="Verify the build and release",
+        mode="objective",
+        origin=ORIGIN,
+        completion_criteria=["build", "release"],
+        required_sources=["path:/builds"],
+    )
+    journal = JobJournal(tmp_path)
+    report = ObjectiveReport(
+        status="blocked", summary="Release awaits signing.", evidence={"build": "build 29"}
+    )
+    for run, reads in [("first", set()), ("second", {"path:/builds"})]:
+        journal.start(job, run)
+        assert journal.finish_check(job, run, report, reads).status == "blocked"
+        assert JobJournal(tmp_path).verification(job)[1] == ({"build": "build 29"} if reads else {})
+
+
 def test_ongoing_milestones_and_legacy_criteria_are_durable(tmp_path: Path) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     job = store.create_job(mode="objective", origin=ORIGIN, prompt="Maintain detections")

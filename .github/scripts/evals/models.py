@@ -298,15 +298,15 @@ REGISTRY: tuple[Model, ...] = (
     ),
     # -- Google --
     Model(
-        "google_genai:gemini-2.5-flash",
+        "google_genai:gemini-3.5-flash-lite",
         frozenset(
             {"eval:set0", "eval:google_genai", "harbor:set0", "harbor:google_genai"}
         ),
-        "Gemini 2.5 Flash",
+        "Gemini 3.5 Flash-Lite",
         "Google",
     ),
     Model(
-        "google_genai:gemini-2.5-pro",
+        "google_genai:gemini-3.8-flash",
         frozenset(
             {
                 "eval:set0",
@@ -317,7 +317,7 @@ REGISTRY: tuple[Model, ...] = (
                 "harbor:google_genai",
             }
         ),
-        "Gemini 2.5 Pro",
+        "Gemini 3.8 Flash",
         "Google",
     ),
     Model(

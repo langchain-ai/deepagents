@@ -86,6 +86,7 @@ class PersistentCronScheduler:
                 while they run and coalesces overlapping runs of the same job.
         """
         current = self.now()
+        missed = self.store.claim_missed_deadlines(now=current)
         self._discard_finished(current)
         for job_id, task in list(self._running.items()):
             if task.done():
@@ -101,6 +102,14 @@ class PersistentCronScheduler:
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
         started = []
+        for job in missed:
+            task = self._running.get(job.id)
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            task = asyncio.create_task(self._report_expiration(job))
+            self._running[job.id] = task
+            started.append(task)
         for job in jobs:
             if job.id not in self._running:
                 task = asyncio.create_task(self._dispatch(job, current))
@@ -108,6 +117,19 @@ class PersistentCronScheduler:
                 started.append(task)
         if wait:
             await asyncio.gather(*started)
+
+    async def _report_expiration(self, job: CronJob) -> None:
+        try:
+            text = f"Job {job.id} missed its deadline. Scheduled work stopped."
+            if job.claimed_at:
+                text += " The previous run was interrupted. Its effects need verification."
+            await self.deliver_result(job, text)
+            self.store.mark_job_run(job.id, status="ok", now=self.now())
+        except Exception as exc:
+            logger.exception("Could not report missed deadline for %s", job.id)
+            self.store.mark_job_run(job.id, status="error", error=str(exc), now=self.now())
+        finally:
+            self._running.pop(job.id, None)
 
     async def _dispatch(self, job: CronJob, now: datetime) -> None:
         try:
@@ -174,26 +196,41 @@ class PersistentCronScheduler:
             conversation_id=claimed.origin.conversation_id,
             next_run_at=None if claimed.next_run_at is None else claimed.next_run_at.isoformat(),
         )
+        timeout = (
+            None
+            if claimed.until is None
+            else max(0.0, (claimed.until - self.now()).total_seconds())
+        )
+        deadline = asyncio.timeout(timeout)
         try:
-            text = await self.run_job(claimed)
+            async with deadline:
+                text = await self.run_job(claimed)
         except Exception as exc:
-            logger.exception("Cron job %s failed", claimed.id)
-            log_event(
-                logger,
-                "cron.failure",
-                job_id=claimed.id,
-                job_name=claimed.name,
-                error=str(exc),
-            )
-            self.store.mark_job_run(
-                claimed.id,
-                status="error",
-                error=str(exc),
-                now=self.now(),
-            )
+            # Keep an expired claim for the next tick to report.
+            if not deadline.expired():
+                logger.exception("Cron job %s failed", claimed.id)
+                log_event(
+                    logger,
+                    "cron.failure",
+                    job_id=claimed.id,
+                    job_name=claimed.name,
+                    error=str(exc),
+                )
+                self.store.mark_job_run(
+                    claimed.id,
+                    status="error",
+                    error=str(exc),
+                    now=self.now(),
+                )
             return
 
-        self.store.mark_job_run(claimed.id, status="ok", error=None, now=self.now())
+        finished = self.now()
+        if claimed.until and finished > claimed.until:
+            return
+        if notice := claimed.target_delay(finished):
+            text = notice if not text or is_silent(text) else f"{notice}\n{text}"
+
+        self.store.mark_job_run(claimed.id, status="ok", error=None, now=finished)
         log_event(
             logger,
             "cron.success",

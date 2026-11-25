@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
-from deepagents_talon.cron.journal import JobJournal, decision_text
+from deepagents_talon.cron.journal import ACTION_CHOICES, JobJournal, decision_text
 
 if TYPE_CHECKING:
     from deepagents_talon.cron.jobs import CronJob
@@ -67,13 +67,10 @@ def _apply_answer(
         return None
     if len(pending) != 1:
         return f"Which decision are you answering?\n{_choices(pending)}"
-    job, question, _ = pending[0]
-    if not journal.resolve_decision(
-        job,
-        question,
-        answer,
-        wake=lambda: store.wake_for_answer(job),
-    ):
+    job, question, unlocks = pending[0]
+    if not store.answer_decision(job, journal, question, answer):
+        if unlocks == ACTION_CHOICES:
+            return ACTION_CHOICES
         return "That decision changed. Check what needs you again."
     return f"Answer recorded for {job.name}."
 

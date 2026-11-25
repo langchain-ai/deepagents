@@ -13,7 +13,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 
@@ -24,6 +24,7 @@ class ActionRun:
     path: Path
     job: str
     run: str
+    current: Callable[[], bool] | None = field(default=None, kw_only=True)
     reads: set[str] = field(default_factory=set)
     active: set[str] = field(default_factory=set)
     applied: set[tuple[str, str]] = field(default_factory=set)

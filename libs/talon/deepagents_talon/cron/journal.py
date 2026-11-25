@@ -26,6 +26,16 @@ _SAVE_WORK: ContextVar[Callable[[str], None] | None] = ContextVar("job_save_work
 _NOTE_LIMIT = 2000
 
 
+ACTION_CHOICES = 'Reply "retire action" or "retry despite duplicate risk".'
+
+
+def _action_question(tool_name: str, call_id: str) -> str:
+    return (
+        f"The outcome of {tool_name} ({call_id}) is uncertain. Can you verify the "
+        "result at its destination or decide whether to accept the risk of a duplicate?"
+    )
+
+
 @tool
 def record_job_work(note: str) -> str:
     """Checkpoint verified work, evidence references, and the next step during a job run."""
@@ -177,16 +187,44 @@ class JobJournal:
                 "CREATE TABLE IF NOT EXISTS objective_actions (job TEXT, run TEXT, call_id TEXT, "
                 "tool TEXT, arguments TEXT, PRIMARY KEY(job, call_id))"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS retired_actions (job TEXT, tool TEXT, arguments TEXT, "
+                "PRIMARY KEY(job,tool,arguments))"
+            )
             db.execute("BEGIN IMMEDIATE")
             if "verified" not in {row[1] for row in db.execute("PRAGMA table_info(evidence)")}:
                 db.execute("ALTER TABLE evidence ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
-    def capture_actions(self, job: str, run: str) -> Iterator[ActionRun]:
+    def capture_actions(
+        self, job: str, run: str, *, current: Callable[[], bool] | None = None
+    ) -> Iterator[ActionRun]:
         """Track real tool execution for an objective until its run ends."""
-        actions = ActionRun(self.path, job, run)
+        actions = ActionRun(self.path, job, run, current=current)
+        with closing(sqlite3.connect(self.path)) as db:
+            actions.applied.update(
+                db.execute("SELECT tool,arguments FROM retired_actions WHERE job=?", (job,))
+            )
         with CURRENT_ACTIONS.set(actions):
             yield actions
+
+    def retain_evidence(self, previous: CronJob, updated: CronJob) -> None:
+        """Carry verified evidence forward for explicitly retained criteria and source grants."""
+        if (previous.required_sources, previous.read_sources) != (
+            updated.required_sources,
+            updated.read_sources,
+        ):
+            return
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.executemany(
+                "INSERT OR REPLACE INTO evidence(job, revision, criterion, reference, verified) "
+                "SELECT job, ?, criterion, reference, verified FROM evidence "
+                "WHERE job=? AND revision=? AND criterion=? AND verified",
+                [
+                    (_revision(updated), updated.id, _revision(previous), criterion)
+                    for criterion in updated.completion_criteria or ()
+                ],
+            )
 
     def verification(
         self, job: CronJob
@@ -230,16 +268,13 @@ class JobJournal:
             ).fetchone()
             if outstanding:
                 tool_name, call_id = outstanding
-                notice = (
-                    f"The outcome of {tool_name} ({call_id}) is uncertain. Can you verify the "
-                    "result at its destination or decide whether to accept the risk of a duplicate?"
-                )
+                notice = _action_question(tool_name, call_id)
                 report = report.model_copy(
                     update={
                         "status": "blocked",
                         "notice": report.notice or notice,
                         "decision_question": notice,
-                        "decision_unlocks": "Resolve the previous action before continuing.",
+                        "decision_unlocks": ACTION_CHOICES,
                         "blocker_key": f"uncertain-action:{call_id}",
                     }
                 )
@@ -331,6 +366,25 @@ class JobJournal:
                 "AND answer IS NULL",
                 (answer, job.id, _revision(job), question),
             ).rowcount
+            if updated:
+                for tool_name, call_id, args in db.execute(
+                    "SELECT tool,call_id,arguments FROM objective_actions WHERE job=?", (job.id,)
+                ):
+                    if question != _action_question(tool_name, call_id):
+                        continue
+                    choice = answer.strip().casefold()
+                    if choice not in {"retire action", "retry despite duplicate risk"}:
+                        db.rollback()
+                        return False
+                    if choice == "retire action":
+                        db.execute(
+                            "INSERT OR IGNORE INTO retired_actions VALUES(?,?,?)",
+                            (job.id, tool_name, args),
+                        )
+                    db.execute(
+                        "DELETE FROM objective_actions WHERE job=? AND call_id=?", (job.id, call_id)
+                    )
+                    break
             if updated and wake():
                 return True
             db.rollback()
@@ -496,6 +550,8 @@ def decision_text(name: str, job_id: str, question: str, unlocks: str) -> str:
 
 
 def _revision(job: CronJob) -> str:
+    if job.instruction_revision:
+        return job.instruction_revision
     instructions = [job.prompt, job.completion_criteria, job.required_sources, job.read_sources]
     return hashlib.sha256(json.dumps(instructions).encode()).hexdigest()
 

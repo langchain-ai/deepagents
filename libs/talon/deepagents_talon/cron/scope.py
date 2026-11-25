@@ -254,6 +254,13 @@ def _action(request: ToolCallRequest) -> Iterator[ToolMessage | None]:
     refusal = _refusal(request)
     actions = CURRENT_ACTIONS.get()
     name = request.tool_call["name"]
+    if actions and actions.current and not actions.current():
+        yield ToolMessage(
+            content="The owner changed this job. End this check.",
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+        return
     if (
         refusal
         or actions is None
@@ -263,7 +270,7 @@ def _action(request: ToolCallRequest) -> Iterator[ToolMessage | None]:
         yield refusal
     elif (name, actions.arguments(request.tool_call["args"])) in actions.applied:
         yield ToolMessage(
-            content="Destination already confirmed this action.",
+            content="This action was confirmed at its destination or retired by the owner.",
             tool_call_id=request.tool_call["id"],
             status="error",
         )

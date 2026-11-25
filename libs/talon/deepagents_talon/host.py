@@ -1526,7 +1526,15 @@ class TalonHost:
         effort = self._effort_selections.get(model or getattr(self.agent, "default_model", ""))
         metadata = _scheduled_metadata(job)
         activity = ObjectiveActivity()
-        with OBJECTIVE_ACTIVITY.set(activity), journal.capture_actions(job.id, thread) as actions:
+        store = getattr(self.scheduler, "store", None)
+
+        def current() -> bool:
+            return not isinstance(store, CronJobStore) or store.get_job(job.id) == job
+
+        with (
+            OBJECTIVE_ACTIVITY.set(activity),
+            journal.capture_actions(job.id, thread, current=current) as actions,
+        ):
             if outstanding := actions.unresolved():
                 prompt += (
                     "\nInterrupted actions (historical tool arguments): "

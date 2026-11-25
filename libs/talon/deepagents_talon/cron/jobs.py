@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.expression import iter_local_matches, parse_expression
+from deepagents_talon.cron.journal import JobJournal
 from deepagents_talon.timezones import TimeZoneError, resolve_zone
 
 if TYPE_CHECKING:
@@ -190,6 +191,7 @@ class CronJobDict(TypedDict):
     completion_criteria: NotRequired[list[str]]
     read_sources: NotRequired[list[str]]
     context_notes: NotRequired[list[str]]
+    instruction_revision: NotRequired[str]
     owner_context_revision: NotRequired[int]
 
 
@@ -733,6 +735,7 @@ class CronJob:
     completion_criteria: tuple[str, ...] | None = field(default=None, kw_only=True)
     read_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
     handoffs: tuple[str, ...] = field(default=(), kw_only=True, compare=False)
+    instruction_revision: str = field(default="", kw_only=True)
     owner_context_revision: int = field(default=0, kw_only=True)
 
     def target_delay(self, finished: datetime) -> str:
@@ -811,6 +814,11 @@ class CronJob:
                 else {}
             ),
             **({"read_sources": list(self.read_sources)} if self.read_sources is not None else {}),
+            **(
+                {"instruction_revision": self.instruction_revision}
+                if self.instruction_revision
+                else {}
+            ),
             **({"context_notes": list(self.handoffs)} if self.handoffs else {}),
             **(
                 {"owner_context_revision": self.owner_context_revision}
@@ -907,6 +915,7 @@ class CronJob:
             handoffs=tuple(_string_list(record, "context_notes"))
             if "context_notes" in record
             else tuple(f"Owner: {note}" for note in _string_list(record, "handoffs")),
+            instruction_revision=_optional_str_field(record, "instruction_revision") or "",
             owner_context_revision=_optional_int_field(record, "owner_context_revision") or 0,
             completion_criteria=tuple(_string_list(record, "completion_criteria"))
             if "completion_criteria" in record
@@ -1202,12 +1211,42 @@ class CronJobStore:
                     deliver_to=job.deliver_to if deliver_to is None else deliver_to,
                     skills=job.skills if pinned is None else pinned,
                 )
+                updated = self._revise_objective(
+                    job,
+                    updated,
+                    criteria_confirmed=completion_criteria is not None,
+                    wake_now=current if schedule is None else None,
+                )
                 result.append(updated)
             if updated is None:
                 msg = f"cron job not found in current conversation: {job_id}"
                 raise CronJobError(msg)
             self._write_jobs(result)
             return updated
+
+    def _revise_objective(
+        self,
+        previous: CronJob,
+        updated: CronJob,
+        *,
+        criteria_confirmed: bool,
+        wake_now: datetime | None,
+    ) -> CronJob:
+        if previous.mode != "objective":
+            return updated
+        if previous.enabled != updated.enabled:
+            updated = replace(updated, owner_context_revision=previous.owner_context_revision + 1)
+        if _instructions(previous) == _instructions(updated):
+            return updated
+        updated = replace(
+            updated,
+            instruction_revision=uuid.uuid4().hex,
+            wait_condition="",
+            next_run_at=wake_now if wake_now and updated.next_run_at else updated.next_run_at,
+        )
+        if criteria_confirmed or previous.prompt == updated.prompt:
+            JobJournal(self.cron_dir).retain_evidence(previous, updated)
+        return updated
 
     def remove_job(self, job_id: str, *, origin: CronOrigin) -> CronJob:
         """Remove a job within the current conversation scope.
@@ -1372,6 +1411,15 @@ class CronJobStore:
             jobs[jobs.index(snapshot)] = replace(snapshot, notice_state=state)
             self._write_jobs(jobs)
             return True
+
+    def answer_decision(
+        self, job: CronJob, journal: JobJournal, question: str, answer: str
+    ) -> bool:
+        """Serialize owner answers and corrections before acquiring the journal write lock."""
+        with self._lock:
+            return journal.resolve_decision(
+                job, question, answer, wake=lambda: self.wake_for_answer(job)
+            )
 
     def wake_for_answer(self, snapshot: CronJob) -> bool:
         """Wake an unchanged active assignment and invalidate its earlier running check."""
@@ -1638,6 +1686,18 @@ class CronJobStore:
         self.cron_dir.chmod(0o700)
         if self.path.exists():
             self.path.chmod(0o600)
+
+
+def _instructions(job: CronJob) -> tuple[object, ...]:
+    return (
+        job.prompt,
+        job.completion_criteria,
+        job.required_sources,
+        job.read_sources,
+        job.skills,
+        job.target_at,
+        job.until,
+    )
 
 
 def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:

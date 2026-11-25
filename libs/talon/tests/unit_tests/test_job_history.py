@@ -12,6 +12,7 @@ from langchain_core.tools import StructuredTool
 
 from deepagents_talon.background import _SCHEDULED_TURN
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
+from deepagents_talon.cron.actions import reconcile_job_action
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, record_job_work
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
 from deepagents_talon.cron.scope import SCHEDULER_FINALIZING, JobScopeMiddleware
@@ -22,6 +23,7 @@ from deepagents_talon.questions import ask_user, question_scope
 from deepagents_talon.runtime import _approval_decision, _job_scope, _question_handler_from_request
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config, _wait_for_sent_count
+from tests.unit_tests.test_action_recovery import request as call
 from tests.unit_tests.test_background import _request
 from tests.unit_tests.test_questions import DATABASE
 
@@ -877,3 +879,161 @@ async def test_independent_work_continues_and_notifies_of_deadline_risk(tmp_path
     assert await host.run_scheduled_job(goal) == "[SILENT]"
     agent.report.update(deadline_risk="Signing capacity will expire before release.")
     assert "Signing capacity will expire" in await host.run_scheduled_job(goal)
+
+
+@pytest.mark.parametrize("answer", ["retire action", "retry despite duplicate risk"])
+async def test_uncertain_action_requires_specific_owner_answer(tmp_path: Path, answer: str) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    goal = store.create_job(mode="objective", origin=ORIGIN, prompt="Publish")
+    channel = RecordingChannel("slack")
+    agent = _WorkingGoalAgent()
+    agent.released.set()
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    scheduler = _attach_scheduler(host, store)
+    journal = JobJournal(tmp_path)
+    with (
+        journal.capture_actions(goal.id, "interrupted") as actions,
+        actions.dispatch("publish-call", "publish", {}),
+    ):
+        pass
+    await scheduler.tick_once()
+
+    async def chat(text: str) -> str:
+        await host.receive_message(
+            channel, ChannelMessage(ORIGIN.conversation_id, text, sender_id="alice")
+        )
+        return channel.sent[-1][1]
+
+    assert "publish-call" in await chat("what needs me?")
+    await chat(f"answer {goal.id}: yes")
+    assert "publish-call" in await chat("what needs me?")
+    await chat(f"answer {goal.id}: {answer}")
+    assert "No open decisions" in await chat("what needs me?")
+    assert store.get_job(goal.id).run_requested
+
+    async def publish(_request):
+        return ToolMessage(content="published", tool_call_id="retry")
+
+    with journal.capture_actions(goal.id, "next") as actions:
+        assert actions.unresolved() == []
+        result = await JobScopeMiddleware().awrap_tool_call(call("publish", "retry"), publish)
+    assert result.status == ("error" if answer == "retire action" else "success")
+
+
+async def test_correct_and_finish_after_interrupted_release(tmp_path: Path) -> None:
+    effects = []
+    accepted = asyncio.Event()
+    middleware = JobScopeMiddleware()
+
+    class Registry(BlockingAgent):
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return AgentResult(
+                    text=json.dumps(
+                        {
+                            "status": "partial",
+                            "summary": "Merge confirmed",
+                            "verified": ["C1"],
+                            "evidence": {"C1": "merge/42"},
+                            "decision_question": "Use beta?",
+                            "decision_unlocks": "Choose release track",
+                            "wait_condition": "Beta opens",
+                        }
+                    )
+                )
+            if len(self.requests) == 2:
+
+                async def publish(_request):
+                    effects.append("release/42")
+                    accepted.set()
+                    await asyncio.Event().wait()
+
+                await middleware.awrap_tool_call(call("publish", "pub"), publish)
+                pytest.fail("interrupted write returned")
+
+            async def lookup(_request):
+                return ToolMessage(content=effects[0], tool_call_id="lookup")
+
+            receipt = await middleware.awrap_tool_call(call("read_file", "lookup"), lookup)
+            outcome = reconcile_job_action.invoke(
+                {
+                    "call_id": "pub",
+                    "read_call_id": "lookup",
+                    "outcome": "applied",
+                    "reference": receipt.content,
+                }
+            )
+            assert "Recorded" in outcome
+            return AgentResult(
+                text=json.dumps(
+                    {
+                        "status": "complete",
+                        "summary": "Stable release confirmed",
+                        "notice": "Stable release confirmed",
+                        "verified": ["C2"],
+                        "evidence": {"C2": receipt.content},
+                    }
+                )
+            )
+
+    class Channel(RecordingChannel):
+        async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool:
+            return any(
+                target == conversation_id and job_id in text and "completed" in text
+                for target, text in self.sent
+            )
+
+        async def send_message(self, conversation_id: str, text: str) -> SendResult:
+            result = await super().send_message(conversation_id, text)
+            if "completed" in text:
+                raise TimeoutError
+            return result
+
+    channel = Channel("slack")
+    agent = Registry()
+    now = datetime.now(UTC)
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    goal = store.create_job(
+        mode="objective",
+        origin=ORIGIN,
+        prompt="Publish beta",
+        now=now,
+        completion_criteria=["Merged", "Beta released"],
+    )
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    scheduler = _attach_scheduler(host, store, now=lambda: now)
+    await scheduler.tick_once()
+    tools = CronTools(store=store, origin=lambda: ORIGIN)
+    assert tools.list_jobs()[0]["wait_condition"] == "Beta opens"
+    assert "Use beta?" in channel.sent[-1][1]
+    tools.edit_job(goal.id, run_now=True)
+    now += timedelta(minutes=1)
+    await scheduler.tick_once(wait=False)
+    await asyncio.wait_for(accepted.wait(), 2)
+    await scheduler.stop()
+
+    tools.edit_job(
+        goal.id, prompt="Verify stable release", completion_criteria=["Merged", "Stable released"]
+    )
+    now += timedelta(days=2)
+    reopened = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    scheduler = _attach_scheduler(host, reopened, now=lambda: now)
+    await host.receive_message(
+        channel, ChannelMessage(ORIGIN.conversation_id, "what needs me?", sender_id="alice")
+    )
+    assert "No open decisions" in channel.sent[-1][1]
+    assert not reopened.get_job(goal.id).wait_condition
+    assert tools.list_jobs()[0]["verified_progress"] == {"Merged": "merge/42"}
+    await scheduler.tick_once()
+    await scheduler.tick_once()
+    await scheduler.tick_once()
+    assert effects == ["release/42"]
+    assert len(agent.requests) == 3
+    assert not reopened.get_job(goal.id).enabled
+    assert tools.list_jobs()[0]["verified_progress"] == {
+        "Merged": "merge/42",
+        "Stable released": "release/42",
+    }
+    assert len([text for _, text in channel.sent if "completed" in text]) == 1

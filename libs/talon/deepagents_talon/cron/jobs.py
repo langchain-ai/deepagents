@@ -686,7 +686,7 @@ class CronJob:
         last_status: Last run outcome.
         last_error: Last run error text.
         origin: Conversation that receives results.
-        target_at: Soft target after which work continues and reports the delay.
+        target_at: Soft target after which the job continues and reports the delay.
         until: Last instant a recurring job may run, inclusive. The job is
             deleted once it passes.
         claimed_at: When the scheduler claimed the current run, or `None` once
@@ -784,8 +784,8 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
-            **({"target_at": _to_epoch(self.target_at)} if self.target_at else {}),
             "until": _to_optional_epoch(self.until),
+            **({"target_at": _to_epoch(self.target_at)} if self.target_at else {}),
             "claimed_at": _to_optional_epoch(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
@@ -830,8 +830,8 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
-            "target_at": _format_optional_time(self.target_at),
             "until": _format_optional_time(self.until),
+            "target_at": _format_optional_time(self.target_at),
             "claimed_at": _format_optional_time(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),

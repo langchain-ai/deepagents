@@ -10,14 +10,19 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
+from deepagents_talon.background import _SCHEDULED_TURN
+from deepagents_talon.cron.actions import reconcile_job_action
 from deepagents_talon.cron.jobs import (
     CronJob,
     CronJobStore,
     CronOrigin,
     CronSchedule,
     DeliverTo,
+    JobMode,
     parse_until,
 )
+from deepagents_talon.cron.journal import JobJournal, record_job_work
+from deepagents_talon.cron.scope import SENDING_OBJECTIVE, ReadScope
 
 OriginFactory = Callable[[], CronOrigin]
 _PAIRED_QUOTE_LENGTH = 2
@@ -44,11 +49,22 @@ _JOB_HELP = f"""{SCHEDULE_HELP}
 Check the returned `upcoming` run times and fix the schedule if they disagree with the request."""
 
 _CREATE_DESCRIPTION = f"""Schedule a self-contained prompt to run later in this conversation.
+Use routine for a procedure or objective when Talon should own an outcome across runs.
+Record applicable standing and job-specific delegations, destination and limits in the prompt.
+Routines require a schedule. For objectives, omit it to start now or specify the first check.
+Derive verifiable completion_criteria from a clear finite assignment. Clarify ambiguity with the
+owner before creating the job when the answer would change the work. Use [] for ongoing work.
+List explicitly required reads as required_sources (tool:<name> or path:<absolute
+path>). These track coverage without granting access. Preserve timing constraints in the prompt.
+Objective blocker notices always return to their original thread.
 {_JOB_HELP}"""
 
 _EDIT_DESCRIPTION = f"""Edit a job in this conversation by ID from create_job or list_jobs.
+Set schedule to replace the routine schedule or the next objective check.
 Supply only changes. Set enabled to false to pause or true to resume.
 Clear until with an empty string and unpin all skills with an empty list.
+Use read_sources to replace read grants with tool:<read-only name> or path:<absolute directory>.
+Set run_now to queue a run at the next tick while preserving the recurring schedule.
 {_JOB_HELP}"""
 
 
@@ -69,19 +85,25 @@ class CronTools:
         self,
         *,
         prompt: str,
-        schedule: str,
+        schedule: str | None = None,
         name: str = "",
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo = "channel",
         skills: list[str] | None = None,
+        mode: JobMode = "routine",
         target_at: str | None = None,
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a scheduled job in the current conversation.
 
         Args:
+            required_sources: Sources whose use must be verified.
+            completion_criteria: Finish criteria, or an empty list for ongoing work.
+            mode: Run a procedure or pursue an objective.
             prompt: Prompt to run when the job fires.
-            schedule: Schedule text, in any form `SCHEDULE_HELP` lists.
+            schedule: Routine schedule or optional first check for an objective.
             name: Optional human-readable label.
             repeat_times: Optional cap for recurring schedules.
             target_at: Soft target in the same format as until.
@@ -94,7 +116,7 @@ class CronTools:
         """
         job = self.store.create_job(
             prompt=prompt,
-            schedule=CronSchedule.parse(schedule),
+            schedule=CronSchedule.parse(schedule) if schedule is not None else None,
             origin=self.origin(),
             name=name,
             repeat_times=repeat_times,
@@ -102,6 +124,9 @@ class CronTools:
             until=parse_until(until) if until else None,
             deliver_to=deliver_to,
             skills=skills or (),
+            required_sources=required_sources,
+            completion_criteria=completion_criteria,
+            mode=mode,
         )
         return _tool_job(job, upcoming=True)
 
@@ -111,7 +136,27 @@ class CronTools:
         Returns:
             Scoped jobs as JSON-compatible dictionaries.
         """
-        return [_tool_job(job) for job in self.store.list_jobs(origin=self.origin())]
+        origin = self.origin()
+        jobs = self.store.list_jobs(origin=origin)
+        journal = JobJournal(self.store.cron_dir)
+        result = []
+        for job in jobs:
+            payload = _tool_job(job)
+            if job.mode == "objective":
+                criteria, evidence = journal.verification(job)
+                if criteria is not None:
+                    payload["completion_criteria"] = list(criteria)
+                payload["verified_progress"] = {
+                    key: item["reference"] for key, item in evidence.items() if item["verified"]
+                }
+            checks = journal.history(job.id, origin, limit=1)
+            payload["last_result"] = (
+                {"status": checks[0]["status"], "summary": checks[0]["summary"][:500]}
+                if checks
+                else None
+            )
+            result.append(payload)
+        return result
 
     def edit_job(  # noqa: PLR0913  # agent tool exposes optional editable fields
         self,
@@ -121,11 +166,15 @@ class CronTools:
         prompt: str | None = None,
         schedule: str | None = None,
         enabled: bool | None = None,
+        run_now: bool = False,
+        target_at: str | None = None,
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
+        read_sources: list[str] | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
         skills: list[str] | None = None,
-        target_at: str | None = None,
     ) -> dict[str, Any]:
         """Edit a scheduled job in the current conversation.
 
@@ -135,6 +184,10 @@ class CronTools:
             prompt: Optional replacement prompt.
             schedule: Optional replacement schedule text, in any form
                 `SCHEDULE_HELP` lists.
+            required_sources: Replacement sources to verify.
+            completion_criteria: Replacement finish criteria.
+            read_sources: Optional replacement read grants.
+            run_now: Queue a run at the next tick.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             target_at: Soft target in the same format as until.
@@ -146,6 +199,19 @@ class CronTools:
         Returns:
             Updated job as a JSON-compatible dictionary, with `upcoming` runs.
         """
+        if _SCHEDULED_TURN.get() and (
+            required_sources is not None or completion_criteria is not None
+        ):
+            msg = "Only the owner in chat may change verification requirements."
+            raise ValueError(msg)
+        if read_sources is not None and _SCHEDULED_TURN.get():
+            msg = "Only the owner in chat may change read grants."
+            raise ValueError(msg)
+        if read_sources is not None:
+            scope = ReadScope.from_sources(read_sources)
+            if not scope.tools and not scope.paths:
+                msg = "Specify at least one tool:<name> or path:<absolute directory>."
+                raise ValueError(msg)
         parsed = None if schedule is None else CronSchedule.parse(schedule)
         job = self.store.edit_job(
             job_id,
@@ -154,6 +220,10 @@ class CronTools:
             prompt=prompt,
             schedule=parsed,
             enabled=enabled,
+            run_now=run_now,
+            required_sources=required_sources,
+            completion_criteria=completion_criteria,
+            read_sources=read_sources,
             repeat_times=repeat_times,
             target_at=parse_until(target_at) if target_at else None,
             until=parse_until(until) if until else None,
@@ -163,6 +233,22 @@ class CronTools:
             skills=skills,
         )
         return _tool_job(job, upcoming=True)
+
+    def send_job_context(self, job_id: str, note: str) -> dict[str, str]:
+        """Send context to an objective in this owner's thread for its next run.
+
+        The owner or another objective can send up to 2000 characters without waking the job.
+        """
+        sender = SENDING_OBJECTIVE.get()
+        if _SCHEDULED_TURN.get() and sender is None:
+            return {"error": "Only the owner or another objective can send context."}
+        try:
+            self.store.send_job_context(
+                _strip_quotes(job_id), note, origin=self.origin(), sender_job=sender
+            )
+        except ValueError as exc:
+            return _tool_error(exc)
+        return {"status": "sent"}
 
     def remove_job(self, job_id: str) -> dict[str, Any]:
         """Remove a scheduled job from the current conversation.
@@ -200,14 +286,17 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
     @tool(description=_CREATE_DESCRIPTION)
     def create_job(  # noqa: PLR0913  # agent tool exposes optional job fields
         prompt: str,
-        schedule: str,
+        schedule: str | None = None,
         name: str = "",
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo = "channel",
         skills: list[str] | None = None,
         *,
+        mode: JobMode = "routine",
         target_at: str | None = None,
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.create_job(
@@ -219,6 +308,9 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 until=_strip_optional_quotes(until),
                 deliver_to=deliver_to,
                 skills=skills,
+                required_sources=required_sources,
+                completion_criteria=completion_criteria,
+                mode=mode,
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
@@ -243,11 +335,15 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         schedule: str | None = None,
         *,
         enabled: bool | None = None,
+        run_now: bool = False,
+        target_at: str | None = None,
+        required_sources: list[str] | None = None,
+        completion_criteria: list[str] | None = None,
+        read_sources: list[str] | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
         skills: list[str] | None = None,
-        target_at: str | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.edit_job(
@@ -256,6 +352,10 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 prompt=_strip_optional_quotes(prompt),
                 schedule=_strip_optional_quotes(schedule),
                 enabled=enabled,
+                run_now=run_now,
+                required_sources=required_sources,
+                completion_criteria=completion_criteria,
+                read_sources=read_sources,
                 repeat_times=repeat_times,
                 target_at=_strip_optional_quotes(target_at),
                 until=_strip_optional_quotes(until),
@@ -280,7 +380,21 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
 
-    return [create_job, list_jobs, edit_job, remove_job]
+    @tool
+    def get_job_history(job_id: str | None = None, offset: int = 0) -> list[dict[str, str]]:
+        """Read ten saved checks for this owner and chat, optionally filtered by job ID."""
+        return JobJournal(cron.store.cron_dir).history(job_id, cron.origin(), offset=offset)
+
+    return [
+        create_job,
+        list_jobs,
+        edit_job,
+        remove_job,
+        get_job_history,
+        record_job_work,
+        reconcile_job_action,
+        tool(cron.send_job_context),
+    ]
 
 
 def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
@@ -289,7 +403,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "id": data["id"],
         "name": data["name"],
         "prompt": data["prompt"],
-        "schedule": data["schedule"],
+        "schedule": data["schedule"] if job.mode == "routine" else None,
         "repeat": data["repeat"],
         "enabled": data["enabled"],
         "next_run_at": data["next_run_at"],
@@ -298,9 +412,17 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "last_error": data["last_error"],
         "until": data["until"],
         **({"target_at": data["target_at"]} if data["target_at"] else {}),
-        "deliver_to": data["deliver_to"],
+        "deliver_to": "thread" if job.mode == "objective" else data["deliver_to"],
         "skills": data["skills"],
+        "mode": data["mode"],
+        "run_requested": job.run_requested,
     }
+    if job.required_sources:
+        payload["required_sources"] = list(job.required_sources)
+    if job.handoffs:
+        payload["handoffs"] = list(job.handoffs)
+    if job.completion_criteria is not None:
+        payload["completion_criteria"] = list(job.completion_criteria)
     if upcoming:
         payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]
     return payload

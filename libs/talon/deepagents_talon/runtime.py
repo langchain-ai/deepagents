@@ -1412,6 +1412,25 @@ class DeepAgentRuntime:
             ),
         }[self.verbosity]
         parts = [prompt, progress]
+        if self.cron_store is not None:
+            parts.append(
+                "Use create_job for scheduled work. A routine repeats the specified procedure. "
+                "An objective carries out available authorized work and schedules its next wake. "
+                "Use list_jobs to show all jobs with mode, latest result and next run. "
+                "Use get_job_history for evidence and progress. Save changes to standing "
+                "instructions with edit_job. During foreground work, if a finding could help an "
+                "existing objective, use list_jobs to identify the relevant job and check its "
+                "saved context. Proactively use send_job_context for new information that "
+                "changes the next step or saves repeated work, even when the owner hasn't "
+                "mentioned the job. Include the result and a reusable reference such as the "
+                "tested revision, artifact path, or running task ID. Attribute owner decisions "
+                "and distinguish observations from assumptions. Answer status questions from "
+                "history and leave objective execution in the background unless the owner asks "
+                "for foreground work. Keep the scheduled wake for informational updates. Use "
+                "run_now when work is unblocked or the owner asks to proceed, respecting timing. "
+                "Omit the schedule for objectives unless the owner specifies a start time. "
+                "Handle one-off requests directly."
+            )
         if self.sandbox_working_dir is not None:
             parts.append(_SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir))
         return "\n\n".join(part for part in parts if part)

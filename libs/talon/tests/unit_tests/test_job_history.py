@@ -16,7 +16,7 @@ from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, record_jo
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
 from deepagents_talon.cron.scope import SCHEDULER_FINALIZING, JobScopeMiddleware
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
+from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, SendResult
 from deepagents_talon.mcp_auth import _no_authorization_channel_error
 from deepagents_talon.questions import ask_user, question_scope
 from deepagents_talon.runtime import _approval_decision, _job_scope, _question_handler_from_request
@@ -732,3 +732,73 @@ def test_partial_and_unmatched_references_cannot_complete_objective(tmp_path: Pa
     assert outcome.status == "partial"
     assert "Checked issuer logs" in journal.history(job.id, ORIGIN)[0]["summary"]
     assert "[SILENT]" not in outcome.summary
+
+
+@pytest.mark.parametrize("lost_ack", [False, True])
+async def test_completion_notice_recovers_without_reopening_goal(
+    tmp_path: Path, *, lost_ack: bool
+) -> None:
+    class Destination(RecordingChannel):
+        interrupted = True
+
+        async def send_message(self, conversation_id: str, text: str) -> SendResult:
+            if self.interrupted:
+                self.interrupted = False
+                if lost_ack:
+                    await super().send_message(conversation_id, text)
+                    raise TimeoutError
+                return SendResult(success=False, error="rejected")
+            return await super().send_message(conversation_id, text)
+
+        async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool:
+            return any(target == conversation_id and job_id in text for target, text in self.sent)
+
+    agent = _VerificationAgent()
+    agent.released.set()
+    agent.report = {
+        "status": "complete",
+        "summary": "Private details.",
+        "notice": "Published.",
+        "verified": ["C1"],
+        "evidence": {"C1": "registry digest"},
+    }
+    channel = Destination("slack")
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(
+        mode="objective", origin=ORIGIN, prompt="Publish", completion_criteria=["published"]
+    )
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    scheduler = _attach_scheduler(host, store, now=lambda: job.next_run_at)
+    await scheduler.tick_once()
+    assert not store.get_job(job.id).enabled
+    scheduler = _attach_scheduler(host, CronJobStore(assistant_id="test", cron_dir=tmp_path))
+    await scheduler.tick_once()
+    await scheduler.tick_once()
+    assert len(agent.requests) == 1
+    assert len(channel.sent) == 1
+    assert "Published." in channel.sent[0][1]
+
+
+async def test_subjective_completion_stays_open_pending_owner_acceptance(tmp_path: Path) -> None:
+    agent = _VerificationAgent()
+    agent.released.set()
+    agent.report = {
+        "status": "complete",
+        "summary": "Draft available.",
+        "requires_signoff": True,
+        "verified": ["C1"],
+        "evidence": {"C1": "draft v1"},
+    }
+    channel = RecordingChannel("slack")
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    job = store.create_job(
+        mode="objective",
+        origin=ORIGIN,
+        prompt="Write a draft I like",
+        completion_criteria=["draft"],
+    )
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    _attach_scheduler(host, store)
+    notice = await host.run_scheduled_job(job)
+    assert store.get_job(job.id).enabled
+    assert "approve" in notice.lower()

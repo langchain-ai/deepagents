@@ -406,7 +406,8 @@ async def test_deadline_cancels_active_final_claim(tmp_path) -> None:
     assert f"Job {job.id} missed its deadline" in notices[0]
 
 
-async def test_soft_target_crossed_during_run(tmp_path) -> None:
+@pytest.mark.parametrize("closing", [False, True])
+async def test_soft_target_crossed_during_run(tmp_path, *, closing: bool) -> None:
     store = _store(tmp_path)
     target = NOON + timedelta(minutes=2)
     store.create_job(
@@ -414,14 +415,18 @@ async def test_soft_target_crossed_during_run(tmp_path) -> None:
         schedule=CronSchedule.parse("every 1m"),
         origin=CronOrigin(conversation_id="chat", sender_id="owner", channel="discord"),
         now=NOON,
+        completion_criteria=["verified"] if closing else None,
         target_at=target,
+        mode="objective" if closing else "routine",
     )
     now = NOON + timedelta(minutes=1)
     notices: list[str] = []
 
-    async def run(_claimed: CronJob) -> str:
+    async def run(claimed: CronJob) -> str:
         nonlocal now
         now = target + timedelta(seconds=1)
+        if closing:
+            assert store.apply_objective_result(claimed, complete=True, notice="verified")
         return "done"
 
     async def deliver(_job: CronJob, text: str) -> None:
@@ -433,4 +438,4 @@ async def test_soft_target_crossed_during_run(tmp_path) -> None:
     await scheduler.tick_once()
     assert len(notices) == 1
     assert "missed its target" in notices[0]
-    assert notices[0].endswith("done")
+    assert notices[0].endswith("verified" if closing else "done")

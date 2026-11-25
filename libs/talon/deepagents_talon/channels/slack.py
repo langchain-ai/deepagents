@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from html import escape
+from http import HTTPStatus
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
 
@@ -387,6 +388,11 @@ class _SlackGateway(Protocol):
     async def post_message(self, channel_id: str, text: str, *, thread_ts: str | None) -> str:
         """Post a message and return its timestamp."""
 
+    async def completion_notice_received(
+        self, channel_id: str, thread_ts: str | None, job_id: str
+    ) -> bool:
+        """Check whether the bot posted this goal's completion marker."""
+
     async def thread_context(
         self, channel_id: str, thread_ts: str, before_ts: str
     ) -> list[tuple[str, str]]:
@@ -523,6 +529,34 @@ class _SlackSdkGateway:
             thread_ts=thread_ts,
         )
         return str(response["ts"])
+
+    async def completion_notice_received(
+        self, channel_id: str, thread_ts: str | None, job_id: str
+    ) -> bool:
+        """Look for a bot-authored marker in the actual delivery conversation."""
+        if not self._bot_id:
+            return False
+        client = self._client()
+        cursor = None
+        for _ in range(_THREAD_CONTEXT_PAGES):
+            if thread_ts:
+                page = await client.conversations_replies(
+                    channel=channel_id, ts=thread_ts, limit=100, cursor=cursor
+                )
+            else:
+                page = await client.conversations_history(
+                    channel=channel_id, limit=100, cursor=cursor
+                )
+            if any(
+                item.get("user") == self._bot_id
+                and str(item.get("text", "")).startswith(f"Goal {job_id} completed. ")
+                for item in page.get("messages", [])
+            ):
+                return True
+            cursor = optional_str(page.get("response_metadata", {}).get("next_cursor"))
+            if not cursor:
+                break
+        return False
 
     async def thread_context(
         self, channel_id: str, thread_ts: str, before_ts: str
@@ -716,6 +750,11 @@ class SlackChannel:
         self._status = ChannelStatus(provider="slack", connected=False, detail="disconnected")
         log_debug_event(logger, "slack.channel.stopped")
 
+    async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool:
+        """Look up an uncertain completion post in its destination."""
+        channel_id, thread_ts = _parse_conversation_id(conversation_id)
+        return await self._gateway.completion_notice_received(channel_id, thread_ts, job_id)
+
     async def send_message(self, conversation_id: str, text: str) -> SendResult:
         """Send a message, splitting long text across multiple posts.
 
@@ -749,7 +788,19 @@ class SlackChannel:
         )
         message_id: str | None = None
         for chunk in chunks:
-            message_id = await self._gateway.post_message(channel_id, chunk, thread_ts=thread_ts)
+            try:
+                message_id = await self._gateway.post_message(
+                    channel_id, chunk, thread_ts=thread_ts
+                )
+            except SlackApiError as exc:
+                if (
+                    message_id is None
+                    and exc.response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR
+                ):
+                    return SendResult(
+                        success=False, error=str(exc.response.get("error") or "Slack rejected post")
+                    )
+                raise
             self._remember_sent(channel_id, message_id, conversation_id)
         log_debug_event(logger, "slack.outbound.text.completed", chunk_count=len(chunks))
         return SendResult(success=True, message_id=message_id)

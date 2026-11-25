@@ -45,6 +45,7 @@ class ObjectiveReport(BaseModel):
     summary: str = Field(min_length=1, max_length=4000)
     notice: str = Field(default="", max_length=2000)
 
+    requires_signoff: bool = False
     blocker_key: str = Field(default="", max_length=200)
 
     verified: list[str] = Field(default_factory=list, max_length=64)
@@ -159,6 +160,11 @@ class JobJournal:
             )
 
             db.execute(
+                "CREATE TABLE IF NOT EXISTS signoff (job TEXT, revision TEXT, "
+                "PRIMARY KEY(job,revision))"
+            )
+
+            db.execute(
                 "CREATE TABLE IF NOT EXISTS objective_actions (job TEXT, run TEXT, call_id TEXT, "
                 "tool TEXT, arguments TEXT, PRIMARY KEY(job, call_id))"
             )
@@ -228,6 +234,8 @@ class JobJournal:
                 )
             report = _check_coverage(job, report, reads)
             report = _update_evidence(db, job.id, revision, criteria, report)
+            if report.requires_signoff:
+                db.execute("INSERT OR IGNORE INTO signoff VALUES(?,?)", (job.id, revision))
             if report.status == "complete":
                 evidence = {
                     row[0]
@@ -237,11 +245,40 @@ class JobJournal:
                     )
                 }
                 report = _check_completion(report, criteria, evidence)
+                if (
+                    report.status == "complete"
+                    and db.execute(
+                        "SELECT 1 FROM signoff WHERE job=? AND revision=?", (job.id, revision)
+                    ).fetchone()
+                ):
+                    report = self._check_signoff(db, job, revision, report)
             db.execute(
                 "UPDATE checks SET status=?,summary=?,read_tools=? WHERE run=?",
                 (report.status, report.summary[:4000], ", ".join(sorted(reads))[:2000], run),
             )
         return report
+
+    def _check_signoff(
+        self, db: sqlite3.Connection, job: CronJob, revision: str, report: ObjectiveReport
+    ) -> ObjectiveReport:
+        references = db.execute(
+            "SELECT criterion,reference FROM evidence WHERE job=? AND revision=? "
+            "AND verified ORDER BY criterion",
+            (job.id, revision),
+        ).fetchall()
+        version = hashlib.sha256(json.dumps(references).encode()).hexdigest()[:10]
+        question = (
+            f"Do you approve completion of {job.name} (evidence {version})? Reply yes to approve."
+        )
+        return report.model_copy(
+            update={
+                "status": "blocked",
+                "notice": question,
+                "decision_question": question,
+                "decision_unlocks": "Close the verified goal and deliver the completion notice.",
+                "blocker_key": f"signoff:{version}",
+            }
+        )
 
     def blocker_key(self, job: str) -> str:
         """Return the current blocker identity for the next isolated check."""

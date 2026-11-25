@@ -142,6 +142,8 @@ class CronTools:
         result = []
         for job in jobs:
             payload = _tool_job(job)
+            if job.completion_notice:
+                payload["completion_notice_state"] = job.notice_state
             if job.mode == "objective":
                 criteria, evidence = journal.verification(job)
                 if criteria is not None:

@@ -179,6 +179,8 @@ class CronJobDict(TypedDict):
     target_at: NotRequired[int | None]
     until: NotRequired[int | None]
     wait_condition: NotRequired[str]
+    completion_notice: NotRequired[str]
+    notice_state: NotRequired[str]
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
@@ -207,10 +209,9 @@ class CronJobWireDict(TypedDict):
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOriginDict
+    wait_condition: NotRequired[str]
     target_at: str | None
     until: str | None
-
-    wait_condition: NotRequired[str]
     claimed_at: str | None
     deliver_to: DeliverTo
     skills: list[str]
@@ -720,8 +721,9 @@ class CronJob:
     origin: CronOrigin
     target_at: datetime | None = field(default=None, kw_only=True)
     until: datetime | None = None
-
     wait_condition: str = field(default="", kw_only=True)
+    completion_notice: str = field(default="", kw_only=True)
+    notice_state: str = field(default="", kw_only=True)
     claimed_at: datetime | None = None
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
@@ -791,6 +793,11 @@ class CronJob:
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
             "until": _to_optional_epoch(self.until),
+            **(
+                {"completion_notice": self.completion_notice, "notice_state": self.notice_state}
+                if self.completion_notice
+                else {}
+            ),
             **({"target_at": _to_epoch(self.target_at)} if self.target_at else {}),
             "claimed_at": _to_optional_epoch(self.claimed_at),
             "deliver_to": self.deliver_to,
@@ -879,6 +886,8 @@ class CronJob:
             target_at=_from_optional_epoch(_optional_int_field(record, "target_at")),
             until=_from_optional_epoch(_optional_int_field(record, "until")),
             wait_condition=_optional_str_field(record, "wait_condition") or "",
+            completion_notice=_optional_str_field(record, "completion_notice") or "",
+            notice_state=_optional_str_field(record, "notice_state") or "",
             claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
             # Jobs saved before this field existed default to the channel.
             deliver_to=cast(
@@ -1308,12 +1317,13 @@ class CronJobStore:
             )
             self._write_jobs(jobs)
 
-    def apply_objective_result(
+    def apply_objective_result(  # Scheduling and notice fields are independent.
         self,
         snapshot: CronJob,
         *,
         complete: bool = False,
         wake: datetime | None = None,
+        notice: str = "",
         wait_condition: str = "",
     ) -> bool:
         """Apply a scheduling decision and report whether the run is still current."""
@@ -1324,7 +1334,14 @@ class CronJobStore:
             index = jobs.index(snapshot)
             current = jobs[index]
             if complete:
-                updated = replace(current, enabled=False, next_run_at=None, wait_condition="")
+                updated = replace(
+                    current,
+                    enabled=False,
+                    next_run_at=None,
+                    wait_condition="",
+                    completion_notice=notice,
+                    notice_state="pending" if notice else "",
+                )
             elif wake is not None and snapshot.enabled:
                 wake = _coerce_utc(wake)
                 if wake <= _coerce_utc() or (snapshot.until is not None and wake > snapshot.until):
@@ -1335,6 +1352,16 @@ class CronJobStore:
             else:
                 return True
             jobs[index] = updated
+            self._write_jobs(jobs)
+            return True
+
+    def transition_notice(self, snapshot: CronJob, state: str) -> bool:
+        """Persist a delivery transition only if the previous state is still current."""
+        with self._lock:
+            jobs = self.list_jobs()
+            if snapshot not in jobs:
+                return False
+            jobs[jobs.index(snapshot)] = replace(snapshot, notice_state=state)
             self._write_jobs(jobs)
             return True
 
@@ -1375,6 +1402,11 @@ class CronJobStore:
                     continue
                 updated = replace(
                     job,
+                    completion_notice=(
+                        f"{delay}\n{job.completion_notice}"
+                        if job.notice_state == "pending" and (delay := job.target_delay(current))
+                        else job.completion_notice
+                    ),
                     last_run_at=current,
                     last_status=status,
                     last_error=error,
@@ -1395,6 +1427,7 @@ class CronJobStore:
                 if (job.enabled or job.claimed_at is not None)
                 and job.until is not None
                 and now > job.until
+                and not job.completion_notice
             ]
             if missed:
                 ids = {job.id for job in missed}
@@ -1432,7 +1465,7 @@ class CronJobStore:
             removed: list[CronJob] = []
             for job in jobs:
                 expired = _is_expired(job, current)
-                if not (expired or _is_finished(job)):
+                if job.completion_notice or not (expired or _is_finished(job)):
                     kept.append(job)
                 elif job.last_status != "error" and job.claimed_at is None:
                     removed.append(job)
@@ -1472,7 +1505,12 @@ class CronJobStore:
             removed: list[CronJob] = []
             for job in self.list_jobs():
                 reference = job.last_run_at or job.created_at
-                if not job.enabled and job.next_run_at is None and reference <= cutoff:
+                if (
+                    job.notice_state not in {"pending", "uncertain"}
+                    and not job.enabled
+                    and job.next_run_at is None
+                    and reference <= cutoff
+                ):
                     removed.append(job)
                 else:
                     kept.append(job)

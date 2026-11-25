@@ -390,7 +390,7 @@ class _SlackGateway(Protocol):
 
     async def completion_notice_received(
         self, channel_id: str, thread_ts: str | None, job_id: str
-    ) -> bool:
+    ) -> bool | None:
         """Check whether the bot posted this goal's completion marker."""
 
     async def thread_context(
@@ -415,6 +415,12 @@ class _SlackGateway(Protocol):
         """Replace a previously posted message's text."""
 
 
+class _ThreadContext(list[tuple[str, str]]):
+    """Thread excerpts and the ID of an immediately preceding bot reply."""
+
+    preceding_bot_message: str | None = None
+
+
 class _SlackSdkGateway:
     """Gateway implementation backed by `slack_sdk` Socket Mode."""
 
@@ -425,6 +431,7 @@ class _SlackSdkGateway:
         self._web: AsyncWebClient | None = None
         self._socket: SocketModeClient | None = None
         self._bot_id: str | None = None
+        self.account_id: str | None = None
         self._seen_events: OrderedDict[str, None] = OrderedDict()
 
     @property
@@ -442,6 +449,8 @@ class _SlackSdkGateway:
         web = AsyncWebClient(token=self._bot_token, timeout=int(self._timeout_seconds))
         auth = await asyncio.wait_for(web.auth_test(), self._timeout_seconds)
         self._bot_id = optional_str(auth.get("user_id"))
+        team = optional_str(auth.get("team_id"))
+        self.account_id = f"{team}:{self._bot_id}" if team and self._bot_id else None
         self._web = web
         # Built here, not in `__init__`: the client opens an aiohttp session and
         # schedules its message processor, both of which need a running loop.
@@ -532,10 +541,10 @@ class _SlackSdkGateway:
 
     async def completion_notice_received(
         self, channel_id: str, thread_ts: str | None, job_id: str
-    ) -> bool:
+    ) -> bool | None:
         """Look for a bot-authored marker in the actual delivery conversation."""
         if not self._bot_id:
-            return False
+            return None
         client = self._client()
         cursor = None
         for _ in range(_THREAD_CONTEXT_PAGES):
@@ -549,19 +558,21 @@ class _SlackSdkGateway:
                 )
             if any(
                 item.get("user") == self._bot_id
-                and str(item.get("text", "")).startswith(f"Goal {job_id} completed. ")
+                and str(item.get("text", "")).startswith(
+                    (f"Goal {job_id} completed. ", f"Job {job_id} missed its deadline.")
+                )
                 for item in page.get("messages", [])
             ):
                 return True
             cursor = optional_str(page.get("response_metadata", {}).get("next_cursor"))
             if not cursor:
-                break
-        return False
+                return None if page.get("has_more") else False
+        return None
 
     async def thread_context(
         self, channel_id: str, thread_ts: str, before_ts: str
     ) -> list[tuple[str, str]]:
-        messages: list[tuple[str, str]] = []
+        messages = _ThreadContext()
         cursor: str | None = None
         more = False
         for _ in range(_THREAD_CONTEXT_PAGES):
@@ -576,6 +587,9 @@ class _SlackSdkGateway:
                 if not isinstance(item, dict) or item.get("ts") == before_ts:
                     continue
                 sender = optional_str(item.get("user"))
+                messages.preceding_bot_message = (
+                    optional_str(item.get("ts")) if sender and sender == self._bot_id else None
+                )
                 raw_text = str(item.get("text") or "")
                 if _contains_oauth_callback(raw_text):
                     continue
@@ -588,7 +602,7 @@ class _SlackSdkGateway:
                             f'kind="message" sender_type="bot">\n{text}\n</input-message>'
                         )
                     messages.append((sender, text))
-            messages = messages[-_THREAD_CONTEXT_MESSAGES:]
+            del messages[:-_THREAD_CONTEXT_MESSAGES]
             cursor = optional_str(response.get("response_metadata", {}).get("next_cursor"))
             more = bool(response.get("has_more") or cursor)
             if not more or not cursor:
@@ -750,7 +764,12 @@ class SlackChannel:
         self._status = ChannelStatus(provider="slack", connected=False, detail="disconnected")
         log_debug_event(logger, "slack.channel.stopped")
 
-    async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool:
+    @property
+    def account_id(self) -> str | None:
+        """Return the authenticated destination account for durable goals."""
+        return getattr(self._gateway, "account_id", None)
+
+    async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool | None:
         """Look up an uncertain completion post in its destination."""
         channel_id, thread_ts = _parse_conversation_id(conversation_id)
         return await self._gateway.completion_notice_received(channel_id, thread_ts, job_id)
@@ -1028,7 +1047,10 @@ class SlackChannel:
             text=inbound.text,
             sender_id=inbound.sender_id,
             message_id=inbound.ts,
-            metadata=_message_metadata(inbound),
+            metadata={
+                **_message_metadata(inbound),
+                **({"channel_account_id": account} if (account := self.account_id) else {}),
+            },
         )
         if not self._admits(message):
             log_debug_event(
@@ -1045,6 +1067,14 @@ class SlackChannel:
                 replies = await self._gateway.thread_context(
                     inbound.channel_id, inbound.thread_ts, inbound.ts
                 )
+                if isinstance(replies, _ThreadContext) and replies.preceding_bot_message:
+                    message = replace(
+                        message,
+                        metadata={
+                            **message.metadata,
+                            "reply_to_message_id": replies.preceding_bot_message,
+                        },
+                    )
                 senders = self._exposure.operator_ids | self.config.allowed_user_ids
                 context = "\n".join(
                     f"{sender}: {text}"
@@ -1610,6 +1640,8 @@ def _message_metadata(inbound: _SlackInboundMessage) -> dict[str, object]:
         "is_dm": inbound.is_dm,
         "from_self": False,
     }
+    if inbound.thread_ts:
+        metadata["thread_root_message_id"] = inbound.thread_ts
     if not inbound.is_dm:
         metadata["history_chat"] = inbound.channel_id
     if inbound.files:

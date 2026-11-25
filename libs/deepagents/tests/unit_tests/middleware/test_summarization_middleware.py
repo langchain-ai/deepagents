@@ -23,6 +23,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
+    SUMMARIZATION_SESSION_ID_KEY,
     SummarizationEvent,
     SummarizationMiddleware,
     _token_counter_accepts_tools,
@@ -1153,6 +1154,75 @@ class TestOffloadingBasic:
         # Check that the offloaded content doesn't include "Previous summary content"
         # (which is the content of the summary message added by include_previous_summary)
         assert "Previous summary content" not in content, "Previous summary message should be filtered from offload"
+
+
+def _qa_turns(prefix: str, count: int) -> list[BaseMessage]:
+    """Build `count` question/answer pairs with ids namespaced by `prefix`."""
+    turns: list[BaseMessage] = []
+    for i in range(count):
+        turns.append(HumanMessage(content=f"{prefix} q{i}", id=f"{prefix}-h{i}"))
+        turns.append(AIMessage(content=f"{prefix} a{i}", id=f"{prefix}-a{i}"))
+    return turns
+
+
+def _tool_round_trip(name: str, args: dict[str, Any], result: str) -> list[BaseMessage]:
+    """Build an `AIMessage` tool call followed by its `ToolMessage` result."""
+    return [
+        AIMessage(content="", id="call-msg", tool_calls=[{"id": "tc-1", "name": name, "args": args}]),
+        ToolMessage(content=result, tool_call_id="tc-1", id="call-result"),
+    ]
+
+
+class TestHistoryReadOffload:
+    """Reads of the history file must not be copied back into it."""
+
+    def test_rereading_history_does_not_duplicate_it(self, tmp_path: Path) -> None:
+        """A full read of the history file is not written back into the file."""
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        middleware = SummarizationMiddleware(model=make_mock_model(), backend=backend, trigger=("messages", 6), keep=("messages", 2))
+        runtime = make_mock_runtime()
+        marker = "ROUND-ONE-MARKER"
+
+        first: AgentState[Any] = cast("AgentState[Any]", {"messages": [HumanMessage(content=marker, id="marker"), *_qa_turns("r1", 4)]})
+        result, _ = call_wrap_model_call(middleware, first, runtime)
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
+        session_id = result.command.update[SUMMARIZATION_SESSION_ID_KEY]
+        path = f"/conversation_history/{session_id}.md"
+
+        read_output = backend.read(path).file_data["content"]
+        assert marker in read_output
+        summary = HumanMessage(content="summary", additional_kwargs={"lc_source": "summarization"}, id="summary")
+        reread = _tool_round_trip("read_file", {"file_path": path}, read_output)
+        second = cast("AgentState[Any]", {"messages": [summary, *reread, *_qa_turns("r2", 4)], SUMMARIZATION_SESSION_ID_KEY: session_id})
+        call_wrap_model_call(middleware, second, runtime)
+
+        history = backend.download_files([path])[0].content
+        assert history is not None
+        assert history.decode().count(marker) == 1
+
+    @pytest.mark.parametrize(
+        ("name", "args", "omitted"),
+        [
+            ("grep", {"pattern": "x", "path": "/conversation_history"}, True),
+            ("grep", {"pattern": "x", "path": "/conversation_history/"}, True),
+            ("read_file", {"file_path": "/conversation_history/media/abc.png"}, False),
+            ("read_file", {"file_path": "/notes.md"}, False),
+            ("grep", {"pattern": "x"}, False),
+        ],
+    )
+    def test_only_history_reads_are_omitted(self, name: str, args: dict[str, Any], omitted: bool) -> None:  # noqa: FBT001  # parametrized expectation
+        """Results of history searches are replaced; other tool results are kept."""
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(model=make_mock_model(), backend=backend, trigger=("messages", 6), keep=("messages", 2))
+        messages = [*_tool_round_trip(name, args, "TOOL-OUTPUT"), *_qa_turns("t", 4)]
+
+        call_wrap_model_call(middleware, cast("AgentState[Any]", {"messages": messages}), make_mock_runtime())
+
+        _, content = backend.write_calls[0]
+        assert ("TOOL-OUTPUT" not in content) is omitted
+        assert ("Output omitted" in content) is omitted
 
 
 class TestSummaryMessageFormat:
@@ -2994,7 +3064,7 @@ def test_context_overflow_triggers_summarization() -> None:
         keep=("messages", 2),
     )
 
-    messages = make_conversation_messages(num_old=6, num_recent=2)
+    messages = make_conversation_messages(num_old=12, num_recent=2)
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
@@ -3040,7 +3110,7 @@ async def test_async_context_overflow_triggers_summarization() -> None:
         keep=("messages", 2),
     )
 
-    messages = make_conversation_messages(num_old=6, num_recent=2)
+    messages = make_conversation_messages(num_old=12, num_recent=2)
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 

@@ -832,6 +832,10 @@ jobs:
           CURATED_APPLY_PARENT_CONCLUSION: ${{ needs.changes.outputs.curated-apply-parent-conclusion }}
           NEEDS: ${{ toJSON(needs) }}
           SELECTION: ${{ toJSON(needs.changes.outputs) }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           if [ "$CHANGES_RESULT" != success ]; then
@@ -854,6 +858,19 @@ jobs:
             fi
             echo "The release-bot changelog-only commit inherits successful prior-head CI."
           fi
+          # A push run is superseded only when its branch has already moved past
+          # this commit. Timeouts, manual cancels, and lost runners leave the
+          # branch at RUN_SHA, so those cancellations still block. Any lookup
+          # failure leaves SUPERSEDED=false (fail closed).
+          SUPERSEDED=false
+          if [ "$EVENT_NAME" = push ] && [ -n "${REPO:-}" ] && [ -n "${REF_NAME:-}" ]; then
+            if branch_head="$(gh api "repos/$REPO/commits/$REF_NAME" --jq .sha 2>/dev/null)" &&
+              [ -n "$branch_head" ] && [ "$branch_head" != "${RUN_SHA:-}" ]; then
+              SUPERSEDED=true
+              echo "$REF_NAME has advanced to $branch_head; cancellations of $RUN_SHA are superseded."
+            fi
+          fi
+          export SUPERSEDED
           python3 - <<'PYTHON'
           import json
           import os
@@ -901,8 +918,8 @@ jobs:
                   continue
               # Pushes to main cancel in-progress runs when a newer commit lands;
               # the newer run validates the same changes, so don't flag these.
-              if result == "cancelled" and event == "push":
-                  print(f"::notice::Ignoring {job}=cancelled on push (superseded by a newer main run).")
+              if result == "cancelled" and event == "push" and os.environ["SUPERSEDED"] == "true":
+                  print(f"::notice::Ignoring {job}=cancelled; a newer push run supersedes this one.")
                   continue
               if result not in {"success", "skipped"}:
                   sys.exit(f"Job did not pass: {job}={result}")

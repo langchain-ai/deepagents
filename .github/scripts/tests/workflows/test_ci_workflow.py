@@ -308,6 +308,7 @@ def test_ci_gate_requires_selected_checks(
         env={
             **os.environ,
             "EVENT_NAME": event,
+            "REPO": "",
             "CHANGES_RESULT": needs.get("changes", {}).get("result", ""),
             "LOCKFILES_RESULT": "success",
             "HYGIENE_RESULT": "success",
@@ -336,16 +337,76 @@ def test_ci_gate_requires_selected_checks(
         and job in {"lint-talon", "test-talon"}
         and result == "failure"
     )
-    cancelled_on_push = (
-        event == "push" and result == "cancelled" and job != "changes"
-    )
-    expected = (
-        waived
-        or cancelled_on_push
-        or (passes and not (result == "skipped" and event == "push"))
-    )
+    expected = waived or (passes and not (result == "skipped" and event == "push"))
     assert (completed.returncode == 0) == expected, completed.stdout + completed.stderr
     assert ("::warning::Waiving" in completed.stdout) == waived
+
+
+@pytest.mark.parametrize(
+    ("event", "branch_head", "passes"),
+    [
+        ("push", "newer", True),
+        ("push", "abc123", False),
+        ("push", None, False),
+        ("pull_request", "newer", False),
+    ],
+)
+def test_ci_gate_ignores_cancellations_only_when_superseded(
+    tmp_path: Path, event: str, branch_head: str | None, passes: bool
+) -> None:
+    """A push cancellation passes only once the branch has moved past the run.
+
+    Timeouts, manual cancels, and lost runners leave the branch at the run's
+    commit; a failed lookup must also keep the gate strict.
+    """
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\nexit 1\n"
+        if branch_head is None
+        else f"#!/bin/sh\necho {branch_head}\n"
+    )
+    fake_gh.chmod(0o755)
+    needs = {
+        name: {"result": "success"} for name in workflow["jobs"]["ci_success"]["needs"]
+    }
+    needs["test-code"]["result"] = "cancelled"
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "EVENT_NAME": event,
+            "REPO": "langchain-ai/deepagents",
+            "REF_NAME": "main",
+            "RUN_SHA": "abc123",
+            "CHANGES_RESULT": "success",
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "CURATED_APPLY_ONLY": "false",
+            "CURATED_APPLY_PARENT_CONCLUSION": "success",
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(
+                {
+                    **{
+                        name.removeprefix("lint-"): "true"
+                        for name in workflow["jobs"]
+                        if name.startswith("lint-")
+                    },
+                    "talon-src": "true",
+                }
+            ),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert (completed.returncode == 0) == passes, completed.stdout + completed.stderr
 
 
 @pytest.mark.parametrize("talon_changed", [None, "", "invalid"])

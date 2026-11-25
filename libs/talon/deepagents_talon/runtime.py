@@ -75,6 +75,7 @@ from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.cron.scope import (
     JOB_READ_SCOPE,
     SCHEDULER_FINALIZING,
+    SENDING_OBJECTIVE,
     JobScopeMiddleware,
     ReadScope,
 )
@@ -1419,7 +1420,7 @@ class DeepAgentRuntime:
                 "Use get_job_history for evidence and progress. Save changes to standing "
                 "instructions with edit_job. During foreground work, if a finding could help an "
                 "existing objective, use list_jobs to identify the relevant job and check its "
-                "saved context. Proactively use edit_job(handoff=...) for new information that "
+                "saved context. Proactively use send_job_context for new information that "
                 "changes the next step or saves repeated work, even when the owner hasn't "
                 "mentioned the job. Include the result and a reusable reference such as the "
                 "tested revision, artifact path, or running task ID. Attribute owner decisions "
@@ -1869,21 +1870,25 @@ def _current_cron_origin() -> CronOrigin:
 def _job_scope(request: AgentRequest) -> Generator[None]:
     """Apply the scheduled job's saved read grants during its run."""
     scope = None
+    sender = None
     if request.metadata.get("trigger") == "cron":
         sources = request.metadata.get("read_sources")
-        job_id = request.metadata.get("cron_job_id")
+        value = request.metadata.get("cron_job_id")
+        job_id = value if isinstance(value, str) else None
+        if request.metadata.get("job_mode") == "objective":
+            sender = job_id
         if sources is not None:
             scope = ReadScope.from_sources(
                 (source for source in sources if isinstance(source, str))
                 if isinstance(sources, list)
                 else (),
-                job_id=job_id if isinstance(job_id, str) else None,
+                job_id=job_id,
             )
-    token = JOB_READ_SCOPE.set(scope)
-    try:
+    with (
+        JOB_READ_SCOPE.set(scope),
+        SENDING_OBJECTIVE.set(sender),
+    ):
         yield
-    finally:
-        JOB_READ_SCOPE.reset(token)
 
 
 def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:

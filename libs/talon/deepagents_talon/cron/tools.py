@@ -21,7 +21,7 @@ from deepagents_talon.cron.jobs import (
     parse_until,
 )
 from deepagents_talon.cron.journal import JobJournal, record_job_work
-from deepagents_talon.cron.scope import ReadScope
+from deepagents_talon.cron.scope import SENDING_OBJECTIVE, ReadScope
 
 OriginFactory = Callable[[], CronOrigin]
 _PAIRED_QUOTE_LENGTH = 2
@@ -59,8 +59,6 @@ Objective blocker notices always return to their original thread.
 _EDIT_DESCRIPTION = f"""Edit a job in this conversation by ID from create_job or list_jobs.
 Set schedule to replace the routine schedule or the next objective check.
 Supply only changes. Set enabled to false to pause or true to resume.
-Use handoff for foreground findings or new context from the owner (up to 2000 characters).
-The objective sees its ten latest handoffs.
 Clear until with an empty string and unpin all skills with an empty list.
 Use read_sources to replace read grants with tool:<read-only name> or path:<absolute directory>.
 Set run_now to queue a run at the next tick while preserving the recurring schedule.
@@ -156,7 +154,6 @@ class CronTools:
         schedule: str | None = None,
         enabled: bool | None = None,
         run_now: bool = False,
-        handoff: str | None = None,
         required_sources: list[str] | None = None,
         completion_criteria: list[str] | None = None,
         read_sources: list[str] | None = None,
@@ -177,7 +174,6 @@ class CronTools:
             completion_criteria: Replacement finish criteria.
             read_sources: Optional replacement read grants.
             run_now: Queue a run at the next tick.
-            handoff: Context from the owner's chat for the next objective run.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement end time, in the form `UNTIL_HELP`
@@ -188,9 +184,6 @@ class CronTools:
         Returns:
             Updated job as a JSON-compatible dictionary, with `upcoming` runs.
         """
-        if handoff is not None and _SCHEDULED_TURN.get():
-            msg = "Only the owner in chat may hand off context to an objective."
-            raise ValueError(msg)
         if _SCHEDULED_TURN.get() and (
             required_sources is not None or completion_criteria is not None
         ):
@@ -213,7 +206,6 @@ class CronTools:
             schedule=parsed,
             enabled=enabled,
             run_now=run_now,
-            handoff=handoff,
             required_sources=required_sources,
             completion_criteria=completion_criteria,
             read_sources=read_sources,
@@ -224,6 +216,22 @@ class CronTools:
             skills=skills,
         )
         return _tool_job(job, upcoming=True)
+
+    def send_job_context(self, job_id: str, note: str) -> dict[str, str]:
+        """Send context to an objective in this owner's thread for its next run.
+
+        The owner or another objective can send up to 2000 characters without waking the job.
+        """
+        sender = SENDING_OBJECTIVE.get()
+        if _SCHEDULED_TURN.get() and sender is None:
+            return {"error": "Only the owner or another objective can send context."}
+        try:
+            self.store.send_job_context(
+                _strip_quotes(job_id), note, origin=self.origin(), sender_job=sender
+            )
+        except ValueError as exc:
+            return _tool_error(exc)
+        return {"status": "sent"}
 
     def remove_job(self, job_id: str) -> dict[str, Any]:
         """Remove a scheduled job from the current conversation.
@@ -309,7 +317,6 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         *,
         enabled: bool | None = None,
         run_now: bool = False,
-        handoff: str | None = None,
         required_sources: list[str] | None = None,
         completion_criteria: list[str] | None = None,
         read_sources: list[str] | None = None,
@@ -326,7 +333,6 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 schedule=_strip_optional_quotes(schedule),
                 enabled=enabled,
                 run_now=run_now,
-                handoff=handoff,
                 required_sources=required_sources,
                 completion_criteria=completion_criteria,
                 read_sources=read_sources,
@@ -365,6 +371,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         remove_job,
         get_job_history,
         record_job_work,
+        tool(cron.send_job_context),
     ]
 
 

@@ -185,7 +185,8 @@ class CronJobDict(TypedDict):
     required_sources: NotRequired[list[str]]
     completion_criteria: NotRequired[list[str]]
     read_sources: NotRequired[list[str]]
-    handoffs: NotRequired[list[str]]
+    context_notes: NotRequired[list[str]]
+    owner_context_revision: NotRequired[int]
 
 
 class CronJobWireDict(TypedDict):
@@ -694,7 +695,8 @@ class CronJob:
         mode: Repeat a procedure or pursue an objective.
         run_requested: Run once at the next tick, preserving the recurring schedule.
         read_sources: Owner-confirmed read boundaries for scheduled checks.
-        handoffs: Recent context supplied from the owner's chat, oldest first.
+        handoffs: Sender-labeled context notes, oldest first.
+        owner_context_revision: Changes when the owner supplies new context.
     """
 
     id: str
@@ -719,7 +721,8 @@ class CronJob:
     required_sources: tuple[str, ...] = field(default=(), kw_only=True)
     completion_criteria: tuple[str, ...] | None = field(default=None, kw_only=True)
     read_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
-    handoffs: tuple[str, ...] = field(default=(), kw_only=True)
+    handoffs: tuple[str, ...] = field(default=(), kw_only=True, compare=False)
+    owner_context_revision: int = field(default=0, kw_only=True)
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -780,7 +783,12 @@ class CronJob:
                 else {}
             ),
             **({"read_sources": list(self.read_sources)} if self.read_sources is not None else {}),
-            **({"handoffs": list(self.handoffs)} if self.handoffs else {}),
+            **({"context_notes": list(self.handoffs)} if self.handoffs else {}),
+            **(
+                {"owner_context_revision": self.owner_context_revision}
+                if self.owner_context_revision
+                else {}
+            ),
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -862,7 +870,10 @@ class CronJob:
             if "run_requested" in record
             else False,
             required_sources=tuple(_string_list(record, "required_sources")),
-            handoffs=tuple(_string_list(record, "handoffs")),
+            handoffs=tuple(_string_list(record, "context_notes"))
+            if "context_notes" in record
+            else tuple(f"Owner: {note}" for note in _string_list(record, "handoffs")),
+            owner_context_revision=_optional_int_field(record, "owner_context_revision") or 0,
             completion_criteria=tuple(_string_list(record, "completion_criteria"))
             if "completion_criteria" in record
             else None,
@@ -1057,7 +1068,6 @@ class CronJobStore:
         schedule: CronSchedule | None = None,
         enabled: bool | None = None,
         run_now: bool = False,
-        handoff: str | None = None,
         required_sources: Sequence[str] | None = None,
         completion_criteria: Sequence[str] | None = None,
         read_sources: Sequence[str] | None = None,
@@ -1080,7 +1090,6 @@ class CronJobStore:
             completion_criteria: Replacement finish criteria, or an empty list for ongoing work.
             read_sources: Replace the read boundaries for scheduled goal checks.
             run_now: Queue an extra run at the next scheduler tick.
-            handoff: Append context from the owner's chat for subsequent objective runs.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement for the job's last allowed run instant.
@@ -1133,7 +1142,6 @@ class CronJobStore:
                 _validate_objective_requirements(job.mode, required_sources, completion_criteria)
                 updated = replace(
                     job,
-                    handoffs=_append_handoff(job, handoff),
                     required_sources=job.required_sources
                     if required_sources is None
                     else tuple(required_sources),
@@ -1236,6 +1244,37 @@ class CronJobStore:
                 self._write_jobs(result)
             return claimed
 
+    def send_job_context(
+        self, job_id: str, note: str, *, origin: CronOrigin, sender_job: str | None = None
+    ) -> None:
+        """Append owner or peer context to an objective in the owner's thread."""
+        note = note.strip()
+        if not note or len(note) > _MAX_HANDOFF_LENGTH:
+            msg = f"A note must contain 1 to {_MAX_HANDOFF_LENGTH} characters."
+            raise CronJobError(msg)
+        with self._lock:
+            target = self.get_job(job_id, origin=origin)
+            if target is None or target.mode != "objective":
+                msg = "No matching objective in this thread."
+                raise CronJobError(msg)
+            label = "Owner"
+            if sender_job is not None:
+                sender = self.get_job(sender_job, origin=origin)
+                if sender is None or sender.mode != "objective" or sender.id == job_id:
+                    msg = "Peer context must come from another objective in this thread."
+                    raise CronJobError(msg)
+                label = f"Objective {sender.id}"
+            entry = f"{label}: {note}"
+            if target.handoffs[-1:] == (entry,):
+                return
+            jobs = self.list_jobs()
+            jobs[jobs.index(target)] = replace(
+                target,
+                handoffs=(*target.handoffs, entry)[-_MAX_HANDOFFS:],
+                owner_context_revision=target.owner_context_revision + int(sender_job is None),
+            )
+            self._write_jobs(jobs)
+
     def apply_objective_result(
         self, snapshot: CronJob, *, complete: bool = False, wake: datetime | None = None
     ) -> bool:
@@ -1244,16 +1283,18 @@ class CronJobStore:
             jobs = self.list_jobs()
             if snapshot.mode != "objective" or snapshot not in jobs:
                 return False
+            index = jobs.index(snapshot)
+            current = jobs[index]
             if complete:
-                updated = replace(snapshot, enabled=False, next_run_at=None)
+                updated = replace(current, enabled=False, next_run_at=None)
             elif wake is not None and snapshot.enabled:
                 wake = _coerce_utc(wake)
                 if wake <= _coerce_utc() or (snapshot.until is not None and wake > snapshot.until):
                     return True
-                updated = replace(snapshot, next_run_at=wake)
+                updated = replace(current, next_run_at=wake)
             else:
                 return True
-            jobs[jobs.index(snapshot)] = updated
+            jobs[index] = updated
             self._write_jobs(jobs)
             return True
 
@@ -1792,21 +1833,6 @@ def _in_scope(job: CronJob, origin: CronOrigin) -> bool:
             and job.origin.conversation_id == origin.conversation_id
         )
     return _origin_scope(job.origin) == _origin_scope(origin)
-
-
-def _append_handoff(job: CronJob, note: str | None) -> tuple[str, ...]:
-    if note is None:
-        return job.handoffs
-    if job.mode != "objective":
-        msg = "Handoffs apply only to objective jobs."
-        raise CronJobError(msg)
-    note = note.strip()
-    if not note or len(note) > _MAX_HANDOFF_LENGTH:
-        msg = f"A handoff must contain 1 to {_MAX_HANDOFF_LENGTH} characters."
-        raise CronJobError(msg)
-    if job.handoffs and job.handoffs[-1] == note:
-        return job.handoffs
-    return (*job.handoffs, note)[-_MAX_HANDOFFS:]
 
 
 def _validate_objective_requirements(

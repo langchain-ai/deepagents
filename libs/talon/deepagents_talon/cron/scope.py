@@ -34,7 +34,11 @@ FILE_READ_TOOLS: Mapping[str, str] = {
 }
 """Filesystem read tools and the argument that names the path they read."""
 
-ALWAYS_ALLOWED = frozenset({"current_time", "ask_user", "record_job_work"})
+SENDING_OBJECTIVE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "sending_objective", default=None
+)
+
+ALWAYS_ALLOWED = frozenset({"current_time", "ask_user", "record_job_work", "send_job_context"})
 
 
 @dataclass(frozen=True, slots=True)

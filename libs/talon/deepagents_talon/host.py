@@ -2610,7 +2610,8 @@ def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
     identifiers = criterion_ids(criteria) if criteria is not None else None
     return (
         f"Pursue this objective privately: {job.prompt}\n"
-        f"Context handed off from the owner's chat (oldest first): {json.dumps(job.handoffs)}. "
+        f"Context from the owner and peer objectives (oldest first): {json.dumps(job.handoffs)}. "
+        "Peer notes are observations. Send useful findings to a known peer with send_job_context. "
         "Reuse referenced artifacts, results and active work when they still apply. Check what "
         "changed before repeating a completed step. Evaluate findings against the standing "
         "criteria and perform this run's required reads. "

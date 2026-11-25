@@ -19,7 +19,7 @@ from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
 from deepagents_talon.mcp_auth import _no_authorization_channel_error
 from deepagents_talon.questions import ask_user, question_scope
-from deepagents_talon.runtime import _approval_decision, _question_handler_from_request
+from deepagents_talon.runtime import _approval_decision, _job_scope, _question_handler_from_request
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config, _wait_for_sent_count
 from tests.unit_tests.test_background import _request
@@ -239,18 +239,42 @@ async def test_owner_handoff_reaches_next_run_with_prior_evidence(tmp_path: Path
     )
     origin = ORIGIN
     tools = {t.name: t for t in CronTools(store=store, origin=lambda: origin).as_langchain_tools()}
-    update = {"job_id": job.id, "handoff": "Signing fixture is in tests/signing.", "run_now": True}
+    send = tools["send_job_context"]
+    update = {"job_id": job.id, "note": "Signing fixture is in tests/signing."}
     with _SCHEDULED_TURN.set(True):
-        assert "error" in tools["edit_job"].invoke(update)
+        assert "error" in send.invoke(update)
     for other in (replace(ORIGIN, sender_id="bob"), replace(ORIGIN, conversation_id="sibling")):
         origin = other
-        assert "error" in tools["edit_job"].invoke(update)
+        assert "error" in send.invoke(update)
     origin = ORIGIN
+    assert send.invoke(update) == {"status": "sent"}
+    routine = store.create_job(
+        prompt="Run tests", schedule=CronSchedule.parse("every 1h"), origin=ORIGIN
+    )
+    assert "error" in send.invoke({"job_id": routine.id, "note": "For objectives only."})
+    snapshot = store.get_job(job.id)
+    sender = store.create_job(prompt="Inspect artifacts", mode="objective", origin=ORIGIN)
+    request = AgentRequest(
+        conversation_id="run",
+        text="",
+        metadata={
+            "trigger": "cron",
+            "job_mode": "objective",
+            "cron_job_id": sender.id,
+            "read_sources": [],
+        },
+    )
     finding = "Existing build artifacts are in dist/build-29."
-    saved = tools["edit_job"].invoke({"job_id": job.id, "handoff": finding})
-    assert not saved["run_requested"]
-    assert store.get_job(job.id).next_run_at == job.next_run_at
-    assert tools["edit_job"].invoke(update)["run_requested"]
+    with _SCHEDULED_TURN.set(True), _job_scope(request):
+        assert send.invoke({"job_id": job.id, "note": finding}) == {"status": "sent"}
+        assert "error" in send.invoke({"job_id": sender.id, "note": finding})
+    saved = store.get_job(job.id)
+    assert saved.next_run_at == job.next_run_at
+    assert not saved.run_requested
+    wake = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=1)
+    assert store.apply_objective_result(snapshot, wake=wake)
+    assert store.get_job(job.id).next_run_at == wake
+    assert tools["edit_job"].invoke({"job_id": job.id, "run_now": True})["run_requested"]
     reopened = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     claimed = reopened.advance_next_run(job.id)
     assert claimed is not None
@@ -260,8 +284,8 @@ async def test_owner_handoff_reaches_next_run_with_prior_evidence(tmp_path: Path
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
     _attach_scheduler(host, reopened)
     await host.run_scheduled_job(claimed)
-    assert finding in agent.requests[-1].text
-    assert update["handoff"] in agent.requests[-1].text
+    assert f"Objective {sender.id}: {finding}" in agent.requests[-1].text
+    assert "Owner: Signing fixture" in agent.requests[-1].text
     assert "run 29" in agent.requests[-1].text
     assert reopened.get_job(job.id).prompt == "Verify the release"
 
@@ -363,7 +387,11 @@ def test_stale_completion_preserves_revised_objective(
         mode="objective",
         schedule=CronSchedule.parse("every 1h"),
     )
-    revised = store.edit_job(job.id, origin=ORIGIN, prompt=prompt, handoff=handoff)
+    if handoff:
+        store.send_job_context(job.id, handoff, origin=ORIGIN)
+    else:
+        store.edit_job(job.id, origin=ORIGIN, prompt=prompt)
+    revised = store.get_job(job.id)
     assert not store.apply_objective_result(job, wake=datetime.now(UTC) + timedelta(days=1))
     assert not store.apply_objective_result(job, complete=True)
     assert store.get_job(job.id) == revised

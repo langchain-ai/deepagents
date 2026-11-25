@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextvars
 import posixpath
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -19,8 +20,10 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 
+from deepagents_talon.cron.actions import CURRENT_ACTIONS, successful
+
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Awaitable, Callable, Iterable, Iterator
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse, ToolCallRequest
 
@@ -38,7 +41,9 @@ SENDING_OBJECTIVE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "sending_objective", default=None
 )
 
-ALWAYS_ALLOWED = frozenset({"current_time", "ask_user", "record_job_work", "send_job_context"})
+ALWAYS_ALLOWED = frozenset(
+    {"current_time", "ask_user", "record_job_work", "reconcile_job_action", "send_job_context"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +222,8 @@ class JobScopeMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], ToolMessage],
     ) -> ToolMessage:
         """Refuse a tool call outside the job's read scope."""
-        return _refusal(request) or _observe_read(request, handler(request))
+        with _action(request) as refusal:
+            return refusal or _observe_read(request, handler(request))
 
     async def awrap_tool_call(
         self,
@@ -225,8 +231,14 @@ class JobScopeMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
         """Refuse a tool call outside the job's read scope."""
-        if refusal := _refusal(request):
-            return refusal
+        with _action(request) as refusal:
+            if refusal:
+                return refusal
+            return await self._dispatch(request, handler)
+
+    async def _dispatch(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]]
+    ) -> ToolMessage:
         activity = OBJECTIVE_ACTIVITY.get()
         call = request.tool_call
         if activity is not None and call["id"] is not None:
@@ -235,6 +247,49 @@ class JobScopeMiddleware(AgentMiddleware):
         if activity is not None and call["id"] is not None:
             activity.finished(call["id"], result)
         return _observe_read(request, result)
+
+
+@contextmanager
+def _action(request: ToolCallRequest) -> Iterator[ToolMessage | None]:
+    refusal = _refusal(request)
+    actions = CURRENT_ACTIONS.get()
+    name = request.tool_call["name"]
+    if (
+        refusal
+        or actions is None
+        or _read_call(request)
+        or name in {"record_job_work", "reconcile_job_action"}
+    ):
+        yield refusal
+    elif (name, actions.arguments(request.tool_call["args"])) in actions.applied:
+        yield ToolMessage(
+            content="Destination already confirmed this action.",
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+    elif actions.unresolved():
+        yield ToolMessage(
+            content="Check the outstanding action at its destination before another write.",
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+    else:
+        if request.tool_call["id"] is None:
+            yield ToolMessage(
+                content="Action requires a tool call ID.", tool_call_id="", status="error"
+            )
+            return
+        with actions.dispatch(request.tool_call["id"], name, request.tool_call["args"]):
+            yield None
+
+
+def _read_call(request: ToolCallRequest) -> bool:
+    return request.tool_call["name"] in {
+        *FILE_READ_TOOLS,
+        "current_time",
+        "get_job_history",
+        "list_jobs",
+    } or (isinstance(request.tool, BaseTool) and is_read_only(request.tool))
 
 
 def _scoped_request(request: ModelRequest) -> ModelRequest:
@@ -260,7 +315,23 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
     return request.override(tools=[*allowed])
 
 
+def _observe_action(request: ToolCallRequest, result: ToolMessage) -> None:
+    if (actions := CURRENT_ACTIONS.get()) and successful(result):
+        call = request.tool_call
+        if call["id"] is None:
+            return
+        if _read_call(request) and call["name"] not in {
+            "current_time",
+            "get_job_history",
+            "list_jobs",
+        }:
+            actions.reads.add(call["id"])
+        elif call["id"] in actions.active:
+            actions.confirm(call["id"], call["name"])
+
+
 def _observe_read(request: ToolCallRequest, result: ToolMessage) -> ToolMessage:
+    _observe_action(request, result)
     reads = JOB_READS.get()
     scope = JOB_READ_SCOPE.get()
     if reads is None or not isinstance(result, ToolMessage) or result.status != "success":

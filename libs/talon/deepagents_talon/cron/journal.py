@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Literal
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
+from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
@@ -153,9 +155,20 @@ class JobJournal:
                 "items TEXT NOT NULL, PRIMARY KEY(job,revision))"
             )
 
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS objective_actions (job TEXT, run TEXT, call_id TEXT, "
+                "tool TEXT, arguments TEXT, PRIMARY KEY(job, call_id))"
+            )
             db.execute("BEGIN IMMEDIATE")
             if "verified" not in {row[1] for row in db.execute("PRAGMA table_info(evidence)")}:
                 db.execute("ALTER TABLE evidence ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
+
+    @contextmanager
+    def capture_actions(self, job: str, run: str) -> Iterator[ActionRun]:
+        """Track real tool execution for an objective until its run ends."""
+        actions = ActionRun(self.path, job, run)
+        with CURRENT_ACTIONS.set(actions):
+            yield actions
 
     def verification(
         self, job: CronJob
@@ -193,6 +206,23 @@ class JobJournal:
                     if reads:
                         summary += f" Read sources: {', '.join(sorted(reads))}."
                 report = report.model_copy(update={"summary": summary})
+            outstanding = db.execute(
+                "SELECT tool, call_id FROM objective_actions WHERE job=? AND run<>? LIMIT 1",
+                (job.id, run),
+            ).fetchone()
+            if outstanding:
+                tool_name, call_id = outstanding
+                notice = (
+                    f"The outcome of {tool_name} ({call_id}) is uncertain. Can you verify the "
+                    "result at its destination or decide whether to accept the risk of a duplicate?"
+                )
+                report = report.model_copy(
+                    update={
+                        "status": "blocked",
+                        "notice": report.notice or notice,
+                        "blocker_key": f"uncertain-action:{call_id}",
+                    }
+                )
             report = _check_coverage(job, report, reads)
             report = _update_evidence(db, job.id, revision, criteria, report)
             if report.status == "complete":

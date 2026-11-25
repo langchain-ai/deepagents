@@ -14,6 +14,7 @@ import tempfile
 import threading
 import uuid
 import weakref
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -24,7 +25,7 @@ from deepagents_talon.cron.expression import iter_local_matches, parse_expressio
 from deepagents_talon.timezones import TimeZoneError, resolve_zone
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import AsyncGenerator, Iterable, Sequence
     from zoneinfo import ZoneInfo
 
     from deepagents_talon.cron.journal import JobJournal
@@ -180,6 +181,7 @@ class CronJobDict(TypedDict):
     origin: CronOriginDict
     target_at: NotRequired[int | None]
     until: NotRequired[int | None]
+    wait_condition: NotRequired[str]
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
     skills: NotRequired[list[str]]
@@ -210,6 +212,8 @@ class CronJobWireDict(TypedDict):
     origin: CronOriginDict
     target_at: str | None
     until: str | None
+
+    wait_condition: NotRequired[str]
     claimed_at: str | None
     deliver_to: DeliverTo
     skills: list[str]
@@ -688,7 +692,7 @@ class CronJob:
         last_status: Last run outcome.
         last_error: Last run error text.
         origin: Conversation that receives results.
-        target_at: Soft target after which work continues and reports the delay.
+        target_at: Soft target after which the job continues and reports the delay.
         until: Last instant a recurring job may run, inclusive. The job is
             deleted once it passes.
         claimed_at: When the scheduler claimed the current run, or `None` once
@@ -719,6 +723,8 @@ class CronJob:
     origin: CronOrigin
     target_at: datetime | None = field(default=None, kw_only=True)
     until: datetime | None = None
+
+    wait_condition: str = field(default="", kw_only=True)
     claimed_at: datetime | None = None
     deliver_to: DeliverTo = "channel"
     skills: tuple[str, ...] = ()
@@ -777,6 +783,7 @@ class CronJob:
             "assistant_id": self.assistant_id,
             "name": self.name,
             "prompt": self.prompt,
+            **({"wait_condition": self.wait_condition} if self.wait_condition else {}),
             "schedule": self.schedule.to_dict(),
             "repeat": self.repeat.to_dict(),
             "enabled": self.enabled,
@@ -786,8 +793,8 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
-            **({"target_at": _to_epoch(self.target_at)} if self.target_at else {}),
             "until": _to_optional_epoch(self.until),
+            **({"target_at": _to_epoch(self.target_at)} if self.target_at else {}),
             "claimed_at": _to_optional_epoch(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
@@ -823,6 +830,7 @@ class CronJob:
             "assistant_id": self.assistant_id,
             "name": self.name,
             "prompt": self.prompt,
+            **({"wait_condition": self.wait_condition} if self.wait_condition else {}),
             "schedule": self.schedule.to_wire(),
             "repeat": self.repeat.to_dict(),
             "enabled": self.enabled,
@@ -832,8 +840,8 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
-            "target_at": _format_optional_time(self.target_at),
             "until": _format_optional_time(self.until),
+            "target_at": _format_optional_time(self.target_at),
             "claimed_at": _format_optional_time(self.claimed_at),
             "deliver_to": self.deliver_to,
             "skills": list(self.skills),
@@ -873,6 +881,7 @@ class CronJob:
             origin=CronOrigin.from_dict(record.get("origin")),
             target_at=_from_optional_epoch(_optional_int_field(record, "target_at")),
             until=_from_optional_epoch(_optional_int_field(record, "until")),
+            wait_condition=_optional_str_field(record, "wait_condition") or "",
             claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
             # Jobs saved before this field existed default to the channel.
             deliver_to=cast(
@@ -940,6 +949,19 @@ class CronJobStore:
         self._lock = _store_lock(self.path)
         self._cache: list[CronJob] | None = None
         self._cache_identity: _FileIdentity | None = None
+
+    @asynccontextmanager
+    async def open_journal(self) -> AsyncGenerator[JobJournal]:
+        """Use the host journal, or open default history for a standalone store."""
+        if self.journal is not None:
+            yield self.journal
+            return
+        from deepagents_talon.config import TalonConfig  # noqa: PLC0415
+        from deepagents_talon.cron.journal import JobJournal  # noqa: PLC0415
+
+        home = self.cron_dir.parent if self.cron_dir.name == "cron" else self.cron_dir
+        async with JobJournal.open(TalonConfig(self.assistant_id, home)) as journal:
+            yield journal
 
     def create_job(  # noqa: PLR0913  # job creation exposes the persisted CRON_JOB fields
         self,
@@ -1304,7 +1326,12 @@ class CronJobStore:
             self._write_jobs(jobs)
 
     def apply_objective_result(
-        self, snapshot: CronJob, *, complete: bool = False, wake: datetime | None = None
+        self,
+        snapshot: CronJob,
+        *,
+        complete: bool = False,
+        wake: datetime | None = None,
+        wait_condition: str = "",
     ) -> bool:
         """Apply a scheduling decision and report whether the run is still current."""
         with self._lock:
@@ -1314,12 +1341,14 @@ class CronJobStore:
             index = jobs.index(snapshot)
             current = jobs[index]
             if complete:
-                updated = replace(current, enabled=False, next_run_at=None)
+                updated = replace(current, enabled=False, next_run_at=None, wait_condition="")
             elif wake is not None and snapshot.enabled:
                 wake = _coerce_utc(wake)
                 if wake <= _coerce_utc() or (snapshot.until is not None and wake > snapshot.until):
-                    return True
-                updated = replace(current, next_run_at=wake)
+                    wake = current.next_run_at
+                updated = replace(current, next_run_at=wake, wait_condition=wait_condition)
+            elif current.wait_condition != wait_condition:
+                updated = replace(current, wait_condition=wait_condition)
             else:
                 return True
             jobs[index] = updated

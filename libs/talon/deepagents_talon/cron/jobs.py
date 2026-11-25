@@ -1430,7 +1430,7 @@ class CronJobStore:
             logger.warning("Could not read cron store %s", self.path, exc_info=True)
             return [], None
         identity = (info.st_mtime_ns, info.st_size, info.st_ino)
-        return _decode_store(raw, path=self.path) or [], identity
+        return _decode_store(raw, path=self.path), identity
 
     def _write_jobs(self, jobs: list[CronJob]) -> None:
         self._ensure_store()
@@ -1888,28 +1888,28 @@ def _format_time(value: datetime) -> str:
     return _coerce_utc(value).isoformat()
 
 
-def _decode_store(raw: bytes, *, path: Path) -> list[CronJob] | None:
-    """Decode the store file, distinguishing an unreadable store from an empty one.
+def _decode_store(raw: bytes, *, path: Path) -> list[CronJob]:
+    """Decode the store file and log malformed data.
 
     Args:
         raw: File contents.
         path: Store path, for diagnostics.
 
     Returns:
-        Parsed jobs, or None if the file cannot be read.
+        Parsed jobs, or an empty list for malformed data.
     """
     try:
         data = json.loads(raw)
     except ValueError:
         logger.warning("Discarding cron store %s: not valid JSON", path, exc_info=True)
-        return None
+        return []
     if not isinstance(data, dict):
         logger.warning(
             "Discarding cron store %s: expected a JSON object, found %s",
             path,
             type(data).__name__,
         )
-        return None
+        return []
     version = data.get("version")
     if version != CRON_STORE_VERSION:
         logger.warning(
@@ -1918,7 +1918,7 @@ def _decode_store(raw: bytes, *, path: Path) -> list[CronJob] | None:
             version,
             CRON_STORE_VERSION,
         )
-        return None
+        return []
     jobs = data.get("jobs")
     if not isinstance(jobs, list):
         logger.warning(
@@ -1926,12 +1926,12 @@ def _decode_store(raw: bytes, *, path: Path) -> list[CronJob] | None:
             path,
             type(jobs).__name__,
         )
-        return None
+        return []
     try:
         return [CronJob.from_dict(item) for item in jobs]
     except CronJobError:
         logger.exception("Discarding cron store %s: a job record is malformed", path)
-        return None
+        return []
 
 
 _MISSING = object()

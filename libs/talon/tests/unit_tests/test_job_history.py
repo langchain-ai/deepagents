@@ -26,9 +26,23 @@ from tests.unit_tests.test_background import _request
 from tests.unit_tests.test_questions import DATABASE
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 ORIGIN = CronOrigin(channel="slack", conversation_id="C1:thread", sender_id="alice")
+
+
+def _attach_scheduler(
+    host: TalonHost, store: CronJobStore, *, now: Callable[[], datetime] | None = None
+) -> PersistentCronScheduler:
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=host.run_scheduled_job,
+        deliver_result=lambda job, text: host.deliver_scheduled_result(host.channels[0], job, text),
+        now=now,
+    )
+    host.scheduler = scheduler
+    return scheduler
 
 
 def test_goals_are_managed_with_job_tools_and_are_private_to_the_owner_and_thread(
@@ -97,13 +111,7 @@ async def test_objective_sets_next_wake_and_does_not_claim_chat_replies(tmp_path
     agent = _GoalAgent()
     agent.wake = now + timedelta(minutes=73)
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
-    scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-        now=lambda: now,
-    )
-    host.scheduler = scheduler
+    scheduler = _attach_scheduler(host, store, now=lambda: now)
     await host.start()
     try:
         now += timedelta(hours=1)
@@ -159,11 +167,7 @@ async def test_background_goal_isolation_history_and_notification_policy(tmp_pat
         schedule=CronSchedule.parse("every 1h"),
     )
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
-    host.scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-    )
+    _attach_scheduler(host, store)
     await host.start()
     try:
         check = asyncio.create_task(host.run_scheduled_job(goal))
@@ -247,9 +251,6 @@ async def test_owner_handoff_reaches_next_run_with_prior_evidence(tmp_path: Path
     assert not saved["run_requested"]
     assert store.get_job(job.id).next_run_at == job.next_run_at
     assert tools["edit_job"].invoke(update)["run_requested"]
-    store.apply_objective_result(
-        job, complete=True
-    )  # A run started before the handoff can no longer close it.
     reopened = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     claimed = reopened.advance_next_run(job.id)
     assert claimed is not None
@@ -257,11 +258,7 @@ async def test_owner_handoff_reaches_next_run_with_prior_evidence(tmp_path: Path
     agent.released.set()
     channel = RecordingChannel("slack")
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
-    host.scheduler = PersistentCronScheduler(
-        store=reopened,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-    )
+    _attach_scheduler(host, reopened)
     await host.run_scheduled_job(claimed)
     assert finding in agent.requests[-1].text
     assert update["handoff"] in agent.requests[-1].text
@@ -279,11 +276,7 @@ async def test_invalid_read_scope_pauses_until_owner_repairs_scope(tmp_path: Pat
     )
     store.edit_job(job.id, origin=ORIGIN, read_sources=["the audit directory"])
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
-    host.scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-    )
+    _attach_scheduler(host, store)
     assert "Job paused" in await host.run_scheduled_job(job)
     assert not store.get_job(job.id).enabled
     assert not agent.requests
@@ -310,13 +303,7 @@ async def test_pausing_an_active_goal_preserves_work_and_stops_the_check(tmp_pat
     )
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
     now += timedelta(minutes=1)
-    scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-        now=lambda: now,
-    )
-    host.scheduler = scheduler
+    scheduler = _attach_scheduler(host, store, now=lambda: now)
     await host.start()
     try:
         await scheduler.tick_once(wait=False)
@@ -363,7 +350,12 @@ def test_previous_runs_exclude_later_starts(tmp_path: Path) -> None:
     assert [row["summary"] for row in rows] == ["first"]
 
 
-def test_stale_completion_preserves_revised_objective(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("prompt", "handoff"), [("Check all builds", None), (None, "Signing is pending.")]
+)
+def test_stale_completion_preserves_revised_objective(
+    tmp_path: Path, prompt: str | None, handoff: str | None
+) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     job = store.create_job(
         prompt="Check builds",
@@ -371,7 +363,7 @@ def test_stale_completion_preserves_revised_objective(tmp_path: Path) -> None:
         mode="objective",
         schedule=CronSchedule.parse("every 1h"),
     )
-    revised = store.edit_job(job.id, origin=ORIGIN, prompt="Check all builds")
+    revised = store.edit_job(job.id, origin=ORIGIN, prompt=prompt, handoff=handoff)
     assert not store.apply_objective_result(job, wake=datetime.now(UTC) + timedelta(days=1))
     assert not store.apply_objective_result(job, complete=True)
     assert store.get_job(job.id) == revised
@@ -421,11 +413,7 @@ async def test_deadline_handoff_survives_a_stalled_tool_or_finalizer(
 
     agent = DeadlineAgent()
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
-    host.scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-    )
+    _attach_scheduler(host, store)
     if stall_finalizer:
         with pytest.raises(TimeoutError):
             await host.run_scheduled_job(job)
@@ -489,12 +477,7 @@ async def test_both_modes_share_listing_and_routine_history_survives_removal(
     host = TalonHost(
         config=_config(tmp_path), channels=[RecordingChannel("slack")], agent=BlockingAgent()
     )
-    scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(host.channels[0], job, text),
-    )
-    host.scheduler = scheduler
+    scheduler = _attach_scheduler(host, store)
     assert tools["edit_job"].invoke({"job_id": routine["id"], "run_now": True})["run_requested"]
     await scheduler.tick_once()
     routine, objective = tools["list_jobs"].invoke({})
@@ -549,11 +532,7 @@ async def test_required_reads_and_evidence_survive_separate_checks(tmp_path: Pat
     )
     job = store.get_job(created["id"])
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
-    host.scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-    )
+    _attach_scheduler(host, store)
     journal = JobJournal(tmp_path)
     agent.paths = ("/audit/image", "/logs-neighbor/file", "/logs/denied")
     agent.report = {"status": "partial", "summary": "Inspected image."}
@@ -589,11 +568,7 @@ async def test_background_login_notice_is_deduplicated(tmp_path: Path) -> None:
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     job = store.create_job(mode="objective", origin=ORIGIN, prompt="Check records")
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
-    host.scheduler = PersistentCronScheduler(
-        store=store,
-        run_job=host.run_scheduled_job,
-        deliver_result=lambda job, text: host.deliver_scheduled_result(channel, job, text),
-    )
+    _attach_scheduler(host, store)
     notice = await host.run_scheduled_job(job)
     assert "Authorize" in notice
     assert "records" in notice

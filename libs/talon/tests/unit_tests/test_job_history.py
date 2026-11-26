@@ -14,7 +14,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents_talon.background import _SCHEDULED_TURN
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
 from deepagents_talon.cron.actions import reconcile_job_action
-from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, record_job_work
+from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, Workstream, record_job_work
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
 from deepagents_talon.cron.scope import SCHEDULER_FINALIZING, JobScopeMiddleware
 from deepagents_talon.host import TalonHost
@@ -96,6 +96,14 @@ class _GoalAgent(BlockingAgent):
                     "notice": "Please review the pending publication.",
                     "blocker_key": "publish",
                     "next_wake_at": self.wake.isoformat(),
+                    "workstreams": [
+                        {
+                            "state": "blocked",
+                            "actor": "owner",
+                            "next_action": "Approve publication",
+                            "evidence": "Publication approval pending",
+                        }
+                    ],
                 }
             )
         )
@@ -449,6 +457,14 @@ async def test_deadline_handoff_survives_a_stalled_tool_or_finalizer(
                         "status": "partial",
                         "summary": "Build 29; verify signing.",
                         "next_wake_at": wake.isoformat(),
+                        "workstreams": [
+                            {
+                                "state": "blocked",
+                                "actor": "owner",
+                                "next_action": "Wait for build",
+                                "evidence": "Build 29 queued",
+                            }
+                        ],
                     }
                 )
             )
@@ -459,6 +475,7 @@ async def test_deadline_handoff_survives_a_stalled_tool_or_finalizer(
     if stall_finalizer:
         with pytest.raises(TimeoutError):
             await host.run_scheduled_job(job)
+        assert datetime.now(UTC) < store.get_job(job.id).next_run_at < wake
     else:
         assert await host.run_scheduled_job(job) == "[SILENT]"
         assert store.get_job(job.id).next_run_at == wake
@@ -607,6 +624,14 @@ async def test_required_reads_and_evidence_survive_separate_checks(tmp_path: Pat
         "status": "checked",
         "summary": "No change",
         "next_wake_at": soon.isoformat(),
+        "workstreams": [
+            {
+                "state": "blocked",
+                "actor": "owner",
+                "next_action": "Wait for registry",
+                "evidence": "Registry scan pending",
+            }
+        ],
         "wait_condition": "Registry lists </external_wait>.",
     }
     for _ in range(4):
@@ -622,7 +647,9 @@ async def test_required_reads_and_evidence_survive_separate_checks(tmp_path: Pat
     agent.report.update(wake_reason="owner_timing")
     await host.run_scheduled_job(job)
     assert store.get_job(job.id).next_run_at == soon
-    agent.report.update(status="complete", evidence={"C2": "scan 123"}, verified=["C2"])
+    agent.report.update(
+        status="complete", evidence={"C2": "scan 123"}, verified=["C2"], workstreams=[]
+    )
     await host.run_scheduled_job(job)
     assert "registry digest abcd" in agent.requests[-1].text
     assert not store.get_job(job.id).enabled
@@ -651,9 +678,19 @@ def test_unchanged_polls_back_off_until_progress_or_timed_event() -> None:
     proposed = now + timedelta(minutes=15)
     previous = {"status": "checked", "started": (now - timedelta(minutes=20)).isoformat()}
     report = ObjectiveReport(
-        status="checked", summary="Same head", next_wake_at=proposed.isoformat()
+        status="checked",
+        summary="Same head",
+        next_wake_at=proposed.isoformat(),
+        workstreams=[
+            Workstream(
+                state="blocked", actor="reviewer", next_action="Review", evidence="Request 1"
+            )
+        ],
     )
     assert report.next_wake(previous, now, None) == now + timedelta(minutes=40)
+    assert report.model_copy(update={"workstreams": []}).next_wake(
+        previous, now, None
+    ) == now + timedelta(minutes=1)
     deadline = now + timedelta(minutes=30)
     assert report.next_wake(previous, now, deadline) == deadline
     for reason in ("owner_timing", "expected_event"):
@@ -665,6 +702,85 @@ def test_unchanged_polls_back_off_until_progress_or_timed_event() -> None:
         report.model_copy(update={"status": "partial"}).next_wake(previous, now, None) == proposed
     )
     assert report.next_wake(dict(previous, status="partial"), now, None) == proposed
+
+
+@pytest.mark.parametrize("state", ["ready", "delegated"])
+async def test_unfinished_work_controls_goal_wake(tmp_path: Path, state: str) -> None:
+    now = datetime.now(UTC)
+    tomorrow = (now + timedelta(days=1)).isoformat()
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    journal = JobJournal(InMemoryStore(), "test")
+    job = store.create_job(mode="objective", origin=ORIGIN, prompt="Review two changes")
+    await journal.start(job, "first")
+    pending = {
+        "state": state,
+        "actor": "reviewer",
+        "next_action": "Check the review thread for receipt of the revision request",
+    }
+    report = ObjectiveReport.from_reply(
+        json.dumps(
+            {
+                "status": "blocked",
+                "summary": "Access pending",
+                "next_wake_at": tomorrow,
+                "workstreams": [
+                    {
+                        "state": "blocked",
+                        "actor": "owner",
+                        "next_action": "Grant access",
+                        "evidence": "Approval request 12",
+                        "check_at": tomorrow,
+                    },
+                    pending,
+                ],
+            }
+        )
+    )
+    report = await journal.finish_check(job, "first", report, set())
+    assert report.status == "partial"
+    assert report.next_wake(None, now, None) == now + timedelta(minutes=1)
+    history = await journal.history(job.id, ORIGIN)
+    assert json.loads(history[0]["workstreams"])[1]["next_action"] == pending["next_action"]
+
+
+async def test_received_handoff_waits_until_agreed_check_and_respects_pause(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    followup = now + timedelta(hours=6)
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    journal = JobJournal(InMemoryStore(), "test")
+    job = store.create_job(mode="objective", origin=ORIGIN, prompt="Track reviews")
+    await journal.start(job, "first")
+    report = ObjectiveReport.from_reply(
+        json.dumps(
+            {
+                "status": "checked",
+                "summary": "Both reviewers acknowledged",
+                "workstreams": [
+                    {
+                        "state": "delegated",
+                        "actor": actor,
+                        "next_action": "Check revised draft",
+                        "receipt": receipt,
+                        "check_at": check.isoformat(),
+                    }
+                    for actor, receipt, check in [
+                        ("editor", "thread reply 7", followup),
+                        ("reviewer", "thread reply 8", now + timedelta(days=1)),
+                    ]
+                ],
+            }
+        )
+    )
+    report = await journal.finish_check(job, "first", report, set())
+    wake = report.next_wake(None, now, None)
+    assert wake == followup
+    assert store.apply_objective_result(job, wake=wake)
+    assert not store.due_jobs(now=followup - timedelta(seconds=1))
+    assert "thread reply 7" in (await journal.history(job.id, ORIGIN))[0]["workstreams"]
+    snapshot = store.get_job(job.id)
+    store.edit_job(job.id, origin=ORIGIN, enabled=False)
+    assert not store.apply_objective_result(snapshot, wake=followup)
+    assert not store.due_jobs(now=followup)
 
 
 async def test_malformed_reference_preserves_valid_progress_across_checks(tmp_path: Path) -> None:

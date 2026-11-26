@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
 from deepagents_talon.store_records import StoreRecords, digest
@@ -51,6 +51,26 @@ async def record_job_work(note: str) -> str:
     return "Work saved to job history."
 
 
+class Workstream(BaseModel):
+    """The next step and its supporting evidence at this checkpoint."""
+
+    next_action: str = Field(min_length=1)
+    actor: str = Field(min_length=1)
+    state: Literal["ready", "blocked", "delegated", "done"]
+    evidence: str = ""
+    receipt: str = ""
+    check_at: AwareDatetime | None = None
+
+    @property
+    def needs_action(self) -> bool:
+        """An unsupported wait needs verification before the objective can sleep."""
+        return (
+            self.state == "ready"
+            or (self.state == "delegated" and not self.receipt.strip())
+            or (self.state in {"blocked", "done"} and not self.evidence.strip())
+        )
+
+
 class ObjectiveReport(BaseModel):
     """One check's private work summary and optional owner-facing message."""
 
@@ -67,16 +87,44 @@ class ObjectiveReport(BaseModel):
 
     verified: list[str] = Field(default_factory=list, max_length=64)
 
+    workstreams: list[Workstream] = Field(default_factory=list)
     wait_condition: str = Field(default="", max_length=2000)
     next_wake_at: datetime | None = None
     wake_reason: Literal["poll", "owner_timing", "expected_event"] = "poll"
     completion_criteria: list[str] | None = None
     evidence: dict[str, str | None] = Field(default_factory=dict, max_length=64)
 
+    def checkpoint_workstreams(self, row: dict[str, object]) -> ObjectiveReport:
+        """Keep the next steps in run history and reconcile the aggregate status."""
+        if not self.workstreams:
+            return self
+        row["workstreams"] = json.dumps([s.model_dump(mode="json") for s in self.workstreams])
+        ready = any(stream.needs_action for stream in self.workstreams)
+        unfinished = any(stream.state != "done" for stream in self.workstreams)
+        if (ready and self.status in {"blocked", "checked", "complete"}) or (
+            unfinished and self.status == "complete"
+        ):
+            return self.model_copy(update={"status": "partial"})
+        return self
+
     def next_wake(
         self, previous: dict[str, str] | None, now: datetime, deadline: datetime | None
     ) -> datetime | None:
         """Double the observed polling interval after consecutive unchanged checks."""
+        missing_checkpoint = (
+            not self.workstreams and self.next_wake_at and self.wake_reason == "poll"
+        )
+        if missing_checkpoint or any(stream.needs_action for stream in self.workstreams):
+            wake = now + timedelta(minutes=1)
+            return min(wake, deadline) if deadline else wake
+        checks = [
+            stream.check_at
+            for stream in self.workstreams
+            if stream.state != "done" and stream.check_at
+        ]
+        if checks:
+            wake = max(min(checks), now + timedelta(seconds=1))
+            return min(wake, deadline) if deadline else wake
         if (
             self.status != "checked"
             or self.wake_reason != "poll"
@@ -230,6 +278,7 @@ class JobJournal:
                     )
                     break
             report = _update_evidence(evidence, criteria, _check_coverage(job, report, reads))
+            report = report.checkpoint_workstreams(row)
             if report.requires_signoff:
                 state["requires_signoff"] = True
             if report.status == "complete":
@@ -310,6 +359,8 @@ class JobJournal:
             if report.status != "blocked" and not risk:
                 if row and report.status in {"checked", "partial", "complete"}:
                     await self.records.commit([(key, None)])
+                return ""
+            if report.workstreams and not (risk or report.notice.strip()):
                 return ""
             identity = (
                 report.blocker_key.strip() or report.notice.strip() or report.summary

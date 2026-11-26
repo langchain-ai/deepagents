@@ -1445,6 +1445,10 @@ class TalonHost:
             )
             return
         await journal.finish(thread, "failed", "Scheduled run timed out.", reads=sorted(reads))
+        store = getattr(self.scheduler, "store", None)
+        if job.mode == "objective" and isinstance(store, CronJobStore):
+            wake = datetime.now(UTC) + timedelta(minutes=1)
+            store.apply_objective_result(job, wake=min(wake, job.until) if job.until else wake)
         log_event(logger, "cron.run_timeout", job_id=job.id, job_name=job.name)
         with SCHEDULER_FINALIZING.set(True), contextlib.suppress(Exception):
             async with asyncio.timeout(5):
@@ -1484,6 +1488,7 @@ class TalonHost:
             waiting = (
                 bool(question)
                 and report.status == "blocked"
+                and not any(s.check_at for s in report.workstreams if s.state != "done")
                 and (await journal.decision_answer(job, question) is None)
             )
             if not store.apply_objective_result(
@@ -2702,6 +2707,14 @@ async def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
         "fix recoverable causes, then verify the result. While waiting on one dependency, "
         "advance independent work. Update the owner's designated artifact or system of record "
         "when authorized, verify the update, and checkpoint its reference with record_job_work. "
+        "At each checkpoint account for every workstream. Continue ready work until the work "
+        "deadline. In the final JSON include workstreams, each with next_action (the exact next "
+        "step), actor, state (ready, blocked, delegated, done), and evidence for its state. "
+        "For delegated work, check the destination and record the receipt reference in receipt. "
+        "Reuse confirmed handoffs. If receipt is uncertain, verify before retrying. "
+        "For waits use check_at (timezone-aware timestamp) for the earliest meaningful check "
+        "consistent with the owner's timing and agreed follow-up. A wake grants no authority. "
+        "Checkpoint the exact remaining action before timeout. "
         "If work remains, say what you tried and what makes another wake necessary. "
         "Return JSON with status (checked, partial, blocked, unverified, or complete) "
         "and a private factual summary naming the source and result, even for quiet checks. "

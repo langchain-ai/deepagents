@@ -913,8 +913,12 @@ jobs:
           waive_talon = event == "pull_request" and talon_changed == "false"
           expected = {"changes", "check-lockfiles", "check-release-options"}
           inherited = event == "pull_request" and os.environ["CURATED_APPLY_ONLY"] == "true"
+          release_scripts = selection.get("release-scripts")
+          if release_scripts not in {"true", "false"}:
+              sys.exit(f"Invalid selection: release-scripts={release_scripts!r}")
           allowed_skips = set()
-          if inherited:
+          # The job is path-gated on PRs, mirroring its `if:`.
+          if inherited or (event == "pull_request" and release_scripts == "false"):
               allowed_skips.add("check-release-options")
           for package in packages:
               selected = selection.get(package)

@@ -185,3 +185,33 @@ async def test_acp_sessions_use_fenced_persistence(tmp_path, monkeypatch) -> Non
         finally:
             for lease in (*first_leases.values(), *second_leases.values()):
                 lease.release()
+
+
+def test_acp_flag_before_auth_login_runs_login_not_acp_server() -> None:
+    """ACP clients append `auth login <provider>` after their `--acp` launch args."""
+    dispatched: list[argparse.Namespace] = []
+
+    def run_auth(args: argparse.Namespace) -> int:
+        dispatched.append(args)
+        return 0
+
+    with (
+        patch.object(sys, "argv", ["dcode", "--acp", "auth", "login", "anthropic"]),
+        patch("deepagents_code.main._install_termination_signal_handlers"),
+        patch("deepagents_code.state_migration.migrate_legacy_state"),
+        patch("deepagents_code.config._get_credentials"),
+        patch("deepagents_code.config._is_editable_install", return_value=True),
+        patch("deepagents_code.client.commands.auth.run_auth_command", run_auth),
+        patch("deepagents_code.main._run_acp_cli_async") as run_acp,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    [args] = dispatched
+    assert (args.command, args.auth_command, args.provider) == (
+        "auth",
+        "login",
+        "anthropic",
+    )
+    run_acp.assert_not_called()

@@ -550,6 +550,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         catalog_loader: Callable[[Sequence[str], str | None], Awaitable[ModelCatalog]]
         | None = None,
         resolve_model: Callable[[str], Awaitable[ModelMetadata]] | None = None,
+        accept_selection: Callable[[str], Awaitable[str | None]] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
 
@@ -586,6 +587,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             catalog_loader: Load discovery and readiness from the inference host.
                 Without it, use the shared loader in the current process.
             resolve_model: Validate and normalize a choice before persisting it.
+            accept_selection: Accept a chosen spec before the selector closes,
+                for example by validating and saving it. Returns an error to
+                show in the footer, keeping the selector open, or `None` to
+                close with the choice.
         """
         super().__init__()
         self._current_model = current_model
@@ -605,6 +610,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._result_callback = result_callback
         self._catalog_loader = catalog_loader
         self._resolve_model = resolve_model
+        self._accept_selection = accept_selection
+        self._accept_worker: Worker[None] | None = None
         self._catalog: ModelCatalog | None = None
         self._catalog_config: ModelConfig | None = None
         self._recommended_only = not curated
@@ -2577,8 +2584,40 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Cancel the selection."""
         self._dismiss_with_result(None)
 
+    def _show_selection_error(self, message: str) -> None:
+        """Show a rejected selection in the footer until the next restore."""
+        self._stop_help_restore_timer()
+        self.query_one(".model-selector-help", Static).update(
+            Content.styled(message, f"bold {theme.get_theme_colors(self).error}")
+        )
+        self._help_error_shown = True
+
     def _dismiss_with_result(self, result: tuple[str, str] | None) -> None:
         """Dismiss the selector and notify an optional direct result callback."""
+        if result is not None and self._accept_selection is not None:
+            # One check at a time: each may construct a model or refresh a token.
+            if self._accept_worker is None or self._accept_worker.is_finished:
+                self._accept_worker = self.run_worker(self._accept_then_dismiss(result))
+            return
+        if self._accept_worker is not None:
+            self._accept_worker.cancel()
+        self._finish_dismiss(result)
+
+    async def _accept_then_dismiss(self, result: tuple[str, str]) -> None:
+        """Close with `result` once `accept_selection` takes it; else show why not."""
+        if self._accept_selection is None:
+            return
+        self.query_one(".model-selector-help", Static).update(
+            Content.from_markup("Checking [bold]$spec[/bold]…", spec=result[0])
+        )
+        problem = await self._accept_selection(result[0])
+        if problem is not None:
+            self._show_selection_error(problem)
+            return
+        self._finish_dismiss(result)
+
+    def _finish_dismiss(self, result: tuple[str, str] | None) -> None:
+        """Notify the direct result callback and dismiss with `result`."""
         if self._result_callback is not None:
             self._result_callback(result)
         self.dismiss(result)

@@ -313,6 +313,41 @@ def _auth_status_for(provider: str) -> ProviderAuthStatus:
     return get_provider_auth_status(provider)
 
 
+def _sign_in_providers(shown: set[str]) -> set[str]:
+    """Narrow the manager's rows to model providers a sign-in can use.
+
+    Uses the same rule as `dcode auth login`'s planner and model step, so the
+    manager never offers a provider the rest of the flow would reject.
+
+    Args:
+        shown: Providers the full manager would list.
+
+    Returns:
+        `shown` without services or providers `provider_problem` rejects.
+    """
+    from deepagents_code.model_readiness import provider_problem
+
+    return {
+        provider
+        for provider in shown
+        if not is_service(provider) and provider_problem(provider) is None
+    }
+
+
+class _SecretInput(Input):
+    """Masked key input that never copies or cuts its value.
+
+    Textual's copy writes the selection to the terminal as OSC 52, which can
+    place the key on the system clipboard. Paste stays enabled.
+    """
+
+    def action_copy(self) -> None:
+        """Do nothing: the key must not reach the clipboard."""
+
+    def action_cut(self) -> None:
+        """Do nothing: the key must not reach the clipboard."""
+
+
 class AuthResult(StrEnum):
     """Outcome of an `AuthPromptScreen` interaction.
 
@@ -847,7 +882,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     Content.from_markup("$msg", msg=self._store_warning),
                     classes="auth-prompt-error",
                 )
-            yield Input(
+            yield _SecretInput(
                 placeholder=self._input_placeholder
                 or (
                     "Paste a new key to replace the stored one"
@@ -1612,7 +1647,9 @@ class AuthManagerScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, *, initial_provider: str | None = None) -> None:
+    def __init__(
+        self, *, initial_provider: str | None = None, sign_in_only: bool = False
+    ) -> None:
         """Initialize the manager with an empty install-on-select registry.
 
         Args:
@@ -1620,8 +1657,13 @@ class AuthManagerScreen(ModalScreen[None]):
                 set when reopening after an install-on-select so the cursor
                 lands on the just-installed provider ready for a key, rather
                 than resetting to the top of the list.
+            sign_in_only: List only installed model providers (no services, no
+                install-on-select rows) and report a ChatGPT sign-in as a
+                saved credential. Used by `dcode auth login`, which runs
+                outside the main app and cannot install packages.
         """
         super().__init__()
+        self._sign_in_only = sign_in_only
         # Uninstalled known providers mapped to the extra that installs them,
         # populated each time the option list is built. Selecting one routes
         # to the install confirmation instead of the key prompt.
@@ -1750,6 +1792,11 @@ class AuthManagerScreen(ModalScreen[None]):
                 link=_PROVIDERS_DOCS_URL,
             )
         )
+        if self._sign_in_only:
+            return Content.assemble(
+                "Choose a model provider and enter its API key. ",
+                ("Docs", link_style),
+            )
         return Content.assemble(
             "Lists installed model providers, services like web search, and any "
             "providers you've configured in "
@@ -1907,10 +1954,12 @@ class AuthManagerScreen(ModalScreen[None]):
             return
         self.app.push_screen(CodexAuthScreen(), self._on_codex_closed)
 
-    def _on_codex_closed(self, _result: bool | None) -> None:
+    def _on_codex_closed(self, result: bool | None) -> None:
         """Refresh the option list once the codex flow dismisses."""
         clear_caches()
         self._refresh_options()
+        if result:
+            self.post_message(self.CredentialSaved(CODEX_PROVIDER))
 
     def _on_codex_signed_in_closed(self, action: CodexSignedInAction | None) -> None:
         """Handle dismissal of the "already signed in" overlay.
@@ -2033,11 +2082,18 @@ class AuthManagerScreen(ModalScreen[None]):
         )
 
         shown = well_known_installed | codex_installed | stored | config_providers
-        # Surface well-known providers whose package isn't installed yet as
-        # greyed-out, install-on-select entries so they stay
-        # discoverable (mirrors the model selector). Disabled providers and
-        # ones already shown above are skipped.
-        self._install_extras = self._uninstalled_known_providers(config, shown)
+        if self._sign_in_only:
+            # ChatGPT's row follows its own eligibility, not the OpenAI row's.
+            shown = _sign_in_providers(shown | {CODEX_PROVIDER})
+            self._install_extras = {}
+            services: set[str] = set()
+        else:
+            # Surface well-known providers whose package isn't installed yet as
+            # greyed-out, install-on-select entries so they stay
+            # discoverable (mirrors the model selector). Disabled providers and
+            # ones already shown above are skipped.
+            self._install_extras = self._uninstalled_known_providers(config, shown)
+            services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
 
         # Resolve each manageable entry's auth status once and reuse it for
         # ordering, badge rendering, and the footer's Enter action.
@@ -2045,7 +2101,6 @@ class AuthManagerScreen(ModalScreen[None]):
         # separately in the sort key and in `_format_label` would read
         # `auth.json` twice per row (and, on a corrupt store, log the same
         # warning twice). A single pass halves both.
-        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
         status_by_key = {key: _auth_status_for(key) for key in shown | services}
         self._auth_statuses = status_by_key
 

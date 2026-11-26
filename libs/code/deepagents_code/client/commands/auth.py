@@ -11,6 +11,9 @@ launching the Textual app:
 - `auth status <provider>` — print the resolution source (`stored`,
     `env: VAR`, `missing`, ...) for one provider.
 - `auth path` — print the resolved `auth.json` path.
+- `auth login [provider]` — interactive sign-in for ACP clients: store a key
+    in a small Textual app, pick a model if none is saved, and exit `0` only
+    when a new session would start.
 
 Security notes:
 
@@ -37,6 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents_code.model_config import ProviderAuthStatus
+    from deepagents_code.model_readiness import LaunchOptions
 
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
@@ -166,6 +170,24 @@ def setup_auth_parser(
         action=make_help_action(_lazy_ui_help("show_auth_help")),
     )
 
+    login_parser = auth_sub.add_parser(
+        "login",
+        help="Sign in interactively: store a provider key and pick a model",
+        add_help=False,
+    )
+    login_parser.add_argument(
+        "provider",
+        nargs="?",
+        default=None,
+        metavar="provider",
+        help="Provider to highlight first (e.g. anthropic)",
+    )
+    login_parser.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(_lazy_ui_help("show_auth_help")),
+    )
+
 
 def run_auth_command(args: argparse.Namespace) -> int:
     """Dispatch a parsed `dcode auth` invocation.
@@ -189,6 +211,8 @@ def run_auth_command(args: argparse.Namespace) -> int:
         return _run_status(getattr(args, "provider", None))
     if command == "path":
         return _run_path()
+    if command == "login":
+        return _run_login(args)
     from deepagents_code.ui import show_auth_help
 
     show_auth_help()
@@ -539,3 +563,67 @@ def _run_path() -> int:
 
     print(auth_store.auth_path())  # noqa: T201
     return 0
+
+
+def _run_login(args: argparse.Namespace) -> int:
+    """Run the interactive sign-in app and report whether dcode is ready.
+
+    ACP clients run this in a terminal and treat exit `0` as signed in, so `0`
+    means a new session would start: a permitted model resolves, its provider
+    has credentials, and it constructs. ACP clients append `auth login` to
+    their launch args, so a launch `--model` (and the flags that change how it
+    constructs) are what their sessions use; check those.
+
+    Returns:
+        Process exit code (`0` when ready, `1` otherwise).
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(  # noqa: T201
+            "Error: `auth login` needs an interactive terminal.\n"
+            "To store a key without one, pipe it to `dcode auth set <provider>`.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        options = _launch_options(args)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)  # noqa: T201
+        return 1
+
+    from deepagents_code.model_readiness import CanStart
+    from deepagents_code.tui.auth_login import run_login
+
+    outcome = run_login(
+        getattr(args, "provider", None),
+        model_override=getattr(args, "model", None),
+        options=options,
+    )
+    if isinstance(outcome, CanStart):
+        print(f"Signed in. New sessions use {outcome.model_spec}.")  # noqa: T201
+        return 0
+    reason = outcome.message.rstrip(".")
+    print(f"Error: not signed in: {reason}.", file=sys.stderr)  # noqa: T201
+    return 1
+
+
+def _launch_options(args: argparse.Namespace) -> LaunchOptions:
+    """Read the launch flags that change how the session model constructs.
+
+    Returns:
+        The parsed options.
+
+    Raises:
+        ValueError: When `--model-params` or `--profile-override` is invalid.
+    """  # noqa: DOC502 - raised by `parse_json_object_flag`
+    from deepagents_code.config import parse_json_object_flag
+    from deepagents_code.model_readiness import LaunchOptions
+
+    return LaunchOptions(
+        model_params=parse_json_object_flag(
+            getattr(args, "model_params", None), "--model-params"
+        ),
+        profile_overrides=parse_json_object_flag(
+            getattr(args, "profile_override", None), "--profile-override"
+        ),
+        max_retries=getattr(args, "max_retries", None),
+    )

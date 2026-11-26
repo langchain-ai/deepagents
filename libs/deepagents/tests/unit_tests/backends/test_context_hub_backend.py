@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
 from langsmith.utils import LangSmithAPIError, LangSmithConflictError, LangSmithNotFoundError
+from requests.exceptions import JSONDecodeError
 
 from deepagents.backends import CompositeBackend, ContextHubBackend, FilesystemBackend
 
@@ -1279,6 +1280,41 @@ def test_conflict_stops_after_three_retries() -> None:
     assert mock_client.push_agent.call_count == 4
     assert mock_client.pull_agent.call_count == 4
     assert backend._worker is None
+
+
+@pytest.mark.parametrize("error", [JSONDecodeError("Expecting value", "", 0), ValueError("Invalid JSON response")])
+def test_invalid_push_response_reloads_and_retries(error: ValueError) -> None:
+    backend, mock_client = _make_backend()
+    remote_hash = "feedface" * 8
+    mock_client.pull_agent.side_effect = [
+        SimpleNamespace(commit_hash=_COMMIT_HASH, files={}),
+        SimpleNamespace(commit_hash=remote_hash, files={"remote.md": FileEntry(type="file", content="remote")}),
+    ]
+    mock_client.push_agent.side_effect = [error, _COMMIT_URL]
+
+    result = backend.write("/local.md", "local")
+
+    assert result.error is None
+    assert mock_client.push_agent.call_count == 2
+    assert mock_client.push_agent.call_args.kwargs["parent_commit"] == remote_hash
+    for path, expected in [("/local.md", "local"), ("/remote.md", "remote")]:
+        content = backend.read(path)
+        assert content.file_data is not None
+        assert content.file_data["content"] == expected
+
+
+@pytest.mark.parametrize("error", [JSONDecodeError("Expecting value", "", 0), ValueError("Invalid JSON response")])
+def test_invalid_push_response_stops_after_three_retries(error: ValueError) -> None:
+    backend, mock_client = _make_backend()
+    mock_client.push_agent.side_effect = error
+
+    result = backend.write("/local.md", "local")
+
+    assert "Context Hub push returned an invalid response on attempt 4" in (result.error or "")
+    assert str(error) in (result.error or "")
+    assert mock_client.push_agent.call_count == 4
+    assert mock_client.pull_agent.call_count == 4
+    assert backend.read("/local.md").error == "File '/local.md' not found"
 
 
 def test_later_same_path_enqueue_wins_coalesced_batch() -> None:

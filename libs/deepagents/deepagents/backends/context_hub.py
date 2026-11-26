@@ -359,9 +359,16 @@ class ContextHubBackend(BackendProtocol):
                     files=payload,
                     parent_commit=parent_commit,
                 )
-            except LangSmithConflictError as conflict:
+            except (LangSmithConflictError, ValueError) as exc:
+                conflict = (
+                    exc
+                    if isinstance(exc, LangSmithConflictError)
+                    else LangSmithConflictError(f"Context Hub push returned an invalid response on attempt {attempt + 1}: {exc}")
+                )
                 if attempt == _MAX_CONFLICT_RETRIES:
-                    raise
+                    if conflict is exc:
+                        raise
+                    raise conflict from exc
                 self._reload_after_conflict(conflict)
                 continue
 

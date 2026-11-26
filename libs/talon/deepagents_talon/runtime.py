@@ -1697,7 +1697,10 @@ def _approval_handler_from_request(request: AgentRequest) -> ToolApprovalHandler
 
 
 def _question_handler_from_request(request: AgentRequest) -> QuestionHandler | None:
-    if request.metadata.get("trigger") == "cron" or request.metadata.get("background_delivery"):
+    if request.metadata.get("background_delivery") or (
+        request.metadata.get("trigger") == "cron"
+        and request.metadata.get("job_mode") != "objective"
+    ):
         return None
     return request.question_handler
 

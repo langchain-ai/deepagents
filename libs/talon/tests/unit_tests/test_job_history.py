@@ -14,6 +14,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents_talon.background import _SCHEDULED_TURN
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule, CronTools
 from deepagents_talon.cron.actions import reconcile_job_action
+from deepagents_talon.cron.decisions import decision_reply
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, Workstream, record_job_work
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
 from deepagents_talon.cron.scope import SCHEDULER_FINALIZING, JobScopeMiddleware
@@ -26,7 +27,6 @@ from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config, _wait_for_sent_count
 from tests.unit_tests.test_action_recovery import request as call
 from tests.unit_tests.test_background import _request
-from tests.unit_tests.test_questions import DATABASE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -81,13 +81,10 @@ class _GoalAgent(BlockingAgent):
             return await super().invoke(request)
         self.requests.append(request)
         assert request.metadata["tool_approval_operator"] is False
-        with question_scope(_question_handler_from_request(request)):
-            answer = await ask_user.ainvoke({"questions": [DATABASE]})
         decision, _, _ = await _approval_decision(
             request, "gate", ({"name": "publish", "args": {}},)
         )
         assert decision == "reject"
-        assert "none were asked" in answer
         return AgentResult(
             text=json.dumps(
                 {
@@ -1166,8 +1163,7 @@ async def test_decision_sleeps_then_owner_reply_wakes_only_named_goal(tmp_path: 
         )
         return channel.sent[-1][1]
 
-    assert "Proceed with signing." in await chat("what needs me?")
-    assert "Which" in await chat("yes")
+    assert "Reply directly" in await chat("yes")
     await host.receive_message(
         channel,
         ChannelMessage(
@@ -1179,7 +1175,7 @@ async def test_decision_sleeps_then_owner_reply_wakes_only_named_goal(tmp_path: 
     )
     assert [job.id for job in store.due_jobs()] == [goals[0].id]
     assert not store.get_job(goals[0].id).wait_condition
-    assert "Approve build?" not in await chat("what needs me?")
+    assert "recorded" in await chat("2")
     async with store.open_journal() as journal:
         assert await journal.decision_answer(goals[0], "Approve build?") == "use beta"
 
@@ -1230,11 +1226,9 @@ async def test_uncertain_action_requires_specific_owner_answer(tmp_path: Path, a
         )
         return channel.sent[-1][1]
 
-    assert "publish-call" in await chat("what needs me?")
-    await chat(f"answer {goal.id}: yes")
-    assert "publish-call" in await chat("what needs me?")
-    await chat(f"answer {goal.id}: {answer}")
-    assert "No open decisions" in await chat("what needs me?")
+    assert "publish-call" in channel.sent[-1][1]
+    assert "retire action" in await chat("yes")
+    assert "recorded" in await chat("1" if answer == "retire action" else "2")
     assert store.get_job(goal.id).run_requested
 
     async def publish(_request):
@@ -1346,10 +1340,6 @@ async def test_correct_and_finish_after_interrupted_release(tmp_path: Path) -> N
     reopened = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
     scheduler = _attach_scheduler(host, reopened, now=lambda: now)
-    await host.receive_message(
-        channel, ChannelMessage(ORIGIN.conversation_id, "what needs me?", sender_id="alice")
-    )
-    assert "No open decisions" in channel.sent[-1][1]
     assert not reopened.get_job(goal.id).wait_condition
     assert (await tools.alist_jobs())[0]["verified_progress"] == {"Merged": "merge/42"}
     await scheduler.tick_once()
@@ -1390,46 +1380,57 @@ async def test_restart_delivers_unanswered_question_without_another_agent_run(
     assert len(agent.requests) == 1
 
 
-async def test_private_owner_inbox_matches_account_and_provider(tmp_path: Path) -> None:
+async def test_objective_feedback_uses_question_choices(tmp_path: Path) -> None:
+
+    class Agent(_WorkingGoalAgent):
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            with question_scope(_question_handler_from_request(request)):
+                await ask_user.ainvoke(
+                    {
+                        "questions": [
+                            {
+                                "header": "Release",
+                                "question": "Which track?",
+                                "options": [{"label": "Beta"}, {"label": "Stable"}],
+                            },
+                            {
+                                "header": "Region",
+                                "question": "Which region?",
+                                "options": [{"label": "East"}, {"label": "West"}],
+                            },
+                        ]
+                    }
+                )
+            return AgentResult(text='{"status":"blocked","summary":"Waiting for the track."}')
+
     store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
     store.journal = journal = JobJournal(InMemoryStore(), "test")
-    report = ObjectiveReport(
-        status="blocked",
-        summary="waiting",
-        decision_question="Which track?",
-        decision_unlocks="Release.",
-    )
     origin = replace(ORIGIN, account_id="team:bot")
-    for source in (
-        origin,
-        replace(origin, sender_id="other"),
-        replace(origin, channel="discord"),
-        replace(origin, account_id="other:bot"),
-        ORIGIN,
-    ):
-        goal = store.create_job(prompt="publish", mode="objective", origin=source)
-        await journal.decision_notice(goal, report)
-        if source == origin:
-            owned = goal
+    job = store.create_job(prompt="publish", mode="objective", origin=origin)
     channel = RecordingChannel("slack")
-    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=_WorkingGoalAgent())
+    channel.account_id = "team:bot"
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=Agent())
+    scheduler = _attach_scheduler(host, store)
+    await scheduler.tick_once()
+    assert "2. Stable" in channel.sent[-1][1]
+    assert job.id not in channel.sent[-1][1]
+
+    message = ChannelMessage(
+        origin.conversation_id,
+        "2",
+        sender_id=origin.sender_id,
+        metadata={"channel_account_id": "team:bot"},
+    )
+    for unrelated in (
+        replace(message, conversation_id="DM"),
+        replace(message, sender_id="other"),
+        replace(message, metadata={"channel_account_id": "other:bot"}),
+    ):
+        assert await decision_reply(store, unrelated, "slack") is None
+    await host.receive_message(channel, message)
+    assert "Which region?" in channel.sent[-1][1]
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=Agent())
     _attach_scheduler(host, store)
-
-    async def chat(text: str, *, private: bool) -> str:
-        await host.receive_message(
-            channel,
-            ChannelMessage(
-                "DM",
-                text,
-                sender_id="alice",
-                metadata={"is_dm": private, "channel_account_id": "team:bot"},
-            ),
-        )
-        return channel.sent[-1][1]
-
-    assert "No open decisions" in await chat("what needs me?", private=False)
-    inbox = await chat("what needs me?", private=True)
-    assert inbox.count("Which track?") == 1
-    assert owned.id in inbox
-    assert "recorded" in await chat(f"answer {owned.id}: stable", private=True)
-    assert await journal.decision_answer(owned, "Which track?") == "stable"
+    await host.receive_message(channel, replace(message, text="1"))
+    assert await journal.decision_answer(job, "Which track?") == "Stable"
+    assert await journal.decision_answer(job, "Which region?") == "East"

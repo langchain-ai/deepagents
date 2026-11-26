@@ -1457,14 +1457,6 @@ class CronJobStore:
             self._write_jobs(jobs)
             return True
 
-    async def answer_decision(
-        self, job: CronJob, journal: JobJournal, question: str, answer: str
-    ) -> bool:
-        """Serialize owner answers and corrections before acquiring the journal write lock."""
-        return await journal.resolve_decision(
-            job, question, answer, wake=lambda: self.wake_for_answer(job)
-        )
-
     def wake_for_answer(self, snapshot: CronJob) -> bool:
         """Wake an unchanged active assignment and invalidate its earlier running check."""
         with self._lock:

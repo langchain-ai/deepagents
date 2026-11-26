@@ -323,6 +323,32 @@ class _ReactionAudit:
     resolution: str
 
 
+@dataclass
+class _ObjectiveQuestions:
+    job: CronJob
+    journal: JobJournal
+    pending: tuple[Question, ...] = ()
+
+    async def collect(self, questions: Sequence[Question]) -> tuple[Answer, ...] | None:
+        answers = []
+        for index, question in enumerate(questions):
+            saved = await self.journal.decision_answer(self.job, question.question)
+            if saved is None:
+                self.pending = self.pending or tuple(questions[index:])
+                return None
+            answers.append(Answer(other=saved))
+        return tuple(answers)
+
+    def attach(self, result: AgentResult, report: ObjectiveReport) -> AgentResult:
+        if not self.pending:
+            return result
+        report.owner_questions = list(self.pending)
+        report.decision_question = self.pending[0].question
+        if report.status == "complete":
+            report.status = "blocked"
+        return replace(result, text=report.model_dump_json())
+
+
 class TalonHost:
     """Long-running process host for one Talon assistant.
 
@@ -1548,6 +1574,8 @@ class TalonHost:
         activity = ObjectiveActivity()
         store = getattr(self.scheduler, "store", None)
 
+        feedback = _ObjectiveQuestions(job, journal)
+
         def current() -> bool:
             return not isinstance(store, CronJobStore) or store.get_job(job.id) == job
 
@@ -1572,10 +1600,11 @@ class TalonHost:
                             metadata=metadata,
                             model=model,
                             effort=effort,
+                            question_handler=feedback.collect,
                         )
                         checkpoint = ObjectiveReport.from_reply(result.text)
                         if not checkpoint.needs_action or not current():
-                            return result
+                            return feedback.attach(result, checkpoint)
                         await journal.save_workstreams(thread, checkpoint)
                         prompt = (
                             "Continue the authorized next actions in this checkpoint now. "
@@ -1593,7 +1622,7 @@ class TalonHost:
                     await journal.append_work(thread, activity.handoff(thread))
         with SCHEDULER_FINALIZING.set(True):
             await self.agent.recover_interrupted(thread)
-            return await self._invoke_agent(
+            result = await self._invoke_agent(
                 conversation_id=thread,
                 text=(
                     f"{activity.handoff(thread)}\nReturn the objective JSON report now. "
@@ -1604,6 +1633,7 @@ class TalonHost:
                 model=model,
                 effort=effort,
             )
+            return feedback.attach(result, ObjectiveReport.from_reply(result.text))
 
     async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
         """Return the origin chat's read-only history scope, or none when ambiguous."""
@@ -2750,7 +2780,8 @@ async def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
         "Omit unchanged entries. "
         f"Standing criteria: {json.dumps(identifiers)}. If null, return completion_criteria once "
         "from the owner's standing prompt, listing each finish condition or [] for ongoing work. "
-        "When the owner must decide, include decision_question and decision_unlocks. Continue "
+        "Use ask_user for owner feedback. An unanswered question is delivered after the check. "
+        "Resume from saved answers on the next run. Continue "
         "independent work with partial status, then report blocked once only the decision remains. "
         "If the target or deadline is at risk, include deadline_risk with the specific risk. "
         f"Target: {job.target_at}. Deadline: {job.until}. "

@@ -9,9 +9,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 from langchain_core.tools import tool
-from pydantic import AwareDatetime, BaseModel, Field, OnErrorOmit, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, OnErrorOmit, TypeAdapter, field_validator
 
 from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
+from deepagents_talon.questions import Answer, Question, QuestionOption, QuestionSession
 from deepagents_talon.store_records import StoreRecords, digest
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ class ObjectiveReport(BaseModel):
     requires_signoff: bool = False
     deadline_risk: str = Field(default="", max_length=1000)
     decision_question: str = Field(default="", max_length=1000)
+    owner_questions: list[Question] = Field(default_factory=list, max_length=4)
     decision_unlocks: str = Field(default="", max_length=1000)
 
     blocker_key: str = Field(default="", max_length=200)
@@ -403,16 +405,17 @@ class JobJournal:
                 for q, item in (await self._questions(job)).items()
             ]
 
-    async def open_decision(
-        self, job: CronJob, reply_to: str | None = None
-    ) -> tuple[str, str] | None:
-        """Find the open question addressed by this message."""
+    async def open_decision(self, job: CronJob, reply_to: str | None = None) -> str | None:
+        """Restore a delivered question for an owner reply."""
         async with self.records.access():
             for question, item in (await self._questions(job)).items():
-                if "answer" not in item and (
-                    reply_to is None or item.get("message_id") == reply_to
+                if (
+                    (reply_to or "skipped" not in item)
+                    and "delivered" in item
+                    and "answer" not in item
+                    and (reply_to is None or item.get("message_id") == reply_to)
                 ):
-                    return question, item["unlocks"]
+                    return question
         return None
 
     async def pending_question(self, job: CronJob) -> str:
@@ -420,7 +423,7 @@ class JobJournal:
         async with self.records.access():
             for question, item in (await self._questions(job)).items():
                 if "answer" not in item and "delivered" not in item:
-                    return decision_text(job.name, job.id, question, item["unlocks"])
+                    return f"{job.name}\n{_decision_session(question, item).prompt()}"
         return ""
 
     async def decision_answer(self, job: CronJob, question: str) -> str | None:
@@ -444,22 +447,39 @@ class JobJournal:
             item = (
                 items.setdefault(question, {"unlocks": report.decision_unlocks}) if question else {}
             )
+            if report.owner_questions and report.owner_questions[0].question == question:
+                item.setdefault("form", _FORMS.dump_json(report.owner_questions).decode())
             record[_revision_key(job)] = items
             await self.records.commit([(key, record)])
             if question and "answer" not in item and "delivered" not in item:
-                return decision_text(job.name, job.id, question, item["unlocks"])
+                return f"{job.name}\n{_decision_session(question, item).prompt()}"
             return ""
 
-    async def resolve_decision(
-        self, job: CronJob, question: str, answer: str, *, wake: Callable[[], bool]
-    ) -> bool:
-        """Resolve an unanswered question and retire or release its action intent."""
+    async def reply_to_question(
+        self, job: CronJob, question: str, text: str, *, wake: Callable[[], bool]
+    ) -> str:
+        """Advance the saved question session and wake the job on submission."""
         key = "decisions:" + job.id
         async with self.records.access():
             record = await self.records.get(key) or {}
             items = await self._questions(job)
-            if question not in items or "answer" in items[question]:
-                return False
+            item = items.get(question)
+            if not item or "answer" in item:
+                return "That question has closed."
+            session = _decision_session(question, item)
+            step = session.reply(text)
+            if step.status != "submitted":
+                item["index"] = str(session.index)
+                item["answers"] = _ANSWERS.dump_json(session.answers).decode()
+                if step.status == "cancelled":
+                    item["skipped"] = "yes"
+                record[_revision_key(job)] = items
+                await self.records.commit([(key, record)])
+                return step.message
+            answers = [
+                a.other if a.other and not a.selected else a.describe() for a in session.result
+            ]
+            answer = answers[0]
             intents = await self.records.get("actions:" + job.id) or {}
             retired = await self.records.get("retired:" + job.id) or {}
             for call_id, action in list(intents.items()):
@@ -468,7 +488,7 @@ class JobJournal:
                 ):
                     choice = answer.strip().casefold()
                     if choice not in {"retire action", "retry despite duplicate risk"}:
-                        return False
+                        return ACTION_CHOICES
                     if choice == "retire action":
                         retired[digest(action["tool"], action["arguments"])] = [
                             action["tool"],
@@ -476,13 +496,14 @@ class JobJournal:
                         ]
                     del intents[call_id]
             if not wake():
-                return False
-            items[question]["answer"] = answer
+                return "That question has changed."
+            for form, value in zip(session.questions, answers, strict=True):
+                items.setdefault(form.question, {"unlocks": ""})["answer"] = value
             record[_revision_key(job)] = items
             await self.records.commit(
                 [(key, record), ("actions:" + job.id, intents), ("retired:" + job.id, retired)]
             )
-            return True
+            return f"Answer recorded for {job.name}."
 
     async def mark_delivered(self, job: str, notice: str, message_id: str | None = None) -> None:
         """Acknowledge only notices included in the delivered message."""
@@ -492,7 +513,7 @@ class JobJournal:
             for items in cast("dict[str, dict[str, dict[str, str]]]", record).values():
                 for question, item in items.items():
                     if "delivered" not in item and notice.endswith(
-                        decision_text("", job, question, item["unlocks"])
+                        _decision_session(question, item).prompt()
                     ):
                         item["delivered"] = "yes"
                         if message_id:
@@ -602,9 +623,28 @@ class JobJournal:
             return result
 
 
-def decision_text(name: str, job_id: str, question: str, unlocks: str) -> str:
-    """Format an owner question with its explicit answer address."""
-    return f"{name} [{job_id}] {question} {unlocks} Reply with: answer {job_id}: <your answer>"
+_FORMS = TypeAdapter(list[Question])
+_ANSWERS = TypeAdapter(list[Answer | None])
+
+
+def _decision_session(question: str, item: dict[str, str]) -> QuestionSession:
+    if form := item.get("form"):
+        session = QuestionSession(_FORMS.validate_json(form))
+        if answers := item.get("answers"):
+            session.answers = _ANSWERS.validate_json(answers)
+            session.index = int(item["index"])
+        return session
+    action = item["unlocks"] == ACTION_CHOICES
+    labels = ("retire action", "retry despite duplicate risk") if action else ("Yes", "No")
+    return QuestionSession(
+        [
+            Question(
+                header="Owner decision",
+                question=question,
+                options=[QuestionOption(label=label) for label in labels],
+            )
+        ]
+    )
 
 
 def _owner_key(origin: CronOrigin) -> str:

@@ -1077,6 +1077,39 @@ async def test_subjective_completion_stays_open_pending_owner_acceptance(tmp_pat
     assert not store.get_job(job.id).enabled
 
 
+def test_malformed_workstream_preserves_verified_progress() -> None:
+    done = {"state": "done", "actor": "owner", "next_action": "publish", "evidence": "receipt"}
+    report = ObjectiveReport.from_reply(
+        json.dumps(
+            {
+                "status": "complete",
+                "summary": "Published",
+                "verified": ["C1"],
+                "evidence": {"C1": "receipt"},
+                "workstreams": [done, {**done, "check_at": "2026-12-01T10:00:00"}],
+            }
+        )
+    )
+    assert report.status == "complete"
+    assert report.verified == ["C1"]
+    assert report.evidence == {"C1": "receipt"}
+    assert report.workstreams == [Workstream.model_validate(done)]
+
+
+@pytest.mark.parametrize("status", ["complete", "blocked", "checked"])
+def test_final_report_clears_stale_workstreams(status: str) -> None:
+    row: dict[str, object] = {
+        "workstreams": '[{"state":"ready","actor":"owner","next_action":"publish"}]'
+    }
+    payload: dict[str, object] = {"status": status, "summary": "Updated"}
+    if status == "checked":
+        payload["workstreams"] = []
+    report = ObjectiveReport.from_reply(json.dumps(payload)).checkpoint_workstreams(row)
+    assert report.status == status
+    assert report.workstreams == []
+    assert row["workstreams"] == "[]"
+
+
 @pytest.mark.parametrize("wait", [None, 7, "w" * 2001])
 def test_invalid_wait_preserves_objective_result(wait: object) -> None:
     report = ObjectiveReport.from_reply(

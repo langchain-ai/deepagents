@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 from langchain_core.tools import tool
-from pydantic import AwareDatetime, BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, OnErrorOmit, field_validator
 
 from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
 from deepagents_talon.store_records import StoreRecords, digest
@@ -87,7 +87,7 @@ class ObjectiveReport(BaseModel):
 
     verified: list[str] = Field(default_factory=list, max_length=64)
 
-    workstreams: list[Workstream] = Field(default_factory=list)
+    workstreams: list[OnErrorOmit[Workstream]] = Field(default_factory=list)
     wait_condition: str = Field(default="", max_length=2000)
     next_wake_at: datetime | None = None
     wake_reason: Literal["poll", "owner_timing", "expected_event"] = "poll"
@@ -101,11 +101,13 @@ class ObjectiveReport(BaseModel):
 
     def checkpoint_workstreams(self, row: dict[str, object]) -> ObjectiveReport:
         """Keep the next steps in run history and reconcile the aggregate status."""
-        if not self.workstreams:
+        if "workstreams" not in self.model_fields_set and self.status not in {
+            "blocked",
+            "complete",
+        }:
             if saved := row.get("workstreams"):
                 streams = [Workstream.model_validate(item) for item in json.loads(str(saved))]
                 return self.model_copy(update={"workstreams": streams}).checkpoint_workstreams(row)
-            return self
         row["workstreams"] = json.dumps([s.model_dump(mode="json") for s in self.workstreams])
         ready = self.needs_action
         unfinished = any(stream.state != "done" for stream in self.workstreams)

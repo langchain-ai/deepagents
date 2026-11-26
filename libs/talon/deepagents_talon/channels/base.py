@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler, SendResult
 from deepagents_talon.media import resolve_bounded_media_path
@@ -25,11 +25,12 @@ MAX_TEXT_CHARS = 4096
 DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
 MAX_MEDIA_BYTES_ENV = "DEEPAGENTS_TALON_MAX_MEDIA_BYTES"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
-OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
-WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
 ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video", "audio"})
 """Media types that may contain audio eligible for ASR transcription."""
+
+OutboundMediaType = Literal["image", "video", "document"]
+"""Categories Talon assigns to files it sends; channels attach documents as files."""
 
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
@@ -219,21 +220,6 @@ def channel_exposure_from_env(
     )
 
 
-def outbound_media_root_from_env(env: Mapping[str, str]) -> Path:
-    """Return the trusted outbound media root for channel attachments.
-
-    Args:
-        env: Environment variable mapping.
-
-    Returns:
-        Configured outbound media directory, workspace directory, or cwd.
-    """
-    raw = env.get(OUTBOUND_MEDIA_DIR_ENV) or env.get(WORKSPACE_ENV)
-    if raw:
-        return Path(raw).expanduser()
-    return Path.cwd()
-
-
 def validate_media(
     media: ChannelMedia,
     *,
@@ -252,7 +238,8 @@ def validate_media(
         The validated media payload.
 
     Raises:
-        ChannelMediaError: If the file is missing, unsupported, or too large.
+        ChannelMediaError: If the file is missing, outside `root`, labeled with the
+            wrong media type, or too large.
     """
     try:
         path = (
@@ -267,7 +254,7 @@ def validate_media(
         msg = f"media file does not exist: {path}"
         raise ChannelMediaError(msg)
 
-    detected = _media_type(path)
+    detected = media_type_for_path(path)
     if detected != media.media_type:
         msg = f"media file type {detected!r} does not match requested type {media.media_type!r}"
         raise ChannelMediaError(msg)
@@ -544,17 +531,22 @@ def _split_index(text: str, limit: int) -> int:
     return limit
 
 
-def _media_type(path: Path) -> str:
+def media_type_for_path(path: Path) -> OutboundMediaType:
+    """Classify a file for channel delivery by its name.
+
+    Args:
+        path: File whose name determines the category.
+
+    Returns:
+        `image` or `video` when the name maps to one, otherwise `document`, which
+            every channel delivers as a plain file attachment.
+    """
     mime, _ = mimetypes.guess_type(path)
-    if mime is None:
-        msg = f"unsupported media file type: {path}"
-        raise ChannelMediaError(msg)
-    if mime.startswith("image/"):
+    if mime is not None and mime.startswith("image/"):
         return "image"
-    if mime.startswith("video/"):
+    if mime is not None and mime.startswith("video/"):
         return "video"
-    msg = f"unsupported media mime type: {mime}"
-    raise ChannelMediaError(msg)
+    return "document"
 
 
 _RETRYABLE_ERROR_FRAGMENTS = frozenset(

@@ -100,6 +100,16 @@ def test_validate_media_accepts_relative_path_under_root(tmp_path: Path) -> None
     assert media == ChannelMedia(path=path.resolve(), media_type="image")
 
 
+@pytest.mark.parametrize("name", ["report.pdf", "data.csv", "archive.tar.gz", "README"])
+def test_validate_media_accepts_any_file_as_a_document(tmp_path: Path, name: str) -> None:
+    path = tmp_path / name
+    path.write_bytes(b"contents")
+
+    media = validate_media(ChannelMedia(path=path, media_type="document"), root=tmp_path)
+
+    assert media == ChannelMedia(path=path.resolve(), media_type="document")
+
+
 def test_validate_media_rejects_configured_global_cap(tmp_path: Path) -> None:
     path = tmp_path / "image.png"
     path.write_bytes(b"abcd")

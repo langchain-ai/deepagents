@@ -365,7 +365,7 @@ def test_config_accepts_telegram_bot_token_alias(tmp_path: Path) -> None:
     assert telegram.bot_token == "alias-token"  # noqa: S105  # inert test token
 
 
-def test_config_defaults_outbound_media_dir_to_cwd(
+def test_config_stages_outbound_media_in_assistant_home(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -381,7 +381,8 @@ def test_config_defaults_outbound_media_dir_to_cwd(
 
     telegram = TelegramChannelConfig.from_talon_config(config)
 
-    assert telegram.outbound_media_dir == tmp_path
+    assert telegram.outbound_media_dir == config.outbound_media_dir
+    assert config.outbound_media_dir == config.home / "media" / "outbound"
 
 
 def test_config_requires_operator_for_self_exposure(tmp_path: Path) -> None:

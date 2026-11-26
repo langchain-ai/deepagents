@@ -44,6 +44,7 @@ from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
 from deepagents_talon.effort import effort_levels, normalize_effort
+from deepagents_talon.file_sending import send_file_to_channel
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -56,6 +57,7 @@ from deepagents_talon.interfaces import (
     ConversationDeliveryRuntime,
     ConversationHistoryRuntime,
     CronScheduler,
+    FileSendHandler,
     InboundMediaRuntime,
     MCPReloadableRuntime,
     ModelSelectableRuntime,
@@ -1074,12 +1076,7 @@ class TalonHost:
         active = True
 
         async def send_progress(text: str) -> SendResult:
-            if (
-                not active
-                or self._generations[agent_conversation_id] != turn.generation
-                or self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
-                or agent_conversation_id in self._terminal_authorizations
-            ):
+            if not (active and self._turn_reaches_chat(turn, agent_conversation_id)):
                 return SendResult(success=False)
             return await channel.send_message(message.conversation_id, text)
 
@@ -1127,6 +1124,11 @@ class TalonHost:
                 message_handler=message_handler,
                 breakout_handler=breakout_handler,
                 question_handler=question_handler,
+                file_handler=self._file_handler(
+                    channel,
+                    message.conversation_id,
+                    lambda: active and self._turn_reaches_chat(turn, agent_conversation_id),
+                ),
                 model=turn.model,
                 effort=turn.effort,
             )
@@ -1434,6 +1436,7 @@ class TalonHost:
         model: str | None = None,
         breakout_handler: BreakoutHandler | None = None,
         question_handler: QuestionHandler | None = None,
+        file_handler: FileSendHandler | None = None,
         effort: str | None = None,
     ) -> AgentResult:
         metadata = {
@@ -1459,6 +1462,7 @@ class TalonHost:
                         message_handler=message_handler,
                         breakout_handler=breakout_handler,
                         question_handler=question_handler,
+                        file_handler=file_handler,
                         model=model,
                         effort=effort,
                     ),
@@ -2058,6 +2062,36 @@ class TalonHost:
 
         if not pending.future.done():
             pending.future.set_result(decision)
+
+    def _turn_reaches_chat(self, turn: _Turn, agent_conversation_id: str) -> bool:
+        """Report whether a running turn may still post to its chat.
+
+        A newer message, a conversation reset, or a terminal authorization prompt
+        supersedes the turn, and anything it sends after that would arrive out of place.
+        """
+        return (
+            self._generations[agent_conversation_id] == turn.generation
+            and self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
+            and agent_conversation_id not in self._terminal_authorizations
+        )
+
+    def _file_handler(
+        self, channel: ChannelAdapter, conversation_id: str, can_deliver: Callable[[], bool]
+    ) -> FileSendHandler:
+        async def handle(data: bytes, filename: str, caption: str | None) -> SendResult:
+            if not can_deliver():
+                return SendResult(success=False, error="this turn can no longer reach the chat")
+            result = await send_file_to_channel(
+                channel,
+                conversation_id,
+                (data, filename, caption),
+                staging_root=self.config.outbound_media_dir,
+            )
+            if not result.success:
+                logger.warning("Could not send an agent file to the chat: %s", result.error)
+            return result
+
+        return handle
 
     def _question_handler(
         self,

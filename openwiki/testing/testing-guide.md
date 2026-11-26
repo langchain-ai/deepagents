@@ -1,17 +1,30 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused, hermetic regression routes for Deep Agents streaming, Talon runtime boundaries, QuickJS tool bridging, and release and workflow automation. Use package Makefiles for package test commands and assert observable ownership, correlation, and failure behavior.
-tags: [testing, hermetic-tests, deepagents, talon, quickjs, mcp, release-automation, github-actions]
+description: Focused, hermetic regression routes for Deep Agents subagents and streaming, dcode cost accounting, Talon controls, and CI workflow gates. Choose tests that assert observable protocol, state, and failure behavior rather than implementation interactions.
+tags: [testing, hermetic-tests, deepagents, dcode, talon, github-actions]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-26T08:03:59.911Z
 sources:
   - id: openwiki-source-74e4ee6ae7c1e3e1008eb655
     resource: repo://.github/scripts/tests/release/test_build_release_notes.py
+  - id: openwiki-source-75ab344a500d6a7392581a42
+    resource: repo://.github/scripts/tests/workflows/test_ci_workflow.py
   - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
     resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
   - id: openwiki-source-8037e2358a2c4f9b2c722a11
     resource: repo://AGENTS.md
+  - id: openwiki-source-a44dd48d815d149c53537ce9
+    resource: repo://libs/code/tests/unit_tests/test_cost_breakdown.py
+  - id: openwiki-source-a1c23c211325ea69f28f8ca0
+    resource: repo://libs/code/tests/unit_tests/test_cost_tracking.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-e05fd90c9d31b1aafef834ba
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_fork_response_format.py
   - id: openwiki-source-10e4084b6aa57e5cc82620b3
     resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
@@ -20,6 +33,8 @@ sources:
     resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-c5c26c24c13b3e91dde43d11
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_end_to_end.py
+  - id: openwiki-source-e0db085f967450f48196d999
+    resource: repo://libs/talon/tests/test_media.py
   - id: openwiki-source-a1c0f013d30da0d68f4ae10b
     resource: repo://libs/talon/tests/unit_tests/test_claude_sessions.py
   - id: openwiki-source-a2224df8e6d0c4947ebe6499
@@ -28,6 +43,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
   - id: openwiki-source-40c11e4c205e2dd133c4f0c3
     resource: repo://libs/talon/tests/unit_tests/test_dcode_sessions.py
+  - id: openwiki-source-022c52172483653e0c3a3eaf
+    resource: repo://libs/talon/tests/unit_tests/test_effort.py
   - id: openwiki-source-cef86b19cd97a1f46e86ebbd
     resource: repo://libs/talon/tests/unit_tests/test_help.py
   - id: openwiki-source-fed7e97e2aca85ebfae626d9
@@ -36,133 +53,121 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # Testing Guide
 
-Run the smallest route that proves the change at its public boundary. Unit tests must be network-free, deterministic, and observe returned messages, persisted state, channel output, or protocol frames instead of private call order. Use fake models, temporary directories, in-process FastMCP transports, mock HTTP transports, and synchronization events; do not use developer credentials or a live provider. Unaccepted pytest warnings fail the suite.
+Run the smallest route that proves the changed public boundary. Unit tests are network-free, deterministic, and should observe returned messages, persisted state, channel output, protocol frames, or workflow exit status—not private call ordering. Use fake models, temporary directories, in-process transports, mock HTTP, and synchronization events; do not use credentials or a live provider. Unaccepted pytest warnings fail the suite.
 
-Package Makefiles are the command authority. From each package root, synchronize its declared groups as needed, then pass the exact test file through `TEST_FILE`:
+From the owning package, pass an exact path through `TEST_FILE`:
 
 ```bash
-# SDK streaming
+# Deep Agents: streaming and forked response formats
 cd libs/deepagents
+make test TEST_FILE=tests/unit_tests/middleware/test_fork_response_format.py
 make test TEST_FILE=tests/unit_tests/test_end_to_end.py
 make test TEST_FILE=tests/unit_tests/test_subagents.py
 
-# Talon runtime, model, diagnostics, MCP, research, and session bridges
+# dcode cost accounting
+cd ../code
+make test TEST_FILE=tests/unit_tests/test_cost_breakdown.py
+make test TEST_FILE=tests/unit_tests/test_cost_tracking.py
+
+# Talon media, effort, commands, integrations, and session bridges
 cd ../talon
+make test TEST_FILE=tests/test_media.py
+make test TEST_FILE=tests/unit_tests/test_effort.py
 make test TEST_FILE=tests/unit_tests/test_help.py
-make test TEST_FILE=tests/unit_tests/test_claude_sessions.py
-make test TEST_FILE=tests/unit_tests/test_codex_sessions.py
-make test TEST_FILE=tests/unit_tests/test_dcode_sessions.py
-make test TEST_FILE=tests/unit_tests/test_context_doctor.py
 make test TEST_FILE=tests/unit_tests/test_mcp_adapter.py
-make test TEST_FILE=tests/unit_tests/test_model_selection.py
 make test TEST_FILE=tests/unit_tests/test_research_subagents.py
 
-# QuickJS production-shaped interpreter and PTC bridge
-cd ../partners/quickjs
-make test TEST_FILE=tests/unit_tests/test_end_to_end.py
-
-# Repository automation routes run from the repository root
-uv run pytest .github/scripts/tests/release/test_build_release_notes.py
-uv run pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py
+# CI workflow contracts run from the repository root
+cd ../..
+uv run pytest .github/scripts/tests/workflows/test_ci_workflow.py
 ```
 
-The Deep Agents Makefile runs pytest with xdist, disabled sockets except Unix sockets, disabled benchmarks, and coverage. Talon's target runs the WhatsApp bridge suite before pytest, then applies the same socket restriction, a ten-second timeout, and coverage. QuickJS disables non-Unix sockets and collects coverage. The last two routes are repository-level Python tests rather than package-owned Make targets.
+The Deep Agents and dcode test targets use xdist, coverage, disabled non-Unix sockets, and disabled benchmarks; Talon also runs its WhatsApp bridge tests and applies a ten-second pytest timeout. `TEST_FILE` is therefore the safe focused-test entrypoint rather than an ad hoc pytest invocation.
 
-## Choose the boundary
+## Select the regression seam
 
 | Change | Focused route | Observable invariant |
 | --- | --- | --- |
-| Stream metadata or subagent stream visibility | `libs/deepagents/tests/unit_tests/test_end_to_end.py`, `test_subagents.py` | Main and child chunks retain their identity and caller metadata; child completion returns through the parent tool update. |
-| Help command concurrency or pending interactive reply | `libs/talon/tests/unit_tests/test_help.py` | `/help` does not invoke or interrupt the agent and does not consume an approval or authorization reply. |
-| Model selection or context-window behavior | `libs/talon/tests/unit_tests/test_model_selection.py` | Only operator-selected, currently available credentialed models apply on later turns; the selected model's own context budget and summarizer govern the request. |
-| Context inspection | `libs/talon/tests/unit_tests/test_context_doctor.py` | Diagnostics are read-only, scoped to the requested thread, redact content and paths, and reflect current configured sources and tools. |
-| MCP adapter, schema conversion, elicitation, reload, or failures | `libs/talon/tests/unit_tests/test_mcp_adapter.py` | The adapter preserves call identity and schemas, adapts protocol failure into tool output, clears authorization context, and does not require network access. |
-| Research subagent tools, MCP authorization, or background delegation | `libs/talon/tests/unit_tests/test_research_subagents.py` | A child begins fresh with explicit tools; authorization metadata survives while background work has no interactive handler and MCP errors are sanitized. |
-| Claude, Codex, or dcode bridge | `libs/talon/tests/unit_tests/test_claude_sessions.py`, `test_codex_sessions.py`, `test_dcode_sessions.py` | External-session messages remain operator-gated, owner-correlated, bounded, and framed as untrusted data; cancellation prevents late delivery. |
-| QuickJS interpreter, PTC, or tool-stream behavior | `libs/partners/quickjs/tests/unit_tests/test_end_to_end.py` | Sync and async interpreter paths can await host tools, preserve meaningful native values and per-call IDs, and expose nested tool events without polluting graph messages. |
-| Release-note history or version-section extraction | `.github/scripts/tests/release/test_build_release_notes.py` | Synthetic Git histories make predecessor selection, release bounds, exact changelog extraction, escaping, and size limits deterministic. |
-| Workflow credential exposure or trusted publishing | `.github/scripts/tests/workflows/test_workflow_secret_scoping.py` | Secrets are scoped to the selected package/job/environment and the OpenWiki update gains its write token only after generation. |
+| Forked subagent structured output | `libs/deepagents/tests/unit_tests/middleware/test_fork_response_format.py` | Parent and child provider requests carry only their respective response strategy; the child result reaches the parent as the delegated `ToolMessage`. |
+| Stream metadata or delegated completion | `libs/deepagents/tests/unit_tests/test_end_to_end.py`, `test_subagents.py` | Named parent/child events retain caller metadata, and the child completion is returned through the parent tools update. |
+| Cost display or persistence | `libs/code/tests/unit_tests/test_cost_breakdown.py`, `test_cost_tracking.py` | Unpriced usage remains visible without inflating priced rows; lifecycle settlement neither loses retriable spend nor double-counts committed spend. |
+| Inbound/outbound media | `libs/talon/tests/test_media.py` | Documents are notices, images are bounded model blocks, and outbound paths resolve beneath their trusted root. |
+| `/effort` or provider payload mapping | `libs/talon/tests/unit_tests/test_effort.py` | Only an operator can persist a supported per-model choice, and each turn receives its own provider-compatible settings. |
+| CI gate, path selection, cancellation, or ripgrep diagnostics | `.github/scripts/tests/workflows/test_ci_workflow.py` | Execute the gate or shell body with controlled environment and stubbed binaries; assert exit status, annotations, artifacts, and fail-closed behavior. |
+| MCP, research, or background delegation | `libs/talon/tests/unit_tests/test_mcp_adapter.py`, `test_research_subagents.py` | Identity and authorization lifetime are preserved while untrusted protocol failures and unavailable interaction paths are safely contained. |
+| External session bridge | `libs/talon/tests/unit_tests/test_claude_sessions.py`, `test_codex_sessions.py`, `test_dcode_sessions.py` | Delivery remains approval-gated, owner-correlated, escaped, and cancellation-safe. |
 
-## SDK streaming: assert the public event shape
+## Forked subagent response formats
 
-Use the Deep Agents routes when changing graph streaming, metadata propagation, or the parent/child boundary. The main-agent test streams `messages` and `updates` with caller-supplied tags and metadata and asserts that streamed model metadata contains the LangChain integration marker plus those values. The subagent test uses a streaming fake parent and child with `subgraphs=True`; it expects chunks and completed updates for both named agents, inherited tags on child chunks, the child final message in its subgraph update, and that same result returned in the parent `tools` update.
+A `mode="fork"` subagent continues the parent conversation but does **not** inherit the parent `response_format`. That separation prevents a parent-only structured-output contract from silently changing the fork's provider request. Give the fork its own `response_format` when it must return a schema; its structured result is JSON-serialized into the task tool's `ToolMessage`, while the parent still produces its own `structured_response`.
 
-Do not replace this with assertions about middleware ordering. The compatibility contract is what a stream consumer can identify and render: namespace, mode, agent identity, metadata, and the completed delegated result.
+The regression test parameterizes sync and async execution across no format, `ToolStrategy`, and `ProviderStrategy`. It compares the actual provider request bodies: a matching tool strategy may share tool definitions and tool choice; a provider strategy controls the provider `output_config`; a distinct or omitted child strategy must not accidentally reuse either. Test the delegated content as well as request shape—otherwise a correctly configured child can still be lost at the parent boundary.
+
+A caller may set `SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY` in runnable configuration. That dynamic format overrides the fork specification, so test both a schema matching the parent and one that differs. This is an extension point: additions to response-format propagation must preserve the precedence `dynamic configuration → fork specification → no inherited parent format`.
 
 ```mermaid
 sequenceDiagram
-    participant Client
+    participant Caller
     participant Parent as Parent agent
-    participant Child as Subagent
-    Client->>Parent: stream messages and updates
-    Parent-->>Client: parent message chunks
-    Parent->>Child: delegated task
-    Child-->>Client: child chunks and update
-    Child-->>Parent: final result
-    Parent-->>Client: tools update and final update
+    participant Fork as Forked subagent
+    Caller->>Parent: invoke with parent format
+    Parent->>Fork: task with child format
+    Fork-->>Parent: ToolMessage with child result
+    Parent-->>Caller: parent structured response
 ```
 
-*The streaming regression route checks both subgraph visibility and the parent-facing completion path.*
+*The test checks two independent provider-format boundaries and the message that joins them.*
 
-## Talon command, model, and context boundaries
+## dcode cost accounting: preserve uncertainty
 
-`/help` is a host command, not an agent turn. Test case variants and a stalled channel send to ensure it can be slow without blocking active conversation work; it must neither invoke the agent nor consume a pending approval or OAuth callback reply. Include `/stop` in the race test because help must not change stop semantics.
+Cost tracking is an accounting boundary, not merely a total. A request without catalog pricing still contributes reported input, output, cache, and reasoning tokens, request count, and completeness information, but its tokens must not be merged into a priced category or presented as priced spend. The cost-breakdown table consequently shows explicit **Unpriced** rows and a partial total when mixed history contains priced and unpriced requests. Legacy breakdowns that predate the split must render conservatively as including unpriced tokens rather than inventing a precise allocation.
 
-Model selection is global state for subsequent conversations, not a mid-flight mutation. The host accepts a switch only from an operator, rejects unknown input without echoing it, persists a selected model through `/new` and restart, and clears selection when `default` is chosen. The runtime builds a selected available model once and falls back to its default for unavailable selections. When a selected model has a different context limit, test the actual model input: a larger selection may receive larger history; a smaller selection must be summarized or rejected before oversized input reaches it. The selected-model summarizer follows the selected model but subagents retain their startup summarizer.
+Test display formatting at the copyable-table boundary: fully priced totals show 100%, sub-display values avoid scientific notation, unavailable values remain unavailable, and incomplete historical detail suppresses a misleading table. A category may have tokens but no category-price detail; retain that partial marker even when its numeric display is zero.
 
-The context doctor is an audit only. Test a fresh thread and a populated thread separately: it counts configured prompt, memory, skill index, tools, effective post-compaction conversation, and provider usage without exposing private body text or filesystem paths. It must not write a checkpoint, must report only the requested thread, and must reflect memory/tool reload changes. The channel command must follow a reset thread without interrupting an active task and must turn internal diagnostic failure into a non-sensitive response.
+The tracking suite covers the state lifecycle. Records drained for an operation are prepared before persistence: `rollback()` restores them so a retry can account for the request, while `commit()` settles them so a later drain cannot double charge. A pre-upgrade checkpoint with a legacy total retains `historical_complete=False` as new usage is recorded and streamed. Test message, recorder, and operation paths, because all must produce the same truthful breakdown.
 
-## Talon MCP and research boundaries
+## Talon media: data, bounds, and model content
 
-`test_mcp_adapter.py` is the adapter regression seam: it replaces connection creation with `FastMCPTransport` over an in-process server. For a tool change, assert the prefixed tool name, original `tool_call_id`, result status, defaulted optional parameters, and user-facing failure text. Keep schema tests at the provider boundary: open object arguments and optional nested objects must survive conversion and invocation without mutating the remote schema. Also cover lifecycle edges—an in-flight tool remains callable across reload, malformed elicitation interrupts are rejected, cancellation resumes the protocol with cancelled responses, and stdio discovery/invocation processes exit.
+Inbound documents and generic files are not read into the user prompt. Talon appends a JSON-serialized absolute path notice directing the agent to `read_file` or `execute`, explicitly labels both path and attachment as untrusted data, and avoids filesystem reads while constructing that notice. This preserves large and binary attachments without turning their contents into prompt injection. Availability failures deliberately return a generic attachment notice that omits transport error details.
 
-Research subagents deliberately do not inherit parent history or memory. Their tool inventory is explicitly selected from the agent definition or dynamic request; privileged shell, conversation, delegation, and reload tools remain unavailable unless explicitly exposed. For MCP delegation, exercise inline and background modes. The invocation and attempt metadata remain bound to the MCP call, but background work has no interactive authorization handler; MCP protocol details are reduced to safe error text and authorization context is cleared afterward.
+Only image media becomes a model content block. The builder passes text plus base64 image blocks for recognized image MIME types, skips missing or oversized images, and leaves documents—even documents mixed into an image message—as path notices. Tests patch `Path` methods to prove that document notices do not stat or read sandbox paths.
 
-## Session bridges: verify correlation before delivery
+Outbound/local media must go through `resolve_bounded_media_path(path, root)`. It rejects URI schemes, home expansion, parent traversal, unavailable or non-regular files, and symlink-resolved escapes; only a canonical regular file beneath the trusted root is accepted. Add containment tests whenever a channel adds a new source of media paths.
 
-Claude, Codex, and dcode adapters are operator-session integrations, not ordinary subagent tools. Their tools are disabled by default, unavailable in nested subagents, and approval-gated. Their test fixtures use private temporary Unix sockets, stand-in protocol clients, and a `BackgroundSubagents` owner store to test the real boundary without a real external session.
+## Talon effort controls
 
-```mermaid
-sequenceDiagram
-    participant Turn as Operator turn
-    participant Bridge as Session bridge
-    participant Peer as External session
-    participant Jobs as Owner result store
-    Turn->>Bridge: approved message for selected target
-    Bridge->>Peer: framed request with correlation
-    Peer-->>Bridge: correlated reply
-    Bridge->>Jobs: deliver under owner thread
-    Jobs-->>Turn: later delivery turn
-```
+`/effort` is operator-only state scoped to the selected model. A valid change is captured on each submitted turn, saved per model in the effort-state file, and restored after restart; choosing `default` removes the selected model's override. Persistence failures must leave the earlier in-memory selection intact, and the state file is mode `0600`. Invalid values and unauthorized requests must neither invoke the agent nor create state.
 
-*Only a verified, correlated external reply is eligible for the originating conversation's later delivery turn.*
+`effort_levels()` is an allowlist, including documented fallbacks for models whose profile metadata omits effort capability. `effort_settings()` translates only an allowed level into provider-native parameters: for example, DeepSeek combines thinking control with `reasoning_effort`, Qwen uses a thinking budget, GLM uses native thinking modes, and ordinary compatible models use `reasoning_effort`. Test actual request payloads for each adapter rather than only the helper return value.
 
-For Claude, verify private owned socket discovery, rejection of symlinks/shared directories and unsolicited frames, one-session-at-a-time ownership, escaped relay content, rate limiting, and dropped replies after cancellation. Codex tests reject malformed IDs, limit message bytes, require a request marker while ignoring unrelated completed turns, keep user text inside its command option, and discard a reply that arrives as its owner is cancelled. dcode tests require a prompt-only frame with the receipt correlation ID; a rejected or mismatched acknowledgement is failure, while discovery excludes symlinks, dead PIDs, shared directories, unlisted targets, and nested callers.
+The runtime stores turn settings in `ACTIVE_EFFORT`, a context variable. Concurrent invocations must receive their own settings, preserve unrelated model settings when merged, and reset the context after the call so an effort selection cannot leak into the next turn.
 
-## QuickJS end-to-end behavior
+## CI gate diagnostics: execute the decision boundary
 
-Use the QuickJS end-to-end route for `CodeInterpreterMiddleware` behavior that crosses the JavaScript/Python bridge. It reproduces a production-shaped `tools.*` evaluation on both sync and async paths, including synchronous and asynchronous host tools. Assert result frames rather than executor internals: Python lists, integers, dictionaries, nested non-native values, and `None` must become usable JavaScript values; failures must surface as tool-visible errors.
+Workflow tests are static where YAML structure is the contract, but execute shell and JavaScript when a conditional can silently reverse a gate. The CI-success test runs the real gate script with synthetic `needs` and selection JSON. It requires selected checks to succeed and treats absent, unknown, skipped, failed, or cancelled required results as failures. The narrow Talon PR waiver applies only when Talon source is unchanged; invalid scope values fail closed and waived failures remain visible through the advisory job.
 
-Streaming PTC calls use the native tool event stream. Assert the outer `eval` and inner host call each get a distinct tool-call ID, progress deltas are associated with the inner call, both calls finish, and graph state contains only the outer `eval` tool message. Also preserve isolation: sharing a middleware object or thread ID across independently constructed agents must not leak interpreter globals.
+Cancellation is not automatically green: a cancelled push may pass only when a GitHub lookup proves the branch head advanced beyond the run SHA. A failed lookup, manual cancellation, timeout, same SHA, PR, or merge queue remains strict. Path-gated release-options work may skip only for an unchanged PR; pushes and merge queues require its result.
 
-## Release notes and workflow secret scope
+For ripgrep installation, test the actual `_test.yml` script against stubbed `sudo`, `timeout`, `rg`, installer, and `gh` binaries. Ordinary SDK PRs soften only timeout exit statuses and record a marker artifact when `rg` is unavailable. Release-sensitive and non-PR runs are strict unless an exact live `ci:skip-ripgrep` label resolves the bypass; lookup failures fail closed. The post-CI comment workflow runs without checking out PR code despite its write permission, consumes only a successful/failed run's artifact, and uses the run head SHA to avoid stale diagnostics.
 
-The Python release-note builder suite creates and commits to disposable Git repositories. Keep tests synthetic rather than consulting checkout history: version and prerelease recognition must agree with `release.yml`; exact version headers must not match a version in a compare URL or a longer version; git logs are package-scoped, bounded by the release commit, HTML-escaped, and constrained by count and byte limits. Predecessor tags must be reachable and ordered by release precedence; a Git query failure must produce a warning rather than silently becoming an initial release.
+## Other high-value boundaries
 
-The workflow secret-scoping route parses workflow YAML as a static security contract. It requires GitHub App client IDs to come from repository variables and private keys from secrets, package-specific integration credentials to be conditional on the selected matrix package, and trusted publishing jobs to use only `id-token: write` within the `release` environment. It also verifies that OpenWiki uses read-only workflow permissions, disables persisted checkout credentials, runs OpenWiki before minting its dedicated App token, then confines that token to the update PR and expected merge head/base.
+Deep Agents streaming tests require caller tags and metadata on main-agent message chunks. With subgraphs enabled they require identifiable parent and child chunks and updates, the child final message in its subgraph update, and that result in the parent tools update. Assert consumer-visible namespace, mode, identity, metadata, and completion—not middleware order.
+
+Talon research-subagent tests require a fresh child context without parent history or memory, explicit tool selection, and preserved MCP authorization metadata. Background MCP delegation has no interactive authorization handler and sanitizes protocol errors. MCP adapter tests use an in-process FastMCP transport and require prefixed names, tool-call IDs, optional defaults, result status, cleared authorization context, open/nested schema preservation, and usability of in-flight tools across reload.
+
+Claude, Codex, and dcode session bridges are disabled by default, unavailable to nested subagents, and approval-gated. Test private verified targets, owner-correlated replies, escaped untrusted relay content, and dropped late replies after cancellation. `/help` must bypass agent invocation, preserve active work and pending interactive replies, and allow conversation progress while its own response is stalled. Model selection remains operator-only, persists an available choice across reset/restart, clears at `default`, and applies the selected model's context budget and summarizer while subagents retain the startup summarizer.
+
+Context doctor is a read-only requested-thread diagnostic: it counts configured and effective context without private content or paths, reflects reloads, and returns a non-sensitive channel error on failure. QuickJS tests cover sync/async host-tool awaiting, Python-to-JavaScript value conversion, correlated nested PTC stream events without inner graph messages, and global isolation across constructed agents. Release-note tests use synthetic Git repositories to prove extraction, release-bounded package history, escaping and bounds, and warnings on predecessor-query failure. Workflow secret-scoping tests retain package-conditional integration credentials, release-environment trusted publishing with only `id-token: write`, and delayed constrained OpenWiki write-token use.
 
 ## Before finishing
 
-1. Run the route for the changed boundary and its paired lifecycle route if the change crosses owner, cancellation, reload, or persistence behavior.
-2. Keep fixtures hermetic: use `tmp_path`, fake models, in-process transports, mock HTTP, and events; close sockets, servers, processes, and runtimes in `finally`.
-3. Add failure and cancellation cases whenever a result can be delivered after the initiating turn ends.
-4. Assert outputs, stream events, serialized state, and protocol frames—not incidental implementation interaction.
-5. Run the owning package's `make lint` after focused tests pass.
+1. Run the focused route and its paired persistence, reload, cancellation, or owner-delivery route when the change crosses that lifecycle boundary.
+2. Keep fixtures hermetic and close sockets, processes, servers, and runtimes in `finally`.
+3. Assert successful, rejected, unavailable, and late/cancelled outcomes whenever state or a result can outlive its initiating turn.
+4. Run the owning package's `make lint` after focused tests pass.

@@ -1,63 +1,23 @@
 ---
 type: operations guide
 title: CI Gates and Labels
-description: Operational map of merge-facing CI, acknowledgement labels, release publication, release notes, and workflow trust boundaries. Explains what blocks a merge or release, where labels apply, and how credentials are scoped.
-tags: [ci, github-actions, labels, releases, security]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
+description: How the CI Success aggregate gate, inherited curated-apply results, Talon waiver, and README acknowledgement check determine merge-facing CI outcomes. Covers strict failure handling, trusted policy inputs, and label-scoped exceptions.
+tags: [ci, github-actions, labels, readme, releases, security]
 sources:
-  - id: openwiki-source-4e1a48a53f7b34ae16b8d91f
-    resource: repo://.github/LABELS.md
-  - id: openwiki-source-9d81aa681a56a98960013750
-    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
-  - id: openwiki-source-c0c09f6fe83cf1ab6089bb24
-    resource: repo://.github/scripts/checks/ci_gate.py
+  - resource: repo://.github/scripts/checks/check_project_readmes.py
+  - resource: repo://.github/scripts/checks/readme-gate.js
+  - resource: repo://.github/scripts/tests/checks/test_check_project_readmes.py
+  - resource: repo://.github/scripts/tests/checks/readme-gate.test.js
+  - resource: repo://.github/scripts/tests/workflows/test_project_readme_check.py
+  - resource: repo://.github/workflows/project_readme_check.yml
   - id: openwiki-source-f59dcf85e4ad8ca3f9f6d5de
     resource: repo://.github/scripts/checks/curated_apply_only.py
-  - id: openwiki-source-07ac367f59bbed1812fef155
-    resource: repo://.github/scripts/labeling/check_pr_scope_files.py
-  - id: openwiki-source-3943bedb80b27cdf64ea8bff
-    resource: repo://.github/scripts/release/build_release_notes.py
-  - id: openwiki-source-d0bc66880aeeb0817674e1c3
-    resource: repo://.github/scripts/release/check_lockfile_release_scope.py
-  - id: openwiki-source-c01179865033a68574568db7
-    resource: repo://.github/scripts/release/check_open_release_fanout.py
-  - id: openwiki-source-92f0f267bd28e544f8eba170
-    resource: repo://.github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
-  - id: openwiki-source-276657d0dcc1b71922f5e1f4
-    resource: repo://.github/scripts/tests/labeling/test_check_pr_scope_files.py
-  - id: openwiki-source-74e4ee6ae7c1e3e1008eb655
-    resource: repo://.github/scripts/tests/release/test_build_release_notes.py
-  - id: openwiki-source-a3e73f18ddc0439259e73c17
-    resource: repo://.github/scripts/tests/release/test_check_lockfile_release_scope.py
-  - id: openwiki-source-bdbb800adcdf22c6c535f06d
-    resource: repo://.github/scripts/tests/release/test_check_open_release_fanout.py
-  - id: openwiki-source-75ab344a500d6a7392581a42
-    resource: repo://.github/scripts/tests/workflows/test_ci_workflow.py
-  - id: openwiki-source-5ec08fb431e595bde89de502
-    resource: repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
-  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
-    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
-  - id: openwiki-source-8d4ac162fca0a57f00bb83b7
-    resource: repo://.github/SECRETS.md
-  - id: openwiki-source-4d9cccca7700db7220ec055e
-    resource: repo://.github/workflows/_test.yml
-  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
-    resource: repo://.github/workflows/check_lockfiles.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-4d4bdb4ee2c259e9a0b5b8f7
-    resource: repo://.github/workflows/pr_scope_file_check.yml
-  - id: openwiki-source-504736637a54f8573036c2df
-    resource: repo://.github/workflows/release_fanout_bypass_warn.yml
-  - id: openwiki-source-9f478a7a77ce5bdf50ca09e4
-    resource: repo://.github/workflows/release_please_fanout_watch.yml
-  - id: openwiki-source-7f3822065cb7dc086752e9d5
-    resource: repo://.github/workflows/release_please_scope_check.yml
-  - id: openwiki-source-4d1d392666be6dfdd7a91a2e
-    resource: repo://.github/workflows/release.yml
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-26T08:03:59.911Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # CI Gates and Labels
@@ -83,9 +43,11 @@ flowchart TD
 
 *The workflow emits the aggregate check; repository branch-protection configuration determines whether it is a merge requirement.*
 
-`ci_success` runs even after dependencies finish unsuccessfully. Lockfiles must succeed; hygiene must succeed when scheduled (its push-time `skipped` result is expected). The trusted-base gate script judges the remaining non-skipped jobs. The sole failure waiver is `lint-talon` or `test-talon` on a pull request that does not change `libs/talon/**`; the workflow reports the waiver and required follow-up. All other failures block. Merge groups remain strict; only push cancellations are tolerated, because concurrency replacement is expected there.
+`ci_success` runs even after dependencies finish unsuccessfully. Its inline validator treats `changes`, lockfiles, and the path-selected job set as an explicit contract: an unknown selection value, missing result, unexpected result, or a skipped job that was expected to run fails the gate. Lockfiles must succeed; hygiene must succeed when scheduled (its push-time `skipped` result is expected). `check-release-options` may be skipped only for a PR that did not change release-script inputs. This is deliberately fail-closed rather than an aggregate that merely asks whether every reported job is green.
 
-The gate script is sparse-checked out from `github.base_ref || github.sha` without persisted credentials. Thus, after bootstrap, a PR cannot replace the logic that decides its own aggregate result. A curated release-bot changelog-only apply is a narrow exception to normal package work: only a conclusive successful parent `✅ CI Success` produces a passing inherited gate; an inherited failure remains failed. Diagnostics are read-only and cannot alter that decision. Re-run **all** jobs after fixing the parent state, because a failed-job-only rerun retains the earlier detection output.
+The sole job-failure waiver is `lint-talon` or `test-talon` on a pull request whose `talon-src` filter is exactly `false`—that filter contains only `libs/talon/**`. The separate advisory job keeps such a waived failure visible in a sticky PR comment and calls for a separate `fix(talon): ...` PR; it is not an input to `✅ CI Success`. All other failures block, including Talon cancellations. Merge groups remain strict. A cancelled job is tolerated only for a push whose branch-head API lookup proves that `main` advanced beyond this run; lookup failure, a timeout, a manual cancellation, or a still-current SHA blocks.
+
+A curated release-bot changelog-only apply is a narrow exception to normal package work. The detector and release configuration are sparse-checked out from the trusted PR base ref, and it recognizes only the expected same-repository bot branch, commit identity, one-parent commit, and one modified managed changelog. CI skips ordinary package jobs only when the parent has exactly one conclusive `✅ CI Success` check. A successful parent can produce a passing inherited gate; an inherited failure remains failed. Read-only diagnostics cannot alter that result: they show sanitized, repository-local parent run/job links where available and explain the retry sequence. After fixing the parent, re-run its failed jobs and wait for `✅ CI Success`, then re-run **all** jobs on the apply commit; re-running only failed head jobs reuses the old detection output.
 
 ### Lockfiles, reusable tests, and limited acknowledgements
 
@@ -109,6 +71,35 @@ The `ci:*` taxonomy is a maintainer-facing acknowledgement/override contract. Mo
 | `ci:allow-warnings` | Warnings-as-errors on a PR test run | `_test.yml` runs pytest with `-W default`; merge-group and push runs stay strict. |
 | `ci:skip-ripgrep` | A release-PR ripgrep installation failure | The missing rg-gated coverage is recorded; normal push and merge-group checks remain strict. |
 | `ci:ack-release-deps` | Review of stale dependency advice on a release PR | It does not relax built-wheel metadata validation or PyPI-only installation. |
+| `ci:ack-readme` | Intentional landing-page README edit in a non-`docs` PR, or an uninspectably large PR | The separate Project README check passes, but branch protection must require that check if it is to block merging. |
+
+### Project README acknowledgement check
+
+`📄 Project README check` is intentionally separate from `ci.yml` and therefore from `✅ CI Success`. It listens for PR open/synchronize/reopen plus `edited`, `labeled`, and `unlabeled` events, so retitling to `docs:` or toggling `ci:ack-readme` immediately recalculates the cheap check without restarting the large CI matrix. To make it merge-blocking, configure its status check as required in branch protection.
+
+```mermaid
+flowchart TD
+    Event["PR event"] --> Files["List changed and prior rename paths"]
+    Files --> Complete{"Complete list"}
+    Complete -->|"no"| FailClosed["Fail closed"]
+    Complete -->|"API cap"| Unknown["Require acknowledgement"]
+    Complete -->|"yes"| Detect["Trusted detector reads title and paths"]
+    Detect --> Docs{"docs title or no protected README"}
+    Docs -->|"yes"| Pass["Pass and clear sticky comment"]
+    Docs -->|"no"| Labels["Read live PR labels"]
+    Unknown --> Labels
+    Labels --> Ack{"ci:ack-readme"}
+    Ack -->|"yes"| Acknowledge["Pass with acknowledgement"]
+    Ack -->|"no"| Block["Fail check and publish verdict"]
+```
+
+*The README check uses a trusted detector and complete changed-file evidence; only its explicit acknowledgement bypasses a known README edit or the API's known listing limit.*
+
+The detector protects the root `README.md` and the landing-page `README.md` for every distributed package. It extracts only an anchored lowercase Conventional Commit type from the PR title: `docs:` (including a valid breaking-change `!`) is the sole title exemption; malformed or other titles are not exempt. The changed-path collector includes `previous_filename`, so renaming a protected README away is still an edit. Its test derives the protected list from package manifests, preventing a new package's landing page from silently falling outside the gate.
+
+Both the Python detector and JavaScript enforcement module are sparse-checked out from the current base-branch tip with credentials disabled; the base-tip choice lets label/edit reruns use policy that has landed on the base rather than a stale payload SHA. A temporary bootstrap fallback can run the PR copy only when base sources are absent, and missing both copies fails closed. The workflow still runs under `pull_request`, so branch protection and review of workflow edits remain part of the trust boundary.
+
+The collector paginates the GitHub file API and rejects unexplained short lists or a missing `changed_files` total. The API's documented 3,000-file ceiling is handled differently: the list is marked unknowable and requires `ci:ack-readme`, rather than becoming a permanently unmergeable check. For a known README edit or a truncated list, enforcement reads live, paginated labels and fails closed if that lookup or the detector result is invalid. It sets the failure before attempting notification, so comment failure cannot make the check pass. Same-repository PRs get a sticky comment that is updated or removed as the result changes; fork PRs still block but use the job summary because their token is read-only.
 
 ### Scope and fan-out controls
 
@@ -165,13 +156,16 @@ Release notes deliberately fail open: a notes failure does not prevent a success
 Run the narrow tests after changing this area:
 
 ```bash
-python -m pytest .github/scripts/tests/checks/test_ci_gate.py
+python -m pytest .github/scripts/tests/checks/test_check_project_readmes.py
+node --test .github/scripts/tests/checks/readme-gate.test.js
+python -m pytest .github/scripts/tests/workflows/test_project_readme_check.py
+python -m pytest .github/scripts/tests/workflows/test_ci_workflow.py
+python -m pytest .github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
 python -m pytest .github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
 python -m pytest .github/scripts/tests/labeling/test_check_pr_scope_files.py
 python -m pytest .github/scripts/tests/release/test_check_lockfile_release_scope.py
 python -m pytest .github/scripts/tests/release/test_build_release_notes.py
-python -m pytest .github/scripts/tests/workflows/test_ci_workflow.py
 python -m pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py
 ```
 
-The workflow tests cover aggregate-gate and inherited-CI behavior. The release-note tests construct histories to exercise predecessor selection, changelog extraction, bounded logs, and incomplete attribution diagnostics; secret-scoping tests ensure publishing jobs retain their minimal OIDC permission and selected environment.
+The CI workflow tests execute the aggregate validator against missing, skipped, failed, cancelled, and invalid results, including the narrow Talon and superseded-push cases. The inherited-CI tests pin both the unchanged failed-parent verdict and safe diagnostic rendering. README tests cover title parsing, protected-set drift, base-source resolution, changed-file completeness, acknowledgements, and fork-safe reporting. The release-note tests construct histories to exercise predecessor selection, changelog extraction, bounded logs, and incomplete attribution diagnostics; secret-scoping tests ensure publishing jobs retain their minimal OIDC permission and selected environment.

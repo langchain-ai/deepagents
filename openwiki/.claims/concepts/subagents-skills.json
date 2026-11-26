@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3a5d1a761c6f23463428124b31ea05e6e079b5f6d2d6d7c5f7abddd8bdf9a2c6",
+  "pageVersion": "sha256:f5ec75df8ded530e5ed06c1685143e82988722d8402e55a9d75c46f2b71e8068",
   "claims": [
     {
       "id": "claim_6bdfb8742f1343cf8ba28d8db535656f",
@@ -36,7 +36,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:12b28893084e14972d00d1a5741c527c055b6070e1017a820e379fcc1720ddca"
+          "version": "repo-file-v1:sha256:537384e3872cdf646aa5a378865377206b1c9ba9f9c6418c19c5ebadf1638217"
         }
       ]
     },
@@ -46,11 +46,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:12b28893084e14972d00d1a5741c527c055b6070e1017a820e379fcc1720ddca"
+          "version": "repo-file-v1:sha256:537384e3872cdf646aa5a378865377206b1c9ba9f9c6418c19c5ebadf1638217"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:c745a3935591739f4ea4172d75881031e84cbe6724398e5fa94e9769beb6fa10"
+          "version": "repo-file-v1:sha256:091aa7851dde6fb09dbcc5e2d457f8b5316d0574e86a427dfe860f4dbf063069"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py",
@@ -74,7 +74,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:12b28893084e14972d00d1a5741c527c055b6070e1017a820e379fcc1720ddca"
+          "version": "repo-file-v1:sha256:537384e3872cdf646aa5a378865377206b1c9ba9f9c6418c19c5ebadf1638217"
         }
       ]
     },
@@ -142,7 +142,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:c745a3935591739f4ea4172d75881031e84cbe6724398e5fa94e9769beb6fa10"
+          "version": "repo-file-v1:sha256:091aa7851dde6fb09dbcc5e2d457f8b5316d0574e86a427dfe860f4dbf063069"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py",
@@ -156,7 +156,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:c745a3935591739f4ea4172d75881031e84cbe6724398e5fa94e9769beb6fa10"
+          "version": "repo-file-v1:sha256:091aa7851dde6fb09dbcc5e2d457f8b5316d0574e86a427dfe860f4dbf063069"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_subagents.py",
@@ -255,10 +255,28 @@
           "version": "repo-file-v1:sha256:726d6c162ba7da873a7759c57e53aab9d333b26a2ddd2a8d0c5354b45bb00bd5"
         }
       ]
+    },
+    {
+      "id": "claim_0a5447f6488646108e87ac4c0a0c97ed",
+      "statement": "`SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY` supplies a per-task dynamic response format only for declarative subagents, overriding their static `response_format`; a compiled runnable rejects that override. A fork does not inherit its parent's response format, and differing child formats change provider tool or output configuration, reducing request equivalence needed for potential prompt-cache reuse.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py#L681-L899",
+          "version": "repo-lines-v1:sha256:294d189439ee0ae11314c4de075fd058f7dbd30c08778cfc29b85663f39b7291:eyJzZWxlY3RlZExpbmVDb3VudCI6MjE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiMjIyN2M2NjFkYTRiNWNmNDRkNDMyZTYyMDA0ODU5MmE0MDQ1OTI5MTljZDU2NWJiZTM4YjAxMzNlYjk0NzExIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiY2ZmMjQzY2NjYmJkM2IzZTM1ZWNjMjk0Y2NkODE0YThkMWUwOTM3Y2JiMzc1YzJiNDg1ZTMwNDJiZTRhYzM4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiYjRkM2FiMmRhMWQxNzMzZTlkNTE1MmU4ODk5NzNkMWRlYWMwNGRmYjk0ZjU5NzNiZmUxZmNiMDgyNjY0OTU2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0NDdlOWNmY2U1YzJkNTRmYjFlYjcxYmM0NmY1MTZmN2UyMGEwZWQzMTg3OWRkNTk5ODMzNjc3MWNlODNlMTgzIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_fork_response_format.py#L24-L120",
+          "version": "repo-lines-v1:sha256:b77d6f0c236a2ef7d9c32f0fa1e72a2ca9e0e803ff2b1a1df91b0ea207608406:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5YzkzOTNkZWUzYWFkZWIxMTY0MjNmYWRiNWU5OTNlOWI1ZTk5N2I4MTMyYTQxYzJlMjU2NzcxYTU5ZmY3YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlZjlkZDEyN2U4MmMxMWM0Zjg2NmUxMzM1MDUwYzEzZGIzZjIzOTczMzY1ZjAyZjg1NjRlYmEzZmMyOTNkOTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4MmE1ODRjMzhhODBhMTE3NDIzZmVjMGU1OTMwNGY5NjhmMjI2MDEyMjQwYzU2N2VlZmE0NmQ1M2FiZWZkNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py#L608-L702",
+          "version": "repo-lines-v1:sha256:6b7d5d7f51c271ccff24ffd68897d2927a73b5d0c8747c86df9ff302944a258b:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzODAwNzQ4MTE0Njk4NWMxM2EwYTUzYjY1NDQ5ZTBlY2E5ZjY4NTQ3YmZkZTc3ZmFkZmQ2ZDRlY2YyZmFkZGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg4NjZhNjJlNDhkYjg4N2JhNTY1MzhiMGU0MDVjYTMyYzg4YmNmNTNjODExNmU2ZmNiNDcxNGU4NGQyZTI2M2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyYTVmMDM1ZTYyMDBkODRjZmY4MmQ1MWE2MmQ2MjAxNWMwNmE5YWQ4OTY3NWVkMjVkNGQ4M2Y2YmM4NzI5M2IifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-25T08:04:06.996Z"
+    "at": "2026-11-26T08:03:59.911Z"
   }
 }

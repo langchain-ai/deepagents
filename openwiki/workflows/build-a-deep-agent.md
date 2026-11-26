@@ -3,9 +3,6 @@ type: implementation workflow
 title: Build a Deep Agent
 description: Build and customize a Deep Agents graph by deliberately assembling its model, backend, middleware, subagent boundary, prompt-cache layer, and filesystem approval policy. Verify the construction and task-result contract with focused graph and subagent tests.
 tags: [deepagents, agent-construction, middleware, subagents, prompt-caching, permissions, testing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-13T08:03:55.116Z
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
@@ -21,6 +18,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-e05fd90c9d31b1aafef834ba
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_fork_response_format.py
+  - id: openwiki-source-454da083c2cc29febd156c7e
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
@@ -29,7 +30,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-13T08:03:55.116Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-26T08:03:59.911Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # Build a Deep Agent
@@ -113,7 +117,13 @@ The main graph appends `ModelRefusalMiddleware` after caller middleware. A paren
 
 If no synchronous worker named `general-purpose` is supplied, the active profile supplies one unless it disables it. Set `GeneralPurposeSubagentProfile(enabled=False)` and provide no synchronous workers to remove `task`; remote async workers do not affect that decision. Declarative workers inherit parent tools when their `tools` key is absent, and inherit `permissions` and `interrupt_on` unless their specification supplies replacements. Compiled and remote workers own their own graph schema and approval configuration.
 
-Use default isolated mode when a worker should receive only the delegated description. Experimental `mode="fork"` gives a declarative worker the parent's effective, summarized conversation plus the task. The fork retains the parent's system prompt and rebuilds inherited prompt-producing middleware; its own `system_prompt` is placed in the task message to preserve the reusable prefix. Forks inherit parent skills rather than declaring separate `skills`, and a fork's `task` call is refused to prevent recursive delegation. A fork is context sharing, not an authorization shortcut.
+Use default isolated mode when a worker should receive only the delegated description. Experimental `mode="fork"` gives a declarative worker the parent's effective, summarized conversation plus the task. The fork retains the parent's system prompt and rebuilds inherited prompt-producing middleware; its own `system_prompt` is placed in the task message to preserve the reusable prefix. Declarative forks inherit parent skills rather than declaring separate `skills`, and a fork's `task` call is refused to prevent recursive delegation. A fork is context sharing, not an authorization shortcut.
+
+### Keep structured-output configuration at the delegation boundary
+
+A fork does **not** inherit the parent's `response_format`. Set `response_format` on the declarative `SubAgent` when the child must return structured data; otherwise its task result uses the final text fallback. This is also a cache boundary: parent and child provider requests have matching tool and provider output configuration only when their formats make them match, so independently changing either can reduce shared-prefix reuse.
+
+For per-invocation control, set `SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY` in the task call's `configurable` configuration. That dynamic format takes precedence over the declarative spec and causes a declarative worker variant to be compiled for that call. It cannot be applied to a `CompiledSubAgent`, because the runnable is already built; the task call fails instead. Test both synchronous and asynchronous execution when changing this behavior, and assert the provider request's tools/output configuration as well as the JSON in the returned `ToolMessage`.
 
 The `task` boundary deliberately returns a narrow result to the parent:
 
@@ -162,7 +172,8 @@ Start with the owning suites rather than a broad smoke test.
 |---|---|---|
 | Builder inputs, profile selection, exact stack order, middleware replacement/exclusion, or provider cache wiring | `tests/unit_tests/test_graph.py` | core-to-tail placement, new versus matching middleware name, cache middleware before no later prompt mutation, and unavailable optional providers |
 | Synchronous task routing, returned state, structured task results, parallel state isolation, or checkpoint result artifacts | `tests/unit_tests/test_subagents.py` | final text versus JSON `structured_response`, private-state stripping, duplicate-update suppression, and separate `ToolMessage` results |
-| Isolated/fork input semantics, fork cache-prefix behavior, or recursion refusal | `tests/unit_tests/middleware/test_subagent_middleware_init.py` | description-only isolation versus inherited fork prefix, fork instruction placement, matching tool order, and refused nested `task` |
+| Isolated/fork input semantics, fork cache-prefix behavior, recursion refusal, or the general dynamic-format boundary | `tests/unit_tests/middleware/test_subagent_middleware_init.py` | description-only isolation versus inherited fork prefix, fork instruction placement, matching tool order, refused nested `task`, and rejection of a dynamic format for a compiled worker |
+| Fork provider request format and dynamic override behavior | `tests/unit_tests/middleware/test_fork_response_format.py` | sync and async paths; parent versus child tool and provider output configuration; child JSON returned through `ToolMessage`; and `SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY` overriding the fork spec |
 | Child or parent model refusal behavior | `tests/unit_tests/test_subagent_refusal.py` | child refusal becomes a task result while parent refusal raises, falls back, or remains in result according to stack configuration |
 | Filesystem matching, resolved paths, recursive delete, or permission-generated HITL | `tests/unit_tests/test_permissions.py` | first-match normal operations, conservative recursive delete, and bulk-search approval geometry |
 
@@ -174,6 +185,7 @@ uv sync --all-groups
 make test TEST_FILE=tests/unit_tests/test_graph.py
 make test TEST_FILE=tests/unit_tests/test_subagents.py
 make test TEST_FILE=tests/unit_tests/middleware/test_subagent_middleware_init.py
+make test TEST_FILE=tests/unit_tests/middleware/test_fork_response_format.py
 make test TEST_FILE=tests/unit_tests/test_subagent_refusal.py
 make test TEST_FILE=tests/unit_tests/test_permissions.py
 make lint

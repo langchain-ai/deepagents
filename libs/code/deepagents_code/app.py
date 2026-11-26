@@ -9532,6 +9532,26 @@ class DeepAgentsApp(App):
         return (
             stats.priced_request_count < stats.request_count
             or self._has_unknown_restored_usage()
+            or self._breakdown_has_unpriced_requests()
+        )
+
+    def _breakdown_has_unpriced_requests(self) -> bool:
+        """Report unpriced requests recorded in the thread-wide breakdown.
+
+        `_thread_stats` starts empty on resume, so a restored thread that mixed
+        priced and unpriced requests is only visible through the checkpointed
+        breakdown counts.
+
+        Returns:
+            `True` when the breakdown records more requests than it priced.
+        """
+        breakdown = self._session_cost_breakdown
+        if not isinstance(breakdown, Mapping):
+            return False
+        requests = breakdown.get("request_count")
+        priced = breakdown.get("priced_request_count")
+        return (
+            isinstance(requests, int) and isinstance(priced, int) and priced < requests
         )
 
     def _reset_thread_usage(

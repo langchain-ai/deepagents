@@ -1584,6 +1584,27 @@ class TestFooterCostBreakdown:
             assert "<$0.01" in rendered
             assert (get_glyphs().warning in rendered) is not priced
 
+    @pytest.mark.parametrize("priced", [False, True])
+    async def test_footer_flags_partial_cost_after_resume(self, priced: bool) -> None:
+        """A restored breakdown with unpriced requests flags the footer."""
+        from deepagents_code.config import get_glyphs
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        breakdown = dict(_empty_cost_breakdown())
+        breakdown.update(request_count=2, priced_request_count=2 if priced else 1)
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._reset_thread_usage(
+                1.25, has_restored_model_usage=True, breakdown=breakdown
+            )
+            await pilot.pause()
+
+            rendered = str(app.query_one("#tokens-display", MetricsLine).render())
+            assert "$1.25" in rendered
+            assert (get_glyphs().warning in rendered) is not priced
+
     @pytest.mark.parametrize("entrypoint", ["footer", "command"])
     @pytest.mark.parametrize("incomplete", [False, True])
     async def test_missing_breakdown_opens_summary_modal(

@@ -101,13 +101,17 @@ class ObjectiveReport(BaseModel):
 
     def checkpoint_workstreams(self, row: dict[str, object]) -> ObjectiveReport:
         """Keep the next steps in run history and reconcile the aggregate status."""
-        if "workstreams" not in self.model_fields_set and self.status not in {
-            "blocked",
-            "complete",
-        }:
-            if saved := row.get("workstreams"):
-                streams = [Workstream.model_validate(item) for item in json.loads(str(saved))]
-                return self.model_copy(update={"workstreams": streams}).checkpoint_workstreams(row)
+        if (
+            "workstreams" not in self.model_fields_set
+            and self.status
+            not in {
+                "blocked",
+                "complete",
+            }
+            and (saved := row.get("workstreams"))
+        ):
+            streams = [Workstream.model_validate(item) for item in json.loads(str(saved))]
+            return self.model_copy(update={"workstreams": streams}).checkpoint_workstreams(row)
         row["workstreams"] = json.dumps([s.model_dump(mode="json") for s in self.workstreams])
         ready = self.needs_action
         unfinished = any(stream.state != "done" for stream in self.workstreams)

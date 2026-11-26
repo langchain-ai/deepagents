@@ -721,7 +721,7 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.4.1,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.44,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.38.6,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.39.0,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.14,<1.0.0" },
     { name = "langsmith", extras = ["sandbox"], specifier = ">=0.16.2" },
     { name = "markdownify", specifier = ">=1.2.3" },
@@ -1240,18 +1240,18 @@ wheels = [
 
 [[package]]
 name = "grpcio"
-version = "1.81.1"
+version = "1.85.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b0/b5/1ff353970a87eda4c98251e34d2dfd214abd4982dc89119c9252a2a482d2/grpcio-1.81.1.tar.gz", hash = "sha256:6fa10a767143a5e82e8eaab53918af0cd8909a57a27f8cb2288b80a613ac671b", size = 13026582, upload-time = "2026-06-11T12:46:51.673Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/c7/37a4a43210ef2ecbf570a84e66c61c8a197db3c4057dc23b20263875f9af/grpcio-1.85.4.tar.gz", hash = "sha256:45c4efd77dbfbb92cfebe493518c7e2a97ef3f4da2673508f81214b7493d7cca", size = 14119566, upload-time = "2026-11-24T10:08:14.94Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/32/f1/2ec88adb92b0eba970dd0e0e7dd086341daa3c75eba4f735f9e44bf684b0/grpcio-1.81.1-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:d865db4a6318e1c1bea83292e0ed231090538fc4ca45425b0f0480eb338bbc6e", size = 12056279, upload-time = "2026-06-11T12:46:24.255Z" },
-    { url = "https://files.pythonhosted.org/packages/41/36/e8c5f8c6ec71de73733695ebc809e98b178b534ec6d8eaa31a7ebab4ad4c/grpcio-1.81.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e2aa72e3ce1770317ef534f63d397b55e130725f5149bd36077c3b539019db27", size = 6608225, upload-time = "2026-06-11T12:46:27.601Z" },
-    { url = "https://files.pythonhosted.org/packages/76/7b/61dab5d5969f28d97fb1009cead1df0a5cd987d3315e1b37f18a4449f8bc/grpcio-1.81.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:410482da976329fe5f4067270401b12cf2bd552ff8020f054ecfaddb5475f9d6", size = 6812165, upload-time = "2026-06-11T12:46:33.699Z" },
-    { url = "https://files.pythonhosted.org/packages/82/78/6e501929d4f5f96462fd82fd9f0f06e5f9612207582b862868d68757b27d/grpcio-1.81.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:e3657301562ac3cb8018d30d0d3ebfa39932239f7b5703422057ef14b69949f5", size = 7422962, upload-time = "2026-06-11T12:46:36.511Z" },
-    { url = "https://files.pythonhosted.org/packages/da/df/c6717fef716e00d235ffb96123baf6dce76d6004f6233fa767c502861460/grpcio-1.81.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:b427c19380991a4eaab2f6144b64b99b412043314c6bf4ab544f97bb31ee4190", size = 7846681, upload-time = "2026-06-11T12:46:43.013Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/7e/ecac0ba1f209b667d3b1e14da69fb46256b9e282edce0c15d47c9882d4c4/grpcio-1.85.4-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:2a471210eace83a9f2cd7445700a7f41eab2c261bfd56e02330105476200e47b", size = 12640253, upload-time = "2026-11-24T10:07:31.344Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/c3/dde68f94ec42c08b1f3908a4231db053f6bbf1b06b588b14eebe977f5f73/grpcio-1.85.4-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2499a2a8b1eac38b2845849a2b566b3d424ccb6dc5b11659c9dc71a3e486621a", size = 7187883, upload-time = "2026-11-24T10:07:35.248Z" },
+    { url = "https://files.pythonhosted.org/packages/78/dc/99906c5b50089e68f1522deeaa6bbf0a362617dbc91c16193676a7eea37a/grpcio-1.85.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0b682bd6be9a621fb30e04364b0236f830e713add877c6d09527142a636adfe9", size = 7367056, upload-time = "2026-11-24T10:07:39.489Z" },
+    { url = "https://files.pythonhosted.org/packages/30/2c/0e2ab08f2c45a5f287eb2e9a3f6a7bdad0edfecbb1745c42915ead606503/grpcio-1.85.4-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:414cc472c74e3a2d633c752f4883b3a08f0c982b38c734a735de34b60cea91b0", size = 7940021, upload-time = "2026-11-24T10:07:41.562Z" },
+    { url = "https://files.pythonhosted.org/packages/18/bb/bb0f0aef29c9dee72a8d4fda27684dc9f3d51d3e2352e8b9b625af4a6aeb/grpcio-1.85.4-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:fdd65fe8df4462a32f9f575ab9642f7f7f2cda157a6a7903d20824ab288c8d1d", size = 8315681, upload-time = "2026-11-24T10:07:45.856Z" },
 ]
 
 [[package]]
@@ -2044,11 +2044,12 @@ wheels = [
 
 [[package]]
 name = "langgraph-api"
-version = "0.18.0"
+version = "0.19.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "cloudpickle" },
+    { name = "croniter" },
     { name = "cryptography" },
     { name = "grpcio" },
     { name = "grpcio-health-checking" },
@@ -2060,7 +2061,6 @@ dependencies = [
     { name = "langchain-protocol" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint" },
-    { name = "langgraph-runtime-inmem" },
     { name = "langgraph-sdk" },
     { name = "langsmith", extra = ["otel"] },
     { name = "mcp" },
@@ -2085,9 +2085,26 @@ dependencies = [
     { name = "websockets" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2d/ba/564d221b545e31b45111cd6a9752c12cbc945adb131a636cffedafe02829/langgraph_api-0.18.0.tar.gz", hash = "sha256:ddc0e6186d292c242b085a8a2dcf7ffff0db160d74ff1a65ca5817c97834f5aa", size = 946515, upload-time = "2026-11-12T22:56:45.258Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/5e/9de6434eaf5b9bdabeed5d46ccac03275b50f105ff151dbe859a07baacf5/langgraph_api-0.19.0.tar.gz", hash = "sha256:79be58ff67107b447daf1e04bbc976da26b478c23944ead4a5abca11a5d43287", size = 1005690, upload-time = "2026-11-25T23:49:19.404Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7d/30/da15e42433f00a9d6509be4a9c8d72b6f501cd0e3a4ba80ea45be2caa2a3/langgraph_api-0.18.0-py3-none-any.whl", hash = "sha256:eda579f447836313a20c6e9fa19b17b1686df9fa955558f767be2670a97271df", size = 707867, upload-time = "2026-11-12T22:56:42.952Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/5b/55127650fc0d4d05dbec2892b4c962accbcb0f39e997b728e21d947104d8/langgraph_api-0.19.0-py3-none-any.whl", hash = "sha256:c8efc0daf05e766b4df0b8e1e0e7520f71719d5c590113e937a09623ecd9f3f8", size = 771257, upload-time = "2026-11-25T23:49:18.08Z" },
+]
+
+[package.optional-dependencies]
+inmem = [
+    { name = "blockbuster" },
+    { name = "langgraph" },
+    { name = "langgraph-api-core-bin" },
+]
+
+[[package]]
+name = "langgraph-api-core-bin"
+version = "0.19.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/26/c8/ae2f8c29b154af8d1d38f139866f8d1834649f9d5e7cbb6e0e79dcf7f95f/langgraph_api_core_bin-0.19.0-py3-none-macosx_12_0_arm64.whl", hash = "sha256:90e48d9e47b4f52fb1800f58c49fde94dae39e85c5c96d2c976d8111f69c1b5e", size = 15635221, upload-time = "2026-11-25T23:48:18.176Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/04/3d3e32a22b4a9a8f81585f9a150fed1d9c7174fc31d2c0d3bb9e0137ffb9/langgraph_api_core_bin-0.19.0-py3-none-manylinux2014_aarch64.musllinux_1_1_aarch64.whl", hash = "sha256:63eee1b488b835a7a942dafce22036d3d717fb69d5ed8255f0d239ef69d8c66e", size = 15036000, upload-time = "2026-11-25T23:48:24.106Z" },
+    { url = "https://files.pythonhosted.org/packages/75/9f/6725b9466c94ee780af6c49f81119ab9ecf6962bc1502ecd302dc4004a63/langgraph_api_core_bin-0.19.0-py3-none-manylinux2014_x86_64.musllinux_1_1_x86_64.whl", hash = "sha256:96f5c65a67689b14a1dac726daf1c3a50997292ddc3d92aa7640d2831848913d", size = 16826368, upload-time = "2026-11-25T23:48:27.224Z" },
 ]
 
 [[package]]
@@ -2154,20 +2171,21 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.38.6"
+version = "0.39.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
     { name = "croniter" },
     { name = "langgraph" },
+    { name = "langgraph-api", extra = ["inmem"] },
     { name = "langgraph-checkpoint" },
     { name = "sse-starlette" },
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7b/e9/0c6f566aa409a09d12336035c3c84d2c668e0b5e7afdc7c705e2ec2aabb2/langgraph_runtime_inmem-0.38.6.tar.gz", hash = "sha256:d07f604f8c1bd836e17d735b5c880df99456ad5b1c816b5d6119fe11dca04da9", size = 145086, upload-time = "2026-11-25T22:05:01.224Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/d4/f3e5b983d8196e81fa69932190e4b17f2bcf5c981e71e4ee4f611ddba90b/langgraph_runtime_inmem-0.39.0.tar.gz", hash = "sha256:9e7597e0582ac292f0a7962790496c4167673eb674bd0e65f9973f18317b5e4c", size = 211510, upload-time = "2026-11-25T23:36:17.239Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/ee/70b978f9d6d9bd6ed772ff381add5695ef1ab750e4da5f7ac49db71c6728/langgraph_runtime_inmem-0.38.6-py3-none-any.whl", hash = "sha256:32271ee586e6932359e975245600aede3145c02b549bf53e12b315a493ef80a2", size = 64994, upload-time = "2026-11-25T22:04:59.828Z" },
+    { url = "https://files.pythonhosted.org/packages/43/51/97f2333a0f70ce3a86c61b8c71abdab2e2f8ee336d0ae6bb9bc8bba2cd54/langgraph_runtime_inmem-0.39.0-py3-none-any.whl", hash = "sha256:eab4f0580839ad46f986df209ec96cd23ef32cc3a4dd389137cc3c44c7c43ee7", size = 66243, upload-time = "2026-11-25T23:36:16.231Z" },
 ]
 
 [[package]]

@@ -22,10 +22,10 @@ Source of truth: [`.github/scripts/evals/models.py`](../../.github/scripts/evals
 - `fireworks:accounts/fireworks/models/deepseek-v3p2`
 - `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
-- `google_genai:gemini-2.5-flash`
-- `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3-flash-preview`
 - `google_genai:gemini-3.1-pro-preview`
+- `google_genai:gemini-3.5-flash-lite`
+- `google_genai:gemini-3.8-flash`
 - `ollama:minimax-m2.7:cloud`
 - `openai:gpt-4.1`
 - `openai:gpt-5.1-codex`
@@ -42,8 +42,8 @@ Source of truth: [`.github/scripts/evals/models.py`](../../.github/scripts/evals
 - `anthropic:claude-sonnet-4-6`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
-- `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3.1-pro-preview`
+- `google_genai:gemini-3.8-flash`
 - `ollama:qwen3.5:cloud`
 - `openai:gpt-4.1`
 - `openai:gpt-5.2-codex`
@@ -135,10 +135,10 @@ Source of truth: [`.github/scripts/evals/models.py`](../../.github/scripts/evals
 
 ### Google (`google_genai`) (4 models)
 
-- `google_genai:gemini-2.5-flash`
-- `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3-flash-preview`
 - `google_genai:gemini-3.1-pro-preview`
+- `google_genai:gemini-3.5-flash-lite`
+- `google_genai:gemini-3.8-flash`
 
 ### `groq` (3 models)
 
@@ -198,10 +198,10 @@ Source of truth: [`.github/scripts/evals/models.py`](../../.github/scripts/evals
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
 - `fireworks:accounts/fireworks/models/minimax-m3`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
-- `google_genai:gemini-2.5-flash`
-- `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3-flash-preview`
 - `google_genai:gemini-3.1-pro-preview`
+- `google_genai:gemini-3.5-flash-lite`
+- `google_genai:gemini-3.8-flash`
 - `groq:moonshotai/kimi-k2-instruct`
 - `groq:openai/gpt-oss-120b`
 - `groq:qwen/qwen3-32b`

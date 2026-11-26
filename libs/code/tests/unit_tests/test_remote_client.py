@@ -38,9 +38,39 @@ _COMPACTED_RESULT = {
 """A well-formed `compacted` result, for tests that perturb one field."""
 
 
-# ---------------------------------------------------------------------------
-# _prepare_config
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+async def test_local_sdk_clients_bypass_proxies(
+    monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """Both real RemoteGraph clients keep local API traffic off the proxy."""
+    import httpx
+
+    monkeypatch.setenv("HTTP_PROXY", "http://company-gateway:8080")
+    monkeypatch.setenv("http_proxy", "http://company-gateway:8080")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+    direct = MagicMock(side_effect=lambda _: httpx.Response(200, json={}))
+    proxy = MagicMock(return_value=httpx.Response(502))
+    for client_type in (httpx.Client, httpx.AsyncClient):
+        monkeypatch.setattr(
+            client_type,
+            "_init_transport",
+            MagicMock(return_value=httpx.MockTransport(direct)),
+        )
+        monkeypatch.setattr(
+            client_type,
+            "_init_proxy_transport",
+            MagicMock(return_value=httpx.MockTransport(proxy)),
+        )
+    graph = RemoteAgent(f"http://{host}:43210")._get_graph()
+    try:
+        assert await graph.client.http.get("/ok") == {}
+        assert graph.sync_client.http.get("/ok") == {}
+        assert direct.call_count == 2
+        proxy.assert_not_called()
+    finally:
+        await graph.client.aclose()
+        graph.sync_client.close()
 
 
 class TestPrepareConfig:
@@ -1565,6 +1595,7 @@ class TestServerOffload:
         assert first["context"] == {
             "model": "test:model",
             "workspace": {"workspace_id": "test-workspace"},
+            "offload_trigger": "manual",
         }
         assert "messages" not in first
         assert first["operation_id"] == second["operation_id"]

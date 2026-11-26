@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, get_notification_metadata
 
 from deepagents.backends.utils import format_content_with_line_numbers
 from deepagents.middleware.filesystem import _read_header
@@ -40,7 +40,6 @@ if TYPE_CHECKING:
 _EXPECTED_NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
     "NVIDIA:nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
-    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
@@ -867,6 +866,8 @@ def test_action_commit_nudge_fires_after_user_approval_with_prior_tool_context()
     assert update is not None
     assert update["nemotron_action_nudged"]
     assert "perform an action now" in update["messages"][0].content
+    assert update["messages"][0].name == "nemotron_action_commit_nudge"
+    assert get_notification_metadata(update["messages"][0]) == {"source": "nemotron_action_commit_nudge"}
 
 
 def test_tool_chain_nudge_fires_after_information_lookup_before_action() -> None:
@@ -895,6 +896,8 @@ def test_tool_chain_nudge_fires_after_information_lookup_before_action() -> None
     assert update is not None
     assert update["nemotron_tool_chain_nudged"] is True
     assert "chained action" in update["messages"][0].content
+    assert update["messages"][0].name == "nemotron_tool_chain_nudge"
+    assert get_notification_metadata(update["messages"][0]) == {"source": "nemotron_tool_chain_nudge"}
 
 
 def test_final_answer_guard_rewrites_vague_mutation_result() -> None:
@@ -965,6 +968,8 @@ def test_domain_tool_nudge_fires_after_dead_end_filesystem_search() -> None:
     assert update is not None
     assert update["nemotron_domain_tool_nudged"] is True
     assert "non-filesystem API/domain tools" in update["messages"][0].content
+    assert update["messages"][0].name == "nemotron_domain_tool_nudge"
+    assert get_notification_metadata(update["messages"][0]) == {"source": "nemotron_domain_tool_nudge"}
 
 
 def test_conversation_transition_ignores_in_progress_single_turn_file_work() -> None:
@@ -1001,6 +1006,8 @@ def test_conversation_transition_nudges_on_new_long_context_file_task() -> None:
     assert update is not None
     assert update["nemotron_transition_nudged"] is True
     assert "compact_conversation" in update["messages"][0].content
+    assert update["messages"][0].name == "nemotron_transition_nudge"
+    assert get_notification_metadata(update["messages"][0]) == {"source": "nemotron_transition_nudge"}
 
 
 def test_conversation_transition_nudges_on_file_followup_after_prior_file_work() -> None:

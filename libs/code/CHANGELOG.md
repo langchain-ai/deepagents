@@ -2,6 +2,141 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.15](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.14...deepagents-code==0.2.15) (2026-11-26)
+
+### Bug Fixes
+
+- Flag partial cost totals in the status bar and keep unpriced usage out of priced cost rows. ([#8023](https://github.com/langchain-ai/deepagents/pull/8023), [#8024](https://github.com/langchain-ai/deepagents/pull/8024))
+- Replace Baseten models retiring on December 18 in `/model` recommendations. ([#8009](https://github.com/langchain-ai/deepagents/pull/8009))
+- Start refreshing the price catalog when a turn begins. ([#8026](https://github.com/langchain-ai/deepagents/pull/8026))
+- Upgrade `genai-prices` to version 0.2. ([#8021](https://github.com/langchain-ai/deepagents/pull/8021))
+
+### Dependencies
+
+- `deepagents`: `==0.7.41` → `==0.7.42`
+- `genai-prices`: `>=0.1.13,<0.2.0` → `>=0.2.5,<0.3.0`
+- `langchain-anthropic`: `>=1.7.12,<2.0.0` → `>=1.7.13,<2.0.0`
+- `langchain-baseten`: `>=0.2.6,<1.0.0` → `>=0.2.7,<1.0.0` (`baseten` extra)
+- `langchain-core`: `>=1.8.4,<2.0.0` → `>=1.8.5,<2.0.0`
+- `langchain-fireworks`: `>=1.7.3,<2.0.0` → `>=1.8.0,<2.0.0` (`fireworks` extra)
+- `langchain-huggingface`: `>=1.2.3,<2.0.0` → `>=1.3.0,<2.0.0` (`huggingface` extra)
+- `langchain-ollama`: `>=1.1.0,<2.0.0` → `>=1.2.0,<2.0.0` (`ollama` extra)
+- `langchain-perplexity`: `>=1.4.2,<2.0.0` → `>=1.5.0,<2.0.0` (`perplexity` extra)
+- `langgraph-cli`: `>=0.4.43,<1.0.0` → `>=0.4.44,<1.0.0`
+- `langgraph-runtime-inmem`: `>=0.38.4,<1.0.0` → `>=0.38.6,<1.0.0`
+- `langsmith`: `>=0.16.0` → `>=0.16.2`
+
+## [0.2.14](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.13...deepagents-code==0.2.14) (2026-11-23)
+
+### Bug Fixes
+
+- Fixed attribution of side-request spending in the `/cost` breakdown ([#7912](https://github.com/langchain-ai/deepagents/pull/7912)).
+- Fixed local context detection on Windows ([#7938](https://github.com/langchain-ai/deepagents/pull/7938)).
+- Corrected flag hints for verbose settings ([#7946](https://github.com/langchain-ai/deepagents/pull/7946)).
+
+### Dependencies
+
+- `deepagents-acp`: `>=0.0.13,<1.0.0` → `>=0.1.0,<1.0.0`
+- `langgraph-runtime-inmem`: `>=0.38.3,<1.0.0` → `>=0.38.4,<1.0.0`
+- `langsmith[sandbox]`: `>=0.15.1` → `>=0.16.0`
+
+## [0.2.13](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.12...deepagents-code==0.2.13) (2026-11-20)
+
+### Bug Fixes
+
+- Correctly report unapproved MCP servers disabled via F2 as disabled, and report project MCP servers skipped due to missing approval ([#7908](https://github.com/langchain-ai/deepagents/pull/7908), [#7904](https://github.com/langchain-ai/deepagents/pull/7904)).
+- Show the source file in the project MCP trust prompt ([#7903](https://github.com/langchain-ai/deepagents/pull/7903)).
+
+## [0.2.12](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.11...deepagents-code==0.2.12) (2026-11-20)
+
+### Features
+
+- Added Gemini 4 Neon and GPT-6.2 Astra and Sol to the model picker ([#7861](https://github.com/langchain-ai/deepagents/pull/7861), [#7831](https://github.com/langchain-ai/deepagents/pull/7831)).
+
+### Bug Fixes
+
+- Changed OpenAI `prompt_cache_key` from per-thread to shared across threads within a local profile, improving prompt-cache reuse across sessions ([#7839](https://github.com/langchain-ai/deepagents/pull/7839)).
+- Fixed Auto mode to resolve relative paths consistently with file tools ([#7821](https://github.com/langchain-ai/deepagents/pull/7821)).
+- Fixed PTC tool discovery to read exposed tools rather than the QuickJS prompt cache ([#7848](https://github.com/langchain-ai/deepagents/pull/7848)).
+
+## [0.2.11](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.10...deepagents-code==0.2.11) (2026-11-18)
+
+### Bug Fixes
+
+- Honor MCP hook approval policies ([#7766](https://github.com/langchain-ai/deepagents/pull/7766)).
+- Wait for background worker cleanup to complete during shutdown ([#7810](https://github.com/langchain-ai/deepagents/pull/7810)).
+
+## [0.2.10](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.9...deepagents-code==0.2.10) (2026-11-17)
+
+### Features
+
+- Report agent status to terminals using OSC 7501 ([#7772](https://github.com/langchain-ai/deepagents/pull/7772)).
+
+### Bug Fixes
+
+- Load MCP trust lists without blocking the server event loop ([#7798](https://github.com/langchain-ai/deepagents/pull/7798)).
+- Show a working upgrade command in the ACP import error message ([#7780](https://github.com/langchain-ai/deepagents/pull/7780)).
+
+## [0.2.9](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.8...deepagents-code==0.2.9) (2026-11-16)
+
+### Features
+
+- Updated stable model recommendations ([#7734](https://github.com/langchain-ai/deepagents/pull/7734)).
+
+### Performance Improvements
+
+- Limited editable-SDK scanning to `deepagents` records ([#7756](https://github.com/langchain-ai/deepagents/pull/7756)).
+
+## [0.2.8](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.7...deepagents-code==0.2.8) (2026-11-13)
+
+### Features
+
+- Set `DEEPAGENTS_CODE=1` in the local shell environment. ([#7701](https://github.com/langchain-ai/deepagents/pull/7701))
+
+### Bug Fixes
+
+- Replace unencodable characters in redirected output. ([#7717](https://github.com/langchain-ai/deepagents/pull/7717))
+
+## [0.2.7](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.6...deepagents-code==0.2.7) (2026-11-10)
+
+### Features
+
+- Added shell completion scripts via `dcode completion` ([#7264](https://github.com/langchain-ai/deepagents/pull/7264)).
+
+### Bug Fixes
+
+- Fixed detection of editor launchers such as `code.cmd` on Windows ([#7642](https://github.com/langchain-ai/deepagents/pull/7642)).
+- Improved `dcode completion` output and setup steps, and fixed Bash completion for `--flag=value` arguments ([#7658](https://github.com/langchain-ai/deepagents/pull/7658), [#7656](https://github.com/langchain-ai/deepagents/pull/7656)).
+- Preserved compaction feedback and offload usage when summaries do not stream ([#7644](https://github.com/langchain-ai/deepagents/pull/7644)).
+
+### Performance Improvements
+
+- Reduced Git attribution overhead by halving probes, backing off after failures, and scanning the worktree only once per evidence probe. Added an option to disable attribution probes ([#7661](https://github.com/langchain-ai/deepagents/pull/7661), [#7660](https://github.com/langchain-ai/deepagents/pull/7660)).
+
+## [0.2.6](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.5...deepagents-code==0.2.6) (2026-11-09)
+
+### Features
+
+- Make idle compaction settings filterable in traces ([#7624](https://github.com/langchain-ai/deepagents/pull/7624)).
+- Tag offload traces with their triggers ([#7630](https://github.com/langchain-ai/deepagents/pull/7630)).
+
+### Bug Fixes
+
+- Fix dcode startup on Windows by disabling server log colors ([#7591](https://github.com/langchain-ai/deepagents/pull/7591)).
+- Bypass proxies for local server traffic ([#7613](https://github.com/langchain-ai/deepagents/pull/7613)).
+- Offer recovery options when server startup times out ([#7610](https://github.com/langchain-ai/deepagents/pull/7610)).
+- Leave piped standard input available to subcommands ([#7601](https://github.com/langchain-ai/deepagents/pull/7601)).
+- Resolve the summarization cutoff by message ID ([#7570](https://github.com/langchain-ai/deepagents/pull/7570)).
+- Keep queued prompts beside long message text ([#7611](https://github.com/langchain-ai/deepagents/pull/7611)).
+
+## [0.2.5](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.4...deepagents-code==0.2.5) (2026-11-05)
+
+### Bug Fixes
+
+- Size the compaction input budget to match the selected model. ([#7545](https://github.com/langchain-ai/deepagents/pull/7545))
+- Preserve cut-off reply handling when `ModelRefusalMiddleware` raises an error. ([#7548](https://github.com/langchain-ai/deepagents/pull/7548))
+- Defer in-app `uv` installations on Windows. ([#7518](https://github.com/langchain-ai/deepagents/pull/7518))
+
 ## [0.2.4](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.3...deepagents-code==0.2.4) (2026-11-02)
 
 ### Features

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import gzip
 import hashlib
 import ipaddress
@@ -14,7 +15,7 @@ import tempfile
 import threading
 import time
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 import httpx2
@@ -42,7 +43,7 @@ from deepagents_talon.mcp_auth import (
     prepare_oauth_login,
 )
 from deepagents_talon.mcp_config import WORKSPACE_ENV, locked_path
-from deepagents_talon.mcp_oauth import parse_oauth_config
+from deepagents_talon.mcp_oauth import MCPOAuthConfig, parse_oauth_config
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1156,8 +1157,36 @@ async def test_token_write_is_flushed_and_locked(
 
 def test_format_login_error_survives_an_empty_message() -> None:
     """Both call sites are error handlers; str(OSError()) is empty."""
-    assert format_login_error(OSError()) == "OSError"
+    assert "check Talon logs" in format_login_error(OSError())
     assert format_login_error(ValueError("first line\nsecond")) == "first line"
+
+
+@pytest.mark.parametrize("exception_type", [RuntimeError, KeyError])
+def test_format_login_error_unknown_failure_is_actionable_and_safe(exception_type) -> None:
+    sensitive = "https://user:password@private.example/mcp?token=secret-token"
+    message = format_login_error(exception_type(sensitive))
+    assert "MCP login failed" in message
+    assert "retry login" in message
+    assert "check Talon logs" in message
+    assert sensitive not in message
+    assert "private.example" not in message
+    assert "secret-token" not in message
+
+
+@pytest.mark.parametrize(
+    ("error", "remedy"),
+    [
+        (TimeoutError("secret-token"), "complete the callback promptly"),
+        (httpx.ConnectError("secret-token"), "check connectivity"),
+        (httpx2.ConnectError("secret-token"), "check connectivity"),
+        (OAuthFlowError("secret-token"), "registered callback_url"),
+        (MCPAuthorizationError("Safe authorization remedy"), "Safe authorization remedy"),
+    ],
+)
+def test_format_login_error_preserves_specialized_remedies(error, remedy: str) -> None:
+    message = format_login_error(error)
+    assert remedy in message
+    assert "secret-token" not in message
 
 
 async def test_authorization_without_a_conversation_names_the_remedy() -> None:
@@ -1363,3 +1392,171 @@ async def _assert_public_client_registration(storage: FileTokenStorage) -> None:
     assert client_info.client_secret is None
     expected_method = "none"
     assert client_info.token_endpoint_auth_method == expected_method
+
+
+def _confidential_oauth(method: str | None = None) -> MCPOAuthConfig:
+    config: dict[str, object] = {
+        "client_id": "assigned-client",
+        "client_secret": "${CONFIDENTIAL_SECRET}",
+    }
+    if method is not None:
+        config["token_endpoint_auth_method"] = method
+    parsed = parse_oauth_config(config)
+    # Loading resolves the reference before parsing; stand in for that here.
+    return dataclasses.replace(parsed, client_secret="s3cr:et/value")  # noqa: S106  # test fixture
+
+
+def _token_client_credentials(request: httpx.Request) -> tuple[str, str]:
+    """Return the client credentials, asserting they are sent exactly once."""
+    authorization = request.headers.get("Authorization")
+    fields = parse_qs(request.content.decode())
+    if authorization is not None:
+        scheme, _, encoded = authorization.partition(" ")
+        assert scheme == "Basic"
+        # RFC 6749 section 2.3.1: Basic carries the identity in the header alone.
+        assert "client_id" not in fields
+        assert "client_secret" not in fields
+        client_id, _, secret = base64.b64decode(encoded).decode().partition(":")
+        return unquote(client_id), unquote(secret)
+    return fields["client_id"][0], fields["client_secret"][0]
+
+
+def _authorization_server(
+    requests: list[httpx.Request],
+) -> Callable[[httpx.Request], httpx.Response]:
+    metadata = _oauth_metadata(code_challenge_methods_supported=["S256"])
+    del metadata["registration_endpoint"]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.headers.get("Authorization") == "Bearer renewed":
+            return httpx.Response(200)
+        if request.url.path == "/mcp":
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://example.com/resource"'
+                },
+            )
+        if request.url.path == "/resource":
+            return httpx.Response(
+                200,
+                json={
+                    "resource": "https://example.com/mcp",
+                    "authorization_servers": ["https://auth.example/tenant"],
+                },
+            )
+        if request.url.path == "/.well-known/oauth-authorization-server/tenant":
+            return httpx.Response(200, json=metadata)
+        if request.url.path == "/tenant/access-token":
+            return httpx.Response(
+                200,
+                json={"access_token": "renewed", "refresh_token": "next", "expires_in": 3600},
+            )
+        pytest.fail(f"Unexpected OAuth request path: {request.url.path}")
+
+    return handle
+
+
+@pytest.mark.parametrize(
+    ("method", "basic"),
+    [(None, True), ("client_secret_basic", True), ("client_secret_post", False)],
+)
+async def test_confidential_client_authenticates_code_exchange(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    oauth_network,
+    method: str | None,
+    *,
+    basic: bool,
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    oauth = _confidential_oauth(method)
+    storage = FileTokenStorage("remote", server_url="https://example.com/mcp", oauth=oauth)
+    await prepare_oauth_login(server_url="https://example.com/mcp", storage=storage, oauth=oauth)
+    provider = build_oauth_provider(
+        server_name="remote",
+        server_url="https://example.com/mcp",
+        storage=storage,
+        interactive=True,
+        oauth=oauth,
+    )
+    authorization: dict[str, list[str]] = {}
+
+    async def redirect(url: str) -> None:
+        authorization.update(parse_qs(urlparse(url).query))
+
+    async def callback() -> AuthorizationCodeResult:
+        return AuthorizationCodeResult(code="code", state=authorization["state"][0])
+
+    provider.context.redirect_handler = redirect
+    provider.context.callback_handler = callback
+    requests: list[httpx.Request] = []
+    async with httpx2.AsyncClient(
+        transport=oauth_network(_authorization_server(requests)), auth=provider
+    ) as client:
+        assert (await client.get("https://example.com/mcp")).status_code == 200
+
+    exchange = next(r for r in requests if r.url.path == "/tenant/access-token")
+    assert ("Authorization" in exchange.headers) is basic
+    assert _token_client_credentials(exchange) == ("assigned-client", "s3cr:et/value")
+    assert "client_secret" not in authorization
+    assert not any("register" in r.url.path for r in requests)
+    assert "s3cr" not in storage.path.read_text()
+
+
+async def test_confidential_client_refreshes_after_restart_without_stored_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oauth_network
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    oauth = _confidential_oauth()
+    first = FileTokenStorage("remote", server_url="https://example.com/mcp", oauth=oauth)
+    await prepare_oauth_login(server_url="https://example.com/mcp", storage=first, oauth=oauth)
+    await first.set_tokens(
+        OAuthToken(
+            access_token="expired",  # noqa: S106
+            refresh_token="refresh",  # noqa: S106
+            expires_in=-1,
+        )
+    )
+    assert "s3cr" not in first.path.read_text()
+    restarted = FileTokenStorage("remote", server_url="https://example.com/mcp", oauth=oauth)
+    provider = build_oauth_provider(
+        server_name="remote",
+        server_url="https://example.com/mcp",
+        storage=restarted,
+        interactive=True,
+        oauth=oauth,
+    )
+    requests: list[httpx.Request] = []
+    async with httpx2.AsyncClient(
+        transport=oauth_network(_authorization_server(requests)), auth=provider
+    ) as client:
+        assert (await client.get("https://example.com/mcp")).status_code == 200
+
+    refresh = next(r for r in requests if r.url.path == "/tenant/access-token")
+    assert parse_qs(refresh.content.decode())["grant_type"] == ["refresh_token"]
+    assert _token_client_credentials(refresh) == ("assigned-client", "s3cr:et/value")
+    assert "s3cr" not in restarted.path.read_text()
+
+
+async def test_configured_secret_is_not_attached_to_another_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage(
+        "remote", server_url="https://example.com/mcp", oauth=_confidential_oauth()
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            redirect_uris=["http://localhost:3000/callback"],
+            client_id="some-other-client",
+            token_endpoint_auth_method="none",  # noqa: S106
+        )
+    )
+
+    client_info = await storage.get_client_info()
+
+    assert client_info is not None
+    assert client_info.client_secret is None
+    assert client_info.token_endpoint_auth_method == "none"  # noqa: S105

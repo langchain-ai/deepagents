@@ -23,7 +23,7 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
     hook_config,
 )
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, add_notification_metadata
 from langchain_core.messages.utils import _convert_to_openai_tool_calls
 
 from deepagents.profiles.harness.harness_profiles import (
@@ -46,7 +46,6 @@ _NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
     "NVIDIA:nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
     # Nemotron 3 Ultra as served by other providers.
-    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
@@ -827,7 +826,7 @@ def _is_final_answer(message: AIMessage) -> bool:
 
 
 def _nudge_update(content: str, source: str, **updates: Any) -> dict[str, Any]:
-    return {"messages": [HumanMessage(content=content, name=source)], **updates}
+    return {"messages": [add_notification_metadata(HumanMessage(content=content, name=source), source=source)], **updates}
 
 
 def _iter_tool_calls(messages: list[Any]) -> list[ToolCall]:

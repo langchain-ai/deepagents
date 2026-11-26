@@ -200,13 +200,38 @@ def test_detection_and_gate_preserve_parent_result(
     assert outputs["parent-sha"] == "abc123"
     assert json.loads(outputs["parent-check"]) == response
     gate = _step("ci_success", "🎉 All Checks Passed")
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    needs = {
+        job: {
+            "result": "success"
+            if job in {"changes", "check-lockfiles", "text-hygiene"}
+            else "skipped"
+        }
+        for job in workflow["jobs"]["ci_success"]["needs"]
+    }
     result = subprocess.run(
         ["bash", "-e", "-c", gate["run"]],
         env={
             **env,
+            "PATH": os.environ["PATH"],
+            "EVENT_NAME": "pull_request",
+            "CHANGES_RESULT": "success",
             "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
             "CURATED_APPLY_ONLY": outputs["only"],
             "CURATED_APPLY_PARENT_CONCLUSION": outputs["prior-conclusion"],
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(
+                {
+                    **{
+                        job.removeprefix("lint-"): "false"
+                        for job in workflow["jobs"]
+                        if job.startswith("lint-")
+                    },
+                    "talon-src": "false",
+                    "release-scripts": "false",
+                }
+            ),
         },
         capture_output=True,
         text=True,

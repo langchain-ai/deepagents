@@ -5,6 +5,7 @@ import contextvars
 import logging
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -21,6 +22,7 @@ from deepagents_talon.authorization import (
     set_authorization_handler,
 )
 from deepagents_talon.background import (
+    _CONSUMED_RESULTS,
     _FAILED_RESULT,
     _IN_SUBAGENT,
     _INSTRUCTIONS,
@@ -29,6 +31,8 @@ from deepagents_talon.background import (
     _SCHEDULED_TURN,
     _TIMED_OUT_RESULT,
     BackgroundSubagents,
+    _failure_summary,
+    _track_consumed_results,
 )
 from deepagents_talon.cron import CronOrigin
 from deepagents_talon.host import TalonHost
@@ -59,7 +63,7 @@ def _delegate(name="researcher"):
 def _runtime(monkeypatch, child, responses):
     model = ToolModel(responses=responses)
     monkeypatch.setattr("deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: model)
-    return DeepAgentRuntime(
+    runtime = DeepAgentRuntime(
         model="test:parent",
         include_web_tools=False,
         skills=(),
@@ -68,6 +72,9 @@ def _runtime(monkeypatch, child, responses):
             {"name": "researcher", "description": "Research", "runnable": RunnableLambda(child)}
         ],
     )
+    snapshot = runtime.approval_store.ensure()
+    runtime.approval_store.update(dict.fromkeys(snapshot.approvals, False), snapshot.revision)
+    return runtime
 
 
 async def test_chat_continues_then_main_processes_background_result(tmp_path, monkeypatch):
@@ -195,7 +202,7 @@ async def test_inspect_cancel_ownership_and_capacity():
     try:
         await background.awrap_tool_call(_request("one", task), _unused_handler)
         await asyncio.sleep(0)
-        listing, cancel = background.tools
+        listing, cancel, *_ = background.tools
         jobs = await listing.ainvoke({"runtime": _request("one", task).runtime})
         assert jobs[0]["status"] == "running"
         task_id = jobs[0]["task_id"]
@@ -264,7 +271,7 @@ async def test_cancel_finished_subagent_preserves_result():
     background = BackgroundSubagents()
     await background.awrap_tool_call(_request("one", task), _unused_handler)
     await asyncio.gather(*(job.worker for job in background._jobs.values()))
-    listing, cancel = background.tools
+    listing, cancel, *_ = background.tools
     runtime = _request("one", task).runtime
     jobs = await listing.ainvoke({"runtime": runtime})
     task_id = jobs[0]["task_id"]
@@ -318,6 +325,90 @@ async def test_invoke_reports_the_results_it_acknowledged(monkeypatch):
         assert set(runtime.background.results("chat")) == pending
     finally:
         await runtime.stop()
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed", "cancelled", "unread"])
+async def test_results_read_during_turn_are_consumed_only_on_success(monkeypatch, outcome):
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    listing = AIMessage(
+        content="",
+        tool_calls=[{"name": "list_subagents", "id": "list", "args": {}}],
+    )
+    runtime = _runtime(
+        monkeypatch,
+        child,
+        [_delegate(), *([listing] if outcome != "unread" else []), AIMessage(content="Done")],
+    )
+    wrap_model = runtime.background.awrap_model_call
+
+    async def finish_before_next_model(request, handler):
+        messages = request.state["messages"]
+        if isinstance(messages[-1], ToolMessage) and messages[-1].name == "task":
+            await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        return await wrap_model(request, handler)
+
+    monkeypatch.setattr(runtime.background, "awrap_model_call", finish_before_next_model)
+    await runtime.start()
+    invoke = runtime._invoke_until_text
+
+    async def finish_turn(request, activity):
+        text = await invoke(request, activity)
+        if outcome == "failed":
+            msg = "turn failed"
+            raise RuntimeError(msg)
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        return text
+
+    monkeypatch.setattr(runtime, "_invoke_until_text", finish_turn)
+    try:
+        request = AgentRequest("chat", "research")
+        if outcome in {"failed", "cancelled"}:
+            error = RuntimeError if outcome == "failed" else asyncio.CancelledError
+            with pytest.raises(error):
+                await runtime.invoke(request)
+            assert runtime.background.results("chat")
+        else:
+            result = await runtime.invoke(request)
+            assert result.text == "Done"
+            if outcome == "success":
+                assert result.background_results
+                assert not runtime.background.results("chat")
+                runtime.background.requeue(result.background_results)
+                assert set(runtime.background.results("chat")) == set(result.background_results)
+            else:
+                assert result.background_results == ()
+                assert runtime.background.results("chat")
+        assert _CONSUMED_RESULTS.get() is None
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize(("owner", "worker"), [("other", False), ("chat", True)])
+async def test_listing_cannot_consume_results_for_another_turn(owner, worker):
+    @tool
+    async def task() -> str:
+        """Return research."""
+        return "research result"
+
+    background = BackgroundSubagents()
+    await background.awrap_tool_call(_request("chat", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    consumed = {}
+    consumed_token = _CONSUMED_RESULTS.set((owner, consumed))
+    worker_token = _IN_SUBAGENT.set(worker)
+    try:
+        listing = background.tools[0]
+        result = await listing.ainvoke({"runtime": _request("chat", task).runtime})
+        assert result[0]["result"] == "research result"
+        assert consumed == {}
+        assert background.results("chat")
+    finally:
+        _CONSUMED_RESULTS.reset(consumed_token)
+        _IN_SUBAGENT.reset(worker_token)
+        await background.cancel()
 
 
 async def test_requeue_returns_only_the_results_it_is_given():
@@ -554,7 +645,12 @@ async def test_background_timeout_is_reported_separately_from_failure(monkeypatc
     @tool
     async def task() -> str:
         """Never return."""
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            error = RuntimeError("secret provider message")
+            error.status_code = 402
+            raise error from None
         return "done"
 
     background = BackgroundSubagents()
@@ -776,7 +872,12 @@ async def test_inline_fan_out_queues_beyond_the_slot_limit(monkeypatch):
 
 async def test_inline_timeout_is_reported_separately_from_failure():
     async def handler(_request):
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            error = RuntimeError("secret provider message")
+            error.status_code = 402
+            raise error from None
 
     @tool
     async def task() -> str:
@@ -825,6 +926,80 @@ async def test_inline_failure_is_reported_without_arguments(caplog):
     assert result.content == _FAILED_RESULT
     assert "sk-secret-arg" not in result.content
     assert "sk-secret-arg" not in caplog.text
+
+
+@pytest.fixture(params=["blocks", "string", "empty", "long"])
+def answer_content(request):
+    text = "answer" * 20_000 if request.param == "long" else "answer"
+    if request.param == "string":
+        return text, text
+    blocks = [{"type": "reasoning", "encrypted_content": "encrypted" * 20_000}]
+    if request.param != "empty":
+        blocks.append({"type": "text", "text": text})
+    expected = "Subagent returned no result." if request.param == "empty" else text
+    return blocks, expected[:_MAX_RESULT_CHARACTERS]
+
+
+@pytest.mark.parametrize("command", [False, True])
+async def test_background_results_expose_only_answer_text(answer_content, command):
+    content, expected = answer_content
+
+    @tool
+    async def task() -> ToolMessage | Command:
+        """Delegate."""
+        message = ToolMessage(content, tool_call_id="call")
+        return Command(update={"messages": [message]}) if command else message
+
+    background = BackgroundSubagents()
+    request = _request("chat", task)
+    await background.awrap_tool_call(request, _unused_handler)
+    job = next(iter(background._jobs.values()))
+    await job.worker
+
+    assert job.result == expected
+    delivered = next(iter(background.results("chat").values()))
+    assert f"<subagent_result>\n{expected}\n</subagent_result>" in delivered
+    assert "encrypted" not in delivered
+    listing = await background.tools[0].ainvoke({"runtime": request.runtime})
+    assert listing[0]["result"] == expected
+    assert "encrypted" not in str(listing)
+
+
+@pytest.mark.parametrize("command", [False, True])
+async def test_inline_results_expose_only_answer_text(answer_content, command):
+    content, expected = answer_content
+    message = ToolMessage(content, tool_call_id="call", status="error", artifact={"key": "value"})
+    untouched = AIMessage("other message")
+
+    async def handler(_request):
+        if command:
+            return Command(
+                update={"messages": [untouched, message, 42], "other": "keep"}, goto="next"
+            )
+        return message
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        result = await background.awrap_tool_call(_request("job:cron", task), handler)
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    if command:
+        assert result.goto == "next"
+        assert result.update["other"] == "keep"
+        assert result.update["messages"][0] is untouched
+        assert result.update["messages"][2] == 42
+        result = result.update["messages"][1]
+    assert result.content == expected
+    assert result.tool_call_id == "call"
+    assert result.status == "error"
+    assert result.artifact == {"key": "value"}
 
 
 async def test_inline_result_is_truncated():
@@ -880,14 +1055,18 @@ async def test_scheduled_run_does_not_consume_background_capacity():
     assert await background.cancel("chat")
 
 
-async def test_scheduled_start_async_task_streams_the_remote(monkeypatch):
+@pytest.mark.parametrize("scheduled", [False, True])
+async def test_start_async_task_streams_plain_remote_results(
+    monkeypatch, answer_content, scheduled
+):
     """The SDK tool would hand back a task id this turn has no way to resolve."""
     created = []
+    content, expected = answer_content
 
     async def stream(*_args: object, **kwargs: object):
         assert kwargs["on_disconnect"] == "cancel"
         yield SimpleNamespace(
-            event="values", data={"messages": [{"role": "assistant", "content": "remote findings"}]}
+            event="values", data={"messages": [{"role": "assistant", "content": content}]}
         )
 
     def client(**_kwargs: object):
@@ -907,7 +1086,7 @@ async def test_scheduled_start_async_task_streams_the_remote(monkeypatch):
     background = BackgroundSubagents().configured(
         [{"name": "remote", "description": "research", "graph_id": "g", "url": "https://e.example"}]
     )
-    token = _scheduled()
+    token = _SCHEDULED_TURN.set(scheduled)
     try:
         result = await asyncio.wait_for(
             background.awrap_tool_call(
@@ -921,7 +1100,12 @@ async def test_scheduled_start_async_task_streams_the_remote(monkeypatch):
     finally:
         _SCHEDULED_TURN.reset(token)
 
-    assert result.content == "remote findings"
+    if scheduled:
+        assert result.content == expected
+    else:
+        job = next(iter(background._jobs.values()))
+        await job.worker
+        assert job.result == expected
     assert created == []
 
 
@@ -958,21 +1142,16 @@ async def test_scheduled_prompt_replaces_the_background_instructions():
         return "response"
 
     @tool
-    async def list_subagents() -> str:
-        """Inspect."""
-        return "none"
-
-    @tool
     async def researcher_tool() -> str:
         """Work."""
         return "done"
 
+    background = BackgroundSubagents()
     request = SimpleNamespace(
         system_message=None,
-        tools=[list_subagents, researcher_tool],
+        tools=[*background.tools, researcher_tool],
         override=_override,
     )
-    background = BackgroundSubagents()
     token = _scheduled()
     try:
         await background.awrap_model_call(request, handler)
@@ -1084,3 +1263,149 @@ async def test_chat_turn_is_not_scheduled(monkeypatch):
         await runtime.stop()
 
     assert seen == [False]
+
+
+async def test_listing_suppresses_unchanged_polls_and_repeated_results():
+    release = asyncio.Event()
+
+    @tool
+    async def task() -> str:
+        """Wait for research."""
+        await release.wait()
+        return "research result"
+
+    background = BackgroundSubagents()
+    runtime = _request("chat", task).runtime
+    listing, _, inspect, *_ = background.tools
+    try:
+        await background.awrap_tool_call(_request("chat", task), _unused_handler)
+        with _track_consumed_results("chat", {}):
+            running = await listing.ainvoke({"runtime": runtime})
+            assert running[0]["status"] == "running"
+            unchanged = await listing.ainvoke({"runtime": runtime})
+            assert isinstance(unchanged, str)
+            assert len(unchanged) < 160
+            assert "automatically" in unchanged
+            assert "independent work or end your turn" in unchanged
+            release.set()
+            await asyncio.gather(*(job.worker for job in background._jobs.values()))
+            finished = await listing.ainvoke({"runtime": runtime})
+            assert finished[0]["status"] == "finished"
+            assert finished[0]["result"] == "research result"
+            assert await listing.ainvoke({"runtime": runtime}) == unchanged
+            await background.awrap_tool_call(_request("chat", task), _unused_handler)
+            updated = await listing.ainvoke({"runtime": runtime})
+            assert "inspect_subagent" in updated[0]["result"]
+            assert "research result" not in updated[0]["result"]
+            detail = await inspect.ainvoke({"runtime": runtime, "task_id": finished[0]["task_id"]})
+            assert detail["result"] == "research result"
+        with _track_consumed_results("chat", {}):
+            assert (await listing.ainvoke({"runtime": runtime}))[0]["result"] == "research result"
+    finally:
+        release.set()
+        await background.cancel()
+
+
+async def test_listing_state_is_isolated_between_concurrent_turns():
+    release = asyncio.Event()
+
+    @tool
+    async def task() -> str:
+        """Wait for research."""
+        await release.wait()
+        return "done"
+
+    background = BackgroundSubagents()
+    listing = background.tools[0]
+    ready = asyncio.Barrier(2)
+
+    async def poll(owner):
+        runtime = _request(owner, listing).runtime
+        with _track_consumed_results(owner, {}):
+            assert await listing.ainvoke({"runtime": runtime}) == []
+            assert await listing.ainvoke({"runtime": runtime}) == []
+            await background.awrap_tool_call(_request(owner, task), _unused_handler)
+            assert len(await listing.ainvoke({"runtime": runtime})) == 1
+            await ready.wait()
+            assert isinstance(await listing.ainvoke({"runtime": runtime}), str)
+            with _track_consumed_results("other", {}):
+                assert len(await listing.ainvoke({"runtime": runtime})) == 1
+            assert isinstance(await listing.ainvoke({"runtime": runtime}), str)
+
+    try:
+        await asyncio.gather(poll("one"), poll("two"))
+    finally:
+        release.set()
+        await background.cancel()
+
+
+@pytest.mark.parametrize("scheduled", [False, True])
+@pytest.mark.parametrize(
+    ("status", "hint"),
+    [
+        (401, "authentication or permission"),
+        (402, "billing/payment"),
+        (404, "model not found"),
+        (429, "rate limited"),
+        (500, "transient"),
+    ],
+)
+async def test_provider_failure_is_actionable_without_sensitive_data(scheduled, status, hint):
+    @tool
+    async def task(description: str) -> str:
+        """Fail with a provider status."""
+        assert description
+        error = RuntimeError("secret exception message")
+        error.status_code = status
+        raise error
+
+    async def handler(request):
+        return await request.tool.ainvoke(request.tool_call)
+
+    background = BackgroundSubagents()
+    token = _SCHEDULED_TURN.set(scheduled)
+    try:
+        result = await background.awrap_tool_call(
+            _request("chat", task, subagent_type="researcher", description="secret task"), handler
+        )
+        if scheduled:
+            summary = result.content
+            assert result.status == "error"
+        else:
+            await asyncio.gather(*(job.worker for job in background._jobs.values()))
+            (job,) = background._jobs.values()
+            summary = job.result
+        assert f"HTTP {status}" in summary
+        assert hint in summary
+        assert "researcher" in summary
+        assert "secret" not in summary
+        if status == 402:
+            assert "retrying will not help" in summary
+            assert "tell the operator" in summary
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+def test_failure_summary_finds_wrapped_http_response_without_payload(link):
+    response = httpx.Response(
+        402, text="secret response body", request=httpx.Request("GET", "https://example.com/secret")
+    )
+    provider = httpx.HTTPStatusError(
+        "secret exception message", request=response.request, response=response
+    )
+    wrapper = RuntimeError("secret wrapper")
+    setattr(wrapper, link, provider)
+    provider.__context__ = wrapper
+    summary = _failure_summary(wrapper, "researcher")
+    assert "HTTP 402" in summary
+    assert "billing/payment" in summary
+    assert "secret" not in summary
+
+
+@pytest.mark.parametrize("status", ["402", 400])
+def test_failure_summary_keeps_generic_fallback(status):
+    error = RuntimeError("secret exception message")
+    error.status_code = status
+    error.__context__ = error
+    assert _failure_summary(error, "researcher") == _FAILED_RESULT

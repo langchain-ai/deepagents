@@ -5,6 +5,13 @@ import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, cast
+from unittest.mock import Mock
+from uuid import uuid4
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tracers.langchain import wait_for_all_tracers
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.channels.slack import _convert_event
@@ -20,12 +27,12 @@ from deepagents_talon.host import (
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
-    ChannelMedia,
     ChannelMessage,
     ChannelReaction,
     SendResult,
     ToolApprovalRequest,
 )
+from deepagents_talon.runtime import DeepAgentRuntime
 from tests.conftest import RecordingChannel
 
 if TYPE_CHECKING:
@@ -1271,12 +1278,11 @@ async def test_suppressed_turn_does_not_requeue_when_also_discarded(
         await host.stop()
 
 
-async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
+async def test_host_sends_markdown_image_refs_as_plain_text(tmp_path: Path) -> None:
     channel = RecordingChannel()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    image = workspace / "result.png"
-    image.write_bytes(b"image")
+    (workspace / "result.png").write_bytes(b"image")
     agent = MediaAgent("result.png")
     host = TalonHost(
         config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
@@ -1289,34 +1295,43 @@ async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -
     await _wait_for_sent_count(channel, 1)
     await host.stop()
 
-    assert channel.media == [
-        (
-            "chat",
-            ChannelMedia(path=image.resolve(), media_type="image", caption="Here is the image."),
-        ),
-    ]
+    assert channel.media == []
+    assert channel.sent == [("chat", "Here is the image.\n\n![chart](result.png)")]
 
 
-async def test_host_rejects_markdown_media_outside_workspace(tmp_path: Path) -> None:
+class FileAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.results: list[SendResult] = []
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        assert request.file_handler is not None
+        self.results.append(await request.file_handler(b"a,b\n", "export.csv", "Export"))
+        return AgentResult(text="Sent the export.")
+
+
+async def test_host_sends_agent_files_to_the_originating_chat(tmp_path: Path) -> None:
     channel = RecordingChannel()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "secret.png"
-    outside.write_bytes(b"secret")
-    agent = MediaAgent(outside)
-    host = TalonHost(
-        config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
-        agent=agent,
-        channels=[channel],
-    )
+    agent = FileAgent()
+    config = _config(tmp_path)
+    host = TalonHost(config=config, agent=agent, channels=[channel])
     await host.start()
 
-    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="draw"))
-    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="export"))
+    await _wait_for_sent_count(channel, 2)
     await host.stop()
 
-    assert channel.media == []
-    assert channel.sent == [("chat", "Here is the image.\n\n_(Could not attach: chart.)_")]
+    assert agent.results == [SendResult(success=True)]
+    [(conversation_id, media)] = channel.media
+    assert conversation_id == "chat"
+    assert (media.path.name, media.media_type, media.caption) == (
+        "export.csv",
+        "document",
+        "Export",
+    )
+    assert media.path.is_relative_to(config.outbound_media_dir)
+    assert list(config.outbound_media_dir.iterdir()) == []
+    assert channel.sent[-1] == ("chat", "Sent the export.")
 
 
 async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> None:
@@ -1385,6 +1400,87 @@ def test_approval_prompt_preserves_angle_brackets_for_other_channels() -> None:
     )
 
     assert '"command": "sort < input.txt"' in _format_tool_approval_prompt(approval)
+
+
+def test_approval_prompt_summarizes_stored_mcp_values_without_changing_args() -> None:
+    args = {
+        "server_name": "slack",
+        "server": {
+            "allowedTools": ["<redacted>"] * 24,
+            "url": "<redacted>",
+            "enabled": False,
+            "auth": "oauth",
+        },
+        "mixed": ["<redacted>", "visible", {"hidden": "<redacted>"}],
+        "empty": {"list": [], "dict": {}, "null": None, "zero": 0},
+    }
+    original = json.dumps(args)
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "update_mcp_server", "args": args}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    assert "<redacted>" not in prompt
+    displayed = json.loads(prompt.split("Args: `", 1)[1].split("`", 1)[0])
+    assert displayed == {
+        "server_name": "slack",
+        "server": {
+            "allowedTools": "(24 stored values preserved)",
+            "url": "<kept>",
+            "enabled": False,
+            "auth": "oauth",
+        },
+        "mixed": ["<kept>", "visible", {"hidden": "<kept>"}],
+        "empty": {"list": [], "dict": {}, "null": None, "zero": 0},
+    }
+    assert json.dumps(args) == original
+
+
+@pytest.mark.parametrize(
+    ("server", "displayed_server"),
+    [
+        (
+            {"url": "https://new.example/mcp", "headers": {"Authorization": "<redacted>"}},
+            {"url": "https://new.example/mcp", "headers": {"Authorization": "<kept>"}},
+        ),
+        (
+            {"command": "new-command", "args": ["<redacted>", "--x"], "env": {"KEY": "<redacted>"}},
+            {"command": "new-command", "args": ["<kept>", "--x"], "env": {"KEY": "<kept>"}},
+        ),
+    ],
+)
+def test_approval_prompt_shows_stored_credential_reuse(
+    server: dict[str, object], displayed_server: dict[str, object]
+) -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "update_mcp_server", "args": {"server": server}}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    displayed = json.loads(prompt.split("Args: `", 1)[1].split("`", 1)[0])
+    assert displayed == {"server": displayed_server}
+    assert "<redacted>" not in prompt
+
+
+@pytest.mark.parametrize("args", ["<redacted>", {"content": "<redacted>"}, ["<redacted>"]])
+def test_approval_prompt_preserves_literal_placeholders_for_other_tools(args: object) -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "write_file", "args": args}],
+    )
+
+    prompt = _format_tool_approval_prompt(approval)
+
+    assert "<redacted>" in prompt
+    assert "<kept>" not in prompt
+    assert "stored values preserved" not in prompt
 
 
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
@@ -1923,7 +2019,8 @@ async def _wait_for_request(agent: BlockingAgent, text: str) -> None:
 
 
 async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
-    for _ in range(100):
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
         if len(channel.sent) >= count:
             return
         await asyncio.sleep(0)
@@ -1965,7 +2062,7 @@ async def test_failed_turn_replies_without_leaking_the_error(
             await asyncio.wait_for(host._tasks["test:chat"], 2)
 
         assert [conversation for conversation, _ in channel.sent] == ["chat"]
-        assert channel.sent[0][1]
+        assert channel.sent[0][1] == "Something went wrong while working on that. Check Talon logs."
         assert "sensitive upstream detail" not in channel.sent[0][1]
         assert "sensitive upstream detail" in caplog.text
     finally:
@@ -2304,5 +2401,107 @@ async def test_host_batch_reprompts_partial_reply(tmp_path: Path, reply: str) ->
         assert channel.sent[3] == ("chat", f"decision:{decision}")
         assert len(agent.requests) == 1
         assert not host._pending_tool_approvals
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("tracing", [False, True])
+@pytest.mark.parametrize("action", ["/stop", "continue", "shutdown"])
+async def test_user_cancellation_feedback(tmp_path: Path, monkeypatch, tracing, action) -> None:
+    started = asyncio.Event()
+    root_id = uuid4()
+    feedback = Mock()
+    monkeypatch.setattr("langsmith.run_trees.get_cached_client", lambda: feedback)
+
+    async def block(_payload):
+        started.set()
+        await asyncio.Event().wait()
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "key"} if tracing else {},
+    )
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", block)
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    runtime._graph = builder.compile().with_config(run_id=root_id)
+
+    class TracedAgent(BlockingAgent):
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            if request.text == "block":
+                await runtime._invoke_payload_with_retries({}, request.conversation_id, None)
+            return AgentResult(text="done")
+
+    channel = RecordingChannel()
+    host = TalonHost(config=_config(tmp_path), agent=TracedAgent(), channels=[channel])
+    await host.start()
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    if action != "shutdown":
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text=action))
+    await host.stop()
+
+    await asyncio.to_thread(wait_for_all_tracers)
+    if tracing and action != "shutdown":
+        roots = [
+            call.kwargs
+            for call in feedback.create_run.call_args_list
+            if not call.kwargs.get("parent_run_id")
+        ]
+        assert len(roots) == 1
+        assert roots[0]["name"] == "talon_turn"
+        feedback.create_feedback.assert_called_once_with(
+            roots[0]["id"], "user_interrupted", score=1
+        )
+    else:
+        feedback.create_feedback.assert_not_called()
+
+
+@pytest.mark.parametrize("activity", ["current", "previous", "none", "unavailable"])
+async def test_failed_turn_reports_checkpointed_tool_activity(
+    tmp_path: Path, activity: str
+) -> None:
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", lambda _state: {"messages": []})
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    messages = [HumanMessage(content="hello")]
+    if activity in {"current", "previous"}:
+        messages.extend(
+            [
+                AIMessage(content="", tool_calls=[{"id": "action", "name": "action", "args": {}}]),
+                ToolMessage(content="completed", tool_call_id="action"),
+            ]
+        )
+    if activity == "previous":
+        messages.append(HumanMessage(content="next turn"))
+    await graph.ainvoke({"messages": messages}, {"configurable": {"thread_id": "test:chat"}})
+
+    class FailedRuntime(DeepAgentRuntime):
+        async def start(self) -> None:
+            self._graph = graph if activity != "unavailable" else None
+
+        async def invoke(self, _request: AgentRequest) -> AgentResult:
+            msg = "sensitive upstream detail"
+            raise RuntimeError(msg)
+
+    agent = FailedRuntime(model="test:model", include_web_tools=False)
+    channel = RecordingChannel()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, ChannelMessage("chat", "hello"))
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+        response = channel.sent[0][1]
+        if activity == "current":
+            assert "Actions may have partially completed" in response
+        else:
+            assert response == "Something went wrong while working on that. Check Talon logs."
+        assert "sensitive upstream detail" not in response
     finally:
         await host.stop()

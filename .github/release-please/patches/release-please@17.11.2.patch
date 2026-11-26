@@ -1,0 +1,77 @@
+diff --git a/build/src/manifest.js b/build/src/manifest.js
+index f1e0a6dd8513e3405261ca9eae6e37dfad46aa4c..732044d0ae80b35d9b254f5bc0fd11f04db328f3 100644
+--- a/build/src/manifest.js
++++ b/build/src/manifest.js
+@@ -471,20 +471,26 @@ class Manifest {
+      * @returns {PullRequest[]} Pull request numbers of release pull requests
+      */
+     async createPullRequests() {
++        // The three pull request lookups don't depend on the candidates or on
++        // each other, so run them while the candidates are built. The no-op
++        // catch only marks each promise handled until it is awaited below.
++        const lookups = [
++            this.hasMergedReleasePullRequest(),
++            this.findOpenReleasePullRequests(),
++            this.findSnoozedReleasePullRequests(),
++        ];
++        lookups.forEach(lookup => lookup.catch(() => { }));
+         const candidatePullRequests = await this.buildPullRequests();
+         if (candidatePullRequests.length === 0) {
+             return [];
+         }
++        const [hasMerged, openPullRequests, snoozedPullRequests] = await Promise.all(lookups);
+         // if there are any merged, pending release pull requests, don't open
+         // any new release PRs
+-        const mergedPullRequestsGenerator = this.findMergedReleasePullRequests();
+-        for await (const _ of mergedPullRequestsGenerator) {
++        if (hasMerged) {
+             this.logger.warn('There are untagged, merged release PRs outstanding - aborting');
+             return [];
+         }
+-        // collect open and snoozed release pull requests
+-        const openPullRequests = await this.findOpenReleasePullRequests();
+-        const snoozedPullRequests = await this.findSnoozedReleasePullRequests();
+         if (this.sequentialCalls) {
+             const pullRequests = [];
+             for (const pullRequest of candidatePullRequests) {
+@@ -504,6 +510,12 @@ class Manifest {
+             return pullNumbers.filter(number => !!number);
+         }
+     }
++    async hasMergedReleasePullRequest() {
++        for await (const _ of this.findMergedReleasePullRequests()) {
++            return true;
++        }
++        return false;
++    }
+     async findOpenReleasePullRequests() {
+         this.logger.info('Looking for open release pull requests');
+         const openPullRequests = [];
+diff --git a/build/src/util/commit-exclude.js b/build/src/util/commit-exclude.js
+index ff87b2222aeb8ac3299db70a6ed4a0e87722c56e..10961a6ae80c6aa3aa253e85daa2274d3981b2b6 100644
+--- a/build/src/util/commit-exclude.js
++++ b/build/src/util/commit-exclude.js
+@@ -42,7 +42,9 @@ class CommitExclude {
+                 .every(file => excludePaths.some(path => this.isRelevant(file, path))));
+     }
+     isRelevant(file, path) {
+-        return path === manifest_1.ROOT_PROJECT_PATH || file.indexOf(`${path}/`) === 0;
++        return (path === manifest_1.ROOT_PROJECT_PATH ||
++            file === path ||
++            file.indexOf(`${path}/`) === 0);
+     }
+ }
+ exports.CommitExclude = CommitExclude;
+diff --git a/build/src/util/tag-name.js b/build/src/util/tag-name.js
+index 469d46b9a3a762e8a18de427cae219d8d1a7117a..94b7696d7d7c2ae0b52fa10d204a512e2433838a 100644
+--- a/build/src/util/tag-name.js
++++ b/build/src/util/tag-name.js
+@@ -15,7 +15,7 @@
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.TagName = void 0;
+ const version_1 = require("../version");
+-const TAG_PATTERN = /^((?<component>.*)(?<separator>[^a-zA-Z0-9]))?(?<v>v)?(?<version>\d+\.\d+\.\d+.*)$/;
++const TAG_PATTERN = /^((?<component>.*[a-zA-Z0-9])(?<separator>[^a-zA-Z0-9]+))?(?<v>v)?(?<version>\d+\.\d+\.\d+.*)$/;
+ const DEFAULT_SEPARATOR = '-';
+ class TagName {
+     constructor(version, component, separator = DEFAULT_SEPARATOR, includeV = true) {

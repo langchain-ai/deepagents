@@ -1,14 +1,20 @@
 ---
 type: operations guide
-title: Development, Dependencies, Lockfiles, and Releases
-description: Package-scoped uv development, dependency contracts, lockfile fan-out, release-note reconstruction, and safeguards for publishing independently versioned Python packages.
-tags: [development, dependencies, uv, lockfiles, releases, release-please]
+title: Development and Release Operations
+description: Package-local development, lockfile propagation, and release operations for independently versioned libraries. Covers the patched release-please runner, safe dry runs and upgrades, and publication recovery.
+tags: [development, uv, python, dependencies, lockfiles, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
+    at: 2026-11-26T08:03:59.911Z
 sources:
-  - id: openwiki-source-3638ff2c170b760df159d81b
-    resource: repo://.github/actions/uv_setup/action.yml
+  - id: openwiki-source-c902cb95854c98734bef1bde
+    resource: repo://.github/release-please/history.mjs
+  - id: openwiki-source-7e61beb8c8df39abc64b1213
+    resource: repo://.github/release-please/patches/release-please%4017.11.2.patch
+  - id: openwiki-source-af240e595c2f1524872d109d
+    resource: repo://.github/release-please/README.md
+  - id: openwiki-source-a8eeaaca51cd690abd309b97
+    resource: repo://.github/release-please/run.mjs
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
   - id: openwiki-source-9d81aa681a56a98960013750
@@ -17,10 +23,22 @@ sources:
     resource: repo://.github/scripts/checks/refresh_lockfiles.py
   - id: openwiki-source-3943bedb80b27cdf64ea8bff
     resource: repo://.github/scripts/release/build_release_notes.py
-  - id: openwiki-source-e7d931fcc9d582768b59c30e
-    resource: repo://.github/scripts/release/check_sdk_pin.py
+  - id: openwiki-source-d0bc66880aeeb0817674e1c3
+    resource: repo://.github/scripts/release/check_lockfile_release_scope.py
+  - id: openwiki-source-ea29da8749b893917f11666d
+    resource: repo://.github/scripts/release/release-notes.js
+  - id: openwiki-source-86d8c13f5b625f095cd4c496
+    resource: repo://.github/scripts/release/update_changelog_dependencies.py
+  - id: openwiki-source-e0d5bd90fac633227fff1f23
+    resource: repo://.github/scripts/tests/release/release-notes.test.js
+  - id: openwiki-source-5f1576ab75e9b69811ec2f36
+    resource: repo://.github/scripts/tests/release/release-please-history.test.mjs
   - id: openwiki-source-74e4ee6ae7c1e3e1008eb655
     resource: repo://.github/scripts/tests/release/test_build_release_notes.py
+  - id: openwiki-source-6e115e2c0860618907327d75
+    resource: repo://.github/scripts/tests/release/test_release_please_workflow.py
+  - id: openwiki-source-4541a26c837a99dc39a0ee0c
+    resource: repo://.github/workflows/release_notes.yml
   - id: openwiki-source-7f3822065cb7dc086752e9d5
     resource: repo://.github/workflows/release_please_scope_check.yml
   - id: openwiki-source-46fa34397e41ebf7491c7359
@@ -29,22 +47,24 @@ sources:
     resource: repo://.github/workflows/release.yml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
-  - id: openwiki-source-49fbcc45434b619b68220bf9
-    resource: repo://libs/Makefile
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-fb60ee46c55b974b8341651c
+    resource: repo://libs/DEVELOPMENT.md
+  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
+    resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
-# Development, Dependencies, Lockfiles, and Releases
+# Development and Release Operations
 
-This repository is a monorepo of independently versioned Python packages. There is no root Python project: make changes, synchronize dependencies, and run the owning package's commands in its directory. For routine test selection, see the [Testing Guide](../testing/testing-guide.md); for the package layout and first setup, see [Quickstart](../quickstart.md).
+This repository is a monorepo of independently versioned packages under `libs/`, not a root Python project. Work in the package that owns the change: its `pyproject.toml` is the published compatibility contract and its `Makefile` is the supported task interface. See [Quickstart](../quickstart.md) for setup and the [Testing Guide](../testing/testing-guide.md) for package tests.
 
-## Work package-first
+## Package-local development and dependency contracts
 
-`uv` owns Python installation, virtual environments, synchronization, and resolution. Each package's `pyproject.toml` declares its supported Python range and published dependency contract; each `Makefile` is the normal interface for test, lint, and format commands. Do not impose a repository-wide interpreter pin.
+Use `uv` for interpreters, environments, and dependencies, and `make` for normal tasks. `uv` provisions the package-required interpreter, while each package declares its supported range in `requires-python`.
 
 ```bash
 uv tool install pre-commit
@@ -56,116 +76,160 @@ make test
 make lint
 ```
 
-Use `make help` in the target directory before assuming a target exists; use `uv run ...` for intentional one-off commands. The shared CI setup takes a required major.minor Python version, pins uv to `0.13.6`, and by default uses a pruned cache keyed only by the selected working directory's manifests, locks, and requirements files.
+Run `make help` in the owning package for its supported targets; use `uv run ...` for an exceptional one-off command. From `libs/`, `make lint`, `make lock`, `make lock-check`, and `make lock-bump DEP=<pkg>` fan out across discovered packages, but do not replace package-local setup.
 
-A package's dependency setup has three distinct layers:
-
-| Layer | Owner and meaning | Change rule |
+| Layer | Meaning | Operational rule |
 | --- | --- | --- |
-| Published metadata | `[project]` dependencies, extras, and `requires-python` | The installer-visible compatibility contract. State released versions and supported ranges here. |
-| Workspace wiring | `[tool.uv.sources]` path entries | Development-only sibling mappings for uv; they do not become wheel metadata. |
-| Resolution | Package-local `uv.lock` | The generated, concrete environment used by development and CI. Regenerate with uv; never hand-edit it. |
+| `[project]` dependencies, extras, `requires-python` | Wheel metadata installed by users | Treat as the public compatibility contract. |
+| `[tool.uv.sources]` | Editable sibling-checkout wiring | A successful local resolution does not prove the published dependency graph resolves. |
+| `uv.lock` | Generated development and CI resolution | Regenerate with `uv`; do not hand-edit it. |
+| `release-please-config.json` | Managed paths, components, changelogs, exclusions, and release behavior | Update it as release integration wiring. |
+| `.release-please-manifest.json` | Last-released baseline at each managed path | Let release-please make ordinary updates. |
 
-Local editable sources can hide a published constraint that is too old. Test an installed artifact or source-free resolution when changing a public compatibility boundary.
+### SDK, Code, and Talon compatibility
 
-### Code and the SDK pin
+`deepagents-code` publishes the exact requirement `deepagents==0.7.42`, while its workspace maps `deepagents` to editable `../deepagents`. Thus a passing Code workspace can use unreleased sibling code and is not evidence of the PyPI installation users receive. Raise the exact Code SDK pin in the PR that first requires new SDK behavior rather than deferring it to a release PR. The `ci:dcode-skip-sdk-pin` label is the explicit acknowledgement for an intentionally older pin.
 
-`deepagents-code` declares an exact `deepagents==0.7.32` requirement while mapping the SDK and sibling packages to editable local paths for monorepo work. Raise that pin in the change that begins relying on newer SDK behavior; otherwise local development can pass while downstream installs receive an insufficient SDK.
+Talon is Python `>=3.14,<3.15`; it publishes `deepagents>=0.7.41` and `deepagents-code>=0.2.14,<1.0.0`, while its local source mappings are development-only wiring. A Talon change that relies on its Code floor must therefore follow a published Code release satisfying that floor.
 
-`make -C libs/code check` runs the pin check as an advisory: an older pin produces exit status 1, which the Makefile reports without failing the aggregate check. Malformed or unsupported version data instead returns status 2 and is an error. Publication is stricter: the release workflow rejects a Code artifact whose pin is older than the workspace SDK unless `dangerous-skip-sdk-pin-check` was explicitly selected.
+## Lockfile propagation
 
-## Lockfiles and reverse-consumer fan-out
-
-Locks are package-local, including library, partner, and example projects. The targeted lock checker discovers library directories with `Makefile`s, partner directories with `Makefile`s, and each direct example directory containing a `pyproject.toml`. It checks packages touched by supplied paths, or every discovered package when no paths are supplied. Its repair diagnostic includes the exact `uv lock --directory … --python …` command.
-
-The checker resolves ACP, Code, Evals, and Talon with Python 3.14; other discovered packages use Python 3.12. This intentionally differs from the broad `libs/Makefile`, which maps only ACP to 3.14. Prefer the targeted refresh command after a manifest edit, then use broad fan-out checks as additional validation.
-
-A manifest edit can invalidate a consumer's lock even when that consumer's own manifest is unchanged. `refresh_lockfiles.py` parses local `[tool.uv.sources]` paths, starts with the changed manifest owner, repeatedly adds packages consuming any marked package, and locks the complete reverse-transitive closure using the checker’s Python policy.
-
-```mermaid
-flowchart TD
-    SDK["Deep Agents manifest"] --> Code["Code local consumer"]
-    SDK --> ACP["ACP local consumer"]
-    Code --> Evals["Evals local consumer"]
-    Code --> Talon["Talon local consumer"]
-    Changed["Changed manifest"] --> Closure["Owner plus reverse consumers"]
-    Closure --> Lock["uv lock with package Python version"]
-```
-
-*Manifest changes propagate to local-source consumers; each selected package receives its own lock regeneration.*
-
-From the repository root, refresh a changed manifest and commit every printed lockfile:
+A changed package manifest can invalidate its own lockfile and every transitive consumer that takes it through a local `uv` source. Refresh the reverse-consumer closure, then check the directly touched package path:
 
 ```bash
 python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
-make -C libs lock-check
+python .github/scripts/checks/check_lockfiles_pre_commit.py libs/code/pyproject.toml
 ```
-
-The helper is deliberately broader than the ordinary checker: the checker tests directly touched package directories, whereas the helper protects consumer locks affected through local sources.
-
-## Release Please boundaries and fan-out control
-
-A managed distribution must appear in both `release-please-config.json` and `.release-please-manifest.json`. The manifest is the latest released baseline, not the version currently present in a development checkout or a dependency constraint. A first managed package intended to release `0.0.1` should have a `0.0.0` manifest baseline.
-
-Nine managed baselines currently exist: Deep Agents `0.7.32`, ACP `0.0.13`, Code `0.2.4`, Talon `0.1.0`, Daytona `0.0.9`, Modal `0.0.7`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.11`. Release Please creates separate draft Python release PRs. All use pre-1.0 behavior: `feat` produces a patch bump and a breaking feature produces a minor bump. The generated visible changelog sections are Features, Bug Fixes, Performance Improvements, and Reverted Changes.
-
-Release Please scopes a bump-worthy commit by changed paths, not merely by Conventional Commit scope. Keep a user-facing `feat` or `fix` within one managed component; put cross-package lower-bound and lockfile churn in a separate `chore(deps):` change. The PR scope guard runs its detector and configuration from the trusted base revision, obtains the complete changed-file list through the GitHub API, and fails closed when that list is incomplete. It blocks a bump-worthy PR that either changes non-lock files in multiple managed components or changes only a managed package lockfile. `ci:allow-lockfile-release` is an explicit, reviewed acknowledgement—not a way to suppress the fan-out.
-
-Do not push ordinary empty commits to `main`. With no changed paths, Release Please cannot assign the commit and can fan out to every component. The release workflow rejects them before Release Please runs, apart from its narrow history-repair exception for an empty `hotfix(repo):` merge whose introduced commits all touch files.
-
-## Publication lifecycle
-
-On a `main` push, the release workflow detects a release only when both the commit subject matches `release(<component>): <version>` and that component’s `CHANGELOG.md` changed. It dispatches `release.yml` as a top-level workflow, rather than a reusable workflow, to support PyPI Trusted Publishing.
 
 ```mermaid
 flowchart TD
-    Main["Scoped releasable commit on main"] --> Please["Release Please draft PR"]
-    Please --> UpdateLocks["Regenerate release-branch locks"]
-    UpdateLocks --> Merge["Merge release(component) PR"]
-    Merge --> Detect["Verify title and CHANGELOG path"]
-    Detect --> Build["Build exact release SHA"]
-    Build --> Checks["Artifact checks and pre-release tests"]
-    Checks --> TestPyPI["Trusted publish to TestPyPI"]
-    TestPyPI --> PyPI["Trusted publish to PyPI"]
-    PyPI --> Tag["Create package tag and GitHub release"]
+    Change["Changed package manifest"] --> Owner["Select owning package"]
+    Owner --> Sources["Read local uv source paths"]
+    Sources --> Consumers["Add local-source consumers"]
+    Consumers --> Closure["Repeat to fixed point"]
+    Closure --> Resolve["Run uv lock with package policy"]
+    Resolve --> Commit["Commit generated uv.lock files"]
 ```
 
-*Normal release path: the published artifact and package tag are tied to the same selected source commit.*
+*Refreshing includes the changed owner and every transitive local-source consumer.*
 
-The release build resolves a package to its working directory, validates that a normal release SHA is reachable from `main`, and verifies that its `pyproject.toml` declares the requested version. It builds at that detached SHA, records distribution SHA-256 sums, and verifies the downloaded artifact against those sums in both TestPyPI and PyPI publication jobs. Before publishing, it queries PyPI’s per-version endpoint and aborts on an existing version, unexpected response, or connectivity failure. Pre-release checks install and test the built distribution rather than trusting the checkout environment.
+`refresh_lockfiles.py` fails on resolver failure. Given paths, the checker intentionally tests only directly touched package paths; with no paths, it tests all discovered packages. The package-specific resolver policy uses Python 3.14 for ACP, Code, Evals, and Talon, and Python 3.12 otherwise. For broad dependency work, run:
 
-For recovery, dispatch `release.yml` with the exact 40-character `release-sha` whose package metadata declares the intended version. `dangerous-nonmain-release` is for explicitly selected branch releases and relaxes the normal `main`/input-version validation. If a failure happened before PyPI publication, a corrective hotfix may retain the version and be dispatched by its exact SHA. After a version reaches PyPI, never republish it and never move or recreate its tag: publish a new version instead.
+```bash
+python .github/scripts/checks/check_lockfiles_pre_commit.py
+```
 
-The release publisher labels the matching merged release PR from `auto:release-pending` to `auto:release-tagged`. Release Please waits for pending publication state across the repository before recomputing other release branches, because it recomputes all components and must not observe a manifest bump before its tag exists. An unreadable state blocks maintenance; a publish still in progress can defer it to the next push.
+After release-please creates or refreshes a release PR, its release-branch job regenerates every tracked `uv.lock`. A rejected push fetches the branch tip, regenerates, and retries up to three times. Lockfiles and their propagation are generated committed output, not handwritten release changes.
 
-## Release-note reconstruction and failure recovery
+## Release-please ownership, baselines, and scope
 
-`release.yml` builds the GitHub release body with `.github/scripts/release/build_release_notes.py`. The workflow checks out the artifact source at the selected release SHA and separately checks out the helper from the workflow revision, then passes the workflow-resolved package directory and the same authoritative prerelease flag used for GitHub’s prerelease setting. Tests pin this wiring and require the script's package map to match the workflow's selectable package/working-directory map.
+The registry is the source of the nine managed components and their changelog targets. Current manifest baselines are Deep Agents `0.7.42`, ACP `0.1.0`, Code `0.2.15`, Talon `0.1.2`, Daytona `0.0.9`, Modal `0.0.8`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.4.0`. It creates separate draft release PRs and deliberately skips GitHub-release creation; `release.yml` publishes after a release PR merges.
 
-The helper reads `CHANGELOG.md` **at the release SHA**, extracts only the requested version section, appends a package-scoped Git log, and adds an immutable full-changelog link. It resolves a predecessor tag from reachable package tags, including earlier same-base prereleases; missing or unreachable history produces warnings instead of silently claiming a reliable initial release. The log and attribution are bounded: at most 100 commits and a size budget are rendered, and GitHub API lookups for contributors, closed-issue reporters, and merger are capped and warn when incomplete. `--offline` skips those API lookups, allowing local reconstruction from a full clone with tags.
+Do not manually rebase a release branch, merge `main` into it, or edit it while automation is queued or running. Wait for the relevant `release-please.yml` run and the release PR's **Update lockfiles** job before review or note curation.
 
-Run this recovery from a repository clone with full history and tags:
+Attribution is path-based rather than solely Conventional Commit scope. Package tests and `uv.lock` are excluded. A bump-worthy PR that changes release-relevant files in more than one configured component is blocked unless a maintainer applies `ci:allow-lockfile-release`; the label acknowledges intentional fan-out but does not suppress the extra releases. The scope gate reads trusted base configuration and fails closed if GitHub's changed-file list is incomplete.
+
+`feat`, `fix`, `perf`, and `revert` appear in generated changelogs. Packages are pre-1.0: `feat` produces a patch bump and a breaking `feat!` produces a minor bump. Hidden types can ship in an existing release without a visible entry. The generated dependency section records dependency-range changes.
+
+## Patched local release-please runner
+
+The release-please job uses a pinned local npm installation instead of `googleapis/release-please-action`, whose prebuilt bundle cannot carry unreleased fixes. The local package pins `release-please` `17.11.2` and pnpm; pnpm applies the versioned patch during a frozen, script-free install. Installation fails if the patch no longer applies, which makes a stale patch an early workflow failure rather than a silent behavior change.
+
+The patch currently has three responsibilities:
+
+- permit `exclude-paths` to name an individual file, so package `uv.lock` exclusions work;
+- parse multi-character tag separators, including repository tags such as `deepagents-code==0.2.7`; and
+- start merged, open, and snoozed release-PR lookups concurrently with candidate construction.
+
+Before creating a GitHub client, `run.mjs` exercises all three patched behaviors. It rejects an installation where file exclusions still retain a lockfile commit, `==` tags parse to the wrong component, or pull-request lookups run serially. It then validates `GITHUB_TOKEN` and `GITHUB_REPOSITORY`, fetches the default branch into a blobless local ref, and constructs the release-please manifest. In normal mode it creates or updates release PRs and writes compatible `pr` and `prs` step outputs.
+
+```mermaid
+flowchart TD
+    Install["Frozen pnpm install"] --> Patch["Apply versioned patch"]
+    Patch --> Checks["Exercise three patched behaviors"]
+    Checks --> Env["Validate GitHub environment"]
+    Env --> Fetch["Fetch default branch blobless"]
+    Fetch --> History["Install local git history iterator"]
+    History --> Manifest["Load config and manifest"]
+    Manifest --> Dry{"DRY_RUN true"}
+    Dry -->|yes| Print["Build and print candidate PRs"]
+    Dry -->|no| Mutate["Create or update release PRs"]
+```
+
+*The runner validates the patched dependency before either dry-run planning or GitHub mutation.*
+
+The runner replaces release-please's GraphQL history walk with a full-history blobless-clone `git log` iterator and removes the 500-commit cap. It reconstructs PR data from squash and merge subjects, fetches override PR bodies when `BEGIN_COMMIT_OVERRIDE` is present, uses first-parent files for merges, and represents both paths of a rename. Those details keep path-based release attribution aligned with GitHub behavior while avoiding per-page GraphQL history requests.
+
+### Safe local dry runs and upgrades
+
+Run the local runner from a full-history clone. `DRY_RUN=true` fetches `main`, builds candidates, prints the release PRs it would open or update, and writes nothing to GitHub:
+
+```bash
+pnpm install --dir .github/release-please --frozen-lockfile --ignore-scripts
+GITHUB_TOKEN="$(gh auth token)" GITHUB_REPOSITORY=langchain-ai/deepagents DRY_RUN=true \
+  node .github/release-please/run.mjs
+```
+
+Treat this comparison as the acceptance check for a runner upgrade: the candidates should match the open `release(...)` PRs. To upgrade, first change the pinned version and run `pnpm install --ignore-scripts`; the old version-named patch should fail. Generate a patch for the new version with `pnpm patch release-please@<new version>`, reapply only fixes not yet upstream, then run `pnpm patch-commit <directory>`. Remove the old patch file and workspace entry, and finish with the dry run. Remove a patch change when the pinned upstream version already includes it.
+
+## Curated release notes
+
+Every managed release PR is eligible for note curation. The notes workflow derives the component from a trusted internal release branch and validates it against the registry and `release(<component>): <version>` title. It runs automation from `main` and reads release-branch material through the API at a validated SHA rather than checking it out or executing it. Manual `@release-bot` commands require write-level maintainer permission.
+
+1. Keep the release PR draft while changes accumulate, then mark it ready for review to create a bot-authored draft.
+2. Review and edit the marked draft comment, retaining its version heading and generated `### Dependencies` section.
+3. Comment `@release-bot apply`. The guarded flow writes curated text to the package `CHANGELOG.md` and mirrors it to the PR preview.
+4. Merge only after the `curated release notes` gate passes. `ci:skip-curated-notes` is the exceptional bypass for shipping generated notes unchanged.
+
+Release-branch text is untrusted drafting input. The model never receives `### Dependencies`; the workflow restores that subsection verbatim. Applying fails rather than writing if headings, generated entries, dependencies, bot metadata, branch or head state, or concurrent PR state has changed. The release-branch dependency generator diffs `pyproject.toml` from the resolved predecessor tag to release head; it warns and leaves the changelog unchanged if generation fails, so dependency notes do not block lockfile updates.
+
+## Publication lifecycle and recovery
+
+```mermaid
+flowchart TD
+    Push["Push to main"] --> Detect["Detect release commit"]
+    Detect --> Dispatch["Dispatch release.yml for exact SHA"]
+    Detect --> Wait["Wait for pending publishes"]
+    Dispatch --> Build["Build selected package at release SHA"]
+    Build --> Publish["TestPyPI then PyPI and GitHub tag"]
+    Wait --> Runner["Run patched release-please"]
+    Runner --> Locks["Refresh release branch locks"]
+```
+
+*Detected publishing is dispatched before serialized release-PR maintenance.*
+
+Empty commits are rejected because they have no paths to scope. Before recomputing release PRs, the workflow waits for repository-wide pending publishes to reach a known-safe state. It fails closed when release state cannot be read; a genuinely stuck pending publish defers maintenance rather than recomputing against a manifest whose tag is not yet present.
+
+`release.yml` is dispatch-only, including manual dispatch. A normal release validates that the supplied exact 40-character `release-sha` is reachable from `main` and that the package manifest declares the requested version. It builds the detached tree at that SHA, verifies downloaded artifact checksums, publishes through TestPyPI and PyPI, then creates `<package>==<version>` and the GitHub release. A PyPI-published version is immutable: do not move or recreate its tag; publish a new version for a defect.
+
+Release-body generation intentionally fails open: publication and tagging continue with an empty GitHub release body if it fails. Rebuild against the exact release SHA and edit only the notes:
 
 ```bash
 python .github/scripts/release/build_release_notes.py \
-  --package deepagents-code \
-  --version 0.2.4 \
-  --sha <release-sha> \
-  --repo langchain-ai/deepagents \
+  --package "<package>" --version "<version>" \
+  --sha "<release-sha>" --repo "langchain-ai/deepagents" \
+  --actor "<actor>" --base-branch "<base-branch>" \
   --out /tmp/release-body.md
 
-gh release edit "deepagents-code==0.2.4" \
-  --repo langchain-ai/deepagents \
+gh release edit "<package>==<version>" --repo "langchain-ai/deepagents" \
   --notes-file /tmp/release-body.md
 ```
 
-Use `--offline` when API attribution is unavailable; omit it when `gh` authentication is available and contributor/releaser credit should be rebuilt. For a non-default branch release, also pass `--base-branch` (and `--default-branch` when it is not `main`) to preserve provenance. The CLI fails for an unresolvable SHA or invalid package directory, writes `--out` atomically, and prints the assembled body if an output-file failure would otherwise lose it.
+The builder resolves a reachable predecessor tag, extracts the requested changelog section at the release SHA, and bounds and escapes package-scoped history so later commits and unsafe subjects cannot be attributed to the release.
 
-Release-note generation is intentionally fail-open: a notes failure does not block TestPyPI, PyPI, tag, or GitHub release creation after artifacts are ready. The resulting GitHub release can therefore have an empty body; the marking job emits an error and a paste-ready reconstruction command in the run summary. Treat warnings or an empty body as an operator task after publication, not as proof that the released artifact is invalid.
+## Focused validation
 
-## Focused checks when changing this area
+For metadata changes, run package tests, refresh the reverse-consumer closure, and run the all-package lock check. For changes to lock propagation or release operations, run the focused regression tests:
 
-- For a package change, run its `make test` and `make lint`; for Code's aggregate parity target, use `make -C libs/code check`.
-- After changing a manifest, run `refresh_lockfiles.py` with the changed manifest and commit its complete closure; then run `make -C libs lock-check`.
-- Changes to release-note rendering should run `pytest .github/scripts/tests/release/test_build_release_notes.py`. The tests cover exact-version changelog extraction, predecessor selection across stable and prerelease histories, release-SHA bounds, log-size limits, contributor API degradation, CLI recovery output, and workflow/script map and flag parity.
-- Changes to managed packages, release paths, or release labels must update the matching Release Please config/manifest and the detection/dispatch mapping together. Consult [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md) for curated-note, prerelease, and incident procedures.
+```bash
+uv run --no-project --with "pytest" pytest \
+  .github/scripts/tests/checks/test_check_lockfiles_pre_commit.py \
+  .github/scripts/tests/checks/test_refresh_lockfiles.py \
+  .github/scripts/tests/release/test_check_lockfile_release_scope.py \
+  .github/scripts/tests/release/test_build_release_notes.py
+node --test .github/scripts/tests/release/release-notes.test.js
+node --test .github/scripts/tests/release/release-please-history.test.mjs
+uv run --no-project --with "pyyaml" pytest .github/scripts/tests/release/test_release_please_workflow.py
+```
+
+In particular, the release-please history tests protect squash and merge PR reconstruction, override-body selection, merge and rename path handling, bounded iteration, and API failure behavior. The workflow tests protect dispatch-before-maintenance ordering and the fail-closed conditions around pending publishing and lockfile regeneration.

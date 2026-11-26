@@ -115,6 +115,7 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    is_git_attribution_enabled,
     restore_user_langsmith_env,
     runtime_state,
 )
@@ -2832,7 +2833,11 @@ def create_cli_agent(
         if effective_cwd is not None
         else ""
     )
-    git_trace = GitTraceMiddleware(lambda: backend, trace_cwd)
+    git_trace: list[AgentMiddleware[Any, Any]] = (
+        [GitTraceMiddleware(lambda: backend, trace_cwd)]
+        if is_git_attribution_enabled()
+        else []
+    )
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
@@ -2887,13 +2892,23 @@ def create_cli_agent(
         else get_project_agents_dir(runtime_credentials.project_root)
     )
 
+    headless_mcp_names: set[str] = set()
+    if not interactive and mcp_tools:
+        from deepagents_code.auto_mode import gated_mcp_tool_names
+
+        headless_mcp_names = gated_mcp_tool_names(mcp_tools)
+
     def _subagent_cli_middleware(
         *,
         has_explicit_model: bool,
     ) -> list[AgentMiddleware[Any, Any]]:
         from deepagents_code.cost_tracking import CostTrackingMiddleware
 
-        middleware: list[AgentMiddleware[Any, Any]] = [git_trace]
+        middleware: list[AgentMiddleware[Any, Any]] = [*git_trace]
+        if headless_mcp_names:
+            from deepagents_code.auto_mode import HeadlessMCPGuardMiddleware
+
+            middleware.append(HeadlessMCPGuardMiddleware(headless_mcp_names))
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
@@ -3074,7 +3089,7 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
-        git_trace,
+        *git_trace,
         ConfigurableModelMiddleware(
             cli_max_retries=cli_max_retries,
             environ=environment,
@@ -3090,14 +3105,10 @@ def create_cli_agent(
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
 
-    if not interactive and mcp_tools:
-        from deepagents_code.auto_mode import (
-            HeadlessMCPGuardMiddleware,
-            gated_mcp_tool_names,
-        )
+    if headless_mcp_names:
+        from deepagents_code.auto_mode import HeadlessMCPGuardMiddleware
 
-        if gated_names := gated_mcp_tool_names(mcp_tools):
-            agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
+        agent_middleware.append(HeadlessMCPGuardMiddleware(headless_mcp_names))
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
@@ -3196,6 +3207,9 @@ def create_cli_agent(
             # agent-only credentials in the workspace environment.
             shell_env = dict(environment)
             shell_env["GIT_TERMINAL_PROMPT"] = "0"
+            # Lets CLIs the agent runs tell the call came from dcode, the way
+            # Claude Code sets `CLAUDECODE` and Cursor sets `CURSOR_AGENT`.
+            shell_env["DEEPAGENTS_CODE"] = "1"
             restore_user_langsmith_env(shell_env, start_path=effective_cwd)
             user_tracing_project = shell_env.get("LANGSMITH_PROJECT")
             # Re-apply a launch-time PYTHONPATH that was stripped from the server

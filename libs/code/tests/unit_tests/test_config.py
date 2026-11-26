@@ -5574,6 +5574,16 @@ class TestCreateModelForwardsProviderProfile:
             "deepagents_code.model_config.has_provider_credentials", lambda _: True
         )
 
+    @pytest.mark.parametrize(
+        "spec", ["google_genai:gemini-4-neon", "openrouter:google/gemini-4-neon"]
+    )
+    def test_gemini_neon_bundled_profile(self, spec: str) -> None:
+        pytest.importorskip(f"langchain_{spec.partition(':')[0]}")
+        result = create_model(spec, extra_kwargs={"api_key": "test-key"})
+        assert result.context_limit == 1_048_576
+        assert result.model.profile is not None
+        assert result.model.profile["max_output_tokens"] == 65_536
+
     def test_terra_profile_and_responses_tool_payload(self) -> None:
         from langchain_core.messages import HumanMessage
         from langchain_core.runnables import RunnableBinding
@@ -7784,6 +7794,54 @@ class TestAgentDirStaysOffTheHeavyImportPath:
     `deepagents_code.agent`, which pulls in both at module level and cost
     roughly 0.8s on commands that touch no model code.
     """
+
+
+@pytest.mark.parametrize(
+    ("file_threshold", "env_threshold", "expected"),
+    [
+        (None, None, 0),
+        (100_000, None, 100_000),
+        (100_000, "0", 0),
+        (0, "50000", 50_000),
+    ],
+)
+def test_stream_config_idle_compaction_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_threshold: int | None,
+    env_threshold: str | None,
+    expected: int,
+) -> None:
+    """Trace filters reflect layered idle compaction settings, including reloads."""
+    from deepagents_code import _env_vars, model_config
+    from deepagents_code.config import build_stream_config
+    from deepagents_code.configuration import service
+
+    monkeypatch.delenv(_env_vars.IDLE_COMPACTION_TOKENS, raising=False)
+    if env_threshold is not None:
+        monkeypatch.setenv(_env_vars.IDLE_COMPACTION_TOKENS, env_threshold)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        ""
+        if file_threshold is None
+        else f"[history]\nidle_compaction_tokens = {file_threshold}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_file)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        metadata = build_stream_config("idle", assistant_id=None)["metadata"]
+        assert metadata["dcode_idle_compaction"] is (expected > 0)
+        assert metadata["dcode_idle_compaction_tokens"] == expected
+        monkeypatch.setenv(_env_vars.IDLE_COMPACTION_TOKENS, "0")
+        service.invalidate_config_sources()
+        metadata = build_stream_config("idle", assistant_id=None)["metadata"]
+        assert metadata["dcode_idle_compaction"] is False
+        assert metadata["dcode_idle_compaction_tokens"] == 0
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
 
 
 class TestBuildStreamConfigRecursionLimit:

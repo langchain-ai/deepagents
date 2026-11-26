@@ -5,41 +5,65 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from contextlib import aclosing
+import time
+from contextlib import aclosing, contextmanager
 from copy import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime  # noqa: TC002  # tools inspect injected annotations
-from langchain_core.messages import SystemMessage, ToolMessage, convert_to_messages
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage, convert_to_messages
 from langchain_core.tools import tool
 from langgraph.types import Command
 from langgraph_sdk import get_client
 
 from deepagents_talon.authorization import set_authorization_handler
+from deepagents_talon.subagent_control import _MAX_EVENTS, ACTIVE_CONTROL, SubagentControl
 from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Sequence
 
     from deepagents import CompiledSubAgent, SubAgent
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph_sdk.schema import StreamPart
 
 logger = logging.getLogger(__name__)
 
 _IN_SUBAGENT: contextvars.ContextVar[bool] = contextvars.ContextVar("talon_subagent", default=False)
+_CONSUMED_RESULTS: contextvars.ContextVar[tuple[str, dict[str, str]] | None] = (
+    contextvars.ContextVar("talon_consumed_subagent_results", default=None)
+)
+
+
+@dataclass
+class _ListingState:
+    owner: str
+    snapshot: tuple[tuple[str, str], ...] | None = None
+    returned: set[str] = field(default_factory=set)
+
+
+_LISTING_STATE: contextvars.ContextVar[_ListingState | None] = contextvars.ContextVar(
+    "talon_subagent_listing", default=None
+)
 # Set by the runtime for a scheduled run, which has no user to keep talking to and no later
 # turn to deliver into: its delegations finish inside the turn that made them.
 _SCHEDULED_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "talon_scheduled_turn", default=False
 )
 _MAX_TASKS = 128
+# Results from outside Talon share the job table, so their own cap keeps a noisy source
+# from starving subagent launches.
+_MAX_EXTERNAL = 32
+# The host can requeue an acknowledged result until it settles the turn that consumed it,
+# so an external delivery only reclaims results acknowledged well before that.
+_REQUEUE_GRACE_SECONDS = 900.0
 _MAX_RUNNING = 4
 _MAX_DELIVERIES = 3
 _TASK_TIMEOUT_SECONDS = 3600
@@ -68,16 +92,24 @@ HIDDEN_ASYNC_TOOLS = frozenset(
 # A scheduled run's delegations finish inside its own tool call, so it never owns a job:
 # these two could only ever report nothing and cancel nothing. Hidden per turn at the model
 # call, not unregistered, because chat turns on the same process still need them.
-_SCHEDULED_HIDDEN_TOOLS = frozenset({"list_subagents", "cancel_subagent"})
+_SCHEDULED_HIDDEN_TOOLS = frozenset(
+    {"list_subagents", "cancel_subagent", "inspect_subagent", "message_subagent"}
+)
 _UNDELIVERED_RESULT = (
     f"The conversation failed to process this result {_MAX_DELIVERIES} times, "
     "so it was dropped and never reached the user."
 )
 _INSTRUCTIONS = (
     "The task and start_async_task tools launch background subagents and return a task ID. "
-    "Keep talking to the user while they work. Use list_subagents to inspect progress and "
-    "cancel_subagent to stop work. Completed results will arrive as subagent data for you to "
-    "process; do not repeatedly poll or wait for them."
+    "Delegate distinct work; do not repeat delegated searches or reads unless a specific "
+    "gap or contradiction requires verification. Continue with independent work while they run. "
+    "Use list_subagents to inspect progress and "
+    "inspect_subagent for recent activity and message receipts, message_subagent to queue "
+    "local-worker guidance for its next model step, and cancel_subagent to stop work. "
+    "Queued messages do not interrupt running model or tool calls. Activity is metadata only, "
+    "not reasoning or tool output. Completed results will arrive as subagent data for you to "
+    "process; do not repeatedly poll or wait for them. Report only material new findings; "
+    "do not repeat an earlier answer just to say a subagent validated it."
 )
 # Every clause of _INSTRUCTIONS is false on a scheduled run, and believing it loses work: a
 # model told the result arrives later ends its turn without one, and a scheduled turn that
@@ -87,6 +119,53 @@ _SCHEDULED_INSTRUCTIONS = (
     "start_async_task tools run a subagent to completion and return its result to you "
     "directly, so act on that result in this same turn -- no later turn will."
 )
+
+
+_SERVER_ERROR_STATUSES = range(500, 600)
+_FAILURE_HINTS = {
+    401: "authentication or permission problem; tell the operator",
+    402: "billing/payment problem; retrying will not help — tell the operator",
+    403: "authentication or permission problem; tell the operator",
+    404: "model not found; tell the operator",
+    429: "rate limited; retry later",
+}
+
+
+def _failure_summary(exc: BaseException, subagent_name: str) -> str:
+    """Describe recognized HTTP failures without exposing exception payloads."""
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        status = getattr(current, "status_code", None)
+        if not isinstance(status, int):
+            status = getattr(getattr(current, "response", None), "status_code", None)
+        if type(status) is int:
+            hint = _FAILURE_HINTS.get(status)
+            if status in _SERVER_ERROR_STATUSES:
+                hint = "transient provider problem; retry later"
+            if hint:
+                return (
+                    f"Subagent {subagent_name} failed: its model provider returned "
+                    f"HTTP {status} ({hint})."
+                )
+        pending.extend(error for error in (current.__context__, current.__cause__) if error)
+    return _FAILED_RESULT
+
+
+@contextmanager
+def _track_consumed_results(owner: str, results: dict[str, str]) -> Generator[None]:
+    """Collect results exposed to this turn without acknowledging them until success."""
+    token = _CONSUMED_RESULTS.set((owner, results))
+    listing_token = _LISTING_STATE.set(_ListingState(owner))
+    try:
+        yield
+    finally:
+        _CONSUMED_RESULTS.reset(token)
+        _LISTING_STATE.reset(listing_token)
 
 
 @dataclass
@@ -99,6 +178,9 @@ class _Job:
     notified: bool = False
     deliveries: int = 0
     tools: list[str] | None = None
+    control: SubagentControl = field(default_factory=SubagentControl)
+    external: bool = False
+    notified_at: float = 0.0
 
     @property
     def status(self) -> str:
@@ -130,22 +212,55 @@ class BackgroundSubagents(AgentMiddleware):
         self._inline_slots = asyncio.Semaphore(_MAX_INLINE_RUNNING)
         self._inline_timeout = inline_timeout
         self._remote: dict[str, AsyncSubAgent] = {}
+        self._expected: dict[str, float] = {}
+        self.messageable: frozenset[str] = frozenset()
 
         @tool
-        async def list_subagents(runtime: ToolRuntime) -> list[dict[str, str | list[str] | None]]:
-            """Inspect this thread's subagents, including their status and final results."""
+        async def list_subagents(
+            runtime: ToolRuntime,
+        ) -> list[dict[str, str | list[str] | None]] | str:
+            """Inspect this thread's subagents, including changed status and final results."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
-            return [
+            jobs = [
+                (key, job, job.status)
+                for key, job in self._jobs.items()
+                if job.owner == owner and not job.external
+            ]
+            state = _LISTING_STATE.get() if jobs and not _IN_SUBAGENT.get() else None
+            if state is not None and state.owner != owner:
+                state = None
+            snapshot = tuple((key, status) for key, _, status in jobs)
+            if state is not None:
+                if state.snapshot == snapshot:
+                    return (
+                        "No subagent status changed. Results arrive automatically. "
+                        "Continue independent work or end your turn."
+                    )
+                state.snapshot = snapshot
+            consumed = _CONSUMED_RESULTS.get()
+            if consumed is not None and consumed[0] == owner and not _IN_SUBAGENT.get():
+                # External results never appear in this listing, so they stay pending
+                # for the delivery turn that shows them.
+                consumed[1].update(
+                    (key, text)
+                    for key, text in self.results(owner).items()
+                    if not self._jobs[key].external
+                )
+            listing = [
                 {
                     "task_id": key,
                     "name": job.name,
-                    "status": job.status,
-                    "result": job.result,
+                    "status": status,
+                    "result": "Result already returned; use inspect_subagent to read it again."
+                    if state is not None and key in state.returned and job.result is not None
+                    else job.result,
                     "tools": job.tools,
                 }
-                for key, job in self._jobs.items()
-                if job.owner == owner
+                for key, job, status in jobs
             ]
+            if state is not None:
+                state.returned.update(key for key, job, _ in jobs if job.result is not None)
+            return listing
 
         @tool
         async def cancel_subagent(task_id: str, runtime: ToolRuntime) -> str:
@@ -157,21 +272,92 @@ class BackgroundSubagents(AgentMiddleware):
             await self._cancel_jobs([job])
             return job.status
 
-        self.tools = [list_subagents, cancel_subagent]
+        self.tools = [list_subagents, cancel_subagent, *self._control_tools()]
+
+    def _control_tools(self) -> list[BaseTool]:
+        @tool
+        async def inspect_subagent(
+            task_id: str, runtime: ToolRuntime, limit: int = 10
+        ) -> dict[str, object]:
+            """Inspect final results, recent metadata-only activity, and message receipts."""
+            owner = runtime.config.get("configurable", {}).get("thread_id")
+            job = self._jobs.get(task_id)
+            if not owner or job is None or job.owner != owner:
+                return {"error": "Unknown subagent for this conversation."}
+            if not 1 <= limit <= _MAX_EVENTS:
+                return {"error": "Limit must be between 1 and 50."}
+            return {
+                "task_id": task_id,
+                "status": job.status,
+                "result": job.result,
+                "messaging_supported": job.control.supported,
+                "activity": "local model/tool metadata"
+                if job.control.supported
+                else "lifecycle only",
+                "events": list(job.control.events)[-limit:],
+                "messages": [
+                    {key: receipt[key] for key in ("message_id", "status")}
+                    for receipt in job.control.messages
+                ],
+            }
+
+        @tool
+        async def message_subagent(
+            task_id: str, message: str, runtime: ToolRuntime
+        ) -> dict[str, str]:
+            """Queue local-worker guidance for its next model step, not an immediate interrupt."""
+            owner = runtime.config.get("configurable", {}).get("thread_id")
+            job = self._jobs.get(task_id)
+            if not owner or job is None or job.owner != owner:
+                return {"error": "Unknown subagent for this conversation."}
+            if job.status != "running":
+                return {"error": "Subagent is no longer accepting messages."}
+            if not job.control.supported:
+                return {"error": "Messaging is supported only for Talon-built local subagents."}
+            return job.control.enqueue(message)
+
+        return [inspect_subagent, message_subagent]
 
     def configured(
-        self, subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent]
+        self,
+        subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent],
     ) -> BackgroundSubagents:
         """Bind remote targets to this graph while sharing the in-memory workers."""
         middleware = copy(self)
+        middleware.messageable = frozenset(
+            spec["name"] for spec in subagents if "runnable" not in spec and "graph_id" not in spec
+        )
         middleware._remote = {  # noqa: SLF001  # configure a copy of this middleware
             spec["name"]: cast("AsyncSubAgent", spec) for spec in subagents if "graph_id" in spec
         }
         return middleware
 
     def owners(self) -> set[str]:
-        """Return threads with running work or unprocessed results."""
-        return {job.owner for job in self._jobs.values() if not job.cancelled and not job.notified}
+        """Return threads with running work, unprocessed results, or an expected reply."""
+        jobs = {job.owner for job in self._jobs.values() if not job.cancelled and not job.notified}
+        return jobs | {owner for owner in list(self._expected) if self.expects(owner)}
+
+    def expect(self, owner: str, seconds: float) -> None:
+        """Keep a thread's delivery route while a reply from outside Talon may arrive.
+
+        Args:
+            owner: Conversation thread that will receive the reply.
+            seconds: How long the reply may take.
+        """
+        deadline = time.monotonic() + seconds
+        self._expected[owner] = max(self._expected.get(owner, deadline), deadline)
+
+    def expects(self, owner: str) -> bool:
+        """Return whether a thread still awaits a reply; `cancel` ends the wait.
+
+        Args:
+            owner: Conversation thread to check.
+        """
+        deadline = self._expected.get(owner)
+        if deadline is not None and deadline <= time.monotonic():
+            del self._expected[owner]
+            return False
+        return deadline is not None
 
     async def awrap_model_call(
         self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
@@ -241,6 +427,10 @@ class BackgroundSubagents(AgentMiddleware):
             task_id = f"subagent-{uuid4().hex}"
             job = _Job(owner, str(request.tool_call["args"].get("subagent_type", "")))
             job.tools = request.tool_call["args"].get("tools")
+            job.control.supported = (
+                request.tool_call["name"] == "task" and job.name in self.messageable
+            )
+            job.control.record("started")
             self._jobs[task_id] = job
             job.worker = asyncio.create_task(
                 self._run(job, request, task_id), name=task_id, context=contextvars.copy_context()
@@ -289,12 +479,16 @@ class BackgroundSubagents(AgentMiddleware):
                                 tool_call_id=request.tool_call["id"],
                             )
                         return _clamp(await handler(request))
-                except Exception:
+                except Exception as exc:
                     logger.exception("Inline subagent failed")
                     # This result reaches the model and the user: no arguments, no
                     # credentials.
                     return ToolMessage(
-                        _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT,
+                        _TIMED_OUT_RESULT
+                        if timeout.expired()
+                        else _failure_summary(
+                            exc, str(request.tool_call["args"].get("subagent_type", ""))
+                        ),
                         tool_call_id=request.tool_call["id"],
                         status="error",
                     )
@@ -303,6 +497,9 @@ class BackgroundSubagents(AgentMiddleware):
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         _IN_SUBAGENT.set(True)
+        _CONSUMED_RESULTS.set(None)
+        _LISTING_STATE.set(None)
+        ACTIVE_CONTROL.set(job.control)
         APPROVAL_OPERATOR.set(False)
         # The copied context carries the host's history scope and cron origin, which the
         # tools a subagent may hold require. It must not carry the authorization handler:
@@ -329,17 +526,21 @@ class BackgroundSubagents(AgentMiddleware):
                 else:
                     messages = result.update.get("messages", [])
                     job.result = (
-                        str(messages[-1].content) if messages else "Subagent returned no result."
+                        _result_text(messages[-1]) if messages else "Subagent returned no result."
                     )
             else:
-                job.result = str(getattr(result, "content", result))
-            job.result = job.result[:_MAX_RESULT_CHARACTERS]
+                job.result = _result_text(result)
+            job.result = (job.result or "Subagent returned no result.")[:_MAX_RESULT_CHARACTERS]
         except asyncio.CancelledError:
             job.cancelled = True
-        except Exception:
+            job.control.record("cancelled")
+        except Exception as exc:
             logger.exception("Background subagent %s failed", task_id)
             # This result reaches the model and the user: no arguments, no credentials.
-            job.result = _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT
+            job.result = _TIMED_OUT_RESULT if timeout.expired() else _failure_summary(exc, job.name)
+            job.control.record("timed_out" if timeout.expired() else "error")
+        finally:
+            job.control.record("finished")
 
     async def _run_remote(self, request: ToolCallRequest) -> str:
         spec = self._remote[request.tool_call["args"]["subagent_type"]]
@@ -365,9 +566,10 @@ class BackgroundSubagents(AgentMiddleware):
                     if part.data.get("__interrupt__"):
                         result = "Subagent needs tool approval; the protected action has not run."
                     elif messages := part.data.get("messages"):
-                        result = str(convert_to_messages(messages)[-1].content)[
-                            :_MAX_RESULT_CHARACTERS
-                        ]
+                        result = (
+                            _result_text(convert_to_messages(messages)[-1])
+                            or "Subagent returned no result."
+                        )[:_MAX_RESULT_CHARACTERS]
         return result
 
     def results(self, owner: str) -> dict[str, str]:
@@ -377,7 +579,9 @@ class BackgroundSubagents(AgentMiddleware):
             owner: Conversation thread receiving the results.
         """
         return {
-            key: f"Background subagent {job.name} ({key}) returned the following data. "
+            key: job.result
+            if job.external
+            else f"Background subagent {job.name} ({key}) returned the following data. "
             f"Process it in the context of the user's request.\n"
             f"<subagent_result>\n{job.result}\n</subagent_result>"
             for key, job in self._jobs.items()
@@ -386,6 +590,35 @@ class BackgroundSubagents(AgentMiddleware):
             and not job.cancelled
             and not job.notified
         }
+
+    def deliver(self, owner: str, name: str, text: str) -> bool:
+        """Queue an already-final result from outside Talon for the owner's next turn.
+
+        The text is passed to the main agent verbatim, so the caller frames it.
+        It then follows the same delivery, retry, and acknowledgement path as a
+        subagent result.
+
+        Args:
+            owner: Conversation thread receiving the result.
+            name: Short source label for logs.
+            text: Fully framed result text.
+
+        Returns:
+            Whether the result was queued; `False` when the job table is full.
+        """
+        settled = time.monotonic() - _REQUEUE_GRACE_SECONDS
+        for key in [
+            key
+            for key, job in self._jobs.items()
+            if (job.notified and job.notified_at < settled) or (job.external and job.cancelled)
+        ]:
+            del self._jobs[key]
+        external = sum(job.external and not job.notified for job in self._jobs.values())
+        if len(self._jobs) >= _MAX_TASKS or external >= _MAX_EXTERNAL:
+            logger.warning("Dropped external result from %s: job table full", name)
+            return False
+        self._jobs[f"external-{uuid4().hex}"] = _Job(owner, name, result=text, external=True)
+        return True
 
     def record_delivery_failure(self, results: dict[str, str]) -> list[str]:
         """Count one failed delivery and drop results the main agent cannot process.
@@ -404,7 +637,7 @@ class BackgroundSubagents(AgentMiddleware):
             job.deliveries += 1
             if job.deliveries < _MAX_DELIVERIES:
                 continue
-            job.notified = True
+            job.notified, job.notified_at = True, time.monotonic()
             job.result = f"{_UNDELIVERED_RESULT}\n{job.result}"
             dropped.append(key)
             logger.warning("Dropped undelivered background subagent result %s", key)
@@ -439,7 +672,7 @@ class BackgroundSubagents(AgentMiddleware):
         """
         for key in results:
             if key in self._jobs:
-                self._jobs[key].notified = True
+                self._jobs[key].notified, self._jobs[key].notified_at = True, time.monotonic()
 
     async def cancel(self, owner: str | None = None) -> bool:
         """Cancel a thread's workers and discard results, or clear all at shutdown.
@@ -450,6 +683,10 @@ class BackgroundSubagents(AgentMiddleware):
         Returns:
             Whether every selected worker has stopped.
         """
+        if owner is None:
+            self._expected.clear()
+        else:
+            self._expected.pop(owner, None)
         jobs = [job for job in self._jobs.values() if owner is None or job.owner == owner]
         for job in jobs:
             job.cancelled = True
@@ -469,18 +706,7 @@ class BackgroundSubagents(AgentMiddleware):
 
 
 def _clamp(result: ToolMessage | Command) -> ToolMessage | Command:
-    """Bound one inline subagent result.
-
-    `_run` clamps before storing a background result. Inline the subagent's output goes
-    straight into the scheduled thread that every later fire of the job reuses, so an
-    unclamped result grows that thread without limit.
-
-    Args:
-        result: What the delegating tool returned.
-
-    Returns:
-        The result, with oversized message text truncated.
-    """
+    """Extract and bound inline subagent answer text."""
     if isinstance(result, Command):
         if not isinstance(result.update, dict):
             return result
@@ -494,19 +720,16 @@ def _clamp(result: ToolMessage | Command) -> ToolMessage | Command:
     return cast("ToolMessage", _clamped(result))
 
 
+def _result_text(value: object) -> str:
+    """Extract message answer text without reasoning or other non-text blocks."""
+    if isinstance(value, BaseMessage):
+        return value.text
+    return value if isinstance(value, str) else str(value)
+
+
 def _clamped(message: object) -> object:
-    """Truncate one message's text, leaving structured content alone.
-
-    Args:
-        message: Message carried back from a subagent.
-
-    Returns:
-        The message, or a copy of it holding only the leading characters.
-    """
-    content = getattr(message, "content", None)
-    if not isinstance(content, str) or len(content) <= _MAX_RESULT_CHARACTERS:
+    """Extract and truncate a tool message while preserving its metadata."""
+    if not isinstance(message, ToolMessage):
         return message
-    copier = getattr(message, "model_copy", None)
-    if not callable(copier):
-        return message
-    return copier(update={"content": content[:_MAX_RESULT_CHARACTERS]})
+    content = (_result_text(message) or "Subagent returned no result.")[:_MAX_RESULT_CHARACTERS]
+    return message.model_copy(update={"content": content})

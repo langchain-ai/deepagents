@@ -33,11 +33,12 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.exceptions import ModelInvalidRequestError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage, add_notification_metadata
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.channels.untracked_value import UntrackedValue
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -82,6 +83,7 @@ from deepagents.backends.utils import (
     format_grep_matches,
     regex_literal_hint,
     sanitize_tool_call_id as sanitize_tool_call_id,
+    to_posix_path,
     truncate_if_too_long,
     validate_path,
 )
@@ -184,6 +186,9 @@ _FILE_MUTATION_TOOLS: Final = frozenset({"write_file", "edit_file", "delete"})
 
 _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 """`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
+
+_READ_FILE_MEDIA_SOURCE: Final = "read_file_media"
+"""`lc_source` of the synthetic `HumanMessage` carrying `read_file` media."""
 
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
@@ -330,13 +335,17 @@ def _handle_video_read(
         additional_kwargs={"read_file_path": validated_path, "read_file_frame_count": frame_count},
         status="success",
     )
-    media_message = HumanMessage(
-        content_blocks=blocks,
-        additional_kwargs={
-            _READ_FILE_MEDIA_RESULT: True,
-            "read_file_path": validated_path,
-            "read_file_tool_call_id": tool_call_id,
-        },
+    media_message = add_notification_metadata(
+        HumanMessage(
+            content_blocks=blocks,
+            additional_kwargs={
+                _READ_FILE_MEDIA_RESULT: True,
+                "read_file_path": validated_path,
+                "read_file_tool_call_id": tool_call_id,
+            },
+        ),
+        source=_READ_FILE_MEDIA_SOURCE,
+        data={"path": validated_path, "tool_call_id": tool_call_id},
     )
     return Command(
         update={
@@ -492,20 +501,54 @@ def _is_denied(
     operation: FilesystemOperation,
     path: str,
     backend: BackendProtocol | None,
+    scope: list[str] | None = None,
 ) -> bool:
     """Whether `path` or, when `backend` is given, its resolved target is denied.
 
-    Paths the backend cannot resolve count as denied.
+    Paths the backend cannot resolve count as denied. With `scope`, so does a
+    path or target that needs approval outside every root in `scope`.
     """
     if _check_fs_permission(rules, operation, path) == "deny":
         return True
-    if backend is None:
-        return False
-    try:
-        real = _resolve_real_path(backend, path)
-    except (ValueError, OSError, RuntimeError):
+    candidates = [path]
+    if backend is not None:
+        try:
+            real = _resolve_real_path(backend, path)
+        except (ValueError, OSError, RuntimeError):
+            return True
+        candidates += [real.rstrip("/") + "/", real] if path.endswith("/") else [real]
+    if any(_check_fs_permission(rules, operation, p) == "deny" for p in candidates[1:]):
         return True
-    return _check_fs_permission(rules, operation, real) == "deny"
+    return scope is not None and any(
+        _check_fs_permission(rules, operation, p) == "interrupt" and not any(PurePosixPath(p).is_relative_to(root) for root in scope)
+        for p in candidates
+    )
+
+
+def _bulk_scope(
+    rules: list[FilesystemPermission],
+    backend: BackendProtocol,
+    path: str,
+    pattern: str | None = None,
+) -> list[str] | None:
+    """Return the roots a bulk call's `interrupt` decision covered, or `None` without `interrupt` rules.
+
+    The roots are `path` and its resolved target. A `glob` pattern can reach
+    outside `path`: an absolute one adds its anchor, one that climbs with `..`
+    adds `/`. Results reached through a symlink can resolve outside them.
+    """
+    if not any(rule.mode == "interrupt" and "read" in rule.operations for rule in rules):
+        return None
+    scope = [path]
+    with contextlib.suppress(ValueError, OSError, RuntimeError):
+        scope.append(_resolve_real_path(backend, path))
+    if pattern is not None:
+        posix_pattern = to_posix_path(pattern)
+        if posix_pattern.startswith("/"):
+            scope.append(_glob_anchor(pattern))
+        elif ".." in PurePosixPath(posix_pattern).parts:
+            scope.append("/")
+    return scope
 
 
 def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
@@ -722,6 +765,7 @@ def _denied_lookup(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
     backend: BackendProtocol | None,
+    scope: list[str] | None = None,
 ) -> Callable[[str], bool]:
     """Return `_is_denied` memoized per path, for filtering many results."""
     if not rules:
@@ -730,7 +774,7 @@ def _denied_lookup(
 
     def denied(path: str) -> bool:
         if path not in cache:
-            cache[path] = _is_denied(rules, operation, path, backend)
+            cache[path] = _is_denied(rules, operation, path, backend, scope)
         return cache[path]
 
     return denied
@@ -760,13 +804,15 @@ def _filter_file_infos_by_permission(
     *,
     operation: FilesystemOperation,
     backend: BackendProtocol | None = None,
+    scope: list[str] | None = None,
 ) -> list[FileInfo]:
     """Filter file-info entries, removing only those denied by a rule.
 
     See `_filter_paths_by_permission` for why interrupt-mode entries
-    pass through, and for `backend`.
+    pass through, and for `backend`. With `scope` (see `_bulk_scope`),
+    interrupt-mode entries outside it are removed too.
     """
-    denied = _denied_lookup(rules, operation, backend)
+    denied = _denied_lookup(rules, operation, backend, scope)
     return [fi for fi in infos if not denied(fi.get("path", ""))]
 
 
@@ -776,13 +822,15 @@ def _filter_grep_matches_by_permission(
     *,
     operation: FilesystemOperation,
     backend: BackendProtocol | None = None,
+    scope: list[str] | None = None,
 ) -> list[GrepMatch]:
     """Filter grep matches, removing only those denied by a rule.
 
     See `_filter_paths_by_permission` for why interrupt-mode entries
-    pass through, and for `backend`.
+    pass through, and for `backend`. With `scope` (see `_bulk_scope`),
+    interrupt-mode entries outside it are removed too.
     """
-    denied = _denied_lookup(rules, operation, backend)
+    denied = _denied_lookup(rules, operation, backend, scope)
     return [m for m in matches if not denied(m.get("path", ""))]
 
 
@@ -816,6 +864,40 @@ async def _agrep_backend(
     return _apply_grep_max_count(result, max_count)
 
 
+GREP_LINE_CHAR_LIMIT = 2000
+"""Characters of a grep line shown to the model.
+
+Longer lines (minified JSON, offloaded tool results) show a window around the
+match instead, so one hit can't return the whole line.
+"""
+
+
+def _clip_grep_line(text: str, pattern: str) -> str:
+    """Clip `text` to a `GREP_LINE_CHAR_LIMIT` window centered on `pattern`.
+
+    Falls back to the head of the line when `pattern` isn't found in it, as for
+    context lines.
+    """
+    if len(text) <= GREP_LINE_CHAR_LIMIT:
+        return text
+    center = max(text.find(pattern), 0) + len(pattern) // 2
+    start = min(max(center - GREP_LINE_CHAR_LIMIT // 2, 0), len(text) - GREP_LINE_CHAR_LIMIT)
+    end = start + GREP_LINE_CHAR_LIMIT
+    before = f"[{start} chars clipped] " if start else ""
+    after = f" [{len(text) - end} chars clipped]" if end < len(text) else ""
+    return f"{before}{text[start:end]}{after}"
+
+
+def _clip_grep_match(match: GrepMatch, pattern: str) -> GrepMatch:
+    """Return `match` with its line and context lines clipped by `_clip_grep_line`."""
+    clipped: GrepMatch = {**match, "text": _clip_grep_line(match["text"], pattern)}
+    if "context_before" in match:
+        clipped["context_before"] = [{**c, "text": _clip_grep_line(c["text"], pattern)} for c in match["context_before"]]
+    if "context_after" in match:
+        clipped["context_after"] = [{**c, "text": _clip_grep_line(c["text"], pattern)} for c in match["context_after"]]
+    return clipped
+
+
 def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
@@ -835,7 +917,7 @@ def _format_grep_tool_result(
     not when matches existed but were all redacted by read permissions (a
     redaction miss has nothing to do with regex syntax).
     """
-    matches = result.matches or []
+    matches = [_clip_grep_match(match, pattern) for match in result.matches or []]
     if result.error and not matches:
         return result.error, "error"
 
@@ -863,9 +945,10 @@ def _apply_permissions_to_ls_results(
     entries: list[FileInfo],
     *,
     backend: BackendProtocol | None = None,
+    scope: list[str] | None = None,
 ) -> list[str]:
     """Filter ls entries by permission and return their paths."""
-    filtered_entries = _filter_file_infos_by_permission(rules, entries, operation="read", backend=backend)
+    filtered_entries = _filter_file_infos_by_permission(rules, entries, operation="read", backend=backend, scope=scope)
     return [fi.get("path", "") for fi in filtered_entries]
 
 
@@ -874,9 +957,10 @@ def _apply_permissions_to_glob_results(
     matches: list[FileInfo],
     *,
     backend: BackendProtocol | None = None,
+    scope: list[str] | None = None,
 ) -> list[str]:
     """Filter glob matches by permission and return their paths."""
-    filtered_infos = _filter_file_infos_by_permission(rules, matches, operation="read", backend=backend)
+    filtered_infos = _filter_file_infos_by_permission(rules, matches, operation="read", backend=backend, scope=scope)
     return [fi.get("path", "") for fi in filtered_infos]
 
 
@@ -1525,7 +1609,7 @@ READ_FILE_VIDEO_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
-- You must read the file before editing; this tool errors otherwise.
+- You must read the file before editing.
 - Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.
 - Prefer editing an existing file over creating a new one.
 - Only use emojis if the user explicitly requests it."""
@@ -1574,15 +1658,15 @@ _EXECUTE_GLOB_SEARCH_GUIDANCE = "You MUST avoid using shell find for searches. I
 _EXECUTE_GLOB_BAD_EXAMPLE = "\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead"
 _EXECUTE_GREP_BAD_EXAMPLE = "\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead"
 
+# Only shown to the model when the backend implements SandboxBackendProtocol
+# (see `supports_execution`); otherwise `execute` is removed from the tool list.
 _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).
 
 Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
 - Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
-- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
-
-Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
+- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}"""
 
 EXECUTE_TOOL_DESCRIPTION = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
     search_guidance=_EXECUTE_SEARCH_GUIDANCE,
@@ -2097,7 +2181,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_ls_results(
+                self._permissions, infos, backend=self.backend, scope=_bulk_scope(self._permissions, self.backend, validated_path)
+            )
             return ToolMessage(
                 content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
@@ -2136,7 +2222,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_ls_results(
+                self._permissions, infos, backend=self.backend, scope=_bulk_scope(self._permissions, self.backend, validated_path)
+            )
             return ToolMessage(
                 content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
@@ -2694,6 +2782,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             try:
                 glob_result = future.result()
+            except GraphBubbleUp:
+                # Interrupts and parent commands are control flow, not a failed search.
+                raise
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
                 # run_glob's finally already released the slot before the
                 # exception propagated, so do not release again here.
@@ -2711,7 +2802,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = glob_result.matches or []
-            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
+            scope = _bulk_scope(self._permissions, self.backend, permission_path, pattern)
+            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend, scope=scope)
             return ToolMessage(
                 content=_format_glob_tool_result(
                     paths,
@@ -2771,6 +2863,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             try:
                 glob_result = task.result()
+            except GraphBubbleUp:
+                # Interrupts and parent commands are control flow, not a failed search.
+                raise
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
                 return ToolMessage(
                     content=f"Error: glob failed: {e}",
@@ -2786,7 +2881,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = glob_result.matches or []
-            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
+            scope = _bulk_scope(self._permissions, self.backend, permission_path, pattern)
+            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend, scope=scope)
             return ToolMessage(
                 content=_format_glob_tool_result(
                     paths,
@@ -2846,7 +2942,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = _grep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
-            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend)
+            scope = _bulk_scope(self._permissions, self.backend, path or "/")
+            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend, scope=scope)
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
@@ -2892,7 +2989,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = await _agrep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
-            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend)
+            scope = _bulk_scope(self._permissions, self.backend, path or "/")
+            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend, scope=scope)
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,

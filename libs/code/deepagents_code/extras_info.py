@@ -176,7 +176,7 @@ def _is_under(root: Path, candidate: Path) -> bool:
 def _editable_sdk_source_root() -> Path | None:
     """Return the editable `deepagents` source root from package metadata.
 
-    Scans every installed distribution named `deepagents` for PEP 610
+    Scans the installed distributions named `deepagents` for PEP 610
     `direct_url.json` with `dir_info.editable: true`, and credits a record only
     when its source root actually contains the `deepagents` module imported into
     this process.
@@ -208,7 +208,13 @@ def _editable_sdk_source_root() -> Path | None:
         # be attributed to it, so report the plain metadata version.
         return None
     try:
-        for dist in distributions():
+        # `name=` matches on directory names, so only `deepagents` records have
+        # their metadata read; an unfiltered scan parses `METADATA` for every
+        # installed package. It still yields *every* matching record across
+        # `sys.path`, so the shadowing `*.egg-info` case above is handled.
+        for dist in distributions(name="deepagents"):
+            # Redundant with the filter for stdlib finders; kept for third-party
+            # finders that may ignore `name`.
             if _sdk_distribution_name(dist) != "deepagents":
                 continue
             source_root = _sdk_editable_record_root(dist)

@@ -49,7 +49,11 @@ from deepagents_talon.mcp_config import (
     MCPConfigStore,
     agent_workspace_root,
 )
-from deepagents_talon.mcp_oauth import parse_oauth_config
+from deepagents_talon.mcp_oauth import (
+    MCPOAuthConfigError,
+    parse_oauth_config,
+    require_secret_reference,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
@@ -331,7 +335,7 @@ class MCPToolProvider:
             path = mcp_config_path(self._config)
             servers = _load_config(path, self._config.env)
             server = servers.get(server_name)
-            if server is None or server.get("auth") != "oauth":
+            if server is None or not server.get("enabled", True) or server.get("auth") != "oauth":
                 return {"status": "failed", "server_name": server_name}
 
             opened = await _run_authorized(
@@ -362,6 +366,9 @@ class MCPToolProvider:
             ValueError,
         ) as exc:
             if not attempt.completed:
+                logger.warning(
+                    "MCP login failed before authorization completed (%s)", type(exc).__name__
+                )
                 return {
                     "status": "failed",
                     "server_name": server_name,
@@ -406,6 +413,16 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     infos: list[MCPServerInfo] = []
     for name, server in servers.items():
         transport = _transport_label(server)
+        if not server.get("enabled", True):
+            infos.append(
+                MCPServerInfo(
+                    name=name,
+                    transport=transport,
+                    status="disabled",
+                    error="Disabled in MCP configuration",
+                )
+            )
+            continue
         try:
             connection, transport = await _connection(name, server)
             adapter = MCPAdapter(connection)
@@ -490,6 +507,9 @@ async def login_mcp_server(
         server = servers.get(server_name)
         if server is None:
             msg = f"MCP server {server_name!r} was not found in {path}"
+            raise MCPConfigError(msg)
+        if not server.get("enabled", True):
+            msg = f"MCP server {server_name!r} is disabled; enable it before logging in"
             raise MCPConfigError(msg)
         connection, transport = await _connection(
             server_name,
@@ -694,7 +714,14 @@ def _load_config(path: Path, env: Mapping[str, str]) -> dict[str, dict[str, obje
         if not isinstance(value, dict):
             msg = f"MCP server {name!r} must be an object"
             raise MCPConfigError(msg)
-        servers[name] = _resolve_server_env(name, value, env)
+        if "enabled" in value and not isinstance(value["enabled"], bool):
+            msg = f"MCP server {name!r} enabled must be a boolean"
+            raise MCPConfigError(msg)
+        servers[name] = (
+            _resolve_server_env(name, value, env)
+            if value.get("enabled", True)
+            else copy.deepcopy(value)
+        )
     return servers
 
 
@@ -730,7 +757,25 @@ def _resolve_server_env(
             key: _resolve_string(value, f"{name}.{field}.{key}", env)
             for key, value in values.items()
         }
+    _resolve_client_secret(name, resolved, env)
     return resolved
+
+
+def _resolve_client_secret(name: str, server: dict[str, object], env: Mapping[str, str]) -> None:
+    oauth = server.get("oauth")
+    if not isinstance(oauth, dict) or "client_secret" not in oauth:
+        return
+    try:
+        require_secret_reference(oauth)
+    except MCPOAuthConfigError as exc:
+        msg = f"MCP server {name!r}: {exc}"
+        raise MCPConfigError(msg) from None
+    server["oauth"] = {
+        **oauth,
+        "client_secret": _resolve_string(
+            oauth["client_secret"], f"{name}.oauth.client_secret", env
+        ),
+    }
 
 
 def _resolve_string(value: object, field: str, env: Mapping[str, str]) -> str:

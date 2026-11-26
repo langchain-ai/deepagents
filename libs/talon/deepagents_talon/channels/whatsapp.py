@@ -34,7 +34,6 @@ from deepagents_talon.channels.base import (
     max_media_bytes_from_env,
     message_with_media_paths,
     optional_str,
-    outbound_media_root_from_env,
     parse_float,
     parse_int,
     validate_media,
@@ -151,7 +150,7 @@ class WhatsAppChannelConfig:
                 str(config.inbound_media_dir / "whatsapp"),
             ),
         )
-        outbound_media_dir = outbound_media_root_from_env(env)
+        outbound_media_dir = config.outbound_media_dir
         command = _bridge_command(env)
         return cls(
             session_dir=session,
@@ -448,7 +447,7 @@ class WhatsAppChannel:
         return SendResult(success=True, message_id=message_id)
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
-        """Send validated image or video media to a WhatsApp chat.
+        """Send a validated image, video, or document to a WhatsApp chat.
 
         Args:
             conversation_id: WhatsApp chat id.

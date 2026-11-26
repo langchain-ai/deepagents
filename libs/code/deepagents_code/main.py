@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
+    from deepagents_code.program_status import ProgramStatusReporter
     from deepagents_code.thread_ownership import ThreadLease
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
@@ -112,11 +113,65 @@ def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
     raise SystemExit(128 + signum)
 
 
+def _start_headless_program_status() -> ProgramStatusReporter:
+    """Report a headless run as `working` with `OSC 7501`.
+
+    The run's final `done` or `error` must outlive the process, so the
+    reporter does not clear at exit; terminals drop `working` on their own.
+
+    Returns:
+        The reporter for the run's final report.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+    from deepagents_code.program_status import (
+        ProgramState,
+        ProgramStatus,
+        ProgramStatusReporter,
+    )
+
+    enabled = load_bool_display_preference("display.terminal_status", fallback=True)
+    reporter = ProgramStatusReporter(enabled=enabled, clear_on_exit=False)
+    reporter.report(ProgramStatus(ProgramState.WORKING))
+    return reporter
+
+
 def _install_termination_signal_handlers() -> None:
     """Install graceful terminating-signal handling on POSIX."""
     if sys.platform != "win32":
         for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
             signal.signal(signum, _handle_termination_signal)
+
+
+def _make_stdio_encoding_safe() -> None:
+    """Prevent `UnicodeEncodeError` from killing a command mid-output.
+
+    Output redirected to a pipe or file is encoded with the locale encoding,
+    which on Windows is the ANSI code page (e.g. cp1252) unless UTF-8 mode is
+    on. Its default error handler raises on any character that encoding lacks,
+    so the first one, whether a glyph or text such as a thread name or skill
+    description, crashes the command. Reconfiguring the streams with
+    `errors="replace"` degrades unencodable characters to "?" instead. The
+    stream encoding itself is left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # Streams replaced by non-reconfigurable objects (e.g. a plain
+        # StringIO or a captured buffer) are left as-is.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except ValueError, OSError, TypeError:
+            # Closed, detached, or otherwise non-reconfigurable stream (a
+            # duck-typed `reconfigure` with a different signature raises
+            # `TypeError`) — leave it as-is. This is a best-effort hardening
+            # step; it must never itself crash the command.
+            logger.debug(
+                "Could not reconfigure %s error handler",
+                getattr(stream, "name", stream),
+                exc_info=True,
+            )
+            continue
 
 
 def build_version_text() -> str:
@@ -2256,16 +2311,21 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     return True
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser without parsing `sys.argv`.
+
+    Kept separate from `parse_args` so code that needs to inspect the command
+    tree, such as `dcode completion`, can do so without consuming arguments or
+    importing the runtime.
 
     Returns:
-        Parsed arguments namespace.
+        The fully populated parser.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
     from deepagents_code.client.commands.auth import setup_auth_parser
     from deepagents_code.client.commands.config import setup_config_parser
     from deepagents_code.client.commands.mcp import setup_mcp_parsers
+    from deepagents_code.completion import SHELLS, program_arg
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
 
@@ -2578,6 +2638,30 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="NAME",
         help="Installed optional extra to remove",
+    )
+
+    completion_parser = subparsers.add_parser(
+        "completion",
+        help="Generate shell completion scripts",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_completion_help")),
+    )
+    completion_parser.add_argument(
+        "shell",
+        nargs="?",
+        default=None,
+        choices=SHELLS,
+        help="Shell to generate a completion script for",
+    )
+    completion_parser.add_argument(
+        "--prog",
+        action="append",
+        metavar="NAME",
+        type=program_arg,
+        help=(
+            "Command name the script completes (repeatable; "
+            "default: dcode and deepagents-code)"
+        ),
     )
 
     # Default interactive mode — argument order here determines the
@@ -3020,11 +3104,21 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(_lazy_help("show_help")),
     )
 
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments.
+
+    Returns:
+        Parsed arguments namespace.
+    """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    parser = build_parser()
     args = parser.parse_args()
     if args.package and (args.uninstall is not None or args.command == "uninstall"):
         parser.error("--package cannot be used with uninstall")
-
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
     if (
         getattr(args, "trust_project_extensions", False)
@@ -3875,6 +3969,29 @@ async def _run_acp_cli_async(
             except Exception:
                 logger.warning("MCP session cleanup failed", exc_info=True)
     return exit_code
+
+
+def _is_session_launch(args: argparse.Namespace) -> bool:
+    """Return whether these arguments start an agent session.
+
+    Subcommands and the management flags (`--update`, `--install`,
+    `--default-model` and the rest) exit without one, so piped stdin is their
+    input rather than a prompt. A new flag that exits before the session starts
+    belongs here too.
+
+    Returns:
+        `True` for interactive and headless launches.
+    """
+    if getattr(args, "command", None) is not None:
+        return False
+    return not (
+        args.update
+        or args.install
+        or args.uninstall is not None
+        or args.auto_update
+        or args.clear_default_model
+        or args.default_model is not None
+    )
 
 
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
@@ -4826,7 +4943,9 @@ def _check_mcp_project_trust(
         ProjectServerSummary,
         discover_mcp_config_sources,
         extract_project_server_summaries,
+        is_user_mcp_config_path,
         load_merged_mcp_configs_lenient,
+        resolve_mcp_server_sources,
     )
     from deepagents_code.project_utils import ProjectContext
 
@@ -4922,9 +5041,35 @@ def _check_mcp_project_trust(
 
     prompt_console.print()
     prompt_console.print("[bold yellow]Approve project MCP servers:[/bold yellow]")
+    server_sources = resolve_mcp_server_sources(project_configs)
     for name, kind, summary in prompt_servers:
         prompt_console.print(
             f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
+        )
+        source = server_sources.get(name)
+        if source is not None:
+            prompt_console.print(
+                f"    [dim]from {escape(PATHS.display(source))}[/dim]",
+                highlight=False,
+                soft_wrap=True,
+            )
+    # Outside a git repository the project root falls back to the working
+    # directory, so starting from home makes the user config a project
+    # candidate too. Discovery keeps it at project scope on purpose; say why.
+    # A profile configured inside a real repo collides the same way, but there
+    # the project framing is accurate, so the note is limited to the fallback.
+    if project_context.project_root is None and any(
+        is_user_mcp_config_path(server_sources[name])
+        for name, _kind, _summary in prompt_servers
+        if name in server_sources
+    ):
+        prompt_console.print(
+            "  [dim]This is your user MCP config. It is gated as a project "
+            f"config because {escape(PATHS.display(project_root))} is not in a "
+            "git repository; start inside a repository to load it without "
+            "approval.[/dim]",
+            highlight=False,
+            soft_wrap=True,
         )
     prompt_console.print()
 
@@ -5470,6 +5615,10 @@ def cli_main() -> None:
         KeyboardInterrupt: Re-raised out of the TUI teardown block so the
             outer handler can print the interruption notice and exit 130.
     """
+    # Every command can print text the stdout encoding lacks, so this runs
+    # before the first write, including the `--version` fast path below.
+    _make_stdio_encoding_safe()
+
     # Fix for gRPC fork issue on macOS
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
@@ -5556,11 +5705,16 @@ def cli_main() -> None:
 
             sys.exit(run_doctor_command(args))
 
+        if command == "completion":
+            from deepagents_code.completion import run_completion_command
+
+            sys.exit(run_completion_command(args))
+
         # Every remaining command can read or act on managed policy, so none
         # may run while that policy is unenforceable. `config`, `doctor`, and
         # `auth path` returned above because they are the tools for diagnosing
         # a broken managed file. Gating them would leave an administrator no way
-        # to see what is wrong. `help` reads no policy.
+        # to see what is wrong. `help` and `completion` read no policy.
         if command != "help":
             _require_managed_config_or_exit()
 
@@ -5761,10 +5915,13 @@ def cli_main() -> None:
                 from acp import run_agent as run_acp_agent
                 from deepagents_acp.server import AgentServerACP
             except ImportError as exc:
+                from deepagents_code.update_check import upgrade_command
+
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: uv tool install --reinstall -U deepagents-code "
-                    "--with deepagents-acp\n"
+                    "This usually means an incompatible deepagents-acp or "
+                    "agent-client-protocol version is installed. "
+                    f"Upgrade with: {upgrade_command()}\n"
                 )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
@@ -5803,7 +5960,11 @@ def cli_main() -> None:
             )
             sys.exit(exit_code)
 
-        apply_stdin_pipe(args)
+        # Only a session takes piped stdin as its prompt. Everything else leaves
+        # it alone, so a pipe that stays open cannot stall a subcommand and a
+        # subcommand's own prompt reads the piped answer.
+        if _is_session_launch(args):
+            apply_stdin_pipe(args)
         if args.non_interactive_message:
             # Piped stdin turned this launch headless. It gets no prewarm
             # thread, so install the redacting client now, as bootstrap would.
@@ -6619,6 +6780,9 @@ def cli_main() -> None:
                 sys.exit(2)
 
             timeout = getattr(args, "timeout", None)
+            program_status = _start_headless_program_status()
+            exit_code: int | None = None
+            failure = ""
             try:
                 exit_code = asyncio.run(
                     asyncio.wait_for(
@@ -6674,13 +6838,26 @@ def cli_main() -> None:
                     f"{timeout}s. Retry with a larger --timeout, or use "
                     "--max-turns for a turn-count limit."
                 )
-                sys.exit(124)
+                exit_code = 124
+                failure = f"Timed out after {timeout}s"
             except KeyboardInterrupt:
                 # `asyncio.run` re-raises `KeyboardInterrupt` past the inner
                 # `run_non_interactive` handler when the signal hits during
                 # `wait_for`; mirror its exit code 130 here so Ctrl-C is a
                 # quiet exit instead of a traceback.
-                sys.exit(130)
+                exit_code = 130
+            except Exception as exc:
+                # An unexpected crash exits 1 with a traceback; report it as
+                # `error` instead of clearing. A signal's `SystemExit` is not
+                # caught here, so it still clears. Only the type is reported:
+                # the message can hold paths or data meant for the log.
+                exit_code = 1
+                failure = f"Crashed with {type(exc).__name__}"
+                raise
+            finally:
+                from deepagents_code.program_status import exit_status
+
+                program_status.report(exit_status(exit_code, reason=failure))
             sys.exit(exit_code)
         else:
             _print_configured_profile_notice()

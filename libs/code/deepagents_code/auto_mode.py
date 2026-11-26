@@ -2205,9 +2205,24 @@ _DEPENDENCY_FILES = frozenset(
 )
 
 
+def _file_tool_path(raw: object) -> Path | None:
+    """Return the path a filesystem tool writes for a model-authored `file_path`.
+
+    The tools root a relative path at `/`, not at the worktree. Do not resolve it
+    against `root`: that judges a different file than the one written.
+    """
+    from deepagents.backends.utils import validate_path
+
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return Path(validate_path(raw)).resolve(strict=False)
+    except OSError, RuntimeError, ValueError:
+        return None
+
+
 def _routine_write_allowed(root: Path, call: ToolCall) -> bool:
-    raw_path = call.get("args", {}).get("file_path")
-    path = _resolve_path(root, raw_path)
+    path = _file_tool_path(call.get("args", {}).get("file_path"))
     if path is None or _is_sensitive_write_path(root, path):
         return False
     if path.name.lower() in _DEPENDENCY_FILES:
@@ -4570,7 +4585,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
 
 class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, Any]):
-    """Reject dynamically gated MCP calls when no approval UI exists."""
+    """Reject dynamically gated MCP calls when no approval UI exists.
+
+    A call passes only when a `PreToolUse` hook explicitly allowed it. A hook
+    denial is reported with the hook's own reason.
+    """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
     """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
@@ -4585,13 +4604,22 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
         self._tool_names = frozenset(tool_names)
 
     def _rejection(self, request: ToolCallRequest) -> ToolMessage | None:
+        from deepagents_code.hooks.server_middleware import (
+            hook_denial_message,
+            hook_explicitly_allowed,
+        )
+
         if request.tool_call["name"] not in self._tool_names:
             return None
+        if hook_explicitly_allowed(request.state, _tool_call_id(request.tool_call)):
+            return None
+        if (denial := hook_denial_message(request)) is not None:
+            return denial
         return ToolMessage(
             content=(
                 "This MCP action requires approval, but the current headless runtime "
-                "has no approval UI. Run it in the interactive TUI or choose a "
-                "read-only MCP action."
+                "has no approval UI. Run it in the interactive TUI, allow it with a "
+                "PreToolUse hook, or choose a read-only MCP action."
             ),
             name=request.tool_call["name"],
             tool_call_id=_tool_call_id(request.tool_call),

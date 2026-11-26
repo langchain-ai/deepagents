@@ -105,6 +105,9 @@ MODEL_USAGE_EVENT_TYPE = "model_usage"
 MODEL_USAGE_EVENT_VERSION = 1
 """Current shape version for nested model-usage events."""
 
+SUMMARIZATION_STARTED_EVENT_TYPE = "summarization_started"
+"""Custom-stream event type marking the start of a summarization model call."""
+
 SESSION_COST_EVENT_TYPE = "session_cost"
 SESSION_COST_EVENT_VERSION = 2
 """Custom-stream event type carrying the thread's absolute cumulative cost.
@@ -153,6 +156,28 @@ class CostBreakdown(TypedDict):
     cache_read_cost_complete: bool
     reasoning_cost_complete: bool
     historical_complete: bool
+    priced_cost_complete: NotRequired[dict[str, bool]]
+    unpriced_input_tokens: NotRequired[int]
+    unpriced_output_tokens: NotRequired[int]
+    unpriced_cache_creation_tokens: NotRequired[int]
+    unpriced_cache_read_tokens: NotRequired[int]
+    unpriced_reasoning_tokens: NotRequired[int]
+    unpriced_tokens_known: NotRequired[bool]
+    """Whether the `unpriced_*` counts cover every unpriced request.
+
+    Breakdowns written before these keys existed lack them. Such a source
+    counts as known only when all of its requests were priced.
+    """
+
+
+_UNPRICED_TOKEN_KEYS = (
+    ("unpriced_input_tokens", "input_tokens"),
+    ("unpriced_output_tokens", "output_tokens"),
+    ("unpriced_cache_creation_tokens", "cache_creation_tokens"),
+    ("unpriced_cache_read_tokens", "cache_read_tokens"),
+    ("unpriced_reasoning_tokens", "reasoning_tokens"),
+)
+"""Each unpriced token key paired with the all-usage key it is a subset of."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +225,15 @@ def _empty_cost_breakdown(*, historical_complete: bool = True) -> CostBreakdown:
         "cache_read_cost_complete": True,
         "reasoning_cost_complete": True,
         "historical_complete": historical_complete,
+        "priced_cost_complete": {
+            key.removesuffix("_tokens"): True for _, key in _UNPRICED_TOKEN_KEYS
+        },
+        "unpriced_input_tokens": 0,
+        "unpriced_output_tokens": 0,
+        "unpriced_cache_creation_tokens": 0,
+        "unpriced_cache_read_tokens": 0,
+        "unpriced_reasoning_tokens": 0,
+        "unpriced_tokens_known": True,
     }
 
 
@@ -263,7 +297,44 @@ def _merge_cost_breakdowns(
             "historical_complete",
         ):
             result[key] = bool(result[key] and source.get(key) is True)  # type: ignore[literal-required]
+        _merge_unpriced_tokens(result, source)
+        _merge_priced_cost_completeness(result, source)
     return result
+
+
+def _merge_priced_cost_completeness(
+    result: CostBreakdown, source: Mapping[str, Any]
+) -> None:
+    """Preserve pricing gaps independently of unpriced usage."""
+    if source.get("priced_request_count") == 0:
+        return
+    flags = source.get("priced_cost_complete")
+    for category, complete in result["priced_cost_complete"].items():
+        value = (
+            flags.get(category)
+            if isinstance(flags, Mapping)
+            else source.get(f"{category}_cost_complete")
+        )
+        result["priced_cost_complete"][category] = complete and value is True
+
+
+def _merge_unpriced_tokens(result: CostBreakdown, source: Mapping[str, Any]) -> None:
+    """Add a source's unpriced token counts, tolerating pre-split breakdowns."""
+    counts: list[int] = []
+    for key, _ in _UNPRICED_TOKEN_KEYS:
+        value = source.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            counts.append(value)
+    if source.get("unpriced_tokens_known") is True and len(counts) == len(
+        _UNPRICED_TOKEN_KEYS
+    ):
+        for (key, _), count in zip(_UNPRICED_TOKEN_KEYS, counts, strict=True):
+            result[key] = result.get(key, 0) + count
+        return
+    # A source without valid counts can only be split when it had nothing
+    # unpriced to split out.
+    if source.get("request_count") != source.get("priced_request_count"):
+        result["unpriced_tokens_known"] = False
 
 
 def _breakdown_for_estimate(
@@ -282,6 +353,8 @@ def _breakdown_for_estimate(
     result["request_count"] = 1
     if estimate is None:
         _retain_unpriced_tokens(result, usage_metadata, provider)
+        for unpriced_key, key in _UNPRICED_TOKEN_KEYS:
+            result[unpriced_key] = result[key]
         result["input_cost_complete"] = False
         result["output_cost_complete"] = False
         result["cache_creation_cost_complete"] = False
@@ -316,6 +389,10 @@ def _breakdown_for_estimate(
         result["cache_read_cost_usd"] = estimate.cache_read_cost_usd
     if estimate.reasoning_cost_usd is not None:
         result["reasoning_cost_usd"] = estimate.reasoning_cost_usd
+    result["priced_cost_complete"] = {
+        category: result.get(f"{category}_cost_complete") is True
+        for category in result["priced_cost_complete"]
+    }
     return result
 
 
@@ -805,6 +882,37 @@ def _start_price_updater() -> None:
             )
         else:
             _PRICE_UPDATER = updater
+
+
+_PRICING_WARMUP: threading.Thread | None = None
+"""The thread `_warm_pricing` started, or `None` before the first turn.
+
+Kept so tests can join it; the thread is a daemon and is never joined in
+production.
+"""
+
+
+def _warm_pricing() -> None:
+    """Load pricing and start the catalog updater without blocking the caller.
+
+    Without this, the updater starts on the first priced response. That request
+    is then priced against the bundled catalog before the first refresh lands,
+    so a model released after the pinned genai-prices shows as unpriced for the
+    rest of the thread. Calling this when a turn begins gives the fetch the
+    whole model call to finish.
+
+    Pricing is still loaded only once a model turn runs, never at CLI startup.
+    The import and the updater start run on a daemon thread because the caller
+    may be on the event loop.
+    """
+    global _PRICING_WARMUP  # noqa: PLW0603
+    with _PRICE_UPDATER_LOCK:
+        if _PRICING_WARMUP is not None or _PRICE_UPDATER_ATTEMPTED:
+            return
+        _PRICING_WARMUP = threading.Thread(
+            target=_load_pricing, name="dcode-pricing-warmup", daemon=True
+        )
+    _PRICING_WARMUP.start()
 
 
 def pricing_data_available() -> bool:
@@ -2095,6 +2203,19 @@ class _ModelCallContext:
     scope: str
     """Checkpoint namespace of the graph that owns this request."""
 
+    summarization: bool = False
+    """Whether the request writes a summarization (compaction) summary."""
+
+
+def _emit_summarization_started() -> None:
+    """Best-effort signal that a summarization model call started."""
+    try:
+        from langgraph.config import get_stream_writer
+
+        get_stream_writer()({"type": SUMMARIZATION_STARTED_EVENT_TYPE})
+    except Exception:
+        logger.debug("Could not emit summarization start", exc_info=True)
+
 
 def _emit_model_usage(
     record: _ModelCallRecord,
@@ -2111,7 +2232,7 @@ def _emit_model_usage(
         record: The completed request's usage, model, and response ID.
         context: The request's thread and owning graph scope.
     """
-    if not context.scope or record.message_id is None:
+    if (not context.scope and not context.summarization) or (record.message_id is None):
         return
     try:
         from langgraph.config import get_stream_writer
@@ -2119,6 +2240,7 @@ def _emit_model_usage(
         get_stream_writer()(
             {
                 "type": MODEL_USAGE_EVENT_TYPE,
+                **({"lc_source": "summarization"} if context.summarization else {}),
                 "version": MODEL_USAGE_EVENT_VERSION,
                 "request_id": record.message_id,
                 "usage_metadata": dict(record.usage_metadata),
@@ -2251,17 +2373,25 @@ class _SessionCostRecorder(BaseCallbackHandler):
         )
         if not isinstance(namespace, str) or not namespace:
             namespace = configurable.get("checkpoint_ns")
+        # `nostream` keeps summary tokens off the message stream, so the
+        # client learns of compaction and its usage from custom events.
+        summarization = (
+            metadata is not None and metadata.get("lc_source") == "summarization"
+        )
         with self._lock:
             self._run_contexts[run_id] = _ModelCallContext(
                 thread_id=thread_id,
                 configured_model=configured_model,
                 configured_provider=configured_provider,
                 scope=_parent_checkpoint_scope(namespace),
+                summarization=summarization,
             )
             # A request that neither completes nor errors (a cancelled turn)
             # leaves its entry behind, so evict the oldest rather than growing.
             while len(self._run_contexts) > _MAX_INFLIGHT_REQUESTS:
                 self._run_contexts.popitem(last=False)
+        if summarization:
+            _emit_summarization_started()
 
     def on_chat_model_start(
         self,
@@ -2895,12 +3025,13 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,  # noqa: ARG002
         runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Zero the cost channel before a nested agent run.
+        """Warm pricing for the turn, and zero the cost channel when nested.
 
         Returns:
             An overwrite of `_session_cost_usd` to `0.0` for a nested instance,
             otherwise `None`.
         """
+        _warm_pricing()
         if not self._nested:
             return None
         return {

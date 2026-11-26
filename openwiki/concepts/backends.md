@@ -1,12 +1,16 @@
 ---
 type: backend architecture concept
 title: Backends, Virtual Filesystems, and Execution
-description: How DeepAgents backend contracts separate virtual file operations, graph state, durable stores, routing, and shell execution. Explains legacy file compatibility and why virtual paths are not a security boundary.
-tags: [backends, virtual-filesystem, state, durable-storage, routing, sandbox, security]
+description: How DeepAgents backend contracts separate virtual file operations, graph state, durable stores, routing, and host shell execution. Covers persisted UTF-8 normalization, LocalShellBackend process cleanup, cross-platform output capture, and why virtual paths are not a security boundary.
+tags: [backends, virtual-filesystem, state, durable-storage, routing, sandbox, security, process-lifecycle]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-11-26T08:03:59.911Z
 sources:
+  - id: openwiki-source-6a9e782d8dda0eeaf00ce0d3
+    resource: repo://libs/deepagents/deepagents/backends/_posix_process.py
+  - id: openwiki-source-34e9cac87b7ccad2573a3565
+    resource: repo://libs/deepagents/deepagents/backends/_windows_process.py
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-f84c83d6fab6028c94be90bc
@@ -21,17 +25,23 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/utils.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-fed4b84a38685f37e58018c5
+    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-ab8bfe29057131f7fc94fb78
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
   - id: openwiki-source-ff7e5dfd747aa11f43332e1b
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_file_format.py
   - id: openwiki-source-1f666eed797336e343fc47c8
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_local_shell_backend.py
+  - id: openwiki-source-fe312e91906ecaaab36bf427
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_posix_process.py
   - id: openwiki-source-fb022ddbcc554eaabedfa8cd
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_state_backend.py
   - id: openwiki-source-e11958a6a68a079be57552fc
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+  - id: openwiki-source-d969accd0b5fc0acdd77cd6e
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_windows_process.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # Backends, Virtual Filesystems, and Execution
@@ -68,7 +78,7 @@ The current `FileData` form is a string plus an encoding and optional timestamps
 }
 ```
 
-Text uses UTF-8. Binary data is represented by base64 text with `encoding: "base64"`, enabling upload/download to round-trip bytes while text edit rejects binary files. File sizes in the state and store implementations are calculated from UTF-8 bytes of normalized content.
+Text uses UTF-8. Before persisting a `utf-8` value, the shared file-data constructors make the Python string UTF-8 encodable: a valid UTF-16 surrogate pair represented as two code points is rejoined, while each lone surrogate becomes U+FFFD. This matches the behavior of writing a JavaScript string and prevents later listing, reading, or downloading from failing on invalid Unicode. Base64 content is not changed by this normalization. Binary data is represented by base64 text with `encoding: "base64"`, enabling upload/download to round-trip bytes while text edit rejects binary files. File sizes in the state and store implementations are calculated from UTF-8 bytes of normalized content.
 
 Older state or store records may use `content: list[str]`. The compatibility conversion joins the strings with `"\n"` (and maps an empty list to `""`). Reads, listing size calculation, searches, globs, and downloads can use that normalized view without rewriting the persisted legacy record. Values other than a string or a list consisting solely of strings raise `TypeError`; malformed persisted data is not silently treated as text.
 
@@ -86,7 +96,7 @@ flowchart TD
 
 This is a lazy migration path: observation is non-mutating, but a successful content mutation writes the current representation.
 
-A write creates or replaces string content and records `utf-8`. An update retains an existing `created_at` when available and refreshes `modified_at`; an edit retains its existing encoding unless the file is rewritten as text. Failed edits do not persist a converted legacy value.
+A write creates or replaces string content, normalizes it to UTF-8-encodable text, and records `utf-8`. A successful text edit applies the same normalization. An update retains an existing `created_at` when available and refreshes `modified_at`; an edit retains its existing encoding unless the file is rewritten as text. Failed edits do not persist a converted legacy value.
 
 ## State and store are different persistence scopes
 
@@ -148,16 +158,52 @@ This makes `/memories/` durable in the selected store namespace while other path
 
 ## Local shell execution is host execution
 
-`LocalShellBackend` combines `FilesystemBackend` with `SandboxBackendProtocol`, but it is explicitly **not** a sandbox. `execute()` invokes `subprocess.run(..., shell=True)` on the host with the process user's permissions and `root_dir` as its working directory. Commands can access accessible host paths, make network connections, modify files and configuration, and spawn processes. Backend operations are not reversible.
+`LocalShellBackend` combines `FilesystemBackend` with `SandboxBackendProtocol`, but it is explicitly **not** a sandbox. `execute()` starts `subprocess.Popen(..., shell=True)` directly on the host with the process user's permissions and `root_dir` as its working directory. Commands can access accessible host paths, make network connections, modify files and configuration, and spawn processes. Backend operations are not reversible.
 
 > **Danger:** Do not expose `LocalShellBackend` to untrusted users, production services, or multi-tenant workloads. Use a genuinely isolated sandbox backend for service-side execution, and apply tool permissions and human approval as defense in depth. See [sandbox partners](/openwiki/integrations/sandbox-partners.md).
 
 `virtual_mode=True` makes *filesystem-tool* paths relative to `root_dir` and rejects traversal such as `..` and `~`. It does not constrain shell syntax or shell paths: `execute("cat /etc/passwd")` is still governed only by host permissions. Likewise, placing a local shell backend inside a composite changes which backend receives file paths but cannot confine commands beyond the rule that the composite executes on its default.
 
-The default command timeout is 120 seconds and must be positive. A timed-out command returns exit code `124`; an empty command returns an error response. The backend captures stdout and stderr, prefixes stderr lines with `[stderr]`, appends nonzero exit status information, and truncates output by UTF-8 byte budget without emitting partial Unicode. Its default command environment is empty apart from supplied `env`; `inherit_env=True` copies the parent environment and overlays `env`. These are operational controls, not isolation guarantees. `stdin=DEVNULL` avoids interactive input, and non-Windows execution starts a new session.
+### Execution lifecycle, timeout, and cancellation
+
+The default command timeout is 120 seconds and must be positive; a positive per-command value overrides it. An empty command produces an error response. The backend starts the shell with stdout and stderr pipes, `stdin=DEVNULL`, text decoding with replacement, the configured environment, and `cwd=root_dir`. By default that environment is empty apart from supplied `env`; `inherit_env=True` copies the parent environment and overlays `env`. On POSIX it also starts a new session, making the shell its process-group leader.
+
+```mermaid
+flowchart TD
+    Start["execute or aexecute"] --> Spawn["Start host shell with pipes"]
+    Spawn --> Capture["Incrementally capture stdout and stderr"]
+    Capture --> Done{"Pipes EOF and shell exited"}
+    Done -->|"Yes"| Response["Format output and return response"]
+    Done -->|"No"| Trigger{"Timeout, interruption, or cancellation"}
+    Trigger -->|"Timeout"| Terminate["Terminate shell or POSIX process group"]
+    Trigger -->|"Cancellation"| Signal["Signal worker cancellation"]
+    Signal --> Terminate
+    Trigger -->|"Interruption"| Terminate
+    Terminate --> Drain["Drain POSIX pipes within cleanup deadline"]
+    Drain --> Reap["Reap direct shell and close pipes"]
+    Reap --> Outcome{"Cleanup completed"}
+    Outcome -->|"Timeout"| Timed["Return 124 with partial output"]
+    Outcome -->|"Cancellation"| Cancelled["Raise cancellation after cleanup grace"]
+    Outcome -->|"No"| Warn["Warn process may still run"]
+    Warn --> Timed
+```
+
+This control flow shows the LocalShellBackend host-process lifecycle. A normal response waits for both pipe EOF and the direct shell to exit; cleanup handles timeout, interruption, and async cancellation.
+
+Output collection is incremental rather than a one-shot `communicate()`. The POSIX reader uses `selectors` to take bounded chunks from both pipes and keeps bytes across cancellation polling attempts, decoding only once complete. The Windows reader polls available named-pipe bytes without reader threads and incrementally decodes each stream. Both require EOF on both pipes *and* direct-shell exit before successful completion, so output from descendants that inherited a pipe is retained rather than silently discarded. This can also mean a shell that has exited does not complete until an inherited writer closes or the command reaches its timeout.
+
+On timeout, the implementation preserves output captured before cleanup, combines it with stderr lines prefixed `[stderr]`, and returns exit code `124`. It applies the configured UTF-8 byte limit only when formatting the combined response, avoiding partial Unicode code points. A nonzero normal exit gets exit-code information appended. If termination or reaping fails, the timeout response warns that the command may still be running and that retrying can create a second copy.
+
+The cleanup boundary is platform-specific. On POSIX, timeout, `KeyboardInterrupt`, and supported async cancellation kill the new process group with `SIGKILL` (falling back to the direct shell if group termination fails), drain output, reap the shell, and close pipes under one cleanup deadline. A descendant that creates its own session or process group escapes that group; `nohup` alone does not. On Windows, cleanup kills and reaps only the direct shell, then closes pipes; descendants can survive and inherited output handles can hold the pipes open. Therefore a timeout response explicitly notes that processes started by the shell may still run even when cleanup of the shell succeeded.
+
+`aexecute()` delegates the built-in implementation to a thread so synchronous process I/O does not block the event loop. It uses a cancellation event and a start handshake so cancellation that wins before execution prevents the worker from launching the command. After cancellation it waits up to a one-second cleanup grace period, including through repeated cancellations. If cleanup exceeds that period, it retains the worker in a background set until it finishes and logs only the failure type, then re-raises cancellation. This bound is for the awaiter's cancellation path, not for interpreter or executor shutdown; overriding `execute()` takes the generic async delegation path and does not receive this built-in cancellation cleanup.
+
+These timeout, output, environment, and cancellation controls are reliability features, not isolation guarantees.
 
 ## Focused regression coverage
 
-The backend tests cover the compatibility boundary from both state and store: legacy list reads without mutation, failed malformed values, successful write/edit migration, timestamps, binary transfer round trips, and edit refusal for binary data. State tests additionally cover graph-context behavior; store tests cover namespace validation, paging, recursive literal-key deletion, and native async paths.
+The backend tests cover the compatibility boundary from both state and store: legacy list reads without mutation, failed malformed values, successful write/edit migration, timestamps, binary transfer round trips, and edit refusal for binary data. State tests also verify that a lone surrogate is persisted and downloaded as U+FFFD, while a split valid surrogate pair becomes its Unicode character before UTF-8 byte-size calculations. State tests additionally cover graph-context behavior; store tests cover namespace validation, paging, recursive literal-key deletion, and native async paths.
 
-Composite tests cover longest-prefix and route-root handling, remapped result paths, root listings, grouped transfers and response order, global grep budgets, anchored glob semantics, merge truncation, error propagation, and default-only execution. Local-shell tests cover working-directory sharing, timeouts, stderr and exit formatting, byte-safe output truncation, environment behavior, and the difference between virtual filesystem paths and unrestricted shell paths. These tests establish observable behavior; they do not make host shell execution safe.
+Composite tests cover longest-prefix and route-root handling, remapped result paths, root listings, grouped transfers and response order, global grep budgets, anchored glob semantics, merge truncation, error propagation, and default-only execution.
+
+Local-shell tests cover working-directory sharing, environment construction, virtual filesystem paths versus unrestricted shell paths, output byte truncation, undecodable bytes, timeout partial-output responses, and warnings for incomplete cleanup. POSIX integration checks that timeout stops a background descendant in the command group, including after the shell has exited, while cleanup unit tests protect the shared drain-and-reap deadline. Reader tests verify output and newline preservation across polling timeouts, do not copy accumulated POSIX output into transient timeout exceptions, wait for process exit even after pipes close, and retain output from pipe-owning descendants. Windows tests additionally cover its pipe EOF error codes, incremental multibyte decoding, and prompt cleanup when an inherited writer keeps a pipe open. These tests establish observable lifecycle behavior; they do not make host shell execution safe.

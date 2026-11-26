@@ -13,6 +13,7 @@
     "whatsapp-web.js": "^1.34.7"
   },
   "overrides": {
-    "@puppeteer/browsers": "^3.2.6"
+    "@puppeteer/browsers": "^3.2.6",
+    "zod": "^4.6.6"
   }
 }

@@ -198,6 +198,53 @@ def _closing_run_worker_mock(
     return MagicMock()
 
 
+@pytest.mark.parametrize("times_out", [False, True])
+async def test_unmount_waits_for_cancelled_database_worker(
+    monkeypatch: pytest.MonkeyPatch, *, times_out: bool
+) -> None:
+    """Database cleanup is awaited, but cannot block shutdown indefinitely."""
+    from deepagents_code import sessions
+
+    monkeypatch.setattr(
+        "deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01 if times_out else 5
+    )
+
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    threads: list[threading.Thread] = []
+
+    async def background() -> None:
+        async with sessions._connect() as conn:
+            threads.append(conn._thread)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+
+    async with app.run_test():
+        worker = app.run_worker(background, group="database-cleanup")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app.workers.cancel_all()
+        await asyncio.wait_for(cleaning.wait(), timeout=5)
+        unmount = asyncio.create_task(app.on_unmount())
+        await asyncio.sleep(0)
+        try:
+            if times_out:
+                await asyncio.wait_for(asyncio.shield(unmount), timeout=1)
+                assert threads[0].is_alive()
+            else:
+                assert not unmount.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(unmount, timeout=5)
+            await asyncio.gather(worker.wait(), return_exceptions=True)
+        assert not threads[0].is_alive()
+
+
 class TestDisplayModelLabel:
     """Tests for stripping the provider prefix off a model spec for display."""
 
@@ -1511,6 +1558,52 @@ class TestFooterCostBreakdown:
             assert not isinstance(app.screen, ModalScreen)
             assert app._is_input_focused()
             app._agent_running = False
+
+    @pytest.mark.parametrize("priced", [True, False])
+    async def test_footer_flags_partial_cost(self, priced: bool) -> None:
+        from deepagents_code.config import get_glyphs
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._thread_stats.record_request(
+                "priced-model", 100, 10, provider="custom", cost_usd=0.001
+            )
+            app._thread_stats.record_request(
+                "other-model",
+                35_000,
+                11,
+                provider="custom",
+                cost_usd=0.002 if priced else None,
+            )
+            app._set_session_cost(0.003 if priced else 0.001)
+            await pilot.pause()
+
+            rendered = str(app.query_one("#tokens-display", MetricsLine).render())
+            assert "<$0.01" in rendered
+            assert (get_glyphs().warning in rendered) is not priced
+
+    @pytest.mark.parametrize("priced", [False, True])
+    async def test_footer_flags_partial_cost_after_resume(self, priced: bool) -> None:
+        """A restored breakdown with unpriced requests flags the footer."""
+        from deepagents_code.config import get_glyphs
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        breakdown = dict(_empty_cost_breakdown())
+        breakdown.update(request_count=2, priced_request_count=2 if priced else 1)
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._reset_thread_usage(
+                1.25, has_restored_model_usage=True, breakdown=breakdown
+            )
+            await pilot.pause()
+
+            rendered = str(app.query_one("#tokens-display", MetricsLine).render())
+            assert "$1.25" in rendered
+            assert (get_glyphs().warning in rendered) is not priced
 
     @pytest.mark.parametrize("entrypoint", ["footer", "command"])
     @pytest.mark.parametrize("incomplete", [False, True])
@@ -17425,6 +17518,45 @@ class TestDeferredActions:
 
             assert len(app._deferred_actions) == 0
 
+    @pytest.mark.parametrize(
+        ("owned", "spawned", "hint"),
+        [
+            (True, False, "/model"),
+            (True, True, "/restart"),
+            (False, False, "remote server"),
+        ],
+    )
+    async def test_startup_timeout_offers_recovery(
+        self, owned: bool, spawned: bool, hint: str
+    ) -> None:
+        from deepagents_code.client.launch.server import ServerStartupTimeoutError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {} if owned else None
+            app._server_proc = MagicMock() if spawned else None
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(
+                    error=ServerStartupTimeoutError(
+                        "Server did not become healthy within 60s "
+                        "(last error: Server disconnected without sending a response.)"
+                    )
+                )
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert widget is not None
+            text = str(widget._content)
+            assert "Server startup timed out" in text
+            assert "Debug Console" in text
+            assert hint in text
+            assert ("/restart" in text) is spawned
+            assert ("remote server" in text) is not owned
+            assert "RuntimeError" not in text
+            assert "Server disconnected" not in text
+
     async def test_server_failure_truncated_headline_notes_debug_rerun(self) -> None:
         """A clipped headline appends a re-run hint when no debug log is active.
 
@@ -25940,6 +26072,72 @@ class TestFormatMcpServerChanges:
         assert _format_mcp_server_changes(None, current) == (
             "MCP server changes couldn't be determined (no baseline metadata); "
             "currently loaded: github, notion."
+        )
+
+    def test_names_project_server_awaiting_approval(self) -> None:
+        """A renamed project server skipped for trust is named, not dropped."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="open-swe",
+                transport="http",
+                status="disabled",
+                error="Disabled by user (F2 to re-enable).",
+            ),
+        ]
+        current = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Removed: open-swe\n"
+            "  - Needs approval: robin (restart to review project MCP servers, "
+            "or launch with --trust-project-mcp)"
+        )
+
+    def test_flags_server_that_lost_approval(self) -> None:
+        """An edited server whose approval no longer matches is not "no change"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="robin", transport="http")]
+        current = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Needs approval: robin (restart to review project MCP servers, "
+            "or launch with --trust-project-mcp)"
+        )
+
+    def test_still_untrusted_server_is_named_as_needing_attention(self) -> None:
+        """A server left unapproved across reloads is not reported as fine."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no metadata changes detected "
+            "(still needs attention: robin; use /mcp)."
         )
 
     def test_flags_server_that_kept_its_name_but_started_failing(self) -> None:

@@ -56,6 +56,24 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.runner import HandlerResult
 
 _PERMISSION_RANK = {"none": 0, "allow": 1, "ask": 2, "deny": 3}
+# Diagnostic codes from `runner.py`, `engine.py`, and this module that mean a
+# handler failed. `onError: "deny"` acts only on these; warnings such as
+# `stderr_truncated` and `unsupported_field` are excluded on purpose. Add new
+# failure codes here, or that failure will not deny.
+_HOOK_FAILURE_CODES = frozenset(
+    {
+        "invalid_command",
+        "launch_failed",
+        "timeout",
+        "io_failed",
+        "stdout_truncated",
+        "nonzero_exit",
+        "invalid_output",
+        "malformed_json",
+        "mismatched_output",
+        "projection_failed",
+    }
+)
 MAX_STOP_CONTINUATIONS = 8
 
 _UNSUPPORTED_SESSION_START_FIELDS = (
@@ -103,6 +121,8 @@ def reduce_hook_results(
     plain_output_policy = get_event_spec(invocation.event.event).plain_output_policy
     for result in results:
         state.diagnostics.extend(result.diagnostics)
+        # Only diagnostics from this handler may trigger its deny-on-error.
+        diagnostic_start = len(state.diagnostics)
         if result.plain_output is not None:
             if plain_output_policy is PlainOutputPolicy.CONTEXT:
                 state.context.append(result.plain_output)
@@ -117,6 +137,19 @@ def reduce_hook_results(
                 )
         if result.output is not None:
             _merge_output(invocation, state, result.handler_id, result.output)
+        if result.deny_on_error and invocation.event.event is HookEvent.PRE_TOOL_USE:
+            errors = (*result.diagnostics, *state.diagnostics[diagnostic_start:])
+            failure = next(
+                (item for item in errors if item.code in _HOOK_FAILURE_CODES), None
+            )
+            if failure is not None:
+                _merge_permission(
+                    state,
+                    PermissionEffect(
+                        behavior="deny",
+                        reason=f"Hook {result.handler_id} failed: {failure.message}",
+                    ),
+                )
     return _decision(invocation, state)
 
 

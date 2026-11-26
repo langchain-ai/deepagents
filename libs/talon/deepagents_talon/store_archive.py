@@ -18,7 +18,14 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from deepagents_talon.archive import CHUNK_SIZE, ScanLimitError, build_search_page
+from deepagents_talon.archive import (
+    CHUNK_SIZE,
+    ArchiveCursorError,
+    ScanLimitError,
+    TranscriptFilter,
+    build_search_page,
+    overlaps,
+)
 from deepagents_talon.history_vectors import HistoryVectorIndex
 from deepagents_talon.store_archive_index import StoreVectorArchive
 from deepagents_talon.store_records import (
@@ -386,7 +393,7 @@ class StoreConversationArchive:
             return None
         return entry
 
-    async def text_entries(  # noqa: PLR0913  # Preserve existing arguments when adding partial scans.
+    async def text_entries(  # noqa: PLR0913  # Preserve existing arguments when adding filters.
         self,
         scope: ArchiveScope,
         *,
@@ -395,6 +402,7 @@ class StoreConversationArchive:
         after: int,
         limit: int,
         partial: bool = False,
+        where: TranscriptFilter | None = None,
     ) -> list[ArchiveEntry]:
         """Read scoped transcripts by ordering link, for this archive's own adapters.
 
@@ -406,40 +414,66 @@ class StoreConversationArchive:
             limit: Maximum entries to return.
             partial: Stop at the scan budget instead of raising; only for ranked
                 candidate generation, never for a page that claims completeness.
+            where: Role and time criteria applied after the scope check.
 
         Raises:
-            ScanLimitError: The scan budget is exhausted and `partial` is not set.
+            ArchiveCursorError: A session read's `after` is not one of its visible chunks.
+            ScanLimitError: The scan budget is exhausted and `partial` is not set; its
+                `resume` cursor continues the read.
         """
         async with self.records.access():
-            if session_id:
-                session = await self.session(session_id)
-                if session is None or session["scope"] != scope or session.get("deleting"):
-                    return []
-                cursor, link = number(session, "tail"), "next_session"
-            else:
-                scoped = await self.records.get(scope_key(scope)) or {}
-                cursor, link = number(scoped, "head"), "previous_scope"
-            if after:
-                previous = await self.records.get(str(after))
-                entry = await self.visible(previous, scope) if previous else None
-                if entry is None or (session_id and entry["session_id"] != session_id):
-                    return []
-                cursor = number(cast("Record", previous), link)
-                if cursor and (cursor == after or (cursor > after) != bool(session_id)):
-                    msg = "Conversation archive contains an invalid ordering link"
-                    raise RuntimeError(msg)
+            start = await self._read_start(scope, session_id, after)
+            if start is None:
+                return []
             hits: list[ArchiveEntry] = []
-            async for _, record in self._retrieval_chain(cursor, link, partial=partial):
-                entry = await self.visible(record, scope)
-                if (
-                    entry is not None
-                    and (not session_id or entry["session_id"] == session_id)
-                    and _matches(str(record["search_text"]), query)
-                ):
-                    hits.append(entry)
-                    if len(hits) == limit:
-                        break
+            scanned = after
+            try:
+                async for _, record in self._retrieval_chain(*start, partial=partial):
+                    entry = await self.visible(record, scope)
+                    if entry is None or (session_id and entry["session_id"] != session_id):
+                        continue
+                    scanned = entry["cursor"]
+                    if (where is None or where.accepts(entry)) and _matches(
+                        str(record["search_text"]), query
+                    ):
+                        hits.append(entry)
+                        if len(hits) == limit:
+                            break
+            except ScanLimitError as error:
+                # Only an empty page means "no more"; a short page still continues
+                # after its last hit, so matches found before the budget are kept.
+                if hits:
+                    return hits
+                resume = scanned if scanned != after else 0
+                raise ScanLimitError(str(error), resume=resume) from error
             return hits
+
+    async def _read_start(
+        self, scope: ArchiveScope, session_id: str, after: int
+    ) -> tuple[int, str] | None:
+        """Return the first record and link to follow, or None for an unreadable session."""
+        if session_id:
+            session = await self.session(session_id)
+            if session is None or session["scope"] != scope or session.get("deleting"):
+                return None
+            cursor, link = number(session, "tail"), "next_session"
+        else:
+            scoped = await self.records.get(scope_key(scope)) or {}
+            cursor, link = number(scoped, "head"), "previous_scope"
+        if not after:
+            return cursor, link
+        previous = await self.records.get(str(after))
+        entry = await self.visible(previous, scope) if previous else None
+        if entry is None or (session_id and entry["session_id"] != session_id):
+            if session_id:
+                msg = "Cursor is not a visible chunk of this session"
+                raise ArchiveCursorError(msg)
+            return None
+        cursor = number(cast("Record", previous), link)
+        if cursor and (cursor == after or (cursor > after) != bool(session_id)):
+            msg = "Conversation archive contains an invalid ordering link"
+            raise RuntimeError(msg)
+        return cursor, link
 
     async def _retrieval_chain(
         self, cursor: int, link: str, *, partial: bool = False
@@ -450,9 +484,9 @@ class StoreConversationArchive:
             scanned += 1
             if scanned == _MAX_SCAN and number(record, link):
                 # Ranked retrieval already scores a bounded candidate pool, so a
-                # truncated scan only narrows it. A page from entries() or
-                # conversations() claims completeness, so truncating one there
-                # would report "no more results" while records remain.
+                # truncated scan only narrows it. An empty page from entries() or
+                # a short one from conversations() claims completeness, so
+                # truncating there would report "no more results" while records remain.
                 if partial:
                     return
                 msg = (
@@ -461,7 +495,7 @@ class StoreConversationArchive:
                 )
                 raise ScanLimitError(msg)
 
-    async def entries(
+    async def entries(  # noqa: PLR0913  # Filters stay keyword-only with defaults.
         self,
         scope: ArchiveScope,
         *,
@@ -469,10 +503,13 @@ class StoreConversationArchive:
         session_id: str = "",
         after: int = 0,
         limit: int = 5,
+        where: TranscriptFilter | None = None,
     ) -> list[ArchiveEntry]:
         """Read or search bounded, scoped transcripts.
 
-        Scans at most 500 ordering records, including skipped and deleted records.
+        Scans at most 500 ordering records, including skipped, filtered, and deleted
+        records. A page cut short by that budget still holds every match it scanned;
+        continue after its last cursor until a page is empty.
 
         Args:
             scope: Trusted channel and chat identity.
@@ -480,14 +517,16 @@ class StoreConversationArchive:
             session_id: Read this session chronologically when supplied.
             after: Previous result cursor.
             limit: Maximum result count, from 1 to 20.
+            where: Role and time criteria for returned chunks.
 
         Raises:
-            ScanLimitError: The scan budget is exhausted before a complete page is known.
+            ArchiveCursorError: A session read's `after` is not one of its visible chunks.
+            ScanLimitError: The budget ran out before any match; `resume` continues it.
         """
         _bounds(after, limit)
         await self.setup()
         return await self.text_entries(
-            scope, query=query, session_id=session_id, after=after, limit=limit
+            scope, query=query, session_id=session_id, after=after, limit=limit, where=where
         )
 
     async def search_page(
@@ -568,6 +607,8 @@ class StoreConversationArchive:
         *,
         after: int = 0,
         limit: int = 5,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[ConversationSummary]:
         """List bounded, nonempty sessions within scope.
 
@@ -575,6 +616,8 @@ class StoreConversationArchive:
             scope: Trusted channel and chat identity.
             after: Previous session cursor.
             limit: Maximum result count, from 1 to 20.
+            since: Only sessions updated at or after this aware time.
+            until: Only sessions started at or before this aware time.
 
         Raises:
             ScanLimitError: More than 500 ordering records are needed to complete the page.
@@ -599,6 +642,7 @@ class StoreConversationArchive:
                     and record.get("scope") == scope
                     and record.get("head")
                     and not record.get("deleting")
+                    and overlaps(str(record["started_at"]), str(record["updated_at"]), since, until)
                 ):
                     results.append(
                         cast(

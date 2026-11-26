@@ -24,6 +24,12 @@ jobs:
         with:
           node-version: "26"
 
+      - name: Set up Python and uv
+        uses: ./.github/actions/uv_setup
+        with:
+          python-version: "3.14"
+          enable-cache: "false"
+
       - name: Install OpenWiki
         run: npm install --global openwiki@0.4.2
 
@@ -72,6 +78,15 @@ jobs:
 
           # Stage only the paths OpenWiki is allowed to change.
           git add -- openwiki AGENTS.md
+
+          mapfile -d '' -t generated_files < <(git diff --cached --name-only --diff-filter=ACMR -z -- openwiki AGENTS.md)
+          if ((${#generated_files[@]})); then
+            printf -v hygiene_files ' %q' "${generated_files[@]}"
+            if ! make -C libs hygiene HYGIENE_ARGS="--files$hygiene_files"; then
+              make -C libs hygiene HYGIENE_ARGS="--files$hygiene_files"
+            fi
+            git add -- openwiki AGENTS.md
+          fi
 
           if git diff --cached --quiet; then
             echo "No OpenWiki changes to commit."

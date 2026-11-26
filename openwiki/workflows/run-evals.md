@@ -1,70 +1,56 @@
 ---
 type: evaluation operations guide
 title: Run Evals
-description: Choose and operate deterministic pytest checks, traced behavioral evals, local or CI Harbor benchmarks, and unified multi-model evaluation campaigns without conflating their signals.
+description: Choose and operate deterministic checks, traced behavioral evals, Harbor task verification, and unified multi-model comparison campaigns as distinct evaluation signals.
 tags: [evaluations, testing, langsmith, harbor, benchmarking]
 sources:
-  - id: openwiki-source-3032482267151cb6e217d034
-    resource: repo://.github/scripts/evals/aggregate_unified.py
-  - id: openwiki-source-666ffb85801f05fea2a2adbf
-    resource: repo://.github/scripts/evals/unified_prep.py
-  - id: openwiki-source-c0a8cdd7847afa481defa30b
-    resource: repo://.github/scripts/tests/evals/test_unified_workflow.py
-  - id: openwiki-source-fa750a379507f8fc66395df2
-    resource: repo://.github/workflows/_eval.yml
+  - id: openwiki-source-4c1e9d635ef15e1154151dc8
+    resource: repo://.github/scripts/evals/shard_matrix.py
+  - id: openwiki-source-2c61f6f93eae02403e106ed9
+    resource: repo://.github/scripts/tests/evals/test_unified_prep.py
   - id: openwiki-source-60d75d0ff1b1cedd1f38db0c
     resource: repo://.github/workflows/_harbor_run.yml
-  - id: openwiki-source-f9138a1fe0bc1bdbb69e3995
-    resource: repo://.github/workflows/evals_trials.yml
-  - id: openwiki-source-efa89bc59ebc2bd6d1443749
-    resource: repo://.github/workflows/evals.yml
-  - id: openwiki-source-b6252e3f3473cd89534f2acb
-    resource: repo://.github/workflows/unified_evals.yml
-  - id: openwiki-source-0153e073a6645f3118ca08c4
-    resource: repo://libs/evals/AGENTS.md
-  - id: openwiki-source-c0799cb44ce695871e7f3bf6
-    resource: repo://libs/evals/CONTRIBUTING.md
-  - id: openwiki-source-b57141bb692e5ccd2249f996
-    resource: repo://libs/evals/deepagents_evals/cli.py
   - id: openwiki-source-dd120a1be03e34bad3c59b22
     resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
-  - id: openwiki-source-8565b7f246ed6e34051d8dfe
-    resource: repo://libs/evals/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-11-02T08:04:35.090Z" }
+  - id: openwiki-source-4e154a759dc1eb1f7ad0801d
+    resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  - id: openwiki-source-78f970513a111c43fc9971ce
+    resource: repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-02T08:04:35.090Z
+    at: 2026-11-24T08:04:12.461Z
 ---
 
 # Run Evals
 
-Deep Agents has four intentionally different evaluation boundaries. Start with the one that answers the question; do not use a stochastic, paid model rollout as a replacement for a deterministic regression test, or interpret a sandbox outage as a capability result.
+Deep Agents has four evaluation boundaries. They answer different questions and must not be treated as interchangeable.
 
-| Question | Use | Signal |
+| Question | Route | Result to interpret |
 | --- | --- | --- |
-| Did repeatable package behavior change? | The changed package's `make test` | Deterministic pytest. |
-| Did a controlled SDK behavior hold for one real model rollout? | `libs/evals`: `make evals` or `deepagents-evals run` | LangSmith-traced behavioral trajectory. |
-| Can an agent finish a sandbox task? | Local `harbor run`/Make targets or `harbor.yml` | Task-owned verifier result and Harbor artifacts. |
-| How do models, branches, and harnesses compare on a fixed battery? | `unified_evals.yml` | Cross-model Harbor scorecard. |
+| Did repeatable implementation behavior regress? | Focused package/unit pytest | Deterministic pass or failure. |
+| Does a particular SDK behavior work with a real model? | `libs/evals` behavioral pytest | A traced agent trajectory and correctness/efficiency scores. |
+| Can the agent complete an external sandbox task? | Harbor locally or `harbor.yml` | The task-owned verifier result and Harbor artifacts. |
+| How do fixed models, branches, and harnesses compare? | `unified_evals.yml` | A cross-model, cross-category scorecard. |
 
-The normal `libs/evals` `make test` target runs `tests/unit_tests` with non-Unix sockets disabled; `make evals` separately invokes real-model tests in `tests/evals`. Package unit and integration suites are likewise package-owned. Run focused deterministic tests first, then pay for the narrower remote measurement that is needed.
+Run deterministic checks before paid, stochastic work. A Harbor result also depends on the task environment and verifier; a unified score is comparable only within its declared battery and fixed scoring configuration.
 
 ```mermaid
 flowchart TD
-    Change["product change"] --> Unit["package deterministic tests"]
-    Change --> Behavior["traced behavioral eval"]
-    Change --> Harbor["Harbor task verification"]
-    Behavior --> Trace["LangSmith trajectory and eval report"]
-    Harbor --> Task["task verifier and Harbor artifacts"]
-    Trace --> Trials["repeat when comparing models"]
-    Task --> Unified["fixed battery comparison"]
+    Change["product or workflow change"] --> Unit["focused deterministic unit checks"]
+    Change --> Behavior["real-model behavioral eval"]
+    Change --> Harbor["Harbor task run"]
+    Behavior --> Trace["LangSmith trajectory"]
+    Harbor --> Verify["task verifier and artifacts"]
+    Trace --> Trials["repeatable model comparison"]
+    Verify --> Unified["fixed comparison campaign"]
 ```
 
-Caption: each evaluation boundary produces a different signal; sequence them when useful, but do not substitute one for another.
+Caption: the four routes provide complementary signals, not successive grades of the same test.
 
 ## Behavioral pytest evals
 
-`libs/evals` is an end-to-end behavioral suite: an eval runs an agent against a real LLM, captures tool calls, file mutations, and final response, and scores correctness and efficiency. It requires `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, and the selected model provider's credential.
+`libs/evals` is an end-to-end behavioral evaluation suite for the Deep Agents SDK: each eval runs an agent against a real LLM, captures the full trajectory (tool calls, file mutations, final response), and scores it on correctness and efficiency. It is not the package unit suite.
 
 ```sh
 cd libs/evals
@@ -73,154 +59,138 @@ export LANGSMITH_TRACING=true
 export LANGSMITH_API_KEY=...
 export ANTHROPIC_API_KEY=...
 
-# Deterministic framework/reporting checks.
-make test TEST_FILE=tests/unit_tests/test_harbor_langgraph_agent.py
+# Deterministic Harbor-harness checks.
+uv run --group test pytest tests/unit_tests/test_harbor_langgraph_agent.py
 
-# A narrow real-model rollout.
+# Narrow paid behavioral rollout.
 make evals MODEL=claude-opus-5 PYTEST_EXTRA="--eval-category memory"
-# Or use the richer CLI.
 deepagents-evals run --model claude-opus-5 --eval-category memory --eval-tier baseline
 ```
 
-An eval is a `@pytest.mark.langsmith` function using the `model` fixture, generally building with `create_deep_agent(...)` and calling `run_agent(...)` with a `TrajectoryScorer`. `run_agent` builds state from the query, optional files, and extra state; invokes the graph with a thread ID; records inputs and outputs to LangSmith; then turns the result into a trajectory for scoring.
+The suite refuses to start without `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY`; the selected model's provider credential is also required. A `TrajectoryScorer.success(...)` assertion is a correctness requirement and hard-fails the test. `.expect(...)` records trajectory-shape or efficiency expectations but never fails it.
 
-```mermaid
-sequenceDiagram
-    participant Test as pytest eval
-    participant Runner as run_agent
-    participant Graph as compiled graph
-    participant Smith as LangSmith
-    participant Scorer as TrajectoryScorer
-    Test->>Runner: query files scorer
-    Runner->>Smith: record inputs
-    Runner->>Graph: invoke with thread ID
-    Graph-->>Runner: result mapping
-    Runner->>Smith: record outputs
-    Runner->>Scorer: trajectory
-    Scorer-->>Test: assertions
-```
+`deepagents-evals run` shells out from `libs/evals` to `uv run --group test pytest tests/evals`, forwarding model, category, tier, and provider controls. For stochastic comparisons, use repeated trials and aggregate their reports. The reporter deliberately leaves pytest's session exit status at zero even when evals fail, so the CLI determines trial/aggregate failure from `counts.failed.mean` in `trials_summary.json`, not a trial's `pytest_returncode`.
 
-Caption: a behavioral eval converts one traced graph invocation into a scored trajectory.
+### Behavioral-eval CI
 
-### Assertions, filtering, and repeated trials
+`evals.yml` partitions resolved models into provider matrices with `fail-fast: false` and one concurrent leaf per provider; each leaf calls `_eval.yml`. That reusable workflow takes one model and artifact-safe key, supplies LangSmith plus only the selected provider credential, requires `evals_report.json` after `make evals`, and uploads `evals-report-<artifact_key>`. `evals_trials.yml` is the separate N-trial route: it validates one `provider:model` and 1–20 trials, uses `trial-NNN-<model-slug>` keys, defaults to sequential trials, and fails its summary job when usable reports are fewer than requested.
 
-Use `TrajectoryScorer.success(...)` for required correctness: it fails the test. Use `.expect(...)` for an efficiency or trajectory-shape expectation: it is reported but cannot fail the test. This distinction lets an otherwise correct answer retain diagnostic information about an inefficient route.
+## Harbor task verification
 
-`deepagents-evals` is the automation-oriented interface (`run`, `trials`, `aggregate`, `radar`, `catalog`, `model-groups`, and `list`). `list` reads metadata and AST-visible evals rather than importing real-model test modules. `run` shells out to pytest and forwards model and category/tier selection. An explicit `--model` takes precedence over `DEEPAGENTS_EVALS_MODEL`; neither is a configuration error. Category exclusions take precedence over inclusions, and nonexistent requested category or tier markers fail collection.
-
-For comparisons, use repeated trials rather than a single trace:
-
-```sh
-deepagents-evals trials --model openai:gpt-6-astra --trials 3 \
-  --eval-category memory --out-dir trial_runs/memory
-deepagents-evals aggregate trial_runs/memory --summary-out summary.json
-```
-
-Trials are sequential within one process because concurrent experiment creation and provider traffic are unsafe. Each trial writes an `evals_report_trial_NNN.json`; aggregation writes `trials_summary.json` with summary statistics, failures, per-category scores, and only numeric non-null metrics. The pytest reporter makes its session status zero even when individual evals fail, so trial automation uses aggregated `counts.failed.mean`, not a trial's pytest return code. A positive failed mean exits `1`; configuration/drift errors exit `2`; unusable reports exit `3`.
-
-When discovery data changes, regenerate rather than hand-edit generated documentation: `EVAL_CATALOG.md` is generated from `tests/evals`, while model groups come from the curated registry. `catalog --check` and `model-groups --check` make stale generated output a configuration failure.
-
-### GitHub Actions: one model per reusable run
-
-Dispatch `evals.yml` for provider-partitioned behavioral evals. Its prep job resolves the requested model group or explicit model list into provider matrices. Each provider matrix is serialized (`max-parallel: 1`) to avoid provider-local rate-limit bursts, while different provider jobs may run concurrently; every leaf calls `_eval.yml` with a stable, artifact-safe key. The reusable workflow sets tracing and a per-model LangSmith experiment, applies category, tier, OpenRouter pin/fallback, OpenAI reasoning-effort, and REPL controls, then runs `make evals`.
-
-Only the selected provider credential is exposed to the execution step alongside the LangSmith key. A report is required even if pytest itself returned successfully: `_eval.yml` checks `evals_report.json`, adds its metrics, category scores, and experiment links to the job summary, and uploads `evals-report-<artifact_key>`. Optional LLM failure analysis is explicitly best-effort and, if produced, is a separate `failure-analysis-<artifact_key>` artifact. The workflow's final aggregate downloads all reports, creates `evals_summary.json`, and may generate and publish charts; chart generation or publishing does not replace the JSON result.
-
-`evals_trials.yml` reuses the same leaf workflow for a single `provider:model`. It builds deterministic artifact keys of the form `trial-NNN-<model-slug>`, accepts 1 through 20 trials, and defaults to one concurrent trial. A dispatcher can opt into parallel trials only after confirming the provider can absorb the burst. Its aggregate job downloads `evals-report-trial-*`, runs `scripts/run_trials.py --aggregate-only`, uploads `trials-summary`, and fails the summary job when fewer usable reports arrive than requested—so a partial sample is visible rather than greenwashed.
+Harbor is the sandbox boundary: benchmark tasks own their environment and verifier. `harbor.yml` resolves exactly one model, validates shard and concurrency limits, derives a bounded shard pool, then calls `_harbor_run.yml`. Task selection happens before partitioning: `include_tasks` and `n_tasks` select the work, and `n_shards` splits that selected work without changing it.
 
 ```mermaid
 flowchart TD
-    Dispatch["evals or evals trials dispatch"] --> Matrix["validate and resolve provider or trial matrix"]
-    Matrix --> Leaf["_eval reusable run"]
-    Leaf --> Report["evals report artifact"]
-    Leaf --> Analysis["optional failure analysis artifact"]
-    Report --> Aggregate["aggregate reports"]
-    Aggregate --> Summary["JSON summary and job summary"]
-    Aggregate --> Charts["best effort charts and publish"]
+    Dispatch["harbor.yml dispatch"] --> Limits["resolve one model and validate limits"]
+    Limits --> LeafPrep["_harbor_run prep matrix"]
+    LeafPrep --> Prewarm{"eligible registry dataset"}
+    Prewarm -->|yes| Snapshots["best effort snapshot prewarm"]
+    Prewarm -->|no| Run["Harbor shard leaves"]
+    Snapshots --> Run
+    Run --> Verifier["task verifier and shard artifacts"]
 ```
 
-Caption: behavioral-eval CI preserves the report as the authoritative artifact while diagnostics and charts are additive.
+Caption: snapshot prewarming optimizes independent Harbor task verification; it is never a prerequisite for a shard.
 
-## Harbor benchmark runs
+### Matrix, selection, and shard controls
 
-Harbor evaluates a different boundary: benchmark tasks own their sandbox environment and verifier. The `deepagents_harbor` adapter provides the Deep Agents LangGraph agent and forwards a task `skills_dir` into graph configuration, which is the runner's channel for it. The LangGraph registry defines the supported graph keys: `bare`, `dcode`, and `tau3`.
+`_harbor_run.yml` has two preparation modes. A normal single-dataset call expands the one model across its shard axis; a caller supplying `flat_matrix` supplies already-expanded leaves, including each leaf's category, dataset or local dataset path, agent implementation, runner, sandbox, concurrency, task filter, and effective shard count. The reusable workflow passes the flat matrix through rather than reconstructing it, derives aggregation legs by `(category, agent implementation)`, and uses `max_parallel` when it is a positive integer; otherwise it uses `shard_parallel`.
 
-For local source changes, stage the checked-out package set before running Harbor. `-n` means concurrent sandbox trials, not task count.
+For the normal path, `n_shards` must be 1 through 200 and is capped to `n_tasks` when a positive task limit makes larger fan-out provably empty. The public dispatch derives `shard_parallel` from its resource validation, so high shard counts drain through a bounded runner pool rather than launching at once. The workflow permits residual empty shards when a glob selects fewer tasks than expected, writes an empty-shard marker, and still lets aggregation distinguish a successful no-op from a missing artifact.
 
-```sh
-cd libs/evals
-make stage-harbor-local-deps
-make run-hello-world MODEL=claude-opus-5
-make run-terminal-bench-docker MODEL=claude-opus-5
-```
+Selection is deliberately performed before partitioning. Each shard resolves the dataset's native-order task names, applies `include_tasks` globs, applies the total `n_tasks` cap, and takes its modulo slice. Thus the union of all shard task lists matches the corresponding unsharded selection rather than applying the task cap once per shard. A glob that matches no task, unusable registry task names, an invalid shard index, or an invalid local dataset path fails the run rather than producing a green but materially empty evaluation.
 
-The staging target copies Deep Agents, deepagents-code, ACP, and QuickJS into the LangGraph project's `.local_deps` so the sandbox installs the checkout rather than unrelated installed artifacts. The local shortcuts select the graph and sandbox backend; standalone CI uses `harbor.yml` for exactly one resolved model, validates its resource limits, derives a safe shard pool, then delegates the leaf execution to `_harbor_run.yml`.
+### Snapshot lifecycle and staging
 
-### Agent and secret boundary
+For an eligible single registry-dataset LangSmith run, `_harbor_run.yml` invokes `prewarm_harbor_snapshots.py` before shard execution. It is skipped for flat unified matrices, local datasets, `tau3-subset`, forced builds, and non-LangSmith sandboxes. The prewarmer uses the run's manifest/glob/limit selection order, downloads selected tasks, and prepares task plus separate verifier environments. Compose environments are skipped because they do not use snapshots.
 
-The Harbor graph uses `bare` for a neutral `create_deep_agent` graph, `dcode` for the product agent, and `tau3` for the conversation runtime. Before shell-backed agent construction, the graph removes provider, LangSmith, and tracing credential variables from the process environment and restores them afterward. Task commands therefore do not inherit those credentials. The focused Harbor-agent tests cover graph registration, task-skill forwarding, web-search behavior, bounded identifiers, and the secret-scrubbing boundary.
+Prewarming is best effort: each environment has three attempts behind a concurrency semaphore, and the workflow uses `continue-on-error`. Failed or skipped prewarms fall back to a trial-time build; they do not erase a shard result.
 
-The reusable workflow validates the sandbox name and all credentials before paid execution. It routes only the selected model provider key to the agent, always supplies the OpenAI verifier key where required, and supplies `TAVILY_API_KEY` only for research. It fails for missing required keys rather than completing a benchmark without the model, verifier, or research web-search capability.
+Before `harbor run`, the reusable workflow stages checked-out `deepagents`, `deepagents-code`, `acp`, and QuickJS sources into the LangGraph project's `.local_deps` for the sandbox install. For a branch comparison, it resolves and verifies an immutable remote SHA, overlays only those agent libraries, and deliberately retains the harness at the workflow ref. This separates the agent source under comparison from evaluation-infrastructure changes.
 
-## Unified multi-model evaluations
+### Harnesses, tools, defaults, and secrets
 
-Dispatch `unified_evals.yml` for a fixed, comparable external battery. Its default categories are `autonomous,conversation,research`; `context` is opt-in. Categories map to Harbor data and graph policy:
+`langgraph.json` registers `bare`, `dcode`, and `tau3`. `bare` is the prompt-free SDK agent with a local shell rooted at the task work directory, a minimal `PATH`/`HOME`, optional task skills, forwarded task MCP tools, and—only when `TAVILY_API_KEY` exists—a bounded Tavily search tool. `dcode` uses the production headless CLI agent. Before it constructs that filesystem-backed agent, it turns `HARBOR_SESSION_ID` into an ASCII `[A-Za-z0-9_-]` assistant ID of at most 64 characters: unsafe or overlong source IDs gain a digest suffix, while an absent or entirely unusable ID receives a UUID-based `harbor-...` fallback. This makes path-like session IDs safe without turning distinct raw IDs that normalize alike into the same state directory.
 
-| Category | Dataset/source | Graph policy |
+`dcode` also populates its process-wide runtime model identity from the selected Harbor model and resolved profile before creating the CLI graph. The production prompt can therefore identify the model, context limit, and unsupported input modalities; a missing or malformed profile clears the optional fields and produces a warning rather than leaking a previous graph's identity. `tau3` uses task-forwarded MCP tools for the simulated-user conversation runtime.
+
+The graph builder applies provider safeguards: OpenAI models default to the Responses API unless callers explicitly choose otherwise; exact GLM-5.2 profiles get `reasoning_effort: high` only when no reasoning control is supplied; and Fireworks receives streaming, retry, and timeout defaults. A Harbor-only profile override supplies the 1,048,576-token input limit for `fireworks:accounts/fireworks/models/kimi-k3p1-pro` when its LangChain model profile lacks it. These are harness defaults, not unified-comparison constants—an explicit model kwarg wins.
+
+Task-provided MCP definitions may use only remote `streamable-http` or SSE transports; `stdio` is rejected so a selectable dataset cannot define a local command to execute. `skills_dir` must be absolute and contain no `..`. The optional Tavily `web_search` tool clamps a request to 1–10 results and truncates rendered output at 20,000 characters; no key or no installed Tavily client means no tool, and a search exception becomes tool text rather than terminating a long run. The dcode and bare graphs attach this tool only when it is available.
+
+The dcode factory temporarily removes provider and LangSmith credential/control variables while it constructs the shell-backed agent and restores them afterward, so that construction does not pass those variables into the shell-backed agent environment. `TAVILY_API_KEY` is deliberately not in that shell-scrub set: it is read only to construct the gated search tool, and the workflow forwards it only to research agents. The workflow separately validates the selected sandbox, LangSmith and sandbox credentials, model-provider key, verifier/judge keys, and research Tavily key before execution. Research fails rather than silently losing its required web-search capability.
+
+## Unified multi-model comparisons
+
+Use `unified_evals.yml` for a controlled comparison, not a general smoke test. It expands models, branches, category/harness groups, and selected tasks into a flat Harbor matrix, then combines an expected leaf grid into a scorecard. Defaults are `autonomous,conversation,research`; `context` is opt-in.
+
+| Category | Dataset | Harness policy |
 | --- | --- | --- |
-| `autonomous` | `harbor-index/harbor-index` | Fan out across selected code graphs, default `bare`. |
-| `conversation` | `tau3-subset` | Always `tau3`; it hosts the simulated-user protocol. |
-| `context` | local `datasets/context-retrieval-evals` | Fan out across selected code graphs. |
-| `research` | local `datasets/drbench-evals` | Fan out across selected code graphs, with enforced overrides. |
+| `autonomous` | `harbor-index/harbor-index` | Fan out across selected code harnesses. |
+| `conversation` | `tau3-subset` | Always run pinned `tau3`; selected native Harbor agents may additionally run it. |
+| `context` | local `datasets/context-retrieval-evals` | Fan out across selected code harnesses. |
+| `research` | local `datasets/drbench-evals` | Fan out across selected code harnesses with pinned runtime settings. |
 
-`agent_impls` may select registered code graphs for fan-out categories; it cannot replace the conversation graph. Full profiles enumerate live tasks first, while `lite` uses frozen high-signal task lists. An exact `include_tasks` selection is validated against the selected profile and categories before any leaf starts.
-
-```sh
-gh workflow run unified_evals.yml \
-  -f models="anthropic:claude-opus-5,openai:gpt-6-astra" \
-  -f categories="autonomous,conversation,research" \
-  -f agent_impls="bare" \
-  -f rollouts="3"
-```
-
-### Flat matrix and resource guards
-
-Prep resolves models, task scope, branches, and harnesses into one flat per-model matrix: each entry is one category/config task shard. It applies a 40-concurrent-task budget per model, an 80-runner global budget, GitHub's outer matrix cap, and a 400 post-packing job cap. Pool sizing is derived before execution so adding compared branches shares the same per-model provider budget instead of multiplying it.
-
-The reusable Harbor workflow passes a supplied flat matrix through directly, executes its leaves with `fail-fast: false`, and derives an aggregate matrix per category and graph. This preserves category-specific dataset, graph, shard, runner, sandbox, and concurrency information. Shards share one category experiment but upload independently; empty legitimate shard slices upload markers so aggregation can distinguish them from missing artifacts.
-
-`research` deliberately overrides dispatch-wide defaults: it runs on `ubuntu-24.04-arm`, uses the Docker sandbox, and has concurrency `1`. Its upstream images are arm64-only and its full application stack is disk-heavy; allowing normal parallelism risks exhausting the runner. Research is also the only category that receives web search. Its judge accepts known DRBench-compatible values or an `openrouter/<vendor>/<model>` slug; an unsupported suite-wide judge falls back visibly to `gpt-5.6-luna`, so that score must be treated as a different baseline.
-
-### Experiment identity, aggregation, and failures
-
-Every `(model, branch, config, category)` leaf has a deterministic LangSmith experiment name shared by prep, Harbor execution, and unified aggregation. It includes sanitized branch/config/model/category, a hash of the raw branch, run ID and attempt, and optional reasoning effort. This lets all shards in a category converge on one project and lets the separate usage job query expected experiments without scanning artifacts.
+The graph registry is the source of truth for code graphs: all registered graphs except the non-fan-out pinned `tau3` are selectable. `codex`, `claude-code`, and `pi` are native Harbor implementations. They are provider-gated (`codex` OpenAI, `claude-code` Anthropic, `pi` either), cannot run branch comparisons, and Claude Code rejects `reasoning_effort=minimal`. Exact task filters reject unknown names and narrow active categories to categories containing a requested task.
 
 ```mermaid
 flowchart TD
-    Prep["prep resolves tasks and flat matrices"] --> Leaf["Harbor leaf shards"]
-    Prep --> Usage["usage queries expected experiments"]
-    Leaf --> Artifacts["category shard artifacts"]
-    Artifacts --> Combine["validate and combine leaf summaries"]
+    Inputs["models categories profile branches harnesses"] --> Prep["unified_prep validates and packs"]
+    Prep --> Matrix["one outer model and branch entry"]
+    Matrix --> Harbor["flat category and shard leaves"]
+    Prep --> Expected["expected leaves and experiment map"]
+    Harbor --> Artifacts["per-leaf summaries"]
+    Expected --> Combine["validate completeness and rank"]
+    Artifacts --> Combine
+    Prep --> Usage["best effort LangSmith usage query"]
     Usage --> Combine
-    Combine --> Scorecard["leaderboard summary and optional radar"]
 ```
 
-Caption: prep establishes the expected leaf grid and experiment identities; combining can report incomplete leaves instead of silently omitting them.
+Caption: prep owns the expected comparison grid, allowing combination to expose absent work instead of silently omitting it.
 
-For binary categories, `pass@K` is the fraction of tasks passing at least one of K rollouts; `avg@K` divides passing trials by expected trials so missing rollout data cannot inflate a result. Graded research uses `avg@K` because its `pass@K` is structurally zero. The combiner validates summary schema and rollout count, quarantines duplicate leaves, marks missing or malformed expected leaves incomplete, and ranks rows by macro `avg@K`. It emits a radar input only with at least three categories. Artifact-download, malformed-summary, and usage failures become structured warnings and incomplete diagnostics rather than silently improving a ranking.
+### Comparability contract: fixed versus selectable
 
-The usage collector is best-effort and is isolated from the publishing job: it receives the LangSmith key, whereas the combine/publish job has repository write access but not that key. Keep model, task/profile, graph, branch SHA, sandbox, judge, reasoning effort, and rollout count fixed when interpreting a comparison. Branch comparisons overlay only `libs/deepagents`, `libs/code`, `libs/acp`, and `libs/partners/quickjs` from a verified resolved SHA; the Harbor harness and benchmark infrastructure remain at the workflow revision.
+| Fixed for a comparable scorecard | Caller-selectable, but hold fixed within the cohort |
+| --- | --- |
+| Category-to-dataset mapping; `tau3` for the conversation baseline; task profile and resulting task IDs; a resolved branch SHA; each category's verifier and score interpretation | Models; selected categories; profile (`full` or `lite`); exact task filter; code/native harnesses where permitted; current versus branch axis; rollouts; reasoning effort; judge model; retries; timeout multiplier; and normal category sandbox/concurrency inputs |
+| Research always uses `ubuntu-24.04-arm`, Docker, and concurrency `1` | The caller's `runner_label`, `sandbox_env`, and concurrency apply only to categories without an override |
 
-### Change and test the orchestration safely
+Changing a task set, harness, branch source, K/rollouts, reasoning setting, judge, or scoring baseline creates a new comparison cohort rather than a delta against an older score. Research judge changes are especially non-comparable: DRBench accepts its supported judges or one valid `openrouter/<vendor>/<model>` slug; otherwise research visibly falls back to `gpt-5.6-luna` while other categories retain the requested suite-wide judge.
 
-Treat the workflow contracts as part of the evaluation implementation. `test_unified_workflow.py` statically checks dispatch defaults and forwarding, full-profile enumeration, flat-pool and per-category aggregate matrices, credential checks, branch overlays, artifact naming, retry/timeout controls, download retry classification, publication serialization, and the separation between LangSmith usage credentials and repository-write publishing. Pair an orchestration change with the focused test covering its contract, rather than relying on a paid dispatch to discover wiring drift.
+### Matrix and pool invariants
 
-For changes to prep or aggregation policy, also preserve these invariants: category mappings must name registered graphs; an explicit task filter must be exact; expected leaves must remain available to combination; and missing artifacts, malformed leaf summaries, duplicated leaf identities, or unavailable usage must become warnings/incompleteness rather than disappear from the scorecard. A green best-effort post-processing job is not evidence that all rollouts completed.
+`full` enumerates current task names; `lite` uses frozen high-signal lists. Full research is capped to a declared 30-task proportional sample, and a stale declared ID fails rather than silently changing a denominator.
+
+Prep produces one flat per-model matrix. Under the shard cap it uses one task per entry; over it, it allocates group budgets proportionally and packs tasks without dropping or duplicating them. Its derived pools enforce at most 40 concurrent tasks per model and 80 runners globally, including the branch axis. It rejects an outer GitHub matrix over its cap, branches exceeding the per-model budget, no jobs, and more than 400 post-pack jobs.
+
+Research's arm64 Docker/concurrency-1 override exists because DRBench images are arm64-only and each application stack is disk-heavy. The reusable Harbor workflow preserves every flat leaf's effective dataset, harness, runner, sandbox, and concurrency values, uses `fail-fast: false`, and aggregates independently by category and harness.
+
+### Combine and score interpretation
+
+Each expected `(model, branch, config, category)` leaf has a deterministic LangSmith experiment name and expected trace count. The combiner validates leaf-summary schema and rollout count, retains the expected grid, quarantines duplicates, marks missing artifacts incomplete, ranks by macro `avg@K`, and emits radar input only for at least three categories.
+
+For binary categories, `pass@K` is the fraction of tasks passing at least one of K rollouts, while `avg@K` is passing trials divided by expected trials; missing rollouts cannot inflate it. Research is a graded reward: its structural `pass@K` is zero, so read research `avg@K`/macro reward and overall macro `avg@K`, not overall pass@K. Incomplete rows are diagnostic partial rankings, not a clean leaderboard.
+
+Usage collection is best effort and isolated from publication: the usage job has the LangSmith key with only `contents: read`; the combine job has `contents: write`, downloads any usage artifact, and does not receive that key. Missing artifacts, usage, or post-processing warnings mean coverage is incomplete, not that all rollouts passed.
+
+## Focused change routes
+
+Use source-owning checks before dispatching paid work:
+
+```sh
+# From libs/evals
+uv run --group test pytest tests/unit_tests/test_harbor_langgraph_agent.py
+
+# From the repository root
+uv run --project libs/evals --group test pytest .github/scripts/tests/evals/test_unified_prep.py
+```
+
+The Harbor graph tests are deterministic adapter tests, not credentialed model or sandbox evaluations: they replace model construction, CLI construction, search, and MCP endpoints as needed. They pin graph registration, secret scrubbing and restoration, model identity/defaults and profile overrides, shell and skills wiring, MCP transport restrictions, session-ID normalization/collision resistance, and optional-search absence, bounds, output truncation, and failure behavior. Unified-prep tests pin category mapping, graph/native-agent eligibility, task/profile validation, local data presence, packing fidelity, category overrides, numeric validation, branch safety, expected leaf/experiment emission, and pool/job guards. Static unified-workflow tests protect workflow forwarding, matrix and artifact wiring, secret/permission separation, branch overlays, and aggregation behavior without a paid dispatch.
 
 ## Operating checklist
 
-1. Run focused deterministic package or eval-infrastructure tests first.
-2. For behavioral changes, make one narrow traced pytest rollout, inspect the LangSmith trace, then run trials before claiming a comparison.
-3. For Harbor, retain task selection, graph, sandbox, verifier/judge, rollouts, and artifacts; separate infrastructure failures from model capability failures.
-4. For unified runs, inspect the dispatch summary and incomplete-row warnings. Do not compare scores across changed task sets, judges, harnesses, profiles, or research fallback judges.
-5. After metadata changes, run the generated-output checks and the focused unit tests that cover the changed matrix, agent, or aggregation logic.
+1. Run focused deterministic checks for implementation or orchestration changes.
+2. Run a narrow traced pytest eval to diagnose a particular real-model behavior; use repeated trials for stochastic behavioral comparisons.
+3. Run Harbor when task-owned verifier success is the question, and retain task, sandbox, verifier, and artifact context when diagnosing failure.
+4. Dispatch unified evals only for a controlled cohort; record the resolved task set, branch SHA, harness, rollouts, reasoning setting, judge, and category-specific runtime overrides.
+5. Check incomplete-row, missing-artifact, and research-judge-fallback warnings before interpreting a score or rank.

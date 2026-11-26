@@ -6,10 +6,12 @@ import asyncio
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
-from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryMiddleware, MemoryState
+from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryState
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState
+from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.tools import BaseTool
 from langgraph.runtime import Runtime
 
 from deepagents_code.context_doctor import (
@@ -18,16 +20,59 @@ from deepagents_code.context_doctor import (
     format_skills_prompt,
     render_context_doctor_report,
 )
-from deepagents_code.tool_catalog import collect_tools_from_agent
+from deepagents_code.tool_catalog import ToolEntry, collect_tools_from_agent
+from deepagents_talon.mcp_middleware import (
+    MCP_SKILL_ONLY_METADATA_KEY,
+    MCP_TOOL_METADATA_KEY,
+)
+from deepagents_talon.memory import TalonMemoryMiddleware
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from deepagents.backends.protocol import BackendProtocol
+    from langchain_core.language_models import BaseChatModel
 
+    from deepagents_code.provider_tool_search import MCPProviderToolSearchMiddleware
     from deepagents_code.skills.load import ExtendedSkillMetadata
 
 _MAX_MESSAGES = 10_000
+
+
+def _initial_tools(
+    graph: object,
+    resolve_model: Callable[[], BaseChatModel],
+    tool_search: MCPProviderToolSearchMiddleware,
+) -> tuple[list[ToolEntry] | None, str]:
+    entries = collect_tools_from_agent(graph)
+    if not entries:
+        return entries, ""
+    node = getattr(graph, "nodes", {})["tools"].bound
+    mcp = [
+        tool
+        for tool in node.tools_by_name.values()
+        if isinstance(tool, BaseTool) and (tool.metadata or {}).get(MCP_TOOL_METADATA_KEY)
+    ]
+    hidden = {tool.name for tool in mcp if (tool.metadata or {}).get(MCP_SKILL_ONLY_METADATA_KEY)}
+    ordinary = [tool for tool in mcp if tool.name not in hidden]
+    deferred: set[str] = set()
+    search = []
+    if ordinary:
+        request = ModelRequest(model=resolve_model(), messages=[], tools=[*ordinary])
+        prepared = tool_search._prepare(request)  # noqa: SLF001  # Apply the graph's real loader without invoking the model.
+        for definition in prepared.tools:
+            if isinstance(definition, dict):
+                search.append(ToolEntry(definition["type"], "", definition))
+            elif (definition.extras or {}).get("defer_loading"):
+                deferred.add(definition.name)
+    excluded = hidden | deferred
+    initial = [entry for entry in entries if entry.name not in excluded]
+    details = []
+    if deferred:
+        details.append(f"deferred MCP tools: {len(deferred)}")
+    if hidden:
+        details.append(f"skill-only tools: {len(hidden)}")
+    return [*initial, *search], ", ".join(details)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,19 +84,26 @@ class ContextDoctor:
         system_prompt: Resolved authored system instructions.
         skills: Configured skill sources, in precedence order.
         memory: Configured memory paths.
+        tool_search: Native search middleware installed on the graph.
+        default_model: Resolve the graph's default model for tool discovery.
     """
 
     backend: BackendProtocol
     system_prompt: str | None
     skills: tuple[str, ...]
     memory: tuple[str, ...]
+    default_model: Callable[[], BaseChatModel]
+    tool_search: MCPProviderToolSearchMiddleware
 
-    async def render(self, graph: object, conversation_id: str) -> str:
+    async def render(
+        self, graph: object, conversation_id: str, *, model: BaseChatModel | None = None
+    ) -> str:
         """Inspect a checkpoint and format a bounded report without changing it.
 
         Args:
             graph: Active compiled graph belonging to this configuration.
             conversation_id: Host-resolved thread identifier.
+            model: Host-selected model override.
 
         Returns:
             Estimated token counts without source contents or paths.
@@ -64,7 +116,12 @@ class ContextDoctor:
         values = cast("Mapping[str, object]", snapshot.values)
         memory = await self._memory(values)
         skills = await self._skills(values)
-        tools = await asyncio.to_thread(collect_tools_from_agent, graph)
+        tools, tool_detail = await asyncio.to_thread(
+            _initial_tools,
+            graph,
+            self.default_model if model is None else lambda: model,
+            self.tool_search,
+        )
         conversation, provider = await asyncio.to_thread(_usage, values)
         report = build_context_doctor_report(
             system_prompt=self.system_prompt or "",
@@ -81,7 +138,13 @@ class ContextDoctor:
         )
         rows = list(report.rows)
         rows[0] = replace(rows[0], label="System prompt (configured)")
-        rows[3] = replace(rows[3], label=rows[3].label.replace("Built-in", "All (including MCP)"))
+        tool_row = rows[3]
+        detail = "" if tool_row.detail == "sent with every request" else tool_row.detail
+        rows[3] = replace(
+            tool_row,
+            label=tool_row.label.replace("Built-in", "Initial"),
+            detail=", ".join(filter(None, (detail, tool_detail))),
+        )
         rows = [replace(row, detail=" ".join(row.detail.split())[:240]) for row in rows]
         text = render_context_doctor_report(replace(report, rows=tuple(rows)))
         return (
@@ -93,7 +156,7 @@ class ContextDoctor:
         if not self.memory:
             return {}
         state = cast("MemoryState", dict(values))
-        middleware = MemoryMiddleware(backend=self.backend, sources=list(self.memory))
+        middleware = TalonMemoryMiddleware(backend=self.backend, sources=list(self.memory))
         loaded = await middleware.abefore_agent(state, Runtime(), {})
         return (loaded or state).get("memory_contents", {})
 

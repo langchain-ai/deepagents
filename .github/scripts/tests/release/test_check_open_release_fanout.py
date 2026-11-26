@@ -1,4 +1,4 @@
-"""Tests for check_open_release_fanout (post-merge lockfile release safety net)."""
+"""Tests for check_open_release_fanout (post-merge empty-release safety net)."""
 
 import json
 import subprocess
@@ -7,21 +7,11 @@ from pathlib import Path
 import pytest
 from check_open_release_fanout import (
     _ref_exists,
-    find_lockfile_only_components,
-    is_lockfile_only,
+    find_empty_release_components,
     main,
     release_tag,
     tag_separator,
 )
-
-
-def test_is_lockfile_only() -> None:
-    """Only non-empty all-lockfile lists count."""
-    assert is_lockfile_only(["libs/acp/uv.lock"])
-    assert is_lockfile_only(["libs/acp/uv.lock", "libs/code/uv.lock"])
-    assert not is_lockfile_only([])
-    assert not is_lockfile_only(["libs/acp/pyproject.toml"])
-    assert not is_lockfile_only(["libs/acp/uv.lock", "libs/acp/main.py"])
 
 
 def test_release_tag_matches_repo_convention() -> None:
@@ -73,31 +63,48 @@ def test_main_ref_lookup_failure_fails_closed(
     assert "not a git repository" in captured.err
 
 
-def test_find_lockfile_only_components_resolves_version_to_tag(
+def _pkg(path: str, component: str) -> dict:
+    """Return a package entry that excludes `tests/` and `uv.lock`, like the real config."""
+    return {
+        "component": component,
+        "exclude-paths": [f"{path}/tests", f"{path}/uv.lock"],
+    }
+
+
+def test_find_empty_release_components_resolves_version_to_tag(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Manifest versions are converted to release tags before git diff."""
+    """Manifest versions are converted to release tags; excluded-only deltas are flagged."""
     config = {
         "tag-separator": "==",
         "packages": {
-            "libs/acp": {"component": "deepagents-acp"},
-            "libs/code": {"component": "deepagents-code"},
+            "libs/acp": _pkg("libs/acp", "deepagents-acp"),
+            "libs/code": _pkg("libs/code", "deepagents-code"),
+            "libs/talon": _pkg("libs/talon", "deepagents-talon"),
         },
     }
     manifest = {
         "libs/acp": "0.2.2",
         "libs/code": "0.1.47",
+        "libs/talon": "0.1.0",
     }
     seen: list[tuple[str, str]] = []
+    diffs = {
+        ("libs/acp", "deepagents-acp==0.2.2"): [
+            "libs/acp/tests/test_x.py",
+            "libs/acp/uv.lock",
+        ],
+        ("libs/code", "deepagents-code==0.1.47"): [
+            "libs/code/deepagents_code/x.py",
+            "libs/code/uv.lock",
+        ],
+        ("libs/talon", "deepagents-talon==0.1.0"): ["libs/talon/pyproject.toml"],
+    }
 
     def fake_diff(path: str, baseline: str, *, repo_root: Path, head: str = "HEAD"):
         del repo_root, head
         seen.append((path, baseline))
-        if path.startswith("libs/acp") and baseline == "deepagents-acp==0.2.2":
-            return ["libs/acp/uv.lock"]
-        if path.startswith("libs/code") and baseline == "deepagents-code==0.1.47":
-            return ["libs/code/deepagents_code/x.py", "libs/code/uv.lock"]
-        return []
+        return diffs.get((path, baseline), [])
 
     monkeypatch.setattr(
         "check_open_release_fanout._ref_exists", lambda *_a, **_k: True
@@ -105,14 +112,47 @@ def test_find_lockfile_only_components_resolves_version_to_tag(
     monkeypatch.setattr(
         "check_open_release_fanout.package_unreleased_files", fake_diff
     )
-    offenders = find_lockfile_only_components(config, manifest, repo_root=tmp_path)
-    assert ("libs/acp", "deepagents-acp==0.2.2") in seen
-    assert ("libs/code", "deepagents-code==0.1.47") in seen
+    offenders = find_empty_release_components(config, manifest, repo_root=tmp_path)
+    assert sorted(seen) == sorted(diffs)
     assert len(offenders) == 1
     assert offenders[0]["component"] == "deepagents-acp"
     assert offenders[0]["version"] == "0.2.2"
     assert offenders[0]["baseline"] == "deepagents-acp==0.2.2"
-    assert offenders[0]["files"] == ["libs/acp/uv.lock"]
+    assert offenders[0]["files"] == ["libs/acp/tests/test_x.py", "libs/acp/uv.lock"]
+
+
+def test_find_empty_release_components_flags_no_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A package with no changes at all since its release has an empty delta too."""
+    config = {"packages": {"libs/acp": _pkg("libs/acp", "deepagents-acp")}}
+    monkeypatch.setattr(
+        "check_open_release_fanout._ref_exists", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        "check_open_release_fanout.package_unreleased_files", lambda *_a, **_k: []
+    )
+    offenders = find_empty_release_components(
+        config, {"libs/acp": "0.2.2"}, repo_root=tmp_path
+    )
+    assert [o["component"] for o in offenders] == ["deepagents-acp"]
+    assert offenders[0]["files"] == []
+
+
+def test_lockfile_counts_without_exclude_paths(tmp_path: Path, monkeypatch) -> None:
+    """Without an exclusion, a lockfile change is release-relevant and not flagged."""
+    config = {"packages": {"libs/acp": {"component": "deepagents-acp"}}}
+    monkeypatch.setattr(
+        "check_open_release_fanout._ref_exists", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        "check_open_release_fanout.package_unreleased_files",
+        lambda *_a, **_k: ["libs/acp/uv.lock"],
+    )
+    assert (
+        find_empty_release_components(config, {"libs/acp": "0.2.2"}, repo_root=tmp_path)
+        == []
+    )
 
 
 def test_main_missing_manifest_fails_closed(capsys, tmp_path: Path) -> None:
@@ -135,7 +175,7 @@ def test_main_happy_path(capsys, tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "release-please-config.json"
     manifest_path = tmp_path / ".release-please-manifest.json"
     config_path.write_text(
-        json.dumps({"packages": {"libs/acp": {"component": "deepagents-acp"}}}),
+        json.dumps({"packages": {"libs/acp": _pkg("libs/acp", "deepagents-acp")}}),
         encoding="utf-8",
     )
     manifest_path.write_text(json.dumps({"libs/acp": "0.2.2"}), encoding="utf-8")

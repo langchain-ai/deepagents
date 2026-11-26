@@ -15,6 +15,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from langgraph.errors import GraphInterrupt, ParentCommand
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
@@ -528,6 +529,16 @@ class TestFilesystemMiddleware:
         assert result.status == "error"
         assert result.content == "Error: glob failed: path traversal not allowed"
 
+    @pytest.mark.parametrize("error", [GraphInterrupt(), ParentCommand(Command())], ids=["interrupt", "parent_command"])
+    def test_glob_propagates_graph_control_flow(self, error: Exception) -> None:
+        """An interrupt or parent command raised in the backend glob propagates instead of becoming a tool error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        with patch.object(backend, "glob", side_effect=error), pytest.raises(type(error)):
+            glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+
     def test_glob_backend_timeouterror_not_misreported_as_glob_timeout(self):
         """A `TimeoutError` raised inside the backend must not be reported as a glob-pattern timeout.
 
@@ -926,6 +937,20 @@ class TestFilesystemMiddleware:
         # Size truncation engaged (body was cut) yet the time-limit note survived at the tail.
         assert TRUNCATION_GUIDANCE in result.content
         assert GREP_TRUNCATION_NOTE in result.content
+
+    def test_grep_clips_long_line_around_match(self):
+        """A match on a huge single line (e.g. offloaded minified JSON) shows a window around the hit, not the line."""
+        line = '{"items": [' + '{"k": "v"}, ' * 8000 + '{"order_id": "abc-123"}, ' + '{"k": "v"}, ' * 8000 + "]}"
+        files = {"/large_tool_results/call_1": FileData(content=line, modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        result = grep_search_tool.invoke({"pattern": "order_id", "output_mode": "content", "runtime": _runtime()})
+
+        assert '"order_id": "abc-123"' in result.content
+        assert len(result.content) < 3000
+        assert "chars clipped]" in result.content
 
     async def test_async_grep_truncated_renders_as_success_with_note(self):
         """The async grep handler renders a truncated result as success with the note (parity with sync)."""

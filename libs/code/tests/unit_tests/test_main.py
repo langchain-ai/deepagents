@@ -1,11 +1,12 @@
 """Unit tests for main entry point."""
 
 import asyncio
+import json
 import os
 import signal
 import sys
 from contextlib import contextmanager
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,7 @@ from deepagents_code.main import (
     _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE,
     _auto_install_ripgrep_cli,
     _install_termination_signal_handlers,
+    _make_stdio_encoding_safe,
     _prespawn_server,
     _print_session_stats,
     _render_teardown_thread_hints,
@@ -82,6 +84,77 @@ class TestTerminationSignalHandling:
         _install_termination_signal_handlers()
 
         install.assert_not_called()
+
+
+class TestMakeStdioEncodingSafe:
+    """Tests for `_make_stdio_encoding_safe`."""
+
+    def test_cp1252_stream_survives_unicode_glyphs(self):
+        """Unencodable glyphs degrade to "?" instead of raising."""
+        buffer = BytesIO()
+        stream = TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+            sys.stdout.write("✓ Server ready")
+            sys.stdout.flush()
+
+        assert buffer.getvalue() == b"? Server ready"
+
+    def test_stream_encoding_is_preserved(self):
+        """Only the error handler changes; the encoding stays untouched."""
+        buffer = BytesIO()
+        stream = TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert stream.encoding == "cp1252"
+        assert stream.errors == "replace"
+
+    def test_non_reconfigurable_stream_is_left_alone(self):
+        """Streams without `reconfigure` (e.g. StringIO) do not raise."""
+        stream = StringIO()
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert not stream.closed
+
+    def test_streams_handled_independently(self):
+        """A non-reconfigurable stdout must not stop stderr from being hardened.
+
+        In quiet mode `run_non_interactive` routes glyph-emitting output to
+        stderr, so a per-stream `continue` (not `break`/`return`) is
+        load-bearing: skipping stdout must still leave stderr reconfigured.
+        """
+        stdout = StringIO()  # no `reconfigure` -> skipped
+        stderr = TextIOWrapper(BytesIO(), encoding="cp1252")
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            _make_stdio_encoding_safe()
+
+        assert stderr.errors == "replace"
+        assert not stdout.closed
+
+    def test_closed_stream_is_swallowed(self):
+        """A closed stream raises `ValueError` on reconfigure; swallowed, no crash."""
+        stream = TextIOWrapper(BytesIO(), encoding="cp1252")
+        stream.close()
+        with (
+            patch.object(sys, "stdout", stream),
+            patch.object(sys, "stderr", StringIO()),
+        ):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert stream.closed
+
+    def test_duck_typed_reconfigure_typeerror_is_swallowed(self):
+        """A `reconfigure` with an incompatible signature must not crash the run."""
+        # This `reconfigure` takes no args, so calling it with `errors=` raises
+        # `TypeError` — the failure mode a non-stdlib stream wrapper (e.g. a
+        # capture/tee library) could exhibit. The guard must not propagate it.
+        stream = SimpleNamespace(reconfigure=lambda: None)
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert hasattr(stream, "reconfigure")
 
 
 class TestStartupAutoUpdate:
@@ -3369,6 +3442,59 @@ class TestCheckMcpProjectTrustPrompt:
         assert '"fs" (stdio):  node server.js' in captured.err
         assert "Learn more:" not in captured.err
         assert "Remembered approvals apply" not in captured.err
+
+    @pytest.mark.parametrize(
+        ("in_repo", "is_user_config", "expect_note"),
+        [
+            pytest.param(True, False, False, id="repo-config"),
+            pytest.param(False, True, True, id="home-fallback-user-config"),
+            # A profile configured inside a real repo collides too, but there
+            # the project framing is accurate.
+            pytest.param(True, True, False, id="repo-profile-collision"),
+        ],
+    )
+    def test_prompt_names_source_file(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        in_repo: bool,  # parametrized flag
+        is_user_config: bool,  # parametrized flag
+        expect_note: bool,  # parametrized flag
+    ) -> None:
+        """Each server names its file; the user-config note shows only on fallback."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        cwd = tmp_path / "proj"
+        (cwd / ".deepagents").mkdir(parents=True)
+        project_cfg = cwd / ".deepagents" / ".mcp.json"
+        server = {"type": "http", "url": "https://example.test/mcp"}
+        project_cfg.write_text(json.dumps({"mcpServers": {"remote": server}}))
+
+        project_context = SimpleNamespace(
+            project_root=cwd if in_repo else None, user_cwd=cwd
+        )
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(project_cfg, cwd)],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.is_user_mcp_config_path",
+                return_value=is_user_config,
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        err = " ".join(capsys.readouterr().err.split())
+        assert '"remote" (http): https://example.test/mcp' in err
+        assert f"from {project_cfg}" in err
+        assert ("This is your user MCP config" in err) is expect_note
 
     def test_yes_allows_for_session_only(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path

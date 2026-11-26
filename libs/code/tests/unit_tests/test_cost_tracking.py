@@ -61,6 +61,7 @@ from deepagents_code.cost_tracking import (
     _RECORDER_VAR,
     MODEL_USAGE_EVENT_TYPE,
     SESSION_COST_EVENT_TYPE,
+    SUMMARIZATION_STARTED_EVENT_TYPE,
     CostState,
     CostTrackingMiddleware,
     _ModelCallRecord,
@@ -572,6 +573,7 @@ class TestPriceUpdater:
         monkeypatch.delenv(OFFLINE, raising=False)
         monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
         monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER", None)
+        monkeypatch.setattr(cost_tracking, "_PRICING_WARMUP", None)
         monkeypatch.setattr(cost_tracking, "_TRUNCATED_CATALOG_REPORTED", False)
         # The opt-out gate reads the user's real `config.toml` unless the
         # read is stubbed, so a local `[update].prices_auto_update = false`
@@ -639,6 +641,24 @@ class TestPriceUpdater:
         assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
 
         factory.assert_called_once()
+
+    def test_turn_start_starts_updater_before_any_pricing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refresh starts when a turn begins, not on its first priced reply."""
+        self._enable_auto_update(monkeypatch)
+        instance = self._autospec_updater()
+        factory = self._patch_updater(monkeypatch, instance)
+        middleware = CostTrackingMiddleware()
+
+        for _ in range(2):
+            assert middleware.before_agent(MagicMock(), MagicMock()) is None
+            warmup = cost_tracking._PRICING_WARMUP
+            assert warmup is not None
+            warmup.join(timeout=10)
+
+        factory.assert_called_once()
+        instance.start.assert_called_once_with(wait=False)
 
 
 class TestPriceCatalogGuard:
@@ -1531,6 +1551,43 @@ class TestSessionCostRecorder:
 
         assert events == []
         assert len(recorder.drain(THREAD_ID)) == 2
+
+    def test_root_summarization_emits_start_and_usage(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: events.append)
+        run_id = uuid4()
+
+        recorder.on_chat_model_start(
+            {},
+            [],
+            run_id=run_id,
+            metadata={"thread_id": THREAD_ID, "lc_source": "summarization"},
+        )
+        recorder.on_llm_end(
+            LLMResult(
+                generations=[
+                    [
+                        ChatGeneration(
+                            message=_message(
+                                _usage(),
+                                model=KNOWN_MODEL,
+                                provider=KNOWN_PROVIDER,
+                                message_id="summary-1",
+                            )
+                        )
+                    ]
+                ]
+            ),
+            run_id=run_id,
+        )
+
+        assert events[0] == {"type": SUMMARIZATION_STARTED_EVENT_TYPE}
+        assert events[1]["type"] == MODEL_USAGE_EVENT_TYPE
+        assert events[1]["lc_source"] == "summarization"
+        assert events[1]["scope"] == ""
+        assert events[1]["request_id"] == "summary-1"
 
     def test_usage_writer_failure_keeps_the_durable_record(
         self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch

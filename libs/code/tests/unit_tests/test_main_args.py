@@ -5,7 +5,7 @@ import io
 import os
 import sys
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1116,6 +1116,113 @@ class TestApplyStdinPipe:
         ):
             apply_stdin_pipe(args)
         assert exc_info.value.code == 1
+
+
+class TestPipedStdinOutsideSessions:
+    """Commands that start no agent session leave piped stdin to themselves."""
+
+    @pytest.mark.parametrize(
+        ("argv", "entry_point", "piped"),
+        [
+            (
+                ["threads", "delete", "thread-1"],
+                "deepagents_code.sessions.delete_thread_command",
+                "thread-2\nthread-3\n",
+            ),
+            (
+                ["skills", "delete", "notes"],
+                "deepagents_code.skills.execute_skills_command",
+                "y\n",
+            ),
+            (
+                ["--install", "daytona"],
+                "deepagents_code.client.commands.extras.run_install_request",
+                "y\n",
+            ),
+        ],
+        ids=["threads-delete", "skills-delete", "install-flag"],
+    )
+    def test_command_reads_the_pipe(
+        self, argv: list[str], entry_point: str, piped: str
+    ) -> None:
+        """Regression test for #7587: piped stdin reaches the command unread.
+
+        In a `while read` loop the rest of the pipe is input for the next
+        iterations, and a command's own y/N prompt reads the piped answer.
+        """
+        from deepagents_code.main import cli_main
+
+        received: list[str] = []
+
+        def run_command(*_args: object, **_kwargs: object) -> int:
+            received.append(sys.stdin.read())
+            return 0
+
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdin", io.StringIO(piped)),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            # Keeps a regression from pointing this process's fd 0 at the
+            # terminal after it drains the pipe.
+            patch("deepagents_code.main.os.open", side_effect=OSError("no tty")),
+            patch(entry_point, side_effect=run_command),
+            # `--install` exits through `sys.exit`; subcommands return.
+            suppress(SystemExit),
+        ):
+            cli_main()
+
+        assert received == [piped]
+
+
+class TestRedirectedOutputEncoding:
+    """Commands survive text their stdout encoding cannot represent."""
+
+    @pytest.mark.parametrize(
+        ("argv", "entry_point"),
+        [
+            (["doctor"], "deepagents_code.doctor.run_doctor_command"),
+            (["skills", "list"], "deepagents_code.skills.execute_skills_command"),
+            (["threads", "list"], "deepagents_code.sessions.list_threads_command"),
+            (
+                ["plugin", "list"],
+                "deepagents_code.plugins.commands_cli.execute_plugin_command",
+            ),
+        ],
+        ids=["doctor", "skills-list", "threads-list", "plugin-list"],
+    )
+    def test_unencodable_text_prints_as_question_mark(
+        self, argv: list[str], entry_point: str
+    ) -> None:
+        """Regression test for #7692: text cp1252 can't encode prints as `?`.
+
+        On Windows, stdout redirected to a pipe or file is encoded with the
+        ANSI code page, so the first character outside it raised
+        `UnicodeEncodeError` and the command exited 1 mid-output.
+        """
+        from deepagents_code.main import cli_main
+
+        buffer = io.BytesIO()
+        # The stream Windows gives redirected stdout when UTF-8 mode is off.
+        stdout = io.TextIOWrapper(buffer, encoding="cp1252", errors="surrogateescape")
+
+        def run_command(*_args: object, **_kwargs: object) -> int:
+            sys.stdout.write("Turns merged PRs → release notes ✨")
+            return 0
+
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdout", stdout),
+            # Keeps the hardening off the test runner's own stderr.
+            patch.object(sys, "stderr", io.StringIO()),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(entry_point, side_effect=run_command),
+            # `doctor` exits through `sys.exit`; the others return.
+            suppress(SystemExit),
+        ):
+            cli_main()
+
+        stdout.flush()
+        assert buffer.getvalue() == b"Turns merged PRs ? release notes ?"
 
 
 class TestAgentResolutionScope:
@@ -2258,3 +2365,113 @@ def test_show_reasoning_defaults_by_mode(
 
     assert _load_show_reasoning() is tui
     assert _resolve_headless_show_reasoning() is headless
+
+
+class TestHeadlessProgramStatus:
+    """The final OSC 7501 report of a headless (`-n`) run."""
+
+    @staticmethod
+    def _run(
+        monkeypatch: pytest.MonkeyPatch, run: AsyncMock
+    ) -> tuple[list[dict[str, str]], BaseException]:
+        """Run `cli_main` headless and return the decoded reports and exit."""
+        import base64
+
+        from deepagents_code import program_status
+        from deepagents_code.main import cli_main
+
+        sent: list[str] = []
+
+        def _write(sequence: str) -> bool:
+            sent.append(sequence)
+            return True
+
+        monkeypatch.setattr(program_status, "_default_write", lambda: _write)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "hi",
+                    "--model",
+                    "openai:test-model",
+                    "--timeout",
+                    "30",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                run,
+            ),
+            pytest.raises((SystemExit, RuntimeError)) as exc_info,
+        ):
+            cli_main()
+
+        reports = []
+        for sequence in sent:
+            body = sequence.removeprefix("\x1b]7501;").removesuffix("\x1b\\")
+            pairs = dict(pair.split("=", 1) for pair in body.split(":"))
+            if "msg" in pairs:
+                pairs["msg"] = base64.b64decode(pairs["msg"]).decode()
+            reports.append(pairs)
+        return reports, exc_info.value
+
+    @pytest.mark.parametrize(
+        ("run", "exit_code", "final"),
+        [
+            (AsyncMock(return_value=0), 0, {"state": "done"}),
+            (
+                AsyncMock(return_value=1),
+                1,
+                {"state": "error", "msg": "Exited with code 1"},
+            ),
+            (
+                AsyncMock(return_value=124),
+                124,
+                {"state": "error", "msg": "Reached the --max-turns limit"},
+            ),
+            (
+                AsyncMock(side_effect=TimeoutError),
+                124,
+                {"state": "error", "msg": "Timed out after 30s"},
+            ),
+            (AsyncMock(side_effect=KeyboardInterrupt), 130, {"state": "clear"}),
+        ],
+    )
+    def test_reports_working_then_final_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        run: AsyncMock,
+        exit_code: int,
+        final: dict[str, str],
+    ) -> None:
+        reports, exc = self._run(monkeypatch, run)
+        assert isinstance(exc, SystemExit)
+        assert exc.code == exit_code
+        assert [r["state"] for r in reports] == ["working", final["state"]]
+        assert {k: reports[-1][k] for k in final} == final
+
+    def test_unexpected_crash_reports_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reports, exc = self._run(
+            monkeypatch, AsyncMock(side_effect=RuntimeError("boom"))
+        )
+        assert isinstance(exc, RuntimeError)
+        assert reports[-1]["state"] == "error"
+        assert reports[-1]["msg"] == "Crashed with RuntimeError"
+
+    def test_opt_out_reports_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEEPAGENTS_CODE_TERMINAL_STATUS", "0")
+        reports, _ = self._run(monkeypatch, AsyncMock(return_value=0))
+        assert reports == []

@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.1...deepagents-talon==0.1.2) (2026-11-24)
+
+### Features
+
+- Discover MCP tools on demand. ([#7977](https://github.com/langchain-ai/deepagents/pull/7977))
+- Send messages to local Claude Code sessions through inbox sockets, Codex sessions, and dcode sessions through event sockets. ([#7685](https://github.com/langchain-ai/deepagents/pull/7685), [#7686](https://github.com/langchain-ai/deepagents/pull/7686), [#7956](https://github.com/langchain-ai/deepagents/pull/7956))
+- Support confidential OAuth clients for MCP servers. ([#7958](https://github.com/langchain-ai/deepagents/pull/7958))
+
+### Bug Fixes
+
+- Honor approval settings when messaging local sessions and scoped authorization when retrieving local CLI data. ([#7975](https://github.com/langchain-ai/deepagents/pull/7975), [#7887](https://github.com/langchain-ai/deepagents/pull/7887))
+- Preserve user messages across turn retries. ([#7883](https://github.com/langchain-ai/deepagents/pull/7883))
+- Keep confirmed write batches on the main agent. ([#7882](https://github.com/langchain-ai/deepagents/pull/7882))
+- Evict oversized tool results from fresh subagents. ([#7969](https://github.com/langchain-ai/deepagents/pull/7969))
+- Refresh memory on every conversation turn. ([#7885](https://github.com/langchain-ai/deepagents/pull/7885))
+- Apply MCP tool search after tool filtering and account for deferred MCP tools in `/context-doctor`. ([#7980](https://github.com/langchain-ai/deepagents/pull/7980), [#7986](https://github.com/langchain-ai/deepagents/pull/7986))
+- Explain unavailable-model failures with recovery guidance. ([#7690](https://github.com/langchain-ai/deepagents/pull/7690))
+- Preserve safe provider status information in subagent failures. ([#7884](https://github.com/langchain-ai/deepagents/pull/7884))
+- Extend Anthropic prompt caching to one hour. ([#7881](https://github.com/langchain-ai/deepagents/pull/7881))
+- Group retry attempts under a single turn trace. ([#7880](https://github.com/langchain-ai/deepagents/pull/7880))
+
+### Performance Improvements
+
+- Shorten scheduled-job tool descriptions. ([#7979](https://github.com/langchain-ai/deepagents/pull/7979))
+
+### Dependencies
+
+- `deepagents`: `>=0.7.40` → `>=0.7.41`
+- `deepagents-code`: `>=0.2.11,<1.0.0` → `>=0.2.14,<1.0.0`
+- `langchain-core`: `>=1.8.3,<2.0.0` → `>=1.8.4,<2.0.0`
+- `langchain-openai`: `>=1.8.3,<2.0.0` → `>=1.8.5,<2.0.0` (`history-openai` extra)
+- `langgraph`: `>=1.2.22,<2.0.0` → `>=1.2.24,<2.0.0`
+- `langgraph-prebuilt`: `>=1.1.2,<2.0.0` → `>=1.1.3,<2.0.0`
+- `langsmith`: `>=0.15.0` → `>=0.16.1`
+- `voyageai`: `>=0.5.0` → `>=0.6.0` (`history-voyage` extra)
+- Plus 9 routine third-party floor raises.
+
+## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.0...deepagents-talon==0.1.1) (2026-11-19)
+
+### Features
+
+- Ask structured clarifying questions in chat. ([#7607](https://github.com/langchain-ai/deepagents/pull/7607))
+- Inspect and guide background subagents. ([#7609](https://github.com/langchain-ai/deepagents/pull/7609))
+- Enable or disable configured MCP servers, and use skill-scoped MCP tools. ([#7608](https://github.com/langchain-ai/deepagents/pull/7608), [#7280](https://github.com/langchain-ai/deepagents/pull/7280))
+- Add command hooks for the main agent and local subagents. ([#7380](https://github.com/langchain-ai/deepagents/pull/7380), [#7381](https://github.com/langchain-ai/deepagents/pull/7381))
+- Filter conversation history by time window and role. ([#7712](https://github.com/langchain-ai/deepagents/pull/7712))
+- Support DeepSeek reasoning levels. ([#7439](https://github.com/langchain-ai/deepagents/pull/7439))
+- Add a `media-cpu` extra with CPU-only PyTorch on Linux. ([#7596](https://github.com/langchain-ai/deepagents/pull/7596))
+
+### Bug Fixes
+
+- Block precompiled delegation when approvals are enabled, and reject tool approvals without a sender. ([#7604](https://github.com/langchain-ai/deepagents/pull/7604), [#7605](https://github.com/langchain-ai/deepagents/pull/7605))
+- Reject symlinked hook configuration. ([#7603](https://github.com/langchain-ai/deepagents/pull/7603))
+- Erase hook transcripts when deleting conversation history. ([#7382](https://github.com/langchain-ai/deepagents/pull/7382))
+- Prevent shell workarounds for unavailable integrations. ([#7622](https://github.com/langchain-ai/deepagents/pull/7622))
+- Avoid duplicate subagent result delivery, and correctly extract text from subagent and tool-attached task results. ([#7619](https://github.com/langchain-ai/deepagents/pull/7619), [#7645](https://github.com/langchain-ai/deepagents/pull/7645), [#7652](https://github.com/langchain-ai/deepagents/pull/7652))
+- Preserve SDK refusal reporting for tool-attached tasks. ([#7760](https://github.com/langchain-ai/deepagents/pull/7760))
+- Avoid stale WhatsApp Web cache on startup. ([#7631](https://github.com/langchain-ai/deepagents/pull/7631))
+- Preserve gateway provider reasoning controls. ([#7047](https://github.com/langchain-ai/deepagents/pull/7047))
+- Preserve optional MCP arguments when using the Responses API. ([#7530](https://github.com/langchain-ai/deepagents/pull/7530))
+- Provide actionable MCP login errors and summarize stored values in MCP approval prompts. ([#7646](https://github.com/langchain-ai/deepagents/pull/7646), [#7812](https://github.com/langchain-ai/deepagents/pull/7812))
+- Correctly parse comma-separated skills and memory paths. ([#7625](https://github.com/langchain-ai/deepagents/pull/7625))
+- Delegate lengthy investigations earlier and summarize fresh subagent context. ([#7621](https://github.com/langchain-ai/deepagents/pull/7621), [#7676](https://github.com/langchain-ai/deepagents/pull/7676))
+- Download only Transformers files for local speech models. ([#7597](https://github.com/langchain-ai/deepagents/pull/7597))
+- Suppress unchanged `list_subagents` polls. ([#7677](https://github.com/langchain-ai/deepagents/pull/7677))
+- Identify user interruptions in traces. ([#7623](https://github.com/langchain-ai/deepagents/pull/7623))
+
 ## [0.1.0](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.9...deepagents-talon==0.1.0) (2026-10-22)
 
 ### ⚠ BREAKING CHANGES

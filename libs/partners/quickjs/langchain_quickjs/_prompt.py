@@ -6,13 +6,15 @@ import contextlib
 import inspect
 import json
 import re
+import threading
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from langchain_core.utils.json_schema import dereference_refs
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Set as AbstractSet
 
     from langchain_core.tools import BaseTool
 
@@ -30,13 +32,33 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "{repl_intro_line}\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
-    "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
-    "unavailable or stubbed).\n"
+    "{sandbox_line}\n"
     "{side_effects_line}\n"
     "- {timeout_line}Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
+FS_SYSTEM_PROMPT = """
+
+### Files: `fs`
+
+`fs` is a global over this agent's files, the same files your file tools see. \
+Its functions return Promises, as Node's `fs/promises` does (`fs.promises` is \
+the same API), and read and write UTF-8 text only. Paths are absolute; relative \
+paths resolve from `/`.
+
+- `await fs.readFile(path)` returns the whole file as a string, without line \
+numbers or headers, as in `JSON.parse(await fs.readFile("/a.json"))`.
+- `await fs.writeFile(path, text)` creates or replaces a file, creating parent \
+directories.
+- `await fs.readdir(dir)` lists entry names. `await fs.access(path)` rejects \
+with `ENOENT` if the path is missing; as a boolean, \
+`await fs.access(path).then(() => true, () => false)`.
+- `await fs.rm(path, { recursive, force })` deletes as Node's does: a directory \
+needs `recursive: true`, and `force: true` ignores a missing path.
+- Errors are Node errors: check `err.code`, such as `ENOENT`, `EISDIR`, or \
+`EACCES`.
+- There are no sync functions such as `readFileSync`, no streams or callbacks, \
+and no `require`."""
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
 
 ### Dispatching Subagents with `task`
@@ -110,8 +132,9 @@ scope (see "Reuse what earlier evals left in scope" below).
 
 #### Fan out with bounded concurrency
 
-Dispatch independent work in parallel with `Promise.all`. Batches around 10 are
-a conservative recommendation, not a required limit; use larger batches when
+Dispatch independent work in parallel with `Promise.allSettled`, so one failed
+dispatch doesn't lose the rest of the batch. Batches around 10 are a
+conservative recommendation, not a required limit; use larger batches when
 appropriate for the workload and its admission controls. The bridge enforces
 a per-REPL cap of {max_subagent_concurrency} concurrent subagent calls; excess
 calls wait for capacity.
@@ -122,7 +145,7 @@ const batchSize = 10;
 const reviewed = [];
 for (let i = 0; i < files.length; i += batchSize) {
   const batch = files.slice(i, i + batchSize);
-  reviewed.push(...(await Promise.all(batch.map(async (file) => {
+  const outcomes = await Promise.allSettled(batch.map(async (file) => {
     const result = await task({
       description: "Read " + file + " and review it for SQL injection. " +
         "Cite line numbers.",
@@ -147,8 +170,12 @@ for (let i = 0; i < files.length; i += batchSize) {
       },
     });
     return { file, ...result };
-  }))));
+  }));
+  reviewed.push(...outcomes.map((outcome, j) => outcome.status === "fulfilled"
+    ? outcome.value
+    : { file: batch[j], error: String(outcome.reason) }));
 }
+reviewed;
 ```
 
 #### Explore with your own tools first, then distribute
@@ -187,12 +214,13 @@ path if it is large). Assemble the results in JS.
 
 #### Compose multiple stages
 
-Filter the array in JS between passes. For example: first ask subagents for a
-cheap classification, filter to the risky items, then dispatch deeper reviews
-only for those items.
+Filter the fulfilled results in JS between passes. For example: first ask
+subagents for a cheap classification, filter to the risky items, then dispatch
+deeper reviews only for those items. Keep failed dispatches next to their
+inputs so they can be reported or retried.
 
 ```javascript
-const tagged = await Promise.all(files.map((file) =>
+const tagged = await Promise.allSettled(files.map((file) =>
   task({
     description: "Read " + file + " and classify it as handler, util, " +
       "test, or config.",
@@ -202,16 +230,21 @@ const tagged = await Promise.all(files.map((file) =>
       properties: { kind: { type: "string" }, risky: { type: "boolean" } },
       required: ["kind", "risky"],
     },
-  }).then((tag) => ({ file, ...tag }))
+  })
 ));
 
-const riskyHandlers = tagged.filter((it) => it.kind === "handler" && it.risky);
-const deepReviews = await Promise.all(riskyHandlers.map((it) =>
+const failed = files.filter((_, i) => tagged[i].status === "rejected");
+const riskyHandlers = files.filter((_, i) => tagged[i].status === "fulfilled" &&
+  tagged[i].value.kind === "handler" && tagged[i].value.risky);
+const reviews = await Promise.allSettled(riskyHandlers.map((file) =>
   task({
-    description: "Deep security review of " + it.file + ". Cite line numbers.",
+    description: "Deep security review of " + file + ". Cite line numbers.",
     subagentType: "reviewer",
-  }).then((review) => ({ ...it, review }))
+  })
 ));
+const deepReviews = reviews.map((outcome, i) =>
+  ({ file: riskyHandlers[i], ...outcome }));
+({ deepReviews, failed });
 ```
 
 #### Return results via the last expression, not `console.log`
@@ -243,19 +276,22 @@ Re-typing prior results as a fresh literal wastes tokens and drifts from what
 actually ran.
 
 ```javascript
-// An earlier eval bound this:
-//   const auditResults = await Promise.all(files.map(/* ...audit... */));
+// An earlier eval bound these:
+//   const auditOutcomes = await Promise.allSettled(files.map(/* ...audit... */));
 
-// A later eval — reference it; do NOT paste the findings back in as a literal:
-const findings = auditResults.flatMap((r) =>
-  r.findings.map((f) => ({ ...f, file: r.file }))
+// A later eval — reference them; do NOT paste the findings back in as a literal:
+const findings = auditOutcomes.flatMap((outcome, i) =>
+  outcome.status === "fulfilled"
+    ? outcome.value.findings.map((f) => ({ ...f, file: files[i] }))
+    : []
 );
-const verified = await Promise.all(findings.map((f) =>
+const verified = await Promise.allSettled(findings.map((f) =>
   task({
     description: "Verify this finding: " + f.evidence,
     subagentType: "verifier",
-  }).then((v) => ({ ...f, ...v }))
+  })
 ));
+verified.map((outcome, i) => ({ finding: findings[i], ...outcome }));
 ```
 
 #### When the user asks for a "workflow"
@@ -276,6 +312,7 @@ def render_repl_system_prompt(
     memory_limit_mb: int,
     mode: Literal["thread", "turn", "call"],
     ptc_attached: bool = False,
+    files_attached: bool = False,
 ) -> str:
     """Render the base REPL system prompt text for `CodeInterpreterMiddleware`.
 
@@ -283,10 +320,27 @@ def render_repl_system_prompt(
     tools are exposed as the `tools.*` namespace it points the model at the
     API reference; otherwise it states the REPL is pure computation.
     """
+    if files_attached:
+        sandbox_line = (
+            "- Runtime sandbox: no network, stdlib, or wall-clock APIs (`fetch`, "
+            "`process`, real `Date.now()` are unavailable or stubbed). Files are "
+            "reachable through `fs`, documented below."
+        )
+    else:
+        sandbox_line = (
+            "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
+            "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
+            "unavailable or stubbed)."
+        )
     if ptc_attached:
         side_effects_line = (
             "- External side effects from inside the REPL are only reachable "
             "via the `tools.*` namespace documented in the API reference below."
+        )
+    elif files_attached:
+        side_effects_line = (
+            "- Apart from `fs`, the REPL has no access to host tools or the "
+            "network. Return values to communicate results."
         )
     else:
         side_effects_line = (
@@ -323,6 +377,7 @@ def render_repl_system_prompt(
     return _REPL_SYSTEM_PROMPT_TEMPLATE.format(
         repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
+        sandbox_line=sandbox_line,
         side_effects_line=side_effects_line,
         timeout_line=("" if timeout is None else f"Timeout: {timeout}s per call. "),
         memory_limit_mb=memory_limit_mb,
@@ -358,7 +413,9 @@ def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str
     )
 
 
-def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> str:
+def render_eval_tool_description(
+    *, mode: Literal["thread", "turn", "call"], files_attached: bool = False
+) -> str:
     """Render the public eval tool description."""
     if mode == "call":
         state_line = (
@@ -377,9 +434,12 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
         )
     return (
         "Execute JavaScript in a sandboxed REPL. "
-        f"{state_line} No filesystem, network, or real clock. "
+        f"{state_line} No {'' if files_attached else 'filesystem, '}network, "
+        "or real clock. "
         "Top-level `await` is supported; a final-expression Promise resolves "
-        "before the call returns."
+        "before the call returns. Only one call can run at a time: do not "
+        "issue parallel calls; use `Promise.allSettled` inside a single call "
+        "instead."
     )
 
 
@@ -398,21 +458,27 @@ def is_valid_ptc_tool_name(name: str) -> bool:
     return is_valid_js_identifier(to_camel_case(name))
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
-    """Build the `tools` namespace section of the system prompt."""
-    if not tools:
-        return ""
-    blocks: list[str] = []
-    for tool in tools:
-        camel = to_camel_case(tool.name)
-        schema = _safe_json_schema(tool)
-        return_type = _render_return_type(tool)
-        signature = _render_signature(camel, schema, return_type=return_type)
-        description = (
-            (tool.description or "").strip().splitlines()[0] if tool.description else ""
-        )
-        blocks.append(f"/** {description} */\n{signature}")
-    body = "\n\n".join(blocks)
+def render_ptc_prompt(
+    tools: Sequence[BaseTool],
+    *,
+    tool_name: str = "eval",
+    deferred: AbstractSet[str] = frozenset(),
+) -> str:
+    """Build the `tools` namespace section of the system prompt.
+
+    Tools named in `deferred` stay callable but are left out of the reference;
+    one line tells the model it can call them once tool search finds them.
+    """
+    listed = [tool for tool in tools if tool.name not in deferred]
+    search_line = (
+        "\n\nTools found through tool search can also be called from code as "
+        "`await tools.<camelCaseName>({ ... })`."
+        if len(listed) < len(tools)
+        else ""
+    )
+    if not listed:
+        return search_line
+    body = "\n\n".join(_render_tool_block(tool) for tool in listed)
     return (
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
@@ -423,8 +489,10 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "arrays, dicts as objects, and `None` as `null`. You do NOT need to "
         "`JSON.parse` results — they are already typed.\n\n"
         "Invocation pattern: `await tools.<name>({ ... })`.\n\n"
-        "- Use `await` to get tool results; combine with `Promise.all` for "
-        "independent calls so they run concurrently.\n"
+        "- Start independent calls together with `Promise.allSettled`, in "
+        "bounded batches for long lists, so one rejected call doesn't lose the "
+        "rest. Keep each input next to its outcome, and check fulfilled values "
+        "for tool-reported errors.\n"
         f"- If the task needs multiple tool calls, prefer one `{tool_name}` "
         "invocation that performs all of them rather than splitting the work "
         f"across multiple `{tool_name}` calls — each round-trip costs a model "
@@ -445,23 +513,82 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "```typescript\n"
         'const users = await tools.findUsers({ name: "Ada" });\n'
         "const userId = users[0].id;\n"
-        "const [city, normalized] = await Promise.all([\n"
+        "const [city, normalized] = await Promise.allSettled([\n"
         "  tools.cityForUser({ user_id: userId }),\n"
         '  tools.normalize({ name: "Ada" }),\n'
         "]);\n"
-        "console.log({ city, normalized });\n"
+        "\n"
+        "// Long list: bound each batch and keep each id with its outcome.\n"
+        "const threads = [];\n"
+        "for (let i = 0; i < ids.length; i += 8) {\n"
+        "  const batch = ids.slice(i, i + 8);\n"
+        "  const outcomes = await Promise.allSettled(\n"
+        "    batch.map((id) => tools.getThread({ thread_id: id })),\n"
+        "  );\n"
+        "  threads.push(...outcomes.map((o, j) => ({ id: batch[j], ...o })));\n"
+        "}\n"
+        "({ city, normalized, threads });\n"
         "```\n\n"
         "```typescript\n"
         f"{body}\n"
         "```"
+        f"{search_line}"
     )
+
+
+# Rendered blocks, shared across middleware instances and threads so agents
+# rebuilt per run don't render them again. Keyed on what a block is built from.
+_TOOL_BLOCKS: OrderedDict[tuple[Any, ...], str] = OrderedDict()
+_TOOL_BLOCKS_LOCK = threading.Lock()
+_MAX_TOOL_BLOCKS = 256
+
+
+def _render_tool_block(tool: BaseTool) -> str:
+    key = _tool_block_key(tool)
+    if key is not None:
+        with _TOOL_BLOCKS_LOCK:
+            if (block := _TOOL_BLOCKS.get(key)) is not None:
+                _TOOL_BLOCKS.move_to_end(key)
+                return block
+    signature = _render_signature(
+        to_camel_case(tool.name),
+        _safe_json_schema(tool),
+        return_type=_render_return_type(tool),
+    )
+    description = (
+        (tool.description or "").strip().splitlines()[0] if tool.description else ""
+    )
+    block = f"/** {description} */\n{signature}"
+    if key is not None:
+        with _TOOL_BLOCKS_LOCK:
+            _TOOL_BLOCKS[key] = block
+            if len(_TOOL_BLOCKS) > _MAX_TOOL_BLOCKS:
+                _TOOL_BLOCKS.popitem(last=False)
+    return block
+
+
+def _tool_block_key(tool: BaseTool) -> tuple[Any, ...] | None:
+    """Key a tool's block by content; `None` (not cached) if that's unhashable."""
+    schema = tool.args_schema
+    if isinstance(schema, dict):  # e.g. MCP tools: key on the schema itself
+        schema = json.dumps(schema, sort_keys=True, default=str)
+    key = (tool.name, tool.description, schema, _return_annotation(tool))
+    try:
+        hash(key)
+    except TypeError:  # e.g. an `Annotated[..., {dict}]` return annotation
+        return None
+    return key
 
 
 def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        model_json_schema = getattr(tool.tool_call_schema, "model_json_schema", None)
+        schema = tool.tool_call_schema
+        # MCP adapters (and other dict-based tools) pass raw JSON Schema.
+        if isinstance(schema, dict):
+            return dereference_refs(schema)
+        model_json_schema = getattr(schema, "model_json_schema", None)
         if callable(model_json_schema):
             return dereference_refs(model_json_schema())
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort
@@ -487,7 +614,7 @@ def _render_signature(
     for key, prop in props.items():
         optional = "" if key in required else "?"
         type_str = _json_schema_to_ts(prop)
-        desc = prop.get("description")
+        desc = prop.get("description") if isinstance(prop, dict) else None
         prefix = f"/**\n *{desc}\n */ " if desc else ""
         fields.append(f"  {prefix}{key}{optional}: {type_str};")
     body = "\n".join(fields) if fields else ""
@@ -502,16 +629,20 @@ def _render_signature(
 # `_json_schema_to_ts` we use for input args.
 
 
+def _return_annotation(tool: BaseTool) -> Any:
+    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    annotation = inspect.Signature.empty
+    if target is not None:
+        with contextlib.suppress(TypeError, ValueError, NameError):
+            signature = inspect.signature(target)
+            resolved = get_type_hints(target)
+            annotation = resolved.get("return", signature.return_annotation)
+    return annotation
+
+
 def _render_return_type(tool: BaseTool) -> str:
     """Render the return annotation as a TS type, defaulting to `unknown`."""
-    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
-    if target is None:
-        return "unknown"
-    annotation = inspect.Signature.empty
-    with contextlib.suppress(TypeError, ValueError, NameError):
-        signature = inspect.signature(target)
-        resolved = get_type_hints(target)
-        annotation = resolved.get("return", signature.return_annotation)
+    annotation = _return_annotation(tool)
     if annotation is inspect.Signature.empty or annotation is Any:
         return "unknown"
     try:
@@ -521,8 +652,11 @@ def _render_return_type(tool: BaseTool) -> str:
     return _json_schema_to_ts(dereference_refs(schema))
 
 
-def _json_schema_to_ts(prop: dict[str, Any]) -> str:
+def _json_schema_to_ts(prop: dict[str, Any] | bool) -> str:  # noqa: FBT001  # bool subschema
     """JSON-Schema → TS type renderer for `$ref`-free (dereferenced) schemas."""
+    # Raw (e.g. MCP) schemas may use boolean subschemas: `true` means any value.
+    if not isinstance(prop, dict):
+        return "unknown"
     if "const" in prop:
         return json.dumps(prop["const"])
     if "enum" in prop:

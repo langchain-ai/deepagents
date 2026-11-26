@@ -707,10 +707,12 @@ def test_main_passes_the_parsed_dependencies_to_run(
         narrow_to: frozenset[str] | None = None,
         *,
         skip_dependent_locks: bool = False,
+        check_resolution: bool = False,
     ) -> int:
         captured["package"] = package
         captured["narrow_to"] = narrow_to
         captured["skip_dependent_locks"] = skip_dependent_locks
+        captured["check_resolution"] = check_resolution
         return 0
 
     monkeypatch.setattr(raise_langchain_minimums, "_run", _fake_run)
@@ -733,6 +735,7 @@ def test_main_passes_the_parsed_dependencies_to_run(
         "package": "pkg",
         "narrow_to": frozenset({"langchain-core"}),
         "skip_dependent_locks": True,
+        "check_resolution": False,
     }
 
 
@@ -869,3 +872,100 @@ def test_workflow_options_match_release_labels() -> None:
     labels = set(load_release_packages().values())
 
     assert options - {"all"} == labels
+
+
+@pytest.mark.parametrize("failure", ["conflict", "tool", "baseline"])
+def test_resolution_filter_preserves_compatible_bumps_and_restores_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    original = (
+        '[project]\nname = "pkg"\n'
+        'dependencies = ["langchain-google-genai>=4.4.3,<5", "langsmith>=0.1"]\n'
+        "[project.optional-dependencies]\n"
+        'google = ["langchain-google-genai>=4.4.3,<5"]\n'
+    )
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text(original)
+    monkeypatch.setattr(raise_langchain_minimums, "REPO_ROOT", tmp_path)
+    plan = _plan_manifest(
+        _load_scope("pyproject.toml"),
+        {"langchain-google-genai": _versions("4.5"), "langsmith": _versions("0.4")},
+    )
+
+    def resolves(*_: object, **__: object) -> bool:
+        if failure == "tool":
+            raise RuntimeError("network unavailable")
+        return failure != "baseline" and "genai>=4.5" not in manifest.read_text()
+
+    monkeypatch.setattr(raise_langchain_minimums, "_resolves", resolves)
+    if failure == "conflict":
+        plans, skipped = raise_langchain_minimums._compatible_plans(
+            [plan], skip_dependents=False
+        )
+        assert "langsmith>=0.4" in plans[0].new_text
+        assert plans[0].new_text.count("genai>=4.4.3,<5") == 2
+        assert {edit.dependency_name for edit in skipped} == {"langchain-google-genai"}
+    else:
+        with pytest.raises(RuntimeError):
+            raise_langchain_minimums._compatible_plans([plan], skip_dependents=False)
+    assert manifest.read_text() == original
+
+
+@pytest.mark.parametrize(
+    ("stderr", "conflict"),
+    [
+        ("No solution found when resolving dependencies", True),
+        ("network failed", False),
+    ],
+)
+def test_resolution_errors_are_not_silently_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr: str, conflict: bool
+) -> None:
+    monkeypatch.setattr(raise_langchain_minimums, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        raise_langchain_minimums, "lock_dirs_for", lambda *_, **__: ["."]
+    )
+    monkeypatch.setattr(raise_langchain_minimums, "python_version", lambda _: "3.14")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_, **__: subprocess.CompletedProcess([], 1, "", stderr),
+    )
+    if conflict:
+        assert not raise_langchain_minimums._resolves(
+            ["pyproject.toml"], skip_dependents=False
+        )
+    else:
+        with pytest.raises(RuntimeError, match="network failed"):
+            raise_langchain_minimums._resolves(
+                ["pyproject.toml"], skip_dependents=False
+            )
+
+
+@pytest.mark.parametrize("allow", [True, False])
+def test_checked_run_reports_skipped_bumps_without_capping_requirements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allow: bool
+) -> None:
+    package = TestRunNarrowing()
+    original = '[project]\nname = "pkg"\ndependencies = ["langsmith>=0.1,<1"]\n'
+    package._package(tmp_path, monkeypatch, original)
+    monkeypatch.setattr(
+        raise_langchain_minimums,
+        "_fetch_available_versions",
+        lambda _: ({"langsmith": _versions("0.4")}, []),
+    )
+    manifest = tmp_path / "libs/x/pyproject.toml"
+    monkeypatch.setattr(
+        raise_langchain_minimums,
+        "_resolves",
+        lambda *_, **__: allow or "langsmith>=0.4" not in manifest.read_text(),
+    )
+    outputs: dict[str, str] = {}
+    monkeypatch.setattr(raise_langchain_minimums, "_write_output", outputs.__setitem__)
+    assert _run("pkg", skip_dependent_locks=True, check_resolution=True) == 0
+    assert outputs["changed"] == str(allow).lower()
+    if allow:
+        assert "langsmith>=0.4,<1" in manifest.read_text()
+    else:
+        assert manifest.read_text() == original
+        assert "Skipped incompatible" in outputs["summary"]

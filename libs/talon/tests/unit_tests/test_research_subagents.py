@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from itertools import pairwise
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool, tool
 from mcp.shared.exceptions import MCPError
@@ -25,6 +30,7 @@ from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.mcp_auth import _channel_handlers
 from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.subagents import prepare_subagents
 from deepagents_talon.tool_approvals import ToolApprovalStore
 
 if TYPE_CHECKING:
@@ -76,25 +82,6 @@ def _runtime(root, monkeypatch, parent, child, **kwargs: object):
         skills=(),
         **{"include_web_tools": False, "memory": (), **kwargs},
     )
-
-
-async def test_custom_help_tool_remains_attachable_without_builtin(tmp_path, monkeypatch) -> None:
-    _write_agent(tmp_path, "[ask_for_help]")
-
-    @tool
-    def ask_for_help(question: str) -> str:
-        """Answer a local question."""
-        return question
-
-    model = ToolModel(responses=[AIMessage(content="done")])
-    runtime = _runtime(tmp_path, monkeypatch, model, model, tools=[ask_for_help])
-    await runtime.start()
-    try:
-        inventory = await _inventory(runtime)
-        researcher = next(agent for agent in inventory["agents"] if agent["name"] == "researcher")
-        assert researcher["tools"] == ["ask_for_help"]
-    finally:
-        await runtime.stop()
 
 
 @pytest.mark.parametrize("background", [False, True])
@@ -354,6 +341,149 @@ async def test_no_implicit_general_purpose_agent(tmp_path, monkeypatch, configur
         await runtime.stop()
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("protected", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+async def test_subagent_approval_boundary(tmp_path, monkeypatch, compiled, protected, background):
+    effects, approvals = [], []
+
+    @tool
+    def protected_effect() -> str:
+        """Record a local effect."""
+        effects.append("executed")
+        return "recorded"
+
+    child = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("protected_effect")]),
+            AIMessage(content="Child done"),
+        ]
+    )
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[_call("task", subagent_type="child", description="Work")],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    spec = {"name": "child", "description": "Research"}
+    if compiled:
+        spec["runnable"] = create_agent(model=child, tools=[protected_effect])
+    else:
+        spec["tools"] = [protected_effect]
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    (tmp_path / "tools.json").write_text(json.dumps({"protected_effect": protected}))
+    runtime = _runtime(tmp_path, monkeypatch, parent, child, subagents=[spec], approval_store=store)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+
+    async def reject(request):
+        approvals.extend(action["name"] for action in request.action_requests)
+        return [{"type": "reject"} for _ in request.action_requests]
+
+    try:
+        await runtime.start()
+        await runtime.invoke(AgentRequest("chat", "Work", approval_handler=reject))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        assert approvals == (
+            ["protected_effect"] if protected and not compiled and not background else []
+        )
+        if compiled and protected:
+            assert not child._seen
+            if background:
+                assert "Delegation refused" in str(runtime.background.results("chat"))
+            else:
+                state = await runtime._graph.aget_state({"configurable": {"thread_id": "chat"}})
+                assert "Delegation refused" in str(state.values["messages"])
+        elif protected and background:
+            assert "needs tool approval" in str(runtime.background.results("chat"))
+        assert effects == ([] if protected else ["executed"])
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "policy", [{"other_tool": True}, {"other_tool": {"allowed_decisions": ["reject"]}}]
+)
+async def test_opaque_subagent_cannot_claim_policy_does_not_apply(policy):
+    spec = {
+        "name": "opaque",
+        "description": "Unknown tool inventory",
+        "tools": [],
+        "runnable": RunnableLambda(lambda state: state),
+    }
+    prepared, _ = prepare_subagents([spec], "test:model", policy)
+    result = await prepared[0]["runnable"].ainvoke({"messages": []})
+    assert "Delegation refused" in result["messages"][-1].content
+
+
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("via_tool", [False, True])
+async def test_compiled_subagent_policy_changes_keep_parent_usable(
+    tmp_path, monkeypatch, background, via_tool
+):
+    effects = []
+
+    async def child(_state):
+        effects.append("ran")
+        return {"messages": [AIMessage(content="Child done")]}
+
+    parent = ToolModel(responses=[AIMessage(content="Ready")])
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    (tmp_path / "tools.json").write_text("{}")
+    runtime = _runtime(
+        tmp_path,
+        monkeypatch,
+        parent,
+        parent,
+        subagents=[{"name": "child", "description": "Research", "runnable": RunnableLambda(child)}],
+        approval_store=store,
+    )
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        for enabled in (True, False):
+            snapshot = store.read()
+            if via_tool:
+                parent.responses = [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            _call(
+                                "update_tool_approvals",
+                                updates={"execute": enabled},
+                                expected_revision=snapshot.revision,
+                            )
+                        ],
+                    ),
+                    AIMessage(content="Policy saved"),
+                ]
+                parent.i = 0
+                await runtime.invoke(
+                    AgentRequest("chat", "Update policy", metadata={"tool_approval_operator": True})
+                )
+            else:
+                store.update({"execute": enabled}, snapshot.revision)
+            assert store.read().approvals["execute"] is enabled
+            parent.responses = [
+                AIMessage(
+                    content="",
+                    tool_calls=[_call("task", subagent_type="child", description="Work")],
+                ),
+                AIMessage(content="Parent still works"),
+            ]
+            parent.i = 0
+            await runtime.invoke(AgentRequest("chat", "Delegate"))
+            await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+            assert runtime._active_approvals == store.read()
+            assert effects == ([] if enabled else ["ran"])
+    finally:
+        await runtime.stop()
+
+
 @pytest.mark.parametrize("source", ["local", "supplied", "compiled"])
 async def test_fork_is_rejected(tmp_path, source):
     spec = {"name": "researcher", "description": "Research", "mode": "fork"}
@@ -556,16 +686,35 @@ async def test_declared_web_capability_travels_with_a_renamed_agent(tmp_path, mo
         await runtime.stop()
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"messages": []}, "Subagent returned no result."),
+        ({"messages": [AIMessage(content="")]}, "Subagent returned no result."),
+        (
+            {
+                "messages": [
+                    AIMessage(content=[{"type": "reasoning", "encrypted_content": "secret"}])
+                ]
+            },
+            "Subagent returned no result.",
+        ),
+        ({"messages": [AIMessage(content="answer")]}, "answer"),
+        (
+            {"messages": [], "__interrupt__": ["approval"]},
+            "Subagent needs tool approval; the protected action has not run.",
+        ),
+    ],
+)
 async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messages(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, result, expected
 ):
     captured = {}
 
-    class Recorder:
-        async def ainvoke(self, payload, config=None):
-            captured["config"] = config
-            captured["payload"] = payload
-            return {"messages": []}
+    async def record(payload, config):
+        captured["config"] = config
+        captured["payload"] = payload
+        return result
 
     _write_agent(tmp_path)
     parent = ToolModel(
@@ -593,7 +742,7 @@ async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messa
         lambda *_args, **_kwargs: {
             "name": "researcher",
             "description": "x",
-            "runnable": Recorder(),
+            "runnable": RunnableLambda(record),
         },
     )
     try:
@@ -603,5 +752,395 @@ async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messa
     finally:
         await runtime.stop()
 
-    assert captured["config"] == {"recursion_limit": 500}
-    assert "Subagent returned no result." in results[0]
+    assert captured["config"]["recursion_limit"] == 500
+    assert captured["config"]["metadata"]["lc_subagent_tool_call_id"] == "task"
+    assert captured["config"]["metadata"]["lc_agent_name"] == "researcher"
+    assert captured["config"]["configurable"]["ls_agent_type"] == "subagent"
+    assert f"<subagent_result>\n{expected}\n</subagent_result>" in results[0]
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        AIMessage(
+            content=[],
+            response_metadata={"model_provider": "anthropic", "stop_reason": "refusal"},
+        ),
+        AIMessage(
+            content="",
+            additional_kwargs={"refusal": "I can't help with that."},
+            response_metadata={"model_provider": "openai"},
+        ),
+    ],
+    ids=["anthropic", "openai"],
+)
+async def test_task_reports_model_refusals(tmp_path, monkeypatch, dynamic, background, refusal):
+    _write_agent(tmp_path)
+    child = ToolModel(responses=[refusal])
+    launch = {"tools": ["current_time"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Research", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        if background:
+            result = next(iter(runtime.background.results("chat").values()))
+        else:
+            result = next(
+                message.content
+                for message in parent._seen[-1]
+                if isinstance(message, ToolMessage) and message.name == "task"
+            )
+        assert "a model refused the request" in result
+        assert "Retrying the same request is unlikely to succeed" in result
+        assert "Subagent returned no result" not in result
+        assert len(child._seen) == 1
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+async def test_task_answer_excludes_reasoning_blocks(tmp_path, monkeypatch, dynamic, background):
+    _write_agent(tmp_path)
+    child = ToolModel(
+        responses=[
+            AIMessage(
+                content=[
+                    {"type": "reasoning", "encrypted_content": "secret"},
+                    {"type": "text", "text": "answer"},
+                ]
+            )
+        ]
+    )
+    launch = {"tools": ["current_time"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Research", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+            AIMessage(content="", tool_calls=[_call("list_subagents")]),
+            AIMessage(content="Processed"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        if background:
+            delivered = next(iter(runtime.background.results("chat").values()))
+            assert "<subagent_result>\nanswer\n</subagent_result>" in delivered
+            assert "encrypted_content" not in delivered
+            assert "'type': 'text'" not in delivered
+            await runtime.invoke(AgentRequest("chat", "Read the result"))
+            listing = next(
+                message
+                for message in parent._seen[-1]
+                if isinstance(message, ToolMessage) and message.name == "list_subagents"
+            )
+            assert json.loads(listing.content)[0]["result"] == "answer"
+        else:
+            result = next(
+                message
+                for message in parent._seen[-1]
+                if isinstance(message, ToolMessage) and message.name == "task"
+            )
+            assert result.content == "answer"
+        assert "encrypted_content" not in str(parent._seen)
+    finally:
+        await runtime.stop()
+
+
+class SummarizingToolModel(ToolModel):
+    _summaries: list = PrivateAttr(default_factory=list)
+
+    def bind_tools(self, tools, **kwargs: object):
+        super().bind_tools(tools, **kwargs)
+        return self.bind(research_call=True)
+
+    def _generate(self, messages, *args: object, **kwargs: object):
+        if not kwargs.pop("research_call", False):
+            self._summaries.append(messages)
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content="Page summary"))]
+            )
+        return super()._generate(messages, *args, **kwargs)
+
+
+async def test_fresh_subagent_archives_history_in_state() -> None:
+    @tool
+    def read_transcript(page: int) -> str:
+        """Read a transcript page."""
+        return f"Transcript page {page}: " + "evidence " * 2_000
+
+    model = SummarizingToolModel(
+        responses=[
+            *[
+                AIMessage(
+                    content="",
+                    tool_calls=[{**_call("read_transcript", page=page), "id": f"page-{page}"}],
+                )
+                for page in range(16)
+            ],
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 16_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [read_transcript]}],
+        model,
+        None,
+        backend=StateBackend(),
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    assert result["messages"][-1].content == "Reviewed"
+    assert len(model._summaries) > 1
+    history = next(iter(result["files"].values()))["content"]
+    assert "Transcript page 0:" in history
+    assert "Transcript page 10:" in history
+    assert all(names == ["read_transcript"] for names in model._tools)
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("override", [False, True])
+async def test_transcript_reads_compact_fresh_subagent_history(
+    tmp_path, monkeypatch, dynamic, override
+):
+    context_size = 16_000
+    pages = []
+
+    @tool
+    def read_transcript() -> str:
+        """Read the next transcript page."""
+        pages.append(len(pages))
+        return f"Transcript page {pages[-1]}: " + "evidence " * 2_000
+
+    launch = {"tools": ["read_transcript"]} if dynamic else {}
+    delegate = AIMessage(
+        content="",
+        tool_calls=[_call("task", subagent_type="researcher", description="Review", **launch)],
+    )
+    reads = [
+        AIMessage(content="", tool_calls=[{**_call("read_transcript"), "id": f"page-{page}"}])
+        for page in range(16)
+    ]
+    child = SummarizingToolModel(
+        responses=[*reads, AIMessage(content="Reviewed")],
+        profile={"max_input_tokens": context_size},
+    )
+    parent = (
+        ToolModel(
+            responses=[delegate, AIMessage(content="Done")],
+            profile={"max_input_tokens": 1_000_000},
+        )
+        if override
+        else child
+    )
+    if not override:
+        parent.responses = [delegate, *child.responses, AIMessage(content="Done")]
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env",
+        lambda model, *_args, **_kwargs: child if model == "test:child" else parent,
+    )
+    spec = {
+        "name": "researcher",
+        "description": "Research",
+        "tools": [] if dynamic else [read_transcript],
+    }
+    if override:
+        spec["model"] = "test:child"
+    runtime = DeepAgentRuntime(
+        model="test:parent",
+        assistant_dir=tmp_path,
+        subagents=[spec],
+        tools=[read_transcript],
+        skills=(),
+        memory=(),
+        include_web_tools=False,
+    )
+    monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest("chat", "Review transcripts"))
+        assert result.text == "Done"
+        assert len(pages) == 16
+        assert child._summaries
+        research = [
+            messages
+            for messages in child._seen
+            if "Answer the delegated question" in str(messages[0].content)
+        ]
+        sizes = [count_tokens_approximately(messages) for messages in research]
+        assert len(sizes) == 17
+        assert max(sizes) < context_size
+        assert any(after < before for before, after in pairwise(sizes))
+        assert "Page summary" in str(research[-1])
+        assert "Transcript page 0:" not in str(research[-1])
+        assert list((tmp_path / "artifacts").rglob("*.md"))
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+async def test_task_can_page_and_hand_off_its_own_result(
+    tmp_path, monkeypatch, dynamic, background
+):
+    _write_agent(tmp_path, "[]" if dynamic else "[lookup]")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    backend.write("/large_tool_results/another-task", "private result")
+    content = "evidence\n" * 6000 + "MIDDLE\n" + "evidence\n" * 6000
+
+    @tool
+    def lookup() -> str:
+        """Look up evidence."""
+        return content
+
+    archive_id = UUID(int=1)
+    monkeypatch.setattr("deepagents_talon.result_paging.uuid4", lambda: archive_id)
+    path = f"/large_tool_results/{archive_id.hex}"
+    child = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("lookup")]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {**_call("read_file", file_path=path, offset=6000, limit=1), "id": "own"},
+                    {
+                        **_call("read_file", file_path="/large_tool_results/another-task"),
+                        "id": "other",
+                    },
+                ],
+            ),
+            AIMessage(content=path),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    launch = {"tools": ["lookup"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Find evidence", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child, tools=[lookup], backend=backend)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        answer = (
+            next(iter(runtime.background.results("chat").values()))
+            if background
+            else next(
+                m.text for m in parent._seen[-1] if isinstance(m, ToolMessage) and m.name == "task"
+            )
+        )
+        assert path in answer
+        assert path in child._seen[1][-1].text
+        assert backend.download_files([path])[0].content == content.encode()
+        assert child._tools == [
+            ["lookup"],
+            ["lookup", "read_file"],
+            ["lookup", "read_file"],
+        ]
+        assert "MIDDLE" not in str(child._seen[1])
+        replies = {m.tool_call_id: m for m in child._seen[-1] if isinstance(m, ToolMessage)}
+        assert "MIDDLE" in replies["own"].text
+        assert replies["other"].status == "error"
+        assert "private result" not in replies["other"].text
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("storage", ["fallback", "state", "routed-state", "write-error"])
+async def test_fresh_result_stays_inline_without_a_durable_archive(tmp_path, storage):
+    backend = None
+    if storage == "state":
+        backend = StateBackend()
+    elif storage == "routed-state":
+        backend = CompositeBackend(
+            default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+            routes={"/large_tool_results/": StateBackend()},
+        )
+    elif storage == "write-error":
+        (tmp_path / "large_tool_results").touch()
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    content = "x" * 85_000
+
+    @tool
+    def lookup() -> str:
+        """Retrieve research evidence."""
+        return content
+
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("lookup")]),
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [lookup]}],
+        model,
+        None,
+        backend=backend,
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    assert next(m.text for m in model._seen[-1] if isinstance(m, ToolMessage)) == content
+    assert not result.get("files")
+    assert model._tools[-1] == ["lookup"]
+
+
+@pytest.mark.parametrize(
+    ("name", "size"), [("lookup", 79_999), ("lookup", 80_000), ("read_file", 100_000)]
+)
+async def test_fresh_subagent_retains_small_and_excluded_results(tmp_path, name, size) -> None:
+    content = "x" * size
+    lookup = StructuredTool.from_function(lambda: content, name=name, description="Read evidence")
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call(name)]),
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 1_000_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [lookup]}],
+        model,
+        None,
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    message = next(item for item in model._seen[-1] if isinstance(item, ToolMessage))
+    assert message.content == content
+    assert not result.get("files")
+    assert all(names == [name] for names in model._tools)

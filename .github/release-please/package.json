@@ -1,0 +1,13 @@
+{
+  "name": "deepagents-release-please",
+  "private": true,
+  "description": "Pinned, patched release-please run by .github/workflows/release-please.yml. See README.md.",
+  "type": "module",
+  "packageManager": "pnpm@12.18.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "release-please": "17.11.2"
+  }
+}

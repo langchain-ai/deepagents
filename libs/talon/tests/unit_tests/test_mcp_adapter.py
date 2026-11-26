@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import sys
@@ -13,11 +14,18 @@ from fastmcp import Context, FastMCP
 from fastmcp.client.transports import FastMCPTransport
 from fastmcp.exceptions import ToolError
 from fastmcp.tools.function_tool import FunctionTool
-from langchain_core.messages import AIMessage
+from langchain.agents.middleware import wrap_model_call
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import BaseTool, StructuredTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
+from mcp.client.session import ClientSession
 from mcp.types import (
     ElicitRequest,
     ElicitRequestFormParams,
@@ -33,10 +41,13 @@ from deepagents_talon.mcp_middleware import talon_mcp_middleware
 from deepagents_talon.runtime import DeepAgentRuntime
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
-    from langchain_core.tools import BaseTool
+    from langchain_core.messages import BaseMessage
     from langgraph.graph.state import CompiledStateGraph
+
+    from deepagents_talon.interfaces import ToolApprovalRequest
 
 
 async def _load_tools(
@@ -151,6 +162,253 @@ async def test_open_arguments_survive_provider_conversion_and_invocation(
     message = result["messages"][-1]
     assert message.status == "success"
     assert message.artifact["structured_content"] == payload
+
+
+@pytest.mark.parametrize("responses", [False, True])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_mcp_binding_preserves_optional_nested_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, responses: bool, asynchronous: bool
+) -> None:
+    server = FastMCP("audio")
+
+    async def audio_create(
+        lyrics: str, style: str, controls: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        return {"lyrics": lyrics, "style": style, "controls": controls}
+
+    remote = FunctionTool.from_function(audio_create, name="audio-create")
+    remote.parameters = {
+        "type": "object",
+        "properties": {
+            "lyrics": {"type": "string"},
+            "style": {"type": "string"},
+            "controls": {
+                "type": ["object", "null"],
+                "default": None,
+                "properties": {
+                    "audio_influence": {"type": "number", "default": 0},
+                    "style_influence": {"type": ["number", "null"], "default": 0.5},
+                },
+            },
+        },
+        "required": ["lyrics", "style"],
+    }
+    original = copy.deepcopy(remote.parameters)
+    server.add_tool(remote)
+    loaded = await _load_tools(server, tmp_path, monkeypatch)
+    tool = loaded.tools[0]
+    local = StructuredTool(name="local", description="Local", args_schema=original)
+    model = ChatOpenAI(model="gpt-4.1", api_key="test", use_responses_api=responses)
+    request = ModelRequest(
+        model=model, messages=[HumanMessage("write a song")], tools=[tool, local]
+    )
+    middleware = talon_mcp_middleware()
+
+    def bind(passed: ModelRequest) -> ModelRequest:
+        bound = model.bind_tools(passed.tools)
+        payload = model._get_request_payload(passed.messages, **bound.kwargs)
+        definitions = payload["tools"]
+        remote_definition = definitions[0] if responses else definitions[0]["function"]
+        local_definition = definitions[1] if responses else definitions[1]["function"]
+        assert remote_definition.get("strict") is (False if responses else None)
+        assert "strict" not in local_definition
+        assert remote_definition["parameters"] == original
+        assert local_definition["parameters"] == original
+        return passed
+
+    if asynchronous:
+
+        async def handle(passed: ModelRequest) -> ModelRequest:
+            return bind(passed)
+
+        await middleware.awrap_model_call(request, handle)
+    else:
+        middleware.wrap_model_call(request, bind)
+    assert tool.args_schema == original
+    assert remote.parameters == original
+    assert loaded.servers[0].tools[0].input_schema == original
+
+    forwarded: list[dict[str, object]] = []
+    call_tool = ClientSession.call_tool
+
+    async def capture(client, name, arguments, **kwargs: object):
+        forwarded.append(copy.deepcopy(arguments))
+        return await call_tool(client, name, arguments, **kwargs)
+
+    monkeypatch.setattr(ClientSession, "call_tool", capture)
+    for controls in [
+        {},
+        {"controls": {}},
+        {"controls": None},
+        {"controls": {"style_influence": None}},
+        {"controls": {"audio_influence": 0}},
+    ]:
+        arguments = {"lyrics": "A new day", "style": "folk", **controls}
+        result = await _graph(list(loaded.tools)).ainvoke(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "audio", "name": tool.name, "args": arguments}],
+                    )
+                ]
+            },
+            {"configurable": {"thread_id": "audio"}},
+        )
+        assert result["messages"][-1].status == "success"
+        assert forwarded[-1] == arguments
+
+
+@pytest.mark.parametrize(
+    ("provider", "responses"),
+    [("openai", None), ("openai", True), ("openai", False), ("anthropic", None)],
+)
+async def test_runtime_discovers_and_executes_mcp_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, *, responses: bool | None
+) -> None:
+    server = FastMCP("records")
+    events: list[str] = []
+
+    @server.tool
+    async def search(query: str = "default") -> str:
+        assert current_authorization_invocation() is not None
+        events.append(query)
+        return "found"
+
+    loaded = await _load_tools(server, tmp_path, monkeypatch)
+    if provider == "openai":
+        model = ChatOpenAI(
+            model="gpt-5.4",
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            use_responses_api=responses,
+        )
+    else:
+        model = ChatAnthropic(
+            model="claude-sonnet-4-6", api_key="test", base_url="https://api.anthropic.com"
+        )
+
+    async def generate(
+        self: ChatOpenAI | ChatAnthropic, messages: list[BaseMessage], **kwargs: object
+    ) -> ChatResult:
+        payload = self._get_request_payload(messages, tools=kwargs["tools"])
+        definitions = payload["tools"]
+        deferred = responses is not False
+        assert (
+            any(item["type"].startswith("tool_search") for item in definitions if "type" in item)
+            is deferred
+        )
+        functions = {
+            fn["name"]: fn for item in definitions if (fn := item.get("function", item)).get("name")
+        }
+        assert not functions["read_file"].get("defer_loading")
+        remote = functions["remote_search"]
+        assert bool(remote.get("defer_loading")) is deferred
+        if deferred and provider == "openai":
+            assert remote["strict"] is False
+        message = (
+            AIMessage(content="done")
+            if events
+            else AIMessage(
+                content="", tool_calls=[{"id": "lookup", "name": "remote_search", "args": {}}]
+            )
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    monkeypatch.setattr(type(model), "_agenerate", generate)
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_kw: model
+    )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=tmp_path,
+        tools=loaded.tools,
+        middleware=(talon_mcp_middleware(),),
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime.approval_store.update({"remote_search": True}, runtime.approval_store.ensure().revision)
+
+    async def approve(request: ToolApprovalRequest) -> str:
+        events.extend(action["name"] for action in request.action_requests)
+        return "approve"
+
+    await runtime.start()
+    try:
+        result = await runtime.invoke(
+            AgentRequest("chat", "find records", approval_handler=approve)
+        )
+        assert result.text == "done"
+        assert events == ["remote_search", "default"]
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("grant_read", [True, False])
+async def test_search_only_defers_visible_mcp_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, grant_read: bool
+) -> None:
+    server = FastMCP("records")
+
+    @server.tool
+    async def lookup() -> str:
+        return "found"
+
+    @server.tool
+    async def write() -> str:
+        return "written"
+
+    loaded = await _load_tools(server, tmp_path, monkeypatch)
+    model = ChatOpenAI(
+        model="gpt-5.4",
+        api_key="test",
+        base_url="https://api.openai.com/v1",
+        use_responses_api=True,
+    )
+
+    async def generate(
+        self: ChatOpenAI, messages: list[BaseMessage], **kwargs: object
+    ) -> ChatResult:
+        definitions = self._get_request_payload(messages, tools=kwargs["tools"])["tools"]
+        assert any(tool["type"] == "tool_search" for tool in definitions) is grant_read
+        remote = {
+            tool["name"]: tool for tool in definitions if tool.get("name", "").startswith("remote_")
+        }
+        assert set(remote) == ({"remote_lookup"} if grant_read else set())
+        if grant_read:
+            assert remote["remote_lookup"]["defer_loading"] is True
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="done"))])
+
+    monkeypatch.setattr(ChatOpenAI, "_agenerate", generate)
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_kw: model
+    )
+
+    @wrap_model_call
+    async def filter_tools(
+        request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> ModelResponse:
+        names = {"read_file", "remote_lookup"} if grant_read else {"read_file"}
+        allowed = [
+            tool for tool in request.tools if isinstance(tool, BaseTool) and tool.name in names
+        ]
+        return await handler(request.override(tools=allowed))
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=tmp_path,
+        tools=loaded.tools,
+        middleware=(talon_mcp_middleware(), filter_tools),
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "check records"))
+    finally:
+        await runtime.stop()
 
 
 async def test_reload_keeps_inflight_tools_callable(

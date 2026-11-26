@@ -686,6 +686,34 @@ def _validate_context(context: dict[str, Any]) -> None:
         raise TypeError(msg)
 
 
+_OFFLOAD_TRIGGERS = frozenset({"manual", "idle"})
+"""Values a client may send as `context.offload_trigger`."""
+
+
+def _offload_trigger(context: Mapping[str, object], *, handoff: bool) -> str:
+    """Label why this offload ran, for the summarizer's trace metadata.
+
+    Lets traces separate idle compaction from a user's `/offload` so the
+    feature's cost effect can be measured. Telemetry only: an absent or
+    unrecognized value is recorded as `manual` rather than rejected.
+
+    Args:
+        context: The request's runtime context.
+        handoff: Whether this is a handoff summary for a new thread.
+
+    Returns:
+        `handoff`, `idle`, or `manual`.
+    """
+    if handoff:
+        return "handoff"
+    trigger = context.get("offload_trigger")
+    return (
+        trigger
+        if isinstance(trigger, str) and trigger in _OFFLOAD_TRIGGERS
+        else "manual"
+    )
+
+
 def _checkpoint_id(state: Mapping[str, object]) -> str:
     checkpoint = state.get("checkpoint")
     value = checkpoint.get("checkpoint_id") if isinstance(checkpoint, Mapping) else None
@@ -1186,7 +1214,10 @@ async def _execute_offload(
                     "checkpoint_id": checkpoint_id,
                     "checkpoint_ns": namespace,
                     "run_id": operation_id,
-                }
+                },
+                "metadata": {
+                    "dcode_offload_trigger": _offload_trigger(context, handoff=handoff)
+                },
             },
         )
         token = var_child_runnable_config.set(config)

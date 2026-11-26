@@ -689,13 +689,14 @@ class TalonHost:
             or message.sender_id not in exposure.operator_ids
         ):
             return _PAIR_OPERATOR_ONLY_MESSAGE
-        parts = message.text.split()
+        command = _command_line(message.text)
+        parts = command.split()
         approving = len(parts) > 1 and parts[1].lower() == "approve"
         if not is_direct_message(message) and not approving:
             return _PAIR_DM_ONLY_MESSAGE
         if not isinstance(pairing, SenderPairing):
             return _PAIR_DISABLED_MESSAGE
-        result = await asyncio.to_thread(run_pair_command, pairing, message.text)
+        result = await asyncio.to_thread(run_pair_command, pairing, command)
         if (approved := result.approved) is not None:
             await send_with_retry(
                 lambda: channel.send_message(approved.conversation_id, APPROVED_NOTICE)
@@ -2320,8 +2321,19 @@ def _command_name(text: str) -> str | None:
     return first.split("@", maxsplit=1)[0]
 
 
+def _command_line(text: str) -> str:
+    """Return the line a chat command occupies.
+
+    Later lines are never part of the command: a client may append a signature or
+    attribution (Slack apps add "Sent using <app>"), and an argument such as a model
+    name or pairing code never spans lines.
+    """
+    lines = text.strip().splitlines()
+    return lines[0].strip() if lines else ""
+
+
 def _command_argument(text: str) -> str:
-    parts = text.strip().split(maxsplit=1)
+    parts = _command_line(text).split(maxsplit=1)
     return parts[1].strip() if len(parts) > 1 else ""
 
 

@@ -2,6 +2,22 @@
 
 # Deep Agents Changelog
 
+## [0.7.42](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.41...deepagents==0.7.42) (2026-11-26)
+
+### Bug Fixes
+
+- Fixed `glob` to propagate interrupts and parent commands ([#7820](https://github.com/langchain-ai/deepagents/pull/7820)).
+- Replaced lone surrogates in stored file text with the Unicode replacement character (`U+FFFD`) ([#7972](https://github.com/langchain-ai/deepagents/pull/7972)).
+- Removed the retiring Baseten Nemotron 3 Ultra model ID from its harness profile ([#8011](https://github.com/langchain-ai/deepagents/pull/8011)).
+
+### Dependencies
+
+- `langchain-anthropic`: `>=1.7.11,<2.0.0` → `>=1.7.13,<2.0.0`
+- `langchain-aws`: `>=1.9.3,<2.0.0` → `>=1.10.0,<2.0.0` (`aws` extra)
+- `langchain-core`: `>=1.8.3,<2.0.0` → `>=1.8.5,<2.0.0`
+- `langchain-quickjs`: `>=0.3.12` → `>=0.4.0` (`quickjs` extra)
+- `langsmith`: `>=0.15.0` → `>=0.16.2`
+
 ## [0.7.41](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.40...deepagents==0.7.41) (2026-11-20)
 
 ### Bug Fixes

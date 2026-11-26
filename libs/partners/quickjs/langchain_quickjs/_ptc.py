@@ -429,9 +429,6 @@ def uses_injected_tool_call_id(tool: Any) -> bool:
 
 TOOLS_CALL = "__tools_call"
 TOOLS_NAMES = "__tools_names"
-# Marks what `__tools_call` answers for a tool result with `status="error"`,
-# which the call then throws as an `Error` so only its promise rejects.
-FAILED_KEY = "__tools_failed"
 
 
 def render_tools_namespace() -> str:
@@ -444,12 +441,8 @@ def render_tools_namespace() -> str:
     """
     call = json.dumps(TOOLS_CALL)
     names = json.dumps(TOOLS_NAMES)
-    failed = json.dumps(FAILED_KEY)
     return (
-        f"{{ const fn = (name) => (input) => globalThis[{call}](name, input)"
-        ".then((result) => { if (result !== null && typeof result === 'object'"
-        f" && Object.prototype.hasOwnProperty.call(result, {failed}))"
-        f" throw new Error(result[{failed}]); return result; }});"
+        f"{{ const fn = (name) => (input) => globalThis[{call}](name, input);"
         " const has = (name) => typeof name === 'string'"
         f" && globalThis[{names}]().includes(name);"
         " globalThis.tools = new Proxy({}, {"

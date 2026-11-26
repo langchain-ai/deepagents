@@ -229,6 +229,7 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
                         if name.startswith("lint-")
                     },
                     "talon-src": "true",
+                    "release-scripts": "true",
                 }
             ),
         },
@@ -323,6 +324,7 @@ def test_ci_gate_requires_selected_checks(
                         if name.startswith("lint-")
                     },
                     "talon-src": talon_changed,
+                    "release-scripts": "true",
                 }
             ),
         },
@@ -398,6 +400,7 @@ def test_ci_gate_ignores_cancellations_only_when_superseded(
                         if name.startswith("lint-")
                     },
                     "talon-src": "true",
+                    "release-scripts": "true",
                 }
             ),
         },
@@ -416,9 +419,12 @@ def test_ci_gate_rejects_unknown_talon_scope(
     workflow = _load_workflow(CI_WORKFLOW)
     step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
     selection = {
-        name.removeprefix("lint-"): "true"
-        for name in workflow["jobs"]
-        if name.startswith("lint-")
+        **{
+            name.removeprefix("lint-"): "true"
+            for name in workflow["jobs"]
+            if name.startswith("lint-")
+        },
+        "release-scripts": "true",
     }
     if talon_changed is not None:
         selection["talon-src"] = talon_changed
@@ -447,6 +453,73 @@ def test_ci_gate_rejects_unknown_talon_scope(
     assert completed.returncode == 1
     assert "Invalid selection: talon-src=" in completed.stderr
     assert "::warning::Waiving" not in completed.stdout
+
+
+def _run_release_options_gate(
+    tmp_path: Path, event: str, release_scripts: str | None, result: str
+) -> subprocess.CompletedProcess[str]:
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    needs = {
+        name: {"result": "success"} for name in workflow["jobs"]["ci_success"]["needs"]
+    }
+    needs["check-release-options"]["result"] = result
+    selection = {
+        **{
+            name.removeprefix("lint-"): "true"
+            for name in workflow["jobs"]
+            if name.startswith("lint-")
+        },
+        "talon-src": "true",
+    }
+    if release_scripts is not None:
+        selection["release-scripts"] = release_scripts
+    return subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EVENT_NAME": event,
+            "REPO": "",
+            "CHANGES_RESULT": "success",
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "CURATED_APPLY_ONLY": "false",
+            "CURATED_APPLY_PARENT_CONCLUSION": "success",
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(selection),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
+@pytest.mark.parametrize("release_scripts", ["true", "false"])
+@pytest.mark.parametrize("result", ["success", "skipped"])
+def test_ci_gate_allows_release_options_skip_only_on_unchanged_prs(
+    tmp_path: Path, event: str, release_scripts: str, result: str
+) -> None:
+    """The path-gated job may skip only on PRs that leave release scripts alone."""
+    completed = _run_release_options_gate(tmp_path, event, release_scripts, result)
+    passes = result == "success" or (
+        event == "pull_request" and release_scripts == "false"
+    )
+    assert (completed.returncode == 0) == passes, completed.stdout + completed.stderr
+    if not passes:
+        assert "Required job did not run: check-release-options" in completed.stderr
+
+
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+@pytest.mark.parametrize("release_scripts", [None, "", "invalid"])
+def test_ci_gate_rejects_unknown_release_scripts_scope(
+    tmp_path: Path, event: str, release_scripts: str | None
+) -> None:
+    completed = _run_release_options_gate(tmp_path, event, release_scripts, "success")
+    assert completed.returncode == 1
+    assert "Invalid selection: release-scripts=" in completed.stderr
 
 
 @pytest.mark.parametrize("case", ["create", "update", "delete", "denied"])

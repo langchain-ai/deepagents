@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage
 from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.file_sending import (
     build_send_file_tool,
+    display_filename,
     file_scope,
     send_file_to_channel,
 )
@@ -45,6 +46,42 @@ async def test_sends_backend_file_with_name_and_caption(tmp_path: Path) -> None:
 
     assert result == "Sent q3.pdf."
     assert sent == [(b"%PDF-report", "q3.pdf", "Q3")]
+
+
+async def test_reports_the_name_the_recipient_sees(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    (tmp_path / "reports" / "Q3 report (final).txt").write_bytes(b"q3")
+    sent: list[Sent] = []
+    send_file = build_send_file_tool(backend, max_bytes=1024)
+
+    with file_scope(_recorder(sent)):
+        result = await send_file.ainvoke({"path": "/reports/Q3 report (final).txt"})
+
+    assert result == "Sent Q3 report (final).txt."
+    assert sent == [(b"q3", "Q3 report (final).txt", None)]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("../../etc/passwd", ".._.._etc_passwd"),
+        ("a\\b.txt", "a_b.txt"),
+        ("..", "file"),
+        (".", "file"),
+        ("   ", "file"),
+        ("line\nbreak.txt", "line_break.txt"),
+        ("invoice\u202efdp.exe", "invoice_fdp.exe"),
+    ],
+)
+def test_display_filename_neutralizes_unsafe_names(name: str, expected: str) -> None:
+    assert display_filename(name) == expected
+
+
+def test_display_filename_truncates_long_names_but_keeps_the_extension() -> None:
+    name = display_filename("é" * 300 + ".csv")
+
+    assert len(name.encode()) <= 200
+    assert name.endswith("é.csv")
 
 
 @pytest.mark.parametrize(
@@ -112,7 +149,15 @@ class _ReadingChannel(RecordingChannel):
 
 @pytest.mark.parametrize(
     ("filename", "media_type"),
-    [("q3.pdf", "document"), ("chart.png", "image"), ("clip.mp4", "video"), ("notes", "document")],
+    [
+        ("q3.pdf", "document"),
+        ("chart.png", "image"),
+        ("clip.mp4", "video"),
+        ("notes", "document"),
+        ("Q3 report (final).txt", "document"),
+        ("résumé ✓.pdf", "document"),
+        (".env", "document"),
+    ],
 )
 async def test_staged_file_keeps_its_name_and_type_then_is_removed(
     tmp_path: Path, filename: str, media_type: str

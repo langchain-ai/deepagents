@@ -13,6 +13,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
@@ -23,7 +24,6 @@ from langchain_core.tools import BaseTool, tool
 from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.channels.base import (
     media_type_for_path,
-    safe_filename_part,
     send_with_retry,
 )
 from deepagents_talon.interfaces import ChannelMedia, SendResult
@@ -36,6 +36,9 @@ if TYPE_CHECKING:
     from deepagents_talon.interfaces import ChannelAdapter, FileSendHandler
 
 FILE_HANDLER: ContextVar[FileSendHandler | None] = ContextVar("talon_file_handler", default=None)
+
+_MAX_NAME_BYTES = 200
+"""Leaves room under the common 255-byte file name limit for any adapter renaming."""
 
 
 @contextmanager
@@ -85,12 +88,46 @@ async def _send(backend: BackendProtocol, path: str, caption: str | None, max_by
     data = await _read(backend, path, max_bytes)
     if isinstance(data, str):
         return data
-    name = PurePosixPath(path).name or "file"
+    name = display_filename(PurePosixPath(path).name)
     result = await handler(data, name, caption or None)
     if result.success:
         return f"Sent {name}."
     # Channel errors can carry transport details, so they go to the logs, not the model.
     return f"Could not send {name} to the chat."
+
+
+def display_filename(name: str) -> str:
+    """Return the name a recipient sees for a sent file.
+
+    Spaces, punctuation, and non-ASCII letters are kept, since each file is staged
+    alone in a fresh private directory. Only what could leave that directory or
+    misrepresent the name is replaced: path separators, names made only of dots,
+    and control or formatting characters such as right-to-left overrides.
+
+    Args:
+        name: Untrusted file name from the agent.
+
+    Returns:
+        A non-empty single path component of at most 200 UTF-8 bytes.
+    """
+    kept = "".join(
+        "_" if char in "/\\" or unicodedata.category(char).startswith("C") else char
+        for char in name
+    )
+    cleaned = kept.strip()
+    if not cleaned.strip("."):
+        return "file"
+    return _truncate_name(cleaned)
+
+
+def _truncate_name(name: str) -> str:
+    if len(name.encode()) <= _MAX_NAME_BYTES:
+        return name
+    path = PurePosixPath(name)
+    suffix = path.suffix if len(path.suffix.encode()) <= _MAX_NAME_BYTES // 4 else ""
+    budget = _MAX_NAME_BYTES - len(suffix.encode())
+    stem = name[: len(name) - len(suffix)].encode()[:budget].decode(errors="ignore")
+    return stem + suffix
 
 
 async def _read(backend: BackendProtocol, path: str, max_bytes: int) -> bytes | str:
@@ -146,9 +183,7 @@ async def _stage_and_send(  # noqa: PLR0913  # one upload's full description
     caption: str | None,
 ) -> SendResult:
     try:
-        path = await asyncio.to_thread(
-            _write_private, directory / safe_filename_part(filename), data
-        )
+        path = await asyncio.to_thread(_write_private, directory / display_filename(filename), data)
     except OSError as error:
         return SendResult(success=False, error=f"could not stage the file: {error}")
     media = ChannelMedia(path=path, media_type=media_type_for_path(path), caption=caption)

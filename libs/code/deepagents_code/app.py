@@ -9735,14 +9735,10 @@ class DeepAgentsApp(App):
         )
         lines = [f"{heading}: {format_cost(displayed_cost_usd)}"]
         if has_unpriced_requests:
-            included_verb = "is" if priced_request_count == 1 else "are"
             lines.extend(
                 [
                     "",
-                    (
-                        f"{priced_request_count} of {request_count} recorded requests "
-                        f"{included_verb} included."
-                    ),
+                    self._priced_agent_request_line(),
                     "",
                     *self._unpriced_request_lines(),
                 ]
@@ -9840,6 +9836,23 @@ class DeepAgentsApp(App):
                 "credits, or fees not represented here."
             )
         return "\n".join(lines)
+
+    def _priced_agent_request_line(self) -> str:
+        """Say how many agent requests were priced, and what that count omits.
+
+        The count comes from agent requests since this thread was loaded. Side
+        questions and thread names are charged outside it, so a non-zero total
+        beside "0 of 1" needs that said explicitly.
+
+        Returns:
+            One sentence for the cost summary.
+        """
+        priced = self._thread_stats.priced_request_count
+        total = self._thread_stats.request_count
+        line = f"Priced agent requests: {priced} of {total}."
+        if self._current_side_cost_usd() > 0:
+            line += " Side questions and thread names are counted separately."
+        return line
 
     def _unpriced_request_lines(self) -> list[str]:
         """Describe model requests omitted because no price was available.

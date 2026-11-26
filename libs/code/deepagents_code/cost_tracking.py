@@ -156,6 +156,27 @@ class CostBreakdown(TypedDict):
     cache_read_cost_complete: bool
     reasoning_cost_complete: bool
     historical_complete: bool
+    unpriced_input_tokens: NotRequired[int]
+    unpriced_output_tokens: NotRequired[int]
+    unpriced_cache_creation_tokens: NotRequired[int]
+    unpriced_cache_read_tokens: NotRequired[int]
+    unpriced_reasoning_tokens: NotRequired[int]
+    unpriced_tokens_known: NotRequired[bool]
+    """Whether the `unpriced_*` counts cover every unpriced request.
+
+    Breakdowns written before these keys existed lack them. Such a source
+    counts as known only when all of its requests were priced.
+    """
+
+
+_UNPRICED_TOKEN_KEYS = (
+    ("unpriced_input_tokens", "input_tokens"),
+    ("unpriced_output_tokens", "output_tokens"),
+    ("unpriced_cache_creation_tokens", "cache_creation_tokens"),
+    ("unpriced_cache_read_tokens", "cache_read_tokens"),
+    ("unpriced_reasoning_tokens", "reasoning_tokens"),
+)
+"""Each unpriced token key paired with the all-usage key it is a subset of."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +224,12 @@ def _empty_cost_breakdown(*, historical_complete: bool = True) -> CostBreakdown:
         "cache_read_cost_complete": True,
         "reasoning_cost_complete": True,
         "historical_complete": historical_complete,
+        "unpriced_input_tokens": 0,
+        "unpriced_output_tokens": 0,
+        "unpriced_cache_creation_tokens": 0,
+        "unpriced_cache_read_tokens": 0,
+        "unpriced_reasoning_tokens": 0,
+        "unpriced_tokens_known": True,
     }
 
 
@@ -266,7 +293,27 @@ def _merge_cost_breakdowns(
             "historical_complete",
         ):
             result[key] = bool(result[key] and source.get(key) is True)  # type: ignore[literal-required]
+        _merge_unpriced_tokens(result, source)
     return result
+
+
+def _merge_unpriced_tokens(result: CostBreakdown, source: Mapping[str, Any]) -> None:
+    """Add a source's unpriced token counts, tolerating pre-split breakdowns."""
+    counts: list[int] = []
+    for key, _ in _UNPRICED_TOKEN_KEYS:
+        value = source.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            counts.append(value)
+    if source.get("unpriced_tokens_known") is True and len(counts) == len(
+        _UNPRICED_TOKEN_KEYS
+    ):
+        for (key, _), count in zip(_UNPRICED_TOKEN_KEYS, counts, strict=True):
+            result[key] = result.get(key, 0) + count
+        return
+    # A source without valid counts can only be split when it had nothing
+    # unpriced to split out.
+    if source.get("request_count") != source.get("priced_request_count"):
+        result["unpriced_tokens_known"] = False
 
 
 def _breakdown_for_estimate(
@@ -285,6 +332,8 @@ def _breakdown_for_estimate(
     result["request_count"] = 1
     if estimate is None:
         _retain_unpriced_tokens(result, usage_metadata, provider)
+        for unpriced_key, key in _UNPRICED_TOKEN_KEYS:
+            result[unpriced_key] = result[key]
         result["input_cost_complete"] = False
         result["output_cost_complete"] = False
         result["cache_creation_cost_complete"] = False

@@ -4,10 +4,180 @@ import math
 from collections.abc import Mapping
 
 _SMALL_COST = 0.0001
+"""Smallest cost the four-decimal table format can show without rounding to 0."""
+
+_CATEGORIES = (
+    ("**Input**", "input"),
+    ("cache creation", "cache_creation"),
+    ("cache read", "cache_read"),
+    ("**Output**", "output"),
+    ("reasoning", "reasoning"),
+)
+"""Table label and breakdown key prefix for each priced row, in display order."""
+
+_UNPRICED_CATEGORIES = (
+    ("**Unpriced input**", "input"),
+    ("**Unpriced output**", "output"),
+)
+"""Rows that hold usage from requests with no price data, when it is separable."""
 
 
 def _format_usd(value: float) -> str:
-    return f"{value:.4g}" if 0 < value < _SMALL_COST else f"{value:.4f}"
+    """Format a table cost with fixed precision and no scientific notation.
+
+    Returns:
+        A four-decimal amount, or `<0.0001` for a positive amount below that.
+    """
+    return "<0.0001" if 0 < value < _SMALL_COST else f"{value:.4f}"
+
+
+class _BreakdownView:
+    """Validated reads from an untrusted breakdown mapping."""
+
+    def __init__(self, breakdown: Mapping[str, object], total_usd: float) -> None:
+        self._data = breakdown
+        self._total_usd = total_usd
+        self.has_unpriced = breakdown.get("priced_request_count") != breakdown.get(
+            "request_count"
+        )
+        # Only breakdowns that recorded unpriced usage separately can keep it
+        # out of the priced rows. Older checkpoints fall back to a marker.
+        self.split = (
+            self.has_unpriced and breakdown.get("unpriced_tokens_known") is True
+        )
+
+    def number(self, key: str) -> float | None:
+        value = self._data.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
+        result = float(value)
+        return result if math.isfinite(result) and result >= 0 else None
+
+    def count(self, key: str) -> int | None:
+        value = self._data.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        return value
+
+    def complete(self, key: str) -> bool:
+        return self._data.get(key) is True
+
+    def priced_tokens(self, category: str) -> str:
+        """Tokens for one category, excluding unpriced usage when possible.
+
+        Returns:
+            The formatted count, with a marker when it is partial or mixed.
+        """
+        value = self.count(f"{category}_tokens")
+        if value is None:
+            return "unavailable"
+        suffix = ""
+        if self.split:
+            value = max(value - (self.count(f"unpriced_{category}_tokens") or 0), 0)
+        elif self.has_unpriced:
+            suffix = " (incl. unpriced)"
+        if not self.complete(f"{category}_tokens_complete"):
+            suffix = " (partial)"
+        return f"{value:,}{suffix}"
+
+    def unpriced_tokens(self, category: str) -> str:
+        value = self.count(f"unpriced_{category}_tokens") or 0
+        partial = not self.complete(f"{category}_tokens_complete")
+        return f"{value:,}{' (partial)' if partial else ''}"
+
+    def cost(self, category: str) -> str:
+        """Cost for one category, marked partial when it misses some usage.
+
+        Returns:
+            The formatted cost, or `unavailable` when it is invalid.
+        """
+        value = self.number(f"{category}_cost_usd")
+        if value is None:
+            return "unavailable"
+        # With unpriced usage split out, the cost flag is false for every
+        # category merely because an unpriced request exists. Missing usage
+        # detail on a priced request still shows up in its token flag.
+        flag = "tokens" if self.split else "cost"
+        if self.complete(f"{category}_{flag}_complete"):
+            return _format_usd(value)
+        return f"{_format_usd(value)} (partial)"
+
+    def percent(self, category: str) -> str:
+        value = self.number(f"{category}_cost_usd")
+        if value is None or self._total_usd <= 0:
+            return "n/a"
+        return f"{value / self._total_usd * 100:.1f}%"
+
+
+_Row = tuple[str, str, str, str]
+"""Category, % cost, tokens, and cost cells for one table row."""
+
+
+def _rows(view: _BreakdownView, total_usd: float) -> list[_Row]:
+    """Build the table rows in display order.
+
+    Returns:
+        One tuple of cell text per row.
+    """
+    rows: list[_Row] = [
+        (label, view.percent(key), view.priced_tokens(key), view.cost(key))
+        for label, key in _CATEGORIES
+    ]
+    if view.split:
+        rows.extend(
+            (label, "n/a", view.unpriced_tokens(key), "no price data")
+            for label, key in _UNPRICED_CATEGORIES
+        )
+    total_tokens = int(view.number("input_tokens") or 0) + int(
+        view.number("output_tokens") or 0
+    )
+    if view.has_unpriced:
+        total_percent, total_cost = "n/a", f"{_format_usd(total_usd)} (partial)"
+    else:
+        total_percent = "100%" if total_usd > 0 else "n/a"
+        total_cost = _format_usd(total_usd)
+    rows.append(("**Total**", total_percent, f"{total_tokens:,}", total_cost))
+    return rows
+
+
+def _notes(view: _BreakdownView, total_usd: float) -> list[str]:
+    """Explain how to read the table and what it leaves out.
+
+    Returns:
+        Note paragraphs to print below the table.
+    """
+    notes = [
+        (
+            "Input and Output are inclusive; cache and reasoning rows are subsets. "
+            "% cost is each row's share of the priced cost."
+        )
+    ]
+    if view.split:
+        notes.append(
+            "Unpriced rows hold usage from requests with no price data; "
+            "the rows above exclude it."
+        )
+    attributed = (view.number("input_cost_usd") or 0.0) + (
+        view.number("output_cost_usd") or 0.0
+    )
+    if not math.isclose(attributed, total_usd, rel_tol=1e-12, abs_tol=1e-15):
+        notes.append(
+            f"Partial attribution: {_format_usd(max(total_usd - attributed, 0.0))} "
+            "USD is directionless/unattributed."
+        )
+    if view.has_unpriced:
+        priced = view.count("priced_request_count")
+        requests = view.count("request_count")
+        counts = (
+            "Some requests"
+            if priced is None or requests is None
+            else f"{priced} of {requests} requests"
+        )
+        notes.append(
+            f"{counts} in this thread, including side questions and thread "
+            "names, had price data; costs are partial."
+        )
+    return notes
 
 
 def format_cost_breakdown_table(
@@ -24,99 +194,15 @@ def format_cost_breakdown_table(
         or breakdown.get("historical_complete") is not True
     ):
         return ""
-
-    def _number(key: str) -> float | None:
-        value = breakdown.get(key)
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            return None
-        result = float(value)
-        return result if math.isfinite(result) and result >= 0 else None
-
-    def _tokens(key: str, complete_key: str | None = None) -> str:
-        value = breakdown.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            return "unavailable"
-        if complete_key and breakdown.get(complete_key) is not True:
-            return f"{value:,} (partial)"
-        return f"{value:,}"
-
-    def _cost(key: str, complete_key: str | None = None) -> str:
-        value = _number(key)
-        if value is None:
-            return "unavailable"
-        text = _format_usd(value)
-        if complete_key and breakdown.get(complete_key) is not True:
-            return f"{text} (partial)"
-        return text
-
-    def _percent(key: str) -> str:
-        value = _number(key)
-        if value is None or total_usd <= 0:
-            return "n/a"
-        return f"{value / total_usd * 100:.1f}%"
-
-    total_tokens = int(_number("input_tokens") or 0) + int(
-        _number("output_tokens") or 0
-    )
-    rows = [
-        (
-            "**Input**",
-            _percent("input_cost_usd"),
-            _tokens("input_tokens", "input_tokens_complete"),
-            _cost("input_cost_usd", "input_cost_complete"),
-        ),
-        (
-            "cache creation",
-            _percent("cache_creation_cost_usd"),
-            _tokens("cache_creation_tokens", "cache_creation_tokens_complete"),
-            _cost("cache_creation_cost_usd", "cache_creation_cost_complete"),
-        ),
-        (
-            "cache read",
-            _percent("cache_read_cost_usd"),
-            _tokens("cache_read_tokens", "cache_read_tokens_complete"),
-            _cost("cache_read_cost_usd", "cache_read_cost_complete"),
-        ),
-        (
-            "**Output**",
-            _percent("output_cost_usd"),
-            _tokens("output_tokens", "output_tokens_complete"),
-            _cost("output_cost_usd", "output_cost_complete"),
-        ),
-        (
-            "reasoning",
-            _percent("reasoning_cost_usd"),
-            _tokens("reasoning_tokens", "reasoning_tokens_complete"),
-            _cost("reasoning_cost_usd", "reasoning_cost_complete"),
-        ),
-        (
-            "**Total**",
-            "100%" if total_usd > 0 else "n/a",
-            f"{total_tokens:,}",
-            _format_usd(total_usd),
-        ),
-    ]
+    view = _BreakdownView(breakdown, total_usd)
     rendered = [
         "| Category | % cost | Tokens | Cost (USD) |",
         "| :--- | ---: | ---: | ---: |",
-        *("| " + " | ".join(row) + " |" for row in rows),
+        *("| " + " | ".join(row) + " |" for row in _rows(view, total_usd)),
     ]
-    notes: list[str] = [
-        "Input and Output are inclusive; cache and reasoning rows are subsets."
-    ]
-    attributed = (_number("input_cost_usd") or 0.0) + (
-        _number("output_cost_usd") or 0.0
-    )
-    if not math.isclose(attributed, total_usd, rel_tol=1e-12, abs_tol=1e-15):
-        notes.append(
-            f"Partial attribution: {_format_usd(max(total_usd - attributed, 0.0))} "
-            "USD is directionless/unattributed."
-        )
-    if breakdown.get("priced_request_count") != breakdown.get("request_count"):
-        notes.append("Some requests were unpriceable; costs are partial.")
     return (
         "Entire-thread estimated breakdown\n\n"
         + "\n".join(rendered)
         + "\n\n"
-        + "\n\n".join(notes)
+        + "\n\n".join(_notes(view, total_usd))
     )

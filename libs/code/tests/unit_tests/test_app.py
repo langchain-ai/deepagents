@@ -1559,6 +1559,31 @@ class TestFooterCostBreakdown:
             assert app._is_input_focused()
             app._agent_running = False
 
+    @pytest.mark.parametrize("priced", [True, False])
+    async def test_footer_flags_partial_cost(self, priced: bool) -> None:
+        from deepagents_code.config import get_glyphs
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._thread_stats.record_request(
+                "priced-model", 100, 10, provider="custom", cost_usd=0.001
+            )
+            app._thread_stats.record_request(
+                "other-model",
+                35_000,
+                11,
+                provider="custom",
+                cost_usd=0.002 if priced else None,
+            )
+            app._set_session_cost(0.003 if priced else 0.001)
+            await pilot.pause()
+
+            rendered = str(app.query_one("#tokens-display", MetricsLine).render())
+            assert "<$0.01" in rendered
+            assert (get_glyphs().warning in rendered) is not priced
+
     @pytest.mark.parametrize("entrypoint", ["footer", "command"])
     @pytest.mark.parametrize("incomplete", [False, True])
     async def test_missing_breakdown_opens_summary_modal(

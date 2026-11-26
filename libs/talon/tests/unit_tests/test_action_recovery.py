@@ -123,6 +123,18 @@ async def test_returned_failure_clears_write_intent(result: ToolMessage) -> None
         assert await actions.unresolved() == []
 
 
+async def test_interrupted_history_search_leaves_no_write_intent() -> None:
+    async def interrupted(_request):
+        raise asyncio.CancelledError
+
+    with JobJournal(InMemoryStore(), "test").capture_actions("goal", "run") as actions:
+        with pytest.raises(asyncio.CancelledError):
+            await JobScopeMiddleware().awrap_tool_call(
+                request("search_conversations", "lookup"), interrupted
+            )
+        assert await actions.unresolved() == []
+
+
 @pytest.mark.parametrize("receipt_id", ["task-call", "other-call"])
 async def test_command_receipt_matches_dispatched_action(receipt_id: str) -> None:
     message = ToolMessage("research", tool_call_id=receipt_id)

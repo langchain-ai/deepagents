@@ -1497,7 +1497,9 @@ class TalonHost:
                 wake=wake,
                 notice=notice,
                 waiting_for_owner=waiting,
-                wait_condition=report.wait_condition,
+                wait_condition=f"Waiting for your decision: {question}"
+                if waiting
+                else report.wait_condition,
             ):
                 return SILENT_SENTINEL
         if question and not report.deadline_risk:

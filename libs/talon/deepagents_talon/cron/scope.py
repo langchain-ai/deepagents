@@ -189,6 +189,7 @@ class ObjectiveActivity:
 OBJECTIVE_ACTIVITY: contextvars.ContextVar[ObjectiveActivity | None] = contextvars.ContextVar(
     "talon_objective_activity", default=None
 )
+HISTORY_READ_TOOLS = frozenset({"search_conversations", "read_conversation", "list_conversations"})
 HIDE_CONVERSATION_SEARCH = contextvars.ContextVar("hide_conversation_search", default=False)
 SCHEDULER_FINALIZING: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "talon_scheduler_finalizing", default=False
@@ -312,6 +313,7 @@ async def _action(request: ToolCallRequest) -> AsyncGenerator[ToolMessage | None
 def _read_call(request: ToolCallRequest) -> bool:
     return request.tool_call["name"] in {
         *FILE_READ_TOOLS,
+        *HISTORY_READ_TOOLS,
         "current_time",
         "get_job_history",
         "list_jobs",
@@ -323,7 +325,7 @@ def _scoped_request(request: ModelRequest) -> ModelRequest:
         return request.override(tools=[])
     if HIDE_CONVERSATION_SEARCH.get():
         request = request.override(
-            tools=[t for t in request.tools if getattr(t, "name", None) != "search_conversations"]
+            tools=[t for t in request.tools if getattr(t, "name", None) not in HISTORY_READ_TOOLS]
         )
     scope = JOB_READ_SCOPE.get()
     if scope is None:
@@ -405,6 +407,8 @@ def _refusal(request: ToolCallRequest) -> ToolMessage | None:
     call = request.tool_call
     if SCHEDULER_FINALIZING.get():
         reason = "The scheduler work deadline has passed. Return the final report now."
+    elif HIDE_CONVERSATION_SEARCH.get() and call["name"] in HISTORY_READ_TOOLS:
+        reason = "Conversation history requires an originating chat."
     elif scope is None or scope.allows_call(request.tool, call.get("args") or {}):
         return None
     else:

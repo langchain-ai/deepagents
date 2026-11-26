@@ -1009,6 +1009,9 @@ async def test_decision_sleeps_then_owner_reply_wakes_only_named_goal(tmp_path: 
         channel.next_message_id = name
         await host.deliver_scheduled_result(channel, goal, notice)
         assert store.get_job(goal.id).next_run_at is None
+        assert (
+            store.get_job(goal.id).wait_condition == f"Waiting for your decision: Approve {name}?"
+        )
         goals.append(goal)
 
     async def chat(text: str) -> str:
@@ -1029,6 +1032,7 @@ async def test_decision_sleeps_then_owner_reply_wakes_only_named_goal(tmp_path: 
         ),
     )
     assert [job.id for job in store.due_jobs()] == [goals[0].id]
+    assert not store.get_job(goals[0].id).wait_condition
     assert "Approve build?" not in await chat("what needs me?")
     async with store.open_journal() as journal:
         assert await journal.decision_answer(goals[0], "Approve build?") == "use beta"

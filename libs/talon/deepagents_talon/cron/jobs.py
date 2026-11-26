@@ -1425,7 +1425,9 @@ class CronJobStore:
                     t for t in (current.target_at, current.until) if t and t > _coerce_utc()
                 ]
                 updated = replace(
-                    current, next_run_at=min(future_targets, default=None), wait_condition=""
+                    current,
+                    next_run_at=min(future_targets, default=None),
+                    wait_condition=wait_condition,
                 )
             elif wake is not None and snapshot.enabled:
                 wake = _coerce_utc(wake)
@@ -1474,6 +1476,7 @@ class CronJobStore:
             jobs[index] = replace(
                 current,
                 next_run_at=_coerce_utc(),
+                wait_condition="",
                 run_requested=True,
                 owner_context_revision=current.owner_context_revision + 1,
             )

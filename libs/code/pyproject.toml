@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.2.14"
+version = "0.2.15"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.41",
+    "deepagents==0.7.42",
     "langchain>=1.5.2,<2.0.0",
     # TODO: Remove this temporary floor once the pinned deepagents release
     # requires langchain-core>=1.7.2 for add_notification_metadata.
@@ -73,7 +73,7 @@ dependencies = [
     # compatibility promise, and this range spans every 0.1.x patch, so re-verify
     # both against `cost_tracking._build_price_overrides` and
     # `cost_tracking._find_override_model` when widening it.
-    "genai-prices>=0.1.13,<0.2.0",
+    "genai-prices>=0.2.5,<0.3.0",
 
     # Clipboard
     "pyperclip>=1.11.0",

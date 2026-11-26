@@ -191,7 +191,7 @@ overrides:
   minimatch@>=7.0.0 <11.0.1: 11.0.1
 
 patchedDependencies:
-  release-please@17.11.2: 8de3da962db3dbca0a356870f1b56fe9a4874d346c31518e8f5af3e72b585b31
+  release-please@17.11.2: f30ed484906bf82db97b102817e6c7a5fad130d0fdbaebff577ef21f5bb252eb
 
 importers:
 
@@ -199,7 +199,7 @@ importers:
     dependencies:
       release-please:
         specifier: 17.11.2
-        version: 17.11.2(patch_hash=8de3da962db3dbca0a356870f1b56fe9a4874d346c31518e8f5af3e72b585b31)(supports-color@7.2.0)
+        version: 17.11.2(patch_hash=f30ed484906bf82db97b102817e6c7a5fad130d0fdbaebff577ef21f5bb252eb)(supports-color@7.2.0)
 
 packages:
 
@@ -1281,7 +1281,7 @@ snapshots:
       indent-string: 4.0.0
       strip-indent: 3.0.0
 
-  release-please@17.11.2(patch_hash=8de3da962db3dbca0a356870f1b56fe9a4874d346c31518e8f5af3e72b585b31)(supports-color@7.2.0):
+  release-please@17.11.2(patch_hash=f30ed484906bf82db97b102817e6c7a5fad130d0fdbaebff577ef21f5bb252eb)(supports-color@7.2.0):
     dependencies:
       '@conventional-commits/parser': 0.4.1
       '@google-automations/git-file-utils': 3.2.1

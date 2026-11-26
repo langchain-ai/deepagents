@@ -82,7 +82,7 @@ class ObjectiveReport(BaseModel):
     requires_signoff: bool = False
     deadline_risk: str = Field(default="", max_length=1000)
     decision_question: str = Field(default="", max_length=1000)
-    owner_questions: list[Question] = Field(default_factory=list, max_length=4)
+    owner_questions: list[Question] = Field(default_factory=list)
     decision_unlocks: str = Field(default="", max_length=1000)
 
     blocker_key: str = Field(default="", max_length=200)
@@ -425,7 +425,8 @@ class JobJournal:
         async with self.records.access():
             key = "decisions:" + job.id
             record = await self.records.get(key) or {}
-            item = record.get(_revision_key(job), {}).get(question)
+            items = cast("dict[str, dict[str, str]]", record.get(_revision_key(job), {}))
+            item = items.get(question)
             if not item or "answer" in item:
                 return "That question has closed."
             if item.get("focused") and not redisplay:
@@ -434,13 +435,30 @@ class JobJournal:
             await self.records.commit([(key, record)])
             return f"{job.name}\n{_decision_session(question, item).prompt()}"
 
+    async def without_question(self, job: CronJob, notice: str) -> str:
+        """Separate a scheduled notice from its independently queued question."""
+        async with self.records.access():
+            for question, item in (await self._questions(job)).items():
+                original = {k: v for k, v in item.items() if k not in {"answers", "index"}}
+                prompt = f"{job.name}\n{_decision_session(question, original).prompt()}"
+                if notice.endswith(prompt):
+                    return notice.removesuffix(prompt).rstrip()
+        return notice
+
     async def pending_question(self, job: CronJob) -> str:
         """Read the current undelivered question."""
+        queued = await self.queued_question(job)
+        return queued[1] if queued else ""
+
+    async def queued_question(self, job: CronJob) -> tuple[str, str] | None:
+        """Return the oldest undelivered question and its enqueue time."""
         async with self.records.access():
             for question, item in (await self._questions(job)).items():
                 if "answer" not in item and "delivered" not in item:
-                    return f"{job.name}\n{_decision_session(question, item).prompt()}"
-        return ""
+                    return item.get(
+                        "queued_at", ""
+                    ), f"{job.name}\n{_decision_session(question, item).prompt()}"
+        return None
 
     async def decision_answer(self, job: CronJob, question: str) -> str | None:
         """Read the exact answer for this revision."""
@@ -448,7 +466,7 @@ class JobJournal:
             return (await self._questions(job)).get(question, {}).get("answer")
 
     async def decision_notice(self, job: CronJob, report: ObjectiveReport) -> str:
-        """Retain answered questions and replace superseded pending questions."""
+        """Queue questions until answered, completed, or superseded by a new job revision."""
         question = report.decision_question.strip() if report.status != "complete" else ""
         if not question and report.status != "complete":
             return ""
@@ -456,15 +474,36 @@ class JobJournal:
         async with self.records.access():
             record = await self.records.get(key) or {}
             items = {
-                q: v
-                for q, v in (await self._questions(job)).items()
-                if q == question or "answer" in v
+                q: v for q, v in (await self._questions(job)).items() if question or "answer" in v
             }
             item = (
-                items.setdefault(question, {"unlocks": report.decision_unlocks}) if question else {}
+                items.setdefault(
+                    question,
+                    {
+                        "unlocks": report.decision_unlocks,
+                        "queued_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+                if question
+                else {}
             )
             if report.owner_questions and report.owner_questions[0].question == question:
-                item.setdefault("form", _FORMS.dump_json(report.owner_questions).decode())
+                known = {
+                    form.question
+                    for previous in items.values()
+                    if previous.get("form")
+                    for form in _FORMS.validate_json(previous["form"])
+                }
+                fresh = [form for form in report.owner_questions if form.question not in known]
+                if fresh:
+                    batch = items.setdefault(
+                        fresh[0].question,
+                        {
+                            "unlocks": report.decision_unlocks,
+                            "queued_at": datetime.now(UTC).isoformat(),
+                        },
+                    )
+                    batch.setdefault("form", _FORMS.dump_json(fresh).decode())
             record[_revision_key(job)] = items
             await self.records.commit([(key, record)])
             if question and "answer" not in item and "delivered" not in item:

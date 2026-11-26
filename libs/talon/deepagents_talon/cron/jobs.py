@@ -5,6 +5,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -14,7 +15,7 @@ import tempfile
 import threading
 import uuid
 import weakref
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -971,6 +972,7 @@ class CronJobStore:
             cron_dir: Directory that contains `jobs.json`.
         """
         self.journal: JobJournal | None = None
+        self._journal_startup = asyncio.Lock()
         self.assistant_id = assistant_id
         self.cron_dir = cron_dir.resolve()
         self.path = self.cron_dir / "jobs.json"
@@ -988,7 +990,11 @@ class CronJobStore:
         from deepagents_talon.cron.journal import JobJournal  # noqa: PLC0415
 
         home = self.cron_dir.parent if self.cron_dir.name == "cron" else self.cron_dir
-        async with JobJournal.open(TalonConfig(self.assistant_id, home)) as journal:
+        async with AsyncExitStack() as stack:
+            async with self._journal_startup:
+                journal = await stack.enter_async_context(
+                    JobJournal.open(TalonConfig(self.assistant_id, home))
+                )
             yield journal
 
     def create_job(  # noqa: PLR0913  # job creation exposes the persisted CRON_JOB fields

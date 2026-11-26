@@ -19,7 +19,13 @@ from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, Workstrea
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
 from deepagents_talon.cron.scope import SCHEDULER_FINALIZING, JobScopeMiddleware
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, SendResult
+from deepagents_talon.interfaces import (
+    AgentRequest,
+    AgentResult,
+    ChannelMessage,
+    SendResult,
+    ToolApprovalRequest,
+)
 from deepagents_talon.mcp_auth import _no_authorization_channel_error
 from deepagents_talon.questions import ask_user, question_scope
 from deepagents_talon.runtime import _approval_decision, _job_scope, _question_handler_from_request
@@ -1128,7 +1134,7 @@ def test_invalid_wait_preserves_objective_result(wait: object) -> None:
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_multiple_decisions_show_one_question_or_return_to_chat(
-    tmp_path: Path, cancel: bool
+    tmp_path: Path, *, cancel: bool
 ) -> None:
     agent = _WorkingGoalAgent()
     agent.released.set()
@@ -1137,6 +1143,7 @@ async def test_multiple_decisions_show_one_question_or_return_to_chat(
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
     _attach_scheduler(host, store)
     goals = []
+    deliveries = []
     for name in ("build", "release", "deploy"):
         goal = store.create_job(
             prompt=name,
@@ -1153,12 +1160,21 @@ async def test_multiple_decisions_show_one_question_or_return_to_chat(
         notice = await host.run_scheduled_job(goal)
         assert f"Approve {name}?" in notice
         channel.next_message_id = name
-        await host.deliver_scheduled_result(channel, goal, notice)
+        deliveries.append((goal, notice))
         assert store.get_job(goal.id).next_run_at is None
         assert (
             store.get_job(goal.id).wait_condition == f"Waiting for your decision: Approve {name}?"
         )
         goals.append(goal)
+
+    await asyncio.gather(
+        *(
+            host.deliver_scheduled_result(channel, goal, notice)
+            for goal, notice in reversed(deliveries)
+        )
+    )
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
+    _attach_scheduler(host, store)
 
     async def chat(text: str) -> str:
         await host.receive_message(
@@ -1166,14 +1182,15 @@ async def test_multiple_decisions_show_one_question_or_return_to_chat(
         )
         return channel.sent[-1][1]
 
+    assert len(channel.sent) == 1
+    assert "Approve build?" in channel.sent[0][1]
     if cancel:
-        assert "continue chatting" in await chat("cancel")
+        assert "Approve release?" in await chat("cancel")
         async with store.open_journal() as journal:
-            for goal in goals:
-                assert await journal.open_decision(goal) is None
+            assert await journal.open_decision(goals[0]) is None
+            assert await journal.open_decision(goals[1]) == "Approve release?"
         assert not store.due_jobs()
         return
-    assert "Approve build?" in await chat("yes")
     assert not store.due_jobs()
     assert "Approve release?" in await chat("use beta")
     assert [job.id for job in store.due_jobs()] == [goals[0].id]
@@ -1397,11 +1414,17 @@ async def test_objective_feedback_uses_question_choices(tmp_path: Path) -> None:
                                 "question": "Which track?",
                                 "options": [{"label": "Beta"}, {"label": "Stable"}],
                             },
+                        ]
+                    }
+                )
+                await ask_user.ainvoke(
+                    {
+                        "questions": [
                             {
                                 "header": "Region",
                                 "question": "Which region?",
                                 "options": [{"label": "East"}, {"label": "West"}],
-                            },
+                            }
                         ]
                     }
                 )
@@ -1438,3 +1461,48 @@ async def test_objective_feedback_uses_question_choices(tmp_path: Path) -> None:
     await host.receive_message(channel, replace(message, text="1"))
     assert await journal.decision_answer(job, "Which track?") == "Stable"
     assert await journal.decision_answer(job, "Which region?") == "East"
+
+
+async def test_tool_approval_waits_for_visible_question_then_releases_queue(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    store.journal = journal = JobJournal(InMemoryStore(), "test")
+    channel = RecordingChannel("slack")
+    host = TalonHost(config=_config(tmp_path), channels=[channel], agent=_WorkingGoalAgent())
+    _attach_scheduler(host, store)
+    for name in ("first", "second"):
+        job = store.create_job(name=name, prompt=name, mode="objective", origin=ORIGIN)
+        notice = await journal.decision_notice(
+            job,
+            ObjectiveReport(
+                status="blocked", summary="waiting", decision_question=f"Choose {name}?"
+            ),
+        )
+        await host.deliver_scheduled_result(channel, job, notice)
+    approval = ToolApprovalRequest(
+        f"slack:{ORIGIN.conversation_id}", "test", [{"name": "example", "args": {}}]
+    )
+    task = asyncio.create_task(
+        host._request_tool_approval(
+            channel,
+            approval,
+            provider="slack",
+            reply_conversation_id=ORIGIN.conversation_id,
+            sender_id=ORIGIN.sender_id,
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        assert len(channel.sent) == 1
+        await host.receive_message(
+            channel, ChannelMessage(ORIGIN.conversation_id, "1", sender_id=ORIGIN.sender_id)
+        )
+        await _wait_for_sent_count(channel, 3)
+        assert "Tool approval required" in channel.sent[-1][1]
+        await host.receive_message(
+            channel, ChannelMessage(ORIGIN.conversation_id, "deny", sender_id=ORIGIN.sender_id)
+        )
+        assert await asyncio.wait_for(task, 2) == "reject"
+        assert "Choose second?" in channel.sent[-1][1]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

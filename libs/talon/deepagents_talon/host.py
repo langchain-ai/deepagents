@@ -41,7 +41,7 @@ from deepagents_talon.channels.base import (
 )
 from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
-from deepagents_talon.cron.decisions import decision_reply
+from deepagents_talon.cron.decisions import decision_reply, objective_jobs
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, criterion_ids
@@ -331,13 +331,15 @@ class _ObjectiveQuestions:
 
     async def collect(self, questions: Sequence[Question]) -> tuple[Answer, ...] | None:
         answers = []
-        for index, question in enumerate(questions):
+        waiting = {q.question: q for q in self.pending}
+        for question in questions:
             saved = await self.journal.decision_answer(self.job, question.question)
             if saved is None:
-                self.pending = self.pending or tuple(questions[index:])
-                return None
-            answers.append(Answer(other=saved))
-        return tuple(answers)
+                waiting.setdefault(question.question, question)
+            else:
+                answers.append(Answer(other=saved))
+        self.pending = tuple(waiting.values())
+        return tuple(answers) if len(answers) == len(questions) else None
 
     def attach(self, result: AgentResult, report: ObjectiveReport) -> AgentResult:
         if not self.pending:
@@ -385,6 +387,7 @@ class TalonHost:
         self._model_selections = _load_model_selections(config.model_state_path)
         self._effort_selections = _load_model_selections(config.effort_state_path)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
+        self._question_changes: dict[str, asyncio.Event] = {}
         self._pending_questions: dict[str, _PendingQuestions] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
@@ -657,13 +660,9 @@ class TalonHost:
                     await self._handle_question_reply(channel, message, questions)
                     return
 
-                if reply := await decision_reply(
-                    getattr(self.scheduler, "store", None), message, provider
+                if not await self._answer_objective_question(
+                    channel, message, provider, agent_conversation_id
                 ):
-                    await send_with_retry(
-                        lambda: channel.send_message(message.conversation_id, reply)
-                    )
-                else:
                     await self._replace_agent_turn(
                         _BackgroundRoute(
                             channel=channel,
@@ -674,6 +673,28 @@ class TalonHost:
                         ),
                         user_interrupted=True,
                     )
+
+    async def _answer_objective_question(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        provider: str | None,
+        conversation: str,
+    ) -> bool:
+        store = getattr(self.scheduler, "store", None)
+        if not isinstance(store, CronJobStore) or not (
+            reply := await decision_reply(store, message, provider)
+        ):
+            return False
+        await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        if changed := self._question_changes.get(conversation):
+            changed.set()
+        origin = CronOrigin(
+            channel=provider, conversation_id=message.conversation_id, sender_id=message.sender_id
+        )
+        async with store.open_journal() as journal:
+            await self._deliver_next_question(channel, origin, store, journal)
+        return True
 
     async def _handle_conversation_command(
         self,
@@ -1678,37 +1699,129 @@ class TalonHost:
         target = _scheduled_target(channel, job)
         store = getattr(self.scheduler, "store", None)
         if job.completion_notice and isinstance(store, CronJobStore):
-            if job.notice_state == "uncertain":
-                lookup = getattr(channel, "completion_notice_received", None)
-                received = await lookup(target, job.id) if lookup else False
-                if received is not None:
-                    store.transition_notice(job, "delivered" if received else "pending")
-                return
-            if job.notice_state != "pending" or not store.transition_notice(job, "uncertain"):
-                return
-            result = await channel.send_message(target, text)
-            uncertain = replace(job, notice_state="uncertain")
-            if result.success:
-                store.transition_notice(uncertain, "delivered")
-            elif not result.retryable:
-                store.transition_notice(uncertain, "pending")
-                msg = "Destination rejected scheduled notice."
-                raise RuntimeError(msg)
+            await self._deliver_completion_notice(channel, job, target, store, text)
             return
-        result = await send_with_retry(lambda: channel.send_message(target, text))
-        if job.mode == "objective" and not result.success:
-            msg = "Objective notice delivery failed."
-            raise RuntimeError(msg)
-        if job.mode == "objective" and isinstance(
-            store := getattr(self.scheduler, "store", None), CronJobStore
-        ):
-            async with store.open_journal() as journal:
-                await journal.mark_delivered(job.id, text, result.message_id)
-        if result.success and not is_silent(text):
+        if job.mode == "objective" and isinstance(store, CronJobStore):
+            text = await self._deliver_objective_notice(channel, job, text, store)
+            if not text:
+                return
+        else:
+            result = await send_with_retry(lambda: channel.send_message(target, text))
+            if not result.success:
+                return
+        if not is_silent(text):
             provider = _channel_key(channel, job.origin.channel)
             chat = job.origin.history_chat or job.origin.conversation_id
             async with self._history_lock((provider, chat)):
                 await self._record_delivery(f"{job.id}{_CRON_THREAD_SUFFIX}", provider, chat, text)
+
+    @staticmethod
+    async def _deliver_completion_notice(
+        channel: ChannelAdapter, job: CronJob, target: str, store: CronJobStore, text: str
+    ) -> None:
+        if job.notice_state == "uncertain":
+            lookup = getattr(channel, "completion_notice_received", None)
+            received = await lookup(target, job.id) if lookup else False
+            if received is not None:
+                store.transition_notice(job, "delivered" if received else "pending")
+            return
+        if job.notice_state != "pending" or not store.transition_notice(job, "uncertain"):
+            return
+        result = await channel.send_message(target, text)
+        uncertain = replace(job, notice_state="uncertain")
+        if result.success:
+            store.transition_notice(uncertain, "delivered")
+        elif not result.retryable:
+            store.transition_notice(uncertain, "pending")
+            msg = "Destination rejected scheduled notice."
+            raise RuntimeError(msg)
+
+    async def _deliver_objective_notice(
+        self, channel: ChannelAdapter, job: CronJob, text: str, store: CronJobStore
+    ) -> str:
+        target = job.origin.conversation_id
+        root = self._conversation_root(
+            _channel_key(channel, await _channel_provider(channel)), target
+        )
+        async with self._conversation_lock(root), store.open_journal() as journal:
+            notice = await journal.without_question(job, text)
+            if notice:
+                result = await send_with_retry(lambda: channel.send_message(target, notice))
+                if not result.success:
+                    msg = "Objective notice delivery failed."
+                    raise RuntimeError(msg)
+                await journal.mark_delivered(job.id, notice, result.message_id)
+            await self._deliver_next_question(channel, job.origin, store, journal)
+            return notice
+
+    async def _deliver_next_question(
+        self, channel: ChannelAdapter, origin: CronOrigin, store: CronJobStore, journal: JobJournal
+    ) -> None:
+        root = self._conversation_root(
+            _channel_key(channel, origin.channel), origin.conversation_id
+        )
+        conversation = self._agent_conversation_id(root)
+        if f"owner-prompt:{conversation}" in self._locks:
+            return
+        jobs = objective_jobs(store, origin, getattr(channel, "account_id", None))
+        queued = None
+        for job in jobs:
+            if await journal.open_decision(job):
+                return
+            entry = await journal.queued_question(job)
+            if entry and (queued is None or entry[0] < queued[0]):
+                queued = (entry[0], job, entry[1])
+        if queued:
+            _, job, prompt = queued
+            result = await send_with_retry(
+                lambda: channel.send_message(origin.conversation_id, prompt)
+            )
+            if result.success:
+                await journal.mark_delivered(job.id, prompt, result.message_id)
+                await self._record_delivery(
+                    f"{job.id}{_CRON_THREAD_SUFFIX}",
+                    _channel_key(channel, origin.channel),
+                    origin.history_chat or origin.conversation_id,
+                    prompt,
+                )
+            else:
+                msg = "Objective question delivery failed."
+                raise RuntimeError(msg)
+
+    @asynccontextmanager
+    async def _foreground_prompt(
+        self, channel: ChannelAdapter, conversation: str, origin: CronOrigin
+    ) -> AsyncGenerator[None]:
+        async with self._conversation_lock(f"owner-prompt:{conversation}"):
+            store = getattr(self.scheduler, "store", None)
+            if isinstance(store, CronJobStore):
+                changed = asyncio.Event()
+                self._question_changes[conversation] = changed
+                try:
+                    root = self._conversation_root(
+                        _channel_key(channel, origin.channel), origin.conversation_id
+                    )
+                    while True:
+                        changed.clear()
+                        async with self._conversation_lock(root), store.open_journal() as journal:
+                            for job in objective_jobs(
+                                store, origin, getattr(channel, "account_id", None)
+                            ):
+                                if await journal.open_decision(job):
+                                    break
+                            else:
+                                break
+                        # A job may also be removed or revised outside this host.
+                        try:
+                            await asyncio.wait_for(changed.wait(), 15)
+                        except TimeoutError:
+                            continue
+                finally:
+                    del self._question_changes[conversation]
+            yield
+        if isinstance(store, CronJobStore):
+            async with self._conversation_lock(root), store.open_journal() as journal:
+                await self._deliver_next_question(channel, origin, store, journal)
 
     async def _record_delivery(self, session: str, provider: str, chat: str, text: str) -> None:
         if isinstance(self.agent, ConversationDeliveryRuntime):
@@ -2347,7 +2460,10 @@ class TalonHost:
             prompt_message_id=None,
             sender_id=sender_id,
         )
-        async with self._conversation_lock(f"owner-prompt:{approval.conversation_id}"):
+        origin = CronOrigin(
+            channel=provider, conversation_id=reply_conversation_id, sender_id=sender_id
+        )
+        async with self._foreground_prompt(channel, approval.conversation_id, origin):
             self._pending_tool_approvals[approval.conversation_id] = pending
             try:
                 await self._send_tool_approval_prompt(channel, pending)
@@ -2458,7 +2574,12 @@ class TalonHost:
             session=QuestionSession(questions),
             sender_id=message.sender_id,
         )
-        async with self._conversation_lock(f"owner-prompt:{conversation_id}"):
+        origin = CronOrigin(
+            channel=await _channel_provider(channel),
+            conversation_id=message.conversation_id,
+            sender_id=message.sender_id,
+        )
+        async with self._foreground_prompt(channel, conversation_id, origin):
             self._pending_questions[conversation_id] = pending
             try:
                 result = await _send_question_message(channel, message, pending.session.prompt())

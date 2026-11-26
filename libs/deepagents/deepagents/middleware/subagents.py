@@ -228,6 +228,11 @@ class SubAgent(TypedDict):
     - `dict[str, Any]`: A JSON schema dictionary
         (e.g., `{"type": "object", "properties": {...}, "required": [...]}`).
 
+    A fork does not inherit the parent's `response_format`. If the fork should
+    also return structured output, set the same format on its spec; this keeps the
+    two requests closer for prompt caching, though a cache hit isn't guaranteed.
+    The fork's result is then JSON rather than its final message.
+
     Example:
         ```python
         from pydantic import BaseModel

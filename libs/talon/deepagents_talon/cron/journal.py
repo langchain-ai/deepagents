@@ -418,6 +418,20 @@ class JobJournal:
                     return question
         return None
 
+    async def focus_question(self, job: CronJob, question: str) -> str | None:
+        """Show the first pending question before accepting an unaddressed answer."""
+        async with self.records.access():
+            key = "decisions:" + job.id
+            record = await self.records.get(key) or {}
+            item = record.get(_revision_key(job), {}).get(question)
+            if not item or "answer" in item:
+                return "That question has closed."
+            if item.get("focused"):
+                return None
+            item["focused"] = "yes"
+            await self.records.commit([(key, record)])
+            return f"{job.name}\n{_decision_session(question, item).prompt()}"
+
     async def pending_question(self, job: CronJob) -> str:
         """Read the current undelivered question."""
         async with self.records.access():

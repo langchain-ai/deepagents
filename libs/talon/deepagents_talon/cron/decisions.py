@@ -49,9 +49,14 @@ async def decision_reply(
         ]
         if not pending:
             return None
-        if len(pending) > 1:
-            return "Reply directly to the question you want to answer."
         job, question = pending[0]
+        if len(pending) > 1:
+            if message.text.strip().casefold() == "cancel":
+                for owner_job, prompt in pending:
+                    await journal.reply_to_question(owner_job, prompt, "cancel", wake=lambda: False)
+                return "Questions skipped. You can continue chatting."
+            if prompt := await journal.focus_question(job, question):
+                return prompt
         return await journal.reply_to_question(
             job, question, message.text, wake=lambda: store.wake_for_answer(job)
         )

@@ -1126,7 +1126,10 @@ def test_invalid_wait_preserves_objective_result(wait: object) -> None:
     assert report.wait_condition == (wait[:2000] if isinstance(wait, str) else "")
 
 
-async def test_decision_sleeps_then_owner_reply_wakes_only_named_goal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_multiple_decisions_show_one_question_or_return_to_chat(
+    tmp_path: Path, cancel: bool
+) -> None:
     agent = _WorkingGoalAgent()
     agent.released.set()
     channel = RecordingChannel("slack")
@@ -1163,16 +1166,16 @@ async def test_decision_sleeps_then_owner_reply_wakes_only_named_goal(tmp_path: 
         )
         return channel.sent[-1][1]
 
-    assert "Reply directly" in await chat("yes")
-    await host.receive_message(
-        channel,
-        ChannelMessage(
-            ORIGIN.conversation_id,
-            "use beta",
-            sender_id="alice",
-            metadata={"reply_to_message_id": "build"},
-        ),
-    )
+    if cancel:
+        assert "continue chatting" in await chat("cancel")
+        async with store.open_journal() as journal:
+            for goal in goals:
+                assert await journal.open_decision(goal) is None
+        assert not store.due_jobs()
+        return
+    assert "Approve build?" in await chat("yes")
+    assert not store.due_jobs()
+    assert "recorded" in await chat("use beta")
     assert [job.id for job in store.due_jobs()] == [goals[0].id]
     assert not store.get_job(goals[0].id).wait_condition
     assert "recorded" in await chat("2")

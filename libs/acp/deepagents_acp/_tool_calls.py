@@ -259,3 +259,13 @@ def _finish_tool_call(calls: dict[str, _ToolCall], message: ToolMessage) -> _Upd
         return
     call.finished = True
     yield _tool_call_result(tool_id, call, message)
+
+
+def _fail_open_calls(calls: dict[str, _ToolCall]) -> _Updates:
+    """Yield a `failed` update for each call that never got a result."""
+    for tool_id, call in calls.items():
+        if not call.finished:
+            call.finished = True
+            yield ToolCallProgress(
+                session_update="tool_call_update", tool_call_id=tool_id, status="failed"
+            )

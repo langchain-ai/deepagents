@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any
 from acp.schema import UserMessageChunk
 
 from deepagents_acp._messages import _content_blocks, _content_updates
-from deepagents_acp._tool_calls import _finish_tool_call, _start_message_tool_calls
+from deepagents_acp._tool_calls import (
+    _fail_open_calls,
+    _finish_tool_call,
+    _start_message_tool_calls,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable, Iterable, Iterator
@@ -55,13 +59,15 @@ def _replay_updates(messages: Iterable[Any]) -> Iterator[Any]:
     Assistant content and tool calls go through the functions the live stream
     uses, so a replayed turn cannot drift from how it first looked. Nothing a
     live turn sends once at its end, such as usage or a title, is replayed.
+    A call that never got a result is shown as failed, as a cancelled turn does.
     """
     calls: dict[str, _ToolCall] = {}
     for message in messages:
         if message.type == "human":
             # Tool-call ids are unique within a turn only; some providers reuse them.
+            # An open call stays: `PatchToolCalls` answers it after the next user message.
             if not message.additional_kwargs.get("lc_source"):
-                calls = {}
+                calls = {tool_id: call for tool_id, call in calls.items() if not call.finished}
             yield from _user_updates(message)
         elif message.type == "ai":
             yield from _content_updates(message, message.id)
@@ -69,3 +75,4 @@ def _replay_updates(messages: Iterable[Any]) -> Iterator[Any]:
         elif message.type == "tool" and message.tool_call_id in calls:
             # Unlike the live stream, a result whose call is not in history is not shown.
             yield from _finish_tool_call(calls, message)
+    yield from _fail_open_calls(calls)

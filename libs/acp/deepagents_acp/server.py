@@ -62,7 +62,6 @@ from acp.schema import (
     SseMcpServer,
     TerminalAuthMethod,
     TextContentBlock,
-    ToolCallProgress,
     ToolCallStart,
     ToolCallUpdate,
     UsageUpdate,
@@ -88,6 +87,7 @@ from deepagents_acp._replay import _history_messages, _replay_updates
 from deepagents_acp._session import AgentSessionContext, McpServer, _Session, _Turn
 from deepagents_acp._tool_calls import (
     ToolCallDisplay,
+    _fail_open_calls,
     _finish_tool_call,
     _plan_update,
     _start_message_tool_calls,
@@ -836,17 +836,9 @@ class AgentServerACP(ACPAgent):
 
     async def _fail_open_tool_calls(self, session_id: str, turn: _Turn) -> None:
         """Close every tool call left open by a cancelled or failed turn."""
-        for tool_id, call in turn.calls.items():
-            if call.finished:
-                continue
-            call.finished = True
+        for update in _fail_open_calls(turn.calls):
             with contextlib.suppress(Exception):
-                await self._send(
-                    session_id,
-                    ToolCallProgress(
-                        session_update="tool_call_update", tool_call_id=tool_id, status="failed"
-                    ),
-                )
+                await self._send(session_id, update)
 
     def _default_context(self, cwd: str) -> AgentSessionContext:
         """Build the context a new session starts with before any option changes."""

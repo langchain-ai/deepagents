@@ -14,6 +14,7 @@ from tests.conformance.harness import (
     Harness,
     RecordingClient,
     call,
+    check_tool_call,
     deep_agent,
     echo,
     reply,
@@ -176,3 +177,62 @@ async def test_concurrent_sessions_each_see_their_own_cwd() -> None:
     for session_id, cwd in ((session_a, "/repo-a"), (session_b, "/repo-b")):
         _, final = harness.client.tool_call(session_id, "call-pwd")
         assert final.content[0].content.text == cwd
+
+
+async def test_replay_finishes_a_call_a_cancelled_turn_left_open() -> None:
+    checkpointer = MemorySaver()
+    started = asyncio.Event()
+
+    async def wait_forever(reason: str) -> str:
+        """Block until cancelled."""
+        started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    tool = StructuredTool.from_function(coroutine=wait_forever, name="wait_forever")
+    model = scripted_model(reply("", call("wait_forever", {"reason": "x"})), "ok")
+    graph = deep_agent(model, tools=[tool], checkpointer=checkpointer)
+    harness = Harness.start(graph, load_sessions=True, checkpointer=checkpointer)
+    session_id = await harness.new_session()
+
+    turn = asyncio.create_task(harness.prompt(session_id, "Wait"))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    await harness.cancel(session_id)
+    assert (await turn).stop_reason == "cancelled"
+    # The next turn's PatchToolCalls answers the dangling call after this user message.
+    await harness.prompt(session_id, "Again")
+    await harness.server.close_session(session_id=session_id)
+
+    replay = RecordingClient()
+    reloaded = Harness.start(graph, client=replay, load_sessions=True, checkpointer=checkpointer)
+    await reloaded.load_session(session_id)
+
+    check_tool_call(replay.tool_call(session_id, "call-wait_forever"), "failed")
+
+
+async def test_replay_closes_a_call_that_never_got_a_result() -> None:
+    checkpointer = MemorySaver()
+    started = asyncio.Event()
+
+    async def wait_forever(reason: str) -> str:
+        """Block until cancelled."""
+        started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    tool = StructuredTool.from_function(coroutine=wait_forever, name="wait_forever")
+    model = scripted_model(reply("", call("wait_forever", {"reason": "x"})))
+    graph = deep_agent(model, tools=[tool], checkpointer=checkpointer)
+    harness = Harness.start(graph, load_sessions=True, checkpointer=checkpointer)
+    session_id = await harness.new_session()
+
+    turn = asyncio.create_task(harness.prompt(session_id, "Wait"))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    await harness.server.close_session(session_id=session_id)
+    assert (await turn).stop_reason == "cancelled"
+
+    replay = RecordingClient()
+    reloaded = Harness.start(graph, client=replay, load_sessions=True, checkpointer=checkpointer)
+    await reloaded.load_session(session_id)
+
+    check_tool_call(replay.tool_call(session_id, "call-wait_forever"), "failed")

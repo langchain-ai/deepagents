@@ -168,7 +168,15 @@ async def _assert_accounting(
     reported = requests if reported is None else reported
     snapshot = await agent.aget_state(_CONFIG)
     assert snapshot.values.get("_session_cost_usd", 0.0) == pytest.approx(charged)
-    assert snapshot.values["_session_cost_breakdown"] == pytest.approx(
+    breakdown = snapshot.values["_session_cost_breakdown"]
+    # The unpriced subset has its own coverage in `test_cost_breakdown`.
+    assert breakdown["unpriced_tokens_known"] is True
+    assert all(breakdown["priced_cost_complete"].values())
+    assert {
+        key: value
+        for key, value in breakdown.items()
+        if not key.startswith("unpriced_") and key != "priced_cost_complete"
+    } == pytest.approx(
         {
             "version": 1,
             "request_count": requests,
@@ -974,9 +982,9 @@ async def test_parallel_usage_with_partial_or_zero_pricing(
         snapshot.values["_session_cost_breakdown"],
     )
     assert "Entire-thread estimated breakdown" in table
-    assert ("Some requests were unpriceable; costs are partial." in table) == (
-        priced < 4
-    )
+    assert (f"{priced} of 4 requests" in table) == (priced < 4)
+    assert ("costs are partial." in table) == (priced < 4)
+    assert ("**Unpriced input**" in table) == (priced < 4)
     assert ("(partial)" in table) == (priced < 4)
     _fresh_runtime()
     await agent.ainvoke(None, _CONFIG)

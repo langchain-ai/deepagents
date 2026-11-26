@@ -229,6 +229,7 @@ def test_detection_and_gate_preserve_parent_result(
                         if job.startswith("lint-")
                     },
                     "talon-src": "false",
+                    "release-scripts": "false",
                 }
             ),
         },

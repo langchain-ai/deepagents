@@ -1061,6 +1061,9 @@ class StatusBar(Vertical):
     _has_token_count: bool = False
     """Whether the status bar has displayed a real token count this session."""
 
+    _cost_partial: bool = False
+    """Whether the displayed cost omits usage that could not be priced."""
+
     _tokens_pending: bool = False
     """Whether the accurate token count for the current turn is still pending.
 
@@ -1222,6 +1225,22 @@ class StatusBar(Vertical):
         """
         return format_cost(self.cost_usd)
 
+    def _cost_segment(self) -> Content:
+        """Build the clickable cost span, flagged when the total is partial.
+
+        Returns:
+            Styled cost content that opens the breakdown when clicked.
+        """
+        cost = self._cost_text()
+        if not cost:
+            return Content("")
+        segment = Content(cost)
+        if self._cost_partial:
+            warning = theme.get_theme_colors(self).warning
+            marker = Content(f" {get_glyphs().warning}").stylize(warning)
+            segment += marker
+        return segment.stylize(Style.from_meta({"status-cost-target": True}))
+
     def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Render cache left and context/cost right on the metrics line."""
         try:
@@ -1230,14 +1249,11 @@ class StatusBar(Vertical):
         except NoMatches:
             return
 
-        cost = self._cost_text()
         context_segments = tuple(
             segment
             for segment in (
                 self._context_segment(count, approximate=approximate),
-                Content.styled(cost, Style.from_meta({"status-cost-target": True}))
-                if cost
-                else Content(""),
+                self._cost_segment(),
             )
             if segment.plain
         )
@@ -1345,12 +1361,16 @@ class StatusBar(Vertical):
             self._cache_timer = self.set_interval(1.0, self._tick_cache_timer)
         self._refresh_metrics()
 
-    def set_cost(self, cost_usd: float) -> None:
+    def set_cost(self, cost_usd: float, *, partial: bool = False) -> None:
         """Set the cumulative thread cost shown beside context tokens.
 
         Args:
             cost_usd: Cumulative estimated cost in US dollars.
+            partial: Whether the total omits usage that could not be priced.
+                The footer then shows a warning marker, so a sub-cent or zero
+                total is not read as the full thread cost.
         """
+        self._cost_partial = partial
         if self.cost_usd == cost_usd:
             self._refresh_metrics()
         else:

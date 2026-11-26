@@ -36,7 +36,6 @@ from deepagents_talon.authorization import (
 from deepagents_talon.channels.base import (
     ChannelExposure,
     ExposureMode,
-    outbound_media_root_from_env,
     send_with_retry,
 )
 from deepagents_talon.channels.discord import DiscordChannel
@@ -45,19 +44,20 @@ from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
 from deepagents_talon.effort import effort_levels, normalize_effort
+from deepagents_talon.file_sending import send_file_to_channel
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
     AgentRuntime,
     BackgroundRuntime,
     ChannelAdapter,
-    ChannelMedia,
     ChannelMessage,
     ChannelReaction,
     ContextDoctorRuntime,
     ConversationDeliveryRuntime,
     ConversationHistoryRuntime,
     CronScheduler,
+    FileSendHandler,
     InboundMediaRuntime,
     MCPReloadableRuntime,
     ModelSelectableRuntime,
@@ -73,11 +73,8 @@ from deepagents_talon.mcp_auth import (
     extract_oauth_callback_url,
 )
 from deepagents_talon.media import (
-    MarkdownMediaRef,
     build_inbound_text,
     build_model_content,
-    extract_markdown_media,
-    outbound_channel_media,
 )
 from deepagents_talon.observability import (
     USER_INTERRUPTED,
@@ -689,13 +686,14 @@ class TalonHost:
             or message.sender_id not in exposure.operator_ids
         ):
             return _PAIR_OPERATOR_ONLY_MESSAGE
-        parts = message.text.split()
+        command = _command_line(message.text)
+        parts = command.split()
         approving = len(parts) > 1 and parts[1].lower() == "approve"
         if not is_direct_message(message) and not approving:
             return _PAIR_DM_ONLY_MESSAGE
         if not isinstance(pairing, SenderPairing):
             return _PAIR_DISABLED_MESSAGE
-        result = await asyncio.to_thread(run_pair_command, pairing, message.text)
+        result = await asyncio.to_thread(run_pair_command, pairing, command)
         if (approved := result.approved) is not None:
             await send_with_retry(
                 lambda: channel.send_message(approved.conversation_id, APPROVED_NOTICE)
@@ -1078,12 +1076,7 @@ class TalonHost:
         active = True
 
         async def send_progress(text: str) -> SendResult:
-            if (
-                not active
-                or self._generations[agent_conversation_id] != turn.generation
-                or self._agent_conversation_id(turn.conversation_root) != agent_conversation_id
-                or agent_conversation_id in self._terminal_authorizations
-            ):
+            if not (active and self._turn_reaches_chat(turn, agent_conversation_id)):
                 return SendResult(success=False)
             return await channel.send_message(message.conversation_id, text)
 
@@ -1131,6 +1124,11 @@ class TalonHost:
                 message_handler=message_handler,
                 breakout_handler=breakout_handler,
                 question_handler=question_handler,
+                file_handler=self._file_handler(
+                    channel,
+                    message.conversation_id,
+                    lambda: active and self._turn_reaches_chat(turn, agent_conversation_id),
+                ),
                 model=turn.model,
                 effort=turn.effort,
             )
@@ -1438,6 +1436,7 @@ class TalonHost:
         model: str | None = None,
         breakout_handler: BreakoutHandler | None = None,
         question_handler: QuestionHandler | None = None,
+        file_handler: FileSendHandler | None = None,
         effort: str | None = None,
     ) -> AgentResult:
         metadata = {
@@ -1463,6 +1462,7 @@ class TalonHost:
                         message_handler=message_handler,
                         breakout_handler=breakout_handler,
                         question_handler=question_handler,
+                        file_handler=file_handler,
                         model=model,
                         effort=effort,
                     ),
@@ -2063,6 +2063,36 @@ class TalonHost:
         if not pending.future.done():
             pending.future.set_result(decision)
 
+    def _turn_reaches_chat(self, turn: _Turn, agent_conversation_id: str) -> bool:
+        """Report whether a running turn may still post to its chat.
+
+        A newer message, a conversation reset, or a terminal authorization prompt
+        supersedes the turn, and anything it sends after that would arrive out of place.
+        """
+        return (
+            self._generations[agent_conversation_id] == turn.generation
+            and self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
+            and agent_conversation_id not in self._terminal_authorizations
+        )
+
+    def _file_handler(
+        self, channel: ChannelAdapter, conversation_id: str, can_deliver: Callable[[], bool]
+    ) -> FileSendHandler:
+        async def handle(data: bytes, filename: str, caption: str | None) -> SendResult:
+            if not can_deliver():
+                return SendResult(success=False, error="this turn can no longer reach the chat")
+            result = await send_file_to_channel(
+                channel,
+                conversation_id,
+                (data, filename, caption),
+                staging_root=self.config.outbound_media_dir,
+            )
+            if not result.success:
+                logger.warning("Could not send an agent file to the chat: %s", result.error)
+            return result
+
+        return handle
+
     def _question_handler(
         self,
         channel: ChannelAdapter,
@@ -2169,38 +2199,10 @@ class TalonHost:
         conversation_id: str,
         result: AgentResult,
     ) -> str | None:
-        cleaned, refs = extract_markdown_media(result.text)
-        if not refs:
-            if result.text:
-                sent = await send_with_retry(
-                    lambda: channel.send_message(conversation_id, result.text)
-                )
-                return result.text if sent.success else None
+        if not result.text:
             return None
-
-        media, failed = _outbound_media_from_refs(
-            refs,
-            cleaned,
-            root=outbound_media_root_from_env(self.config.env),
-        )
-        text = _with_failed_attachment_text(cleaned, failed)
-        sent_media, send_failed, captions = await _send_channel_media(
-            channel,
-            conversation_id,
-            media,
-            fallback_caption=text,
-        )
-        if text and not sent_media:
-            sent = await send_with_retry(lambda: channel.send_message(conversation_id, text))
-            return text if sent.success else None
-        if send_failed and sent_media:
-            await send_with_retry(
-                lambda: channel.send_message(
-                    conversation_id,
-                    f"_(Could not attach: {', '.join(send_failed)}.)_",
-                )
-            )
-        return "\n".join(captions) or None
+        sent = await send_with_retry(lambda: channel.send_message(conversation_id, result.text))
+        return result.text if sent.success else None
 
     def _track_conversation_task(
         self,
@@ -2320,8 +2322,19 @@ def _command_name(text: str) -> str | None:
     return first.split("@", maxsplit=1)[0]
 
 
+def _command_line(text: str) -> str:
+    """Return the line a chat command occupies.
+
+    Later lines are never part of the command: a client may append a signature or
+    attribution (Slack apps add "Sent using <app>"), and an argument such as a model
+    name or pairing code never spans lines.
+    """
+    lines = text.strip().splitlines()
+    return lines[0].strip() if lines else ""
+
+
 def _command_argument(text: str) -> str:
-    parts = text.strip().split(maxsplit=1)
+    parts = _command_line(text).split(maxsplit=1)
     return parts[1].strip() if len(parts) > 1 else ""
 
 
@@ -2369,24 +2382,6 @@ def _format_provider_models(provider: str, catalog: Mapping[str, Sequence[str]])
     return f"{listing}\n\nSend /model <provider:model> to switch."
 
 
-def _outbound_media_from_refs(
-    refs: list[MarkdownMediaRef],
-    cleaned_text: str,
-    *,
-    root: Path,
-) -> tuple[list[ChannelMedia], list[str]]:
-    media: list[ChannelMedia] = []
-    failed: list[str] = []
-    for index, ref in enumerate(refs):
-        caption = cleaned_text if index == 0 and cleaned_text else getattr(ref, "alt", "") or None
-        try:
-            media.append(outbound_channel_media(ref, caption=caption, root=root))
-        except ValueError:
-            path = getattr(ref, "path", None)
-            failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
-    return media, failed
-
-
 def _scheduled_metadata(job: CronJob) -> dict[str, object]:
     """Return the turn metadata identifying one scheduled job's thread.
 
@@ -2416,50 +2411,6 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
 
 def _conversation_key(provider: str, conversation_id: str) -> str:
     return f"{provider}:{conversation_id}"
-
-
-def _with_failed_attachment_text(text: str, failed: list[str]) -> str:
-    if not failed:
-        return text
-    return f"{text.rstrip()}\n\n_(Could not attach: {', '.join(failed)}.)_".strip()
-
-
-async def _send_channel_media(
-    channel: ChannelAdapter,
-    conversation_id: str,
-    media: list[ChannelMedia],
-    *,
-    fallback_caption: str,
-) -> tuple[bool, list[str], list[str]]:
-    sent = False
-    failed: list[str] = []
-    captions: list[str] = []
-    for index, item in enumerate(media):
-        payload = _media_with_fallback_caption(item, fallback_caption, is_first=index == 0)
-        result = await send_with_retry(lambda p=payload: channel.send_media(conversation_id, p))
-        if result.success:
-            sent = True
-            if payload.caption:
-                captions.append(payload.caption)
-        else:
-            logger.warning(
-                "Could not send outbound media: %s (%s)",
-                payload.path,
-                result.error,
-            )
-            failed.append(payload.caption or payload.path.name)
-    return sent, failed, captions
-
-
-def _media_with_fallback_caption(
-    media: ChannelMedia,
-    fallback: str,
-    *,
-    is_first: bool,
-) -> ChannelMedia:
-    if not is_first or media.caption is not None or not fallback:
-        return media
-    return ChannelMedia(path=media.path, media_type=media.media_type, caption=fallback)
 
 
 async def _send_typing(channel: ChannelAdapter, conversation_id: str) -> None:

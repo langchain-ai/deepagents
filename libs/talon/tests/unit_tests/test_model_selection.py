@@ -88,6 +88,24 @@ async def test_switch_applies_to_new_conversations(tmp_path: Path) -> None:
         await host.stop()
 
 
+_SLACK_FOOTER = "\n*Sent using* <@U0ABFK68KT6|Claude>"
+"""Attribution a Slack app appends below a message it posts for a user."""
+
+
+async def test_trailing_lines_are_not_part_of_the_argument(tmp_path: Path) -> None:
+    agent, channel = SelectableAgent(), _operator_channel()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, _from("op", "/model" + _SLACK_FOOTER))
+        assert channel.sent[-1][1].startswith("All chats use ")
+
+        await host.receive_message(channel, _from("op", "/model other:two" + _SLACK_FOOTER))
+        assert channel.sent[-1] == ("chat", "All chats now use other:two.")
+    finally:
+        await host.stop()
+
+
 async def test_non_operator_cannot_switch(tmp_path: Path) -> None:
     agent, channel = SelectableAgent(), _operator_channel()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])

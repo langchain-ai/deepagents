@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bfb232e56de42f96df1c6639e4d2ff0e1b5a67db385dc0cfa35b23164180d4ca",
+  "pageVersion": "sha256:3b5991d82fbea683f0a2686cb60f2d7e35c1f0fe6072104fc7b2ab4d87769e0d",
   "claims": [
     {
       "id": "claim_1fc1053d29a24f6e96d97f4b7686606a",
@@ -213,10 +213,118 @@
           "version": "repo-lines-v1:sha256:04750ac9fda42639e4e76b4fd06dcf05a4074fc7aa85e0ceaf1eadef2048e0e1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlYmUxZTZjMmEzZDQwMzM2OTk3Yjk2ZDg0NTUyMTM1M2JiNDQ4NTZmMTQ3YTZjNTcxZTA4ZmI1OTlkMDU5MGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1ZDY4OTY3YzQ3OGM3OTI2ZDI0MDA2NGFmYzVjYThhMTMzMjkxMmUxZjlhN2FhZjYyMmUxNzJlOGM4ZGNhZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU2ZGZiZjQ1M2Y3ZjFiZWJhYjcyODM2MWIwZjM5M2VlYjRjMWZiNjY4ZjllYTIyYjkxNmRhY2Y1ZGZmODFkODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjMjliYmEyZGRjZGM4OThmMzBmNGQ3NWVmYzhhNmIxMTIzNGY4Y2IzMjcwNjBkZGY0MzJhZmI2NjRjODZjMTkifQ"
         }
       ]
+    },
+    {
+      "id": "claim_b3fff04908bb4bf998fceb5c8c475bcf",
+      "statement": "Forked Deep Agents subagents do not inherit the parent response format; a fork-specific or dynamically configured format controls its provider request, and a structured child result is JSON-serialized into the delegated ToolMessage.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py#L211-L234",
+          "version": "repo-lines-v1:sha256:190a454832f3ecccb8c2cc06cb90a01945aff1362e8548360104d20ebafaadef:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3NzE3MjM3Y2RhMDhkMjdmMWFmYTA4NjRlM2Q1NmJjZjlkZjk0NDI5MzllM2Q3Yzk1NTg0YzQ4MzU5NmEzMmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyOTU5MTA0MjA3MTNiMjM3NTI3YzdmZjUyNzJlOWU2MGFkNDIwNWY3YTJmNGM3ZWMwOWRlYTc5YzYyNzJmZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxZDNjZWU4YWFmZGUxODJkZmU3Mzk0ODRmZTE1NzVlYmVhZGE2ZDk4ZmQwOWQxYWYwYzZiYzgxY2IzMDM4M2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1MzU1YTdlZWI1N2MyMWIxNjdjYzc0YzViMTVmMTI3ODQ0MGZlODFmY2E5N2Q0OGI0NzhhMjY1ZGU1ZGQ0YjEifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_fork_response_format.py#L24-L88",
+          "version": "repo-lines-v1:sha256:23ceb1c9104d39db794fa53af72a9548cd07c88bcef8eec84f2500caf020676c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5YzkzOTNkZWUzYWFkZWIxMTY0MjNmYWRiNWU5OTNlOWI1ZTk5N2I4MTMyYTQxYzJlMjU2NzcxYTU5ZmY3YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzYWRmMDI0OTE2OTdlNTQ5ZWY2MWYyNDBlMGVmZjhjM2UyYTE1OTkwMDMxNjhkYWQ2YWYyNjY2ZGI2ZGUyNjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4MmE1ODRjMzhhODBhMTE3NDIzZmVjMGU1OTMwNGY5NjhmMjI2MDEyMjQwYzU2N2VlZmE0NmQ1M2FiZWZkNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiNGFlMzdiYjhjN2I3NTg2MjU2Njk1NDA1OGE3ODg0YzEzZWI5YTA0YjY2ZDAxYzQ1YTY5YjJhNTczYmU5ZDMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_fork_response_format.py#L91-L120",
+          "version": "repo-lines-v1:sha256:3ca931d1e9771ceaf3b31f02b2fecebd9f40e85490538f2b3c767a0841b937d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5YzkzOTNkZWUzYWFkZWIxMTY0MjNmYWRiNWU5OTNlOWI1ZTk5N2I4MTMyYTQxYzJlMjU2NzcxYTU5ZmY3YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlZjlkZDEyN2U4MmMxMWM0Zjg2NmUxMzM1MDUwYzEzZGIzZjIzOTczMzY1ZjAyZjg1NjRlYmEzZmMyOTNkOTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5YWU1M2NiOTMwM2RiYjZmMDEyOTJmMjliZWU3YWE1ZDkxM2FlOWE1YWE2MzM1YWIyOWQ2ZjFhOWM1YTE2NGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_39f413ff3bde4474a7025ab99ae29474",
+      "statement": "dcode cost breakdown tests keep unpriced request usage separate from priced rows and mark mixed or category-incomplete totals as partial, including conservative rendering of legacy breakdowns.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_cost_breakdown.py#L107-L135",
+          "version": "repo-lines-v1:sha256:5826122333d703fedfa924b37a3dd8041acafa5ed054e17bebe9c4a5a1db5e14:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4YzEwYzZlZjQwMTQwMTBkYTY5OTljY2UwYWY3YTdkZmQyMTNkODY3YTA1ZThlNTQ4YTRkZTdjNTkzNjg4ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2YTlmMmRlMGY5MDUwYzI5Yzg5YmZmOTEyMWIxNmJkYjExNGIwNTU4MTgxYjc5MzEzMzViNjBjOTdhMzg5OGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU3MDQ3YTQ4ZjQ4NDNlM2FlNThhNjVhYTYyMjJlZTc4NWU3NmQ2YmMxYTFiYmVmYTM4YmI1MDJlMTdkZTYxMzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_cost_breakdown.py#L48-L105",
+          "version": "repo-lines-v1:sha256:4866cb370c1a58dacd0fc26f1c68f4d826a227fc572e7ce5608a88a4ad9fdc7a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0MTA3ZDQ0MDgwMWU3ZTYyYWRkMzUxMjNhN2YwZDVlNGFkMDM0NTBmN2YzMWJkY2IzN2U1ZjljNWNmZjc0YmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViMzUzMjEyZjhlYWY2YTc4NzE3NTlmZWYwYmE5MzhhNWJjMWVhNGE4Y2Q0NGNlMTMyOTIzZjY2ZDZlNjhiZjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0e1836387cd1497b81e38deceea01bb0",
+      "statement": "dcode cost-tracking tests require unpriced requests to retain reported token counts, preserve legacy-history incompleteness, and settle drained operation records with rollback for retry or commit without double counting.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_cost_tracking.py#L694-L779",
+          "version": "repo-lines-v1:sha256:8ceb021713da3032eed3a43b5f9dc11bf592296d3444593de286c0a11711485e:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyNmUwOWE5YmZmMTI5MDZjODkyZGMxYjcxNGNiODJlMTQ3MWYzNDNlY2VjOTdmZTczY2E1NjhjM2Y5YzZiNmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlNjkyNzNjNTNmYTI1N2FkNDI5NDc1ZDg3ZmRmZDY1ZGY1YTRlMzU0YWE4ZDlkMDUwOTFkODY5MjQ2OTI3NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjODUwZTU5YTliY2I1MGZjZTMxOTZjNDA5ZDM1NjNiYzU1YmQ3MmQyZGNlNGQ2NDA0ZDM0MmY1NTA4MTY2ZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZDYzYTU2MDY0NmJhZDcyNjdmZDRlOTE3OWU2YWRmNmZkMDEzOTFlYWY0ODM2YzBlMjM4NjcxNWJiZDkwODkifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_cost_tracking.py#L781-L912",
+          "version": "repo-lines-v1:sha256:941daa64c377e81bd351798c017005c10bf9ba459959698317219f9bad55c4a5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1MTA3MGIwMzY1ZGM2ZDcwODJiMTFmNDU3YzE4MDFkZDU5Y2NjZDNmMzY2NzgwYWU0NTdmZWRiNzQ3NDJlNWU1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNDU3MmMyYWIwNTE4NzhiYmRkNjZjODA0MjkzNjMyMGNkZGIwMDU1MTY4MjlhNGFmYjhiNjU4ZTNhNWYxMDlkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5OTBlNDY4ZTBjZDhjMGE5NDUwNTRkMzU1YmMwODVmOTUyZGFjYzk2YTMzNTRhMjZjMjY2Y2YzNWRjNWU4Mzc3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzNjU1ZjQyZTI3NzFlZTNhYWM2NjBkNDAwNGJhNGFlYTBiZWM0ZDNiNmI2NTdkMWFkMWNmNWU2M2E0OWY4ZjJjIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_cost_tracking.py#L914-L966",
+          "version": "repo-lines-v1:sha256:8463217a8c6ba220648dba7a7315f794fbe641d040ed2d5f80403f29fc795c0c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjYjIxMjRmNjZiYzA4ODE5MjVjNDhhNzliNDM4YzcwODZiNTJlMmZmZDk4NzM5ODhmZDJkM2ExM2NiNDgzYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyOGFjMDhhZDkyMmE1MjY5ZDI5M2RmNTFjMWYxYzU0YTE2ZTVmYjViOGUwMDI0NmVkNWNjYzZjODdjNGNlMTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiNTQzOTAzMjM3NjIyOTNhMDY3YzAwNjQ4ZDAwYmUyN2JmMmY0ZDg2YWU4YTBmOTU4ZmJjOWM2YzNhOTMyN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJiNDZjYjZiZDZkMWNjZDFkZGM5ZWQ4MDk2MWJjYWMwMjdhNDJkOGNlMzU2MWNkMzRhMjFhM2JkODQ1ZDMwYTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fe971b15614b426a854496c94d424350",
+      "statement": "Talon media tests require documents to be represented as untrusted path notices without reading their contents, allow only bounded image blocks for model input, and reject outbound paths that escape a trusted root.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/test_media.py#L174-L200",
+          "version": "repo-lines-v1:sha256:0734a580565f3bfcf8aaa6df713d2a0c82bae99a52384d1afc119b3273a83161:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczMGIwYmI0ZGNmNWJjNWE5YjJmODlkOTlkNTdhNWY3MWEzNDIyODQ3NmVjZDZhOTNhOTc1ZGMxNzllZTczOTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmYmQwMDkzMTRiYzI3MDg0MTY3MzRhMDJhZTVmZjM5YTFlNDhhMDUwYmU5MWY0M2IyZmFhOTIwMDJjNjJiZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_media.py#L22-L95",
+          "version": "repo-lines-v1:sha256:32fa800b3b28ef177a0becf3104221a0d00c75a0931fa2806e8efd17fb12f31a:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjOGQ0NmRjOTlkNDU3ZWJjMDQzMzM0MWFjM2I4ZjIyZmY0NjlhNTY5ZDE5ZTUyZmE5YmQ3YTU3MjQ2YTk4M2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOTcyNTJjMzkzYjkyYTg2MWMzODE4OTJhY2RjMTg4MmQyYjUyMTkxZmJjMWEwODk3YmFkNTIxZDdhOTFhNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyZmMyOTQ5Y2NiYjFkMmQ3NmU1YjFiMDdkMTIzZTk0ODVlMDMzM2EyN2U1OTBjZjZlNGI3YTg1OTUyN2ZlYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkNmVkNTc5NDViMzBkZmRkM2IxYjAxNGFjMTBlNWI2YzFmMDMxMjAzYWFmZmEwYWE3NWRmNjM4YmVhYWU1OGYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_media.py#L98-L171",
+          "version": "repo-lines-v1:sha256:8486db5176e8102eed8fbdd694a9ad290bf679855f8bb8bf29bbcb2a8cbba35e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5YTY5MTk4ZmZhMDFkNTdmMTIxODU2NjYyZGE0YzAxNWZhODdiZjdmYmNmMDM2ZmVmODcxZjAwMDc5OTRlNTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3MmUyNzAxOTdkZTkwNDFiOWY1NWFmYzk4NWRkNjU3YzNlZDczMzdiNjhlMzIwMWRhNjI4ZTdjODM4ZjlkYjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7a399f381d4e4378b051fcc396ca00e0",
+      "statement": "Talon effort tests require operator-only, per-model effort persistence with safe failure behavior, provider-specific payload translation for supported effort levels, and per-turn context isolation without leaking settings.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_effort.py#L139-L304",
+          "version": "repo-lines-v1:sha256:10d591fc753d28dd69b0b6e263b33c4d5dc9d7c62f93a2d4213f00f31378855b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MjNjM2IyOGJjMTA1Y2M3NzFkYTdlMmM1ZGRjNWMxNGJlNDI1NTE1NDQ0OTFlOWUzMjNlN2Y1MTdiODEzNDhhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0YzllOGQzODUwZmMxZTRiOWZmMWNjZjA5NjIyNjYwN2ZhNmMwNjIxMmViZGQyZmNmYzE4YjU5ZTU3YTk1ZjZhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmZDFmN2RkY2M3ODIwMjg1MzFlNWJiNDQyM2I2NzJhNDQxNTk3MDdkYWNjMjQ1ZDdmZWQ1N2MyYjVkZTIwYzRmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MjdjZGNhOTA5YjQ4N2Y5YmNiNzdhZGEwZGM5YWYxZjNhNzZhYmZjMmM3OTAwNDQyZTlmY2M0MGJiNmE4YzBiIn0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_effort.py#L318-L361",
+          "version": "repo-lines-v1:sha256:e4e2fb1a4b9b71a84bba90f5b9595d5141b274b8cc7dac3925f0f62ccd72fd28:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0ZmUyOWM3ZmQ2NDc2ZDNjNWE2Njc2YzRjOWIzNTAyZGMyYmI0MDJmZGYyODAxMmM5ZDMzODk1MDFlNjhhZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4MTc0NmRmZmM0MzdkN2ZkNzA3NWY0MWFkMzU2MjA2ODZmNDdhYWZiN2M4Yzk0NGFlZTBiMDEwZTg2NjU0ZTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5NDk3NTBhNzhkODc4YTFkMjI5NWQ3MGFlNDQ3OWUzOTc2MmVkMTE5NGZmYzg0Zjg3NWFjNTRjYjE3ZGVlOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzODMyYzFiZDY3ZGE2NjcwZmI1ODg5NjVmOWQyZjljZWI5NDk0MWEyMWFiZWVlOWU4MjY2ZGM2ZTI0YWZiYmIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_effort.py#L54-L136",
+          "version": "repo-lines-v1:sha256:706fb3b51e12aabad60b16b538def90a7f136c212140365592733bd80274fd6b:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmOGNmNmU2MjBjMDg2ZDAzMTIyYzIxNThkMTY2ODZkMmIzYzBkZGE3YjY1ZDdkMjc4YjVkNWFlOGE2MDMxMmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzZjhjODIwNDJhMDhmNmVhY2Q4YmZiMmEzYWRlMDVhYzdhNGVmMTMwNTFhNzYwNjg2YmM1M2QyNTA2NzkwNWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cb3711fd00f9427796f450baa87e9a91",
+      "statement": "CI workflow tests execute the CI-success gate and ripgrep shell steps with controlled environments to require selected checks, constrain cancellation and scope waivers, and verify strict or fail-closed ripgrep diagnostics and bypass behavior.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L262-L455",
+          "version": "repo-lines-v1:sha256:edba2a168e116892ba030baf38bf690bc0e8d408cba33d2a4a4ce735257f09d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkODhjOGFiZmNhOWUxOGExYmVjNTg1MWQzYTEyZjdmNzcyMTg0ZjJhY2I2NjA3NTBhZTMyMjk2YmI2OWFlMWYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmN2YwNWJkNDNlMTQ3ZTg4ZWY5N2I2ZWJlMmFmY2Q2NmRjMDk3YTI4MzFjNTZlNzYzYzU2ZWE1NTJkM2ZiY2MyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNmJiOTVjZGU2Nzk4NDZmM2U2MmM0MTJkYjAwZWI5OGRkZjk2MzZmMGQyZDVhZjQ3OGRhN2ZkNzVjOGM3NjIxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkNWQyNGQ3NTBmOTc3Mzk4MDU4NTJiNTdmYTBjNWNlMzAzNzMxNWQxYjA0YTRiYmM2NjNiYWVkMWFmNGE0NDBmIn0"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L499-L522",
+          "version": "repo-lines-v1:sha256:1faddde3f1bfb1a2caa5ccd065fa565d28e17aa872c318f9ecf2fb49a017e33c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OGM4YWJmY2E5ZTE4YTFiZWM1ODUxZDNhMTJmN2Y3NzIxODRmMmFjYjY2MDc1MGFlMzIyOTZiYjY5YWUxZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzOGFmOWZiYzJiZWE0NDhjM2E1ZDg1ZjcxNzVlNDM2Mjg1YWFiOTE3ZTQ2NmZkYjZjNTM2ZGViZmQ1MzIwNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY1MGIwM2MwZDg0YWJiOTRmZTVkNjkzZDVhMGZhMmY4NGVkNWUxNTBjN2M3NGJlODhjNmRlZTAyZDRmNjk3NGUifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L706-L895",
+          "version": "repo-lines-v1:sha256:adf72b6c38fe27cdbaf844acadc47ebf3bfe85cf6719741c3555e1536cd6b8b5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTkwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyY2Q2NDExMzIxZmM3N2YxNmIyNmQ5NTdkMGMxY2VjMmQwM2EwNjU1ZDkxNjVhZjFlNWY3OTg5ZmZiMGFlNzViIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkZDFlNmY3ODEyMzAzZDQxZGZhODEyNjYzODlmZmRmZmJmM2Q1NDM1OTg5YzA3YjU3MmVjODEyMTQyZTQwMzllIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MTllZTEyYmRlYmExNjQ3MjNiYjJjZGVjMmVhYjNiYmUyNDA2MTc3NjY5ZDhmOGViYjMwZjY4N2ZjZmZjYTFkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxOWVlODg4Yjc4OGZlZWE2MjhiOGY4Yjg3ODBiN2ZiNmUzZDBlZThiNjM5NzM2NTEzOTgxZWExYTc2NzQ3YzRlIn0"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L963-L1103",
+          "version": "repo-lines-v1:sha256:e20a0950fbb11c606a950282e6ab161e1575492b6a1eb4e70fc1055f3610606c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2NzQxODZkYzA1NjU2OGZhY2Q2NGVhMjY1MDMzOGQyNzRmYmMwY2EyZjJmYTY2MzI5M2RmMzUyZTUyZGZlZTY4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlMTFkNzlkM2MxMjBmNGZkOTViNDcwNjcxMzc3ODQwZWU4YzRiNjFhNjY0NWE0OTZkYmUzZmM2ODNjNGEyYjBlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhNzBkZTFjODUwMTI1ZWMxZGNiZTViMDAzN2M5YzMwYjVkMDkyNGQ0YWI1YTM2YjkyOWQwMzY4ZDg1Yjg1M2JiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0Mjc2YmQ1OTc2MWNmMjIxYjgzYmVlNWJmMGE0ZGVlZTc4Yjg0MDI4ZmM3ZmI0ODQxOGI4NmNjY2E4ZGYyYzhiIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-25T08:04:06.996Z"
+    "at": "2026-11-26T08:03:59.911Z"
   }
 }

@@ -465,6 +465,20 @@ async def test_operator_approves_code_from_any_chat(tmp_path: Path, *, is_dm: bo
     assert [request.text for request in agent.requests] == ["hello agent"]
 
 
+async def test_approval_ignores_lines_after_the_command(tmp_path: Path) -> None:
+    host, gateway, agent, _ = await _host(tmp_path, Clock())
+    await gateway.deliver_message(_dm(STRANGER, "let me in"))
+    code = format_code(_issued_code(gateway))
+
+    footer = "\n*Sent using* <@U0ABFK68KT6|Claude>"
+    await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {code}{footer}"))
+    await gateway.deliver_message(_dm(STRANGER, "hello agent"))
+    await _wait_for_request(agent)
+    await host.stop()
+
+    assert (OPERATOR_DM, f"Paired sender {STRANGER}.") in gateway.sent_text
+
+
 @pytest.mark.parametrize("is_dm", [True, False])
 async def test_non_operator_cannot_approve_and_never_reaches_the_agent(
     tmp_path: Path, *, is_dm: bool

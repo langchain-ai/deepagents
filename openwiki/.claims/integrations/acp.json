@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:39b63db79abea842f3ccd5d4657668c2eee3ae3bd8eeaed8131fb5aa64f23cf5",
+  "pageVersion": "sha256:8b83837503c359f63f1163fa686e8d7e89190dab07801cc8f17431ed53e7a8b5",
   "claims": [
     {
       "id": "claim_c99866f7307a4171a2332376a9dd8ed4",
-      "statement": "deepagents-code 0.2.14 pins deepagents to 0.7.41, requires Python 3.14 (below 3.15), and depends on deepagents-acp version 0.1.0 or later below 1.0.0, so dcode ACP deployments follow dcode's stricter Python requirement and selected SDK release rather than deepagents-acp's standalone Python 3.11 floor.",
+      "statement": "deepagents-code 0.2.15 pins deepagents to 0.7.42, requires Python 3.14 (below 3.15), and depends on deepagents-acp version 0.1.0 or later below 1.0.0, so dcode ACP deployments follow dcode's stricter Python requirement and selected SDK release rather than deepagents-acp's standalone Python 3.11 floor.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:cc28193f478d9a8c41e81a7db5fee05d236a305164e29a0334b1c0d645a9ceb5"
+          "version": "repo-file-v1:sha256:0ae0847114f688244e887ad74297731a9d013da5a7da7535f671e8e3846b5af0"
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:4b322945d792ad6932fe8ad2c31a35f996ae94d044711cda09d3368ce2f586e3"
+          "version": "repo-file-v1:sha256:c198c111cd4b8bcfc5df5fca97befbb71899722ce8f10000cab92959b2070f3e"
         }
       ]
     },
@@ -158,7 +158,7 @@
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:cc28193f478d9a8c41e81a7db5fee05d236a305164e29a0334b1c0d645a9ceb5"
+          "version": "repo-file-v1:sha256:0ae0847114f688244e887ad74297731a9d013da5a7da7535f671e8e3846b5af0"
         }
       ]
     },
@@ -193,6 +193,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-25T08:04:06.996Z"
+    "at": "2026-11-26T08:03:59.911Z"
   }
 }

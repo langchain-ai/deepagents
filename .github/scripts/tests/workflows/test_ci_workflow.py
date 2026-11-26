@@ -203,22 +203,35 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
     step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
     assert step["env"]["LOCKFILES_RESULT"] == "${{ needs.check-lockfiles.result }}"
     assert step["env"]["HYGIENE_RESULT"] == "${{ needs.text-hygiene.result }}"
-    gate = tmp_path / ".ci-gate-base/.github/scripts/checks/ci_gate.py"
-    gate.parent.mkdir(parents=True)
-    gate.write_text((ROOT / ".github/scripts/checks/ci_gate.py").read_text())
     completed = subprocess.run(
         ["bash", "-c", step["run"]],
         cwd=tmp_path,
         env={
             **os.environ,
             "EVENT_NAME": event,
+            "CHANGES_RESULT": "success",
             "LOCKFILES_RESULT": "success",
             "HYGIENE_RESULT": "success",
             gated: result,
             "CURATED_APPLY_ONLY": curated,
             "CURATED_APPLY_PARENT_CONCLUSION": "success",
-            "TALON_CHANGED": "false",
-            "NEEDS": json.dumps({"check-lockfiles": {"result": "success"}}),
+            "NEEDS": json.dumps(
+                {
+                    name: {"result": "success"}
+                    for name in workflow["jobs"]["ci_success"]["needs"]
+                }
+            ),
+            "SELECTION": json.dumps(
+                {
+                    **{
+                        name.removeprefix("lint-"): "true"
+                        for name in workflow["jobs"]
+                        if name.startswith("lint-")
+                    },
+                    "talon-src": "true",
+                    "release-scripts": "true",
+                }
+            ),
         },
         capture_output=True,
         text=True,
@@ -229,6 +242,354 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
         gated == "HYGIENE_RESULT" and event == "push" and result == "skipped"
     )
     assert completed.returncode == (0 if passes else 1)
+
+
+@pytest.mark.parametrize("event", ["push"])
+def test_full_suite_does_not_depend_on_path_selection(event: str) -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    jobs = workflow["jobs"]
+    selected = [
+        name
+        for name in jobs
+        if name.startswith(("lint-", "test-")) and name != "test-quickjs-sdk-smoke"
+    ]
+    selected.append("drbench-dataset")
+    for name in selected:
+        condition = re.sub(r"needs.changes.outputs.[a-z]+", "'false'", jobs[name]["if"])
+        assert _eval_condition(condition, _context(event_name=event)), name
+
+
+@pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
+@pytest.mark.parametrize("talon_changed", ["true", "false"])
+@pytest.mark.parametrize(
+    ("job", "result", "selected", "curated", "passes"),
+    [
+        ("changes", "failure", "true", "false", False),
+        ("changes", "cancelled", "true", "true", False),
+        ("test-code", "skipped", "true", "false", False),
+        ("test-code", "unknown", "true", "false", False),
+        ("test-code", None, "true", "false", False),
+        ("test-code", "failure", "true", "false", False),
+        ("test-code", "cancelled", "true", "false", False),
+        ("test-talon", "failure", "true", "false", False),
+        ("lint-talon", "failure", "true", "false", False),
+        ("test-talon", "cancelled", "true", "false", False),
+        ("lint-talon", "cancelled", "true", "false", False),
+        ("test-talon", "skipped", "true", "false", False),
+        ("lint-talon", None, "true", "false", False),
+        ("test-talon", "unknown", "true", "false", False),
+        ("test-code", "failure", "true", "true", False),
+        ("test-code", "success", "false", "false", True),
+        ("test-code", "skipped", "false", "false", True),
+        ("test-code", "success", "invalid", "false", False),
+    ],
+)
+def test_ci_gate_requires_selected_checks(
+    tmp_path: Path,
+    event: str,
+    talon_changed: str,
+    job: str,
+    result: str | None,
+    selected: str,
+    curated: str,
+    passes: bool,
+) -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    needs = {
+        name: {"result": "success"} for name in workflow["jobs"]["ci_success"]["needs"]
+    }
+    if result is None:
+        del needs[job]
+    else:
+        needs[job]["result"] = result
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EVENT_NAME": event,
+            "REPO": "",
+            "CHANGES_RESULT": needs.get("changes", {}).get("result", ""),
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "CURATED_APPLY_ONLY": curated,
+            "CURATED_APPLY_PARENT_CONCLUSION": "success",
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(
+                {
+                    **{
+                        name.removeprefix("lint-"): selected
+                        for name in workflow["jobs"]
+                        if name.startswith("lint-")
+                    },
+                    "talon-src": talon_changed,
+                    "release-scripts": "true",
+                }
+            ),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    waived = (
+        event == "pull_request"
+        and talon_changed == "false"
+        and job in {"lint-talon", "test-talon"}
+        and result == "failure"
+    )
+    expected = waived or (passes and not (result == "skipped" and event == "push"))
+    assert (completed.returncode == 0) == expected, completed.stdout + completed.stderr
+    assert ("::warning::Waiving" in completed.stdout) == waived
+
+
+@pytest.mark.parametrize(
+    ("event", "branch_head", "passes"),
+    [
+        ("push", "newer", True),
+        ("push", "abc123", False),
+        ("push", None, False),
+        ("pull_request", "newer", False),
+    ],
+)
+def test_ci_gate_ignores_cancellations_only_when_superseded(
+    tmp_path: Path, event: str, branch_head: str | None, passes: bool
+) -> None:
+    """A push cancellation passes only once the branch has moved past the run.
+
+    Timeouts, manual cancels, and lost runners leave the branch at the run's
+    commit; a failed lookup must also keep the gate strict.
+    """
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\nexit 1\n"
+        if branch_head is None
+        else f"#!/bin/sh\necho {branch_head}\n"
+    )
+    fake_gh.chmod(0o755)
+    needs = {
+        name: {"result": "success"} for name in workflow["jobs"]["ci_success"]["needs"]
+    }
+    needs["test-code"]["result"] = "cancelled"
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "EVENT_NAME": event,
+            "REPO": "langchain-ai/deepagents",
+            "REF_NAME": "main",
+            "RUN_SHA": "abc123",
+            "CHANGES_RESULT": "success",
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "CURATED_APPLY_ONLY": "false",
+            "CURATED_APPLY_PARENT_CONCLUSION": "success",
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(
+                {
+                    **{
+                        name.removeprefix("lint-"): "true"
+                        for name in workflow["jobs"]
+                        if name.startswith("lint-")
+                    },
+                    "talon-src": "true",
+                    "release-scripts": "true",
+                }
+            ),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert (completed.returncode == 0) == passes, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("talon_changed", [None, "", "invalid"])
+def test_ci_gate_rejects_unknown_talon_scope(
+    tmp_path: Path, talon_changed: str | None
+) -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    selection = {
+        **{
+            name.removeprefix("lint-"): "true"
+            for name in workflow["jobs"]
+            if name.startswith("lint-")
+        },
+        "release-scripts": "true",
+    }
+    if talon_changed is not None:
+        selection["talon-src"] = talon_changed
+    needs = {
+        name: {"result": "success"} for name in workflow["jobs"]["ci_success"]["needs"]
+    }
+    needs["test-talon"]["result"] = "failure"
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EVENT_NAME": "pull_request",
+            "CHANGES_RESULT": "success",
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "CURATED_APPLY_ONLY": "false",
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(selection),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert completed.returncode == 1
+    assert "Invalid selection: talon-src=" in completed.stderr
+    assert "::warning::Waiving" not in completed.stdout
+
+
+def _run_release_options_gate(
+    tmp_path: Path, event: str, release_scripts: str | None, result: str
+) -> subprocess.CompletedProcess[str]:
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    needs = {
+        name: {"result": "success"} for name in workflow["jobs"]["ci_success"]["needs"]
+    }
+    needs["check-release-options"]["result"] = result
+    selection = {
+        **{
+            name.removeprefix("lint-"): "true"
+            for name in workflow["jobs"]
+            if name.startswith("lint-")
+        },
+        "talon-src": "true",
+    }
+    if release_scripts is not None:
+        selection["release-scripts"] = release_scripts
+    return subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EVENT_NAME": event,
+            "REPO": "",
+            "CHANGES_RESULT": "success",
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            "CURATED_APPLY_ONLY": "false",
+            "CURATED_APPLY_PARENT_CONCLUSION": "success",
+            "NEEDS": json.dumps(needs),
+            "SELECTION": json.dumps(selection),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize("event", ["pull_request", "merge_group", "push"])
+@pytest.mark.parametrize("release_scripts", ["true", "false"])
+@pytest.mark.parametrize("result", ["success", "skipped"])
+def test_ci_gate_allows_release_options_skip_only_on_unchanged_prs(
+    tmp_path: Path, event: str, release_scripts: str, result: str
+) -> None:
+    """The path-gated job may skip only on PRs that leave release scripts alone."""
+    completed = _run_release_options_gate(tmp_path, event, release_scripts, result)
+    passes = result == "success" or (
+        event == "pull_request" and release_scripts == "false"
+    )
+    assert (completed.returncode == 0) == passes, completed.stdout + completed.stderr
+    if not passes:
+        assert "Required job did not run: check-release-options" in completed.stderr
+
+
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+@pytest.mark.parametrize("release_scripts", [None, "", "invalid"])
+def test_ci_gate_rejects_unknown_release_scripts_scope(
+    tmp_path: Path, event: str, release_scripts: str | None
+) -> None:
+    completed = _run_release_options_gate(tmp_path, event, release_scripts, "success")
+    assert completed.returncode == 1
+    assert "Invalid selection: release-scripts=" in completed.stderr
+
+
+@pytest.mark.parametrize("case", ["create", "update", "delete", "denied"])
+def test_talon_advisory_keeps_waived_failures_visible(case: str) -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    job = workflow["jobs"]["talon-failure-advisory"]
+    assert job["permissions"] == {"pull-requests": "write"}
+    assert "write" not in workflow["permissions"].values()
+    assert "talon-failure-advisory" not in workflow["jobs"]["ci_success"]["needs"]
+    assert "github.event_name == 'pull_request'" in job["if"]
+    assert "needs.changes.outputs.talon-src == 'false'" in job["if"]
+    outputs = workflow["jobs"]["changes"]["outputs"]
+    assert "steps.filter.outputs.talon-src == 'true'" in outputs["talon-src"]
+    filters = yaml.safe_load(
+        _find_step(workflow, job="changes", name="🔍 Check for changes")["with"][
+            "filters"
+        ]
+    )
+    assert filters["talon-src"] == ["libs/talon/**"]
+    script = job["steps"][0]["with"]["script"]
+    for name in ("lint-talon", "test-talon"):
+        script = script.replace(
+            "${{ needs." + name + ".result }}",
+            "success" if case == "delete" else "failure",
+        )
+    harness = """
+const result = {calls: [], warning: [], summary: ''};
+const context = {repo: {owner: 'langchain-ai', repo: 'deepagents'},
+  payload: {pull_request: {number: 123}}, serverUrl: 'https://github.com', runId: 456};
+const core = {warning: message => result.warning.push(message), summary: {
+  addHeading(text) { result.summary += text; return this; },
+  addRaw(text) { result.summary += text; return this; },
+  addCodeBlock(text) { result.summary += text; return this; }, async write() {},
+}};
+const github = {rest: {issues: {listComments: 'listComments'}},
+  async paginate() {
+    if (process.argv[1] === 'denied') throw new Error('permission denied');
+    return process.argv[1] === 'create' ? [] :
+      [{id: 789, body: '<!-- talon-ci-advisory -->old advisory'}];
+  },
+};
+for (const method of ['createComment', 'updateComment', 'deleteComment']) {
+  github.rest.issues[method] = async params => result.calls.push({method, ...params});
+}
+console.log = () => {};
+(async () => { SCRIPT })().then(() => process.stdout.write(JSON.stringify(result)));
+""".replace("SCRIPT", script)
+    completed = subprocess.run(
+        ["node", "-e", harness, case],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    result = json.loads(completed.stdout)
+    if case == "denied":
+        assert not result["calls"]
+        assert result["warning"]
+        message = result["summary"]
+    else:
+        assert len(result["calls"]) == 1
+        assert result["calls"][0]["method"] == case + "Comment"
+        if case == "delete":
+            return
+        message = result["calls"][0]["body"]
+    assert "lint-talon" in message and "test-talon" in message
+    assert "failure(s) were waived" in message
+    assert "fix(talon):" in message
+    assert "main CI stays strict" in message
+    assert "https://github.com/langchain-ai/deepagents/actions/runs/456" in message
 
 
 def test_lockfile_workflow_checks_every_package() -> None:
@@ -274,28 +635,6 @@ def test_text_hygiene_job_annotates_and_propagates_failure(
     )
     assert completed.returncode == hygiene
     assert ("::error file=notes.md,line=2," in completed.stdout) == bool(hygiene)
-
-
-def test_ci_success_builds_named_results_from_needs_object() -> None:
-    """The gate needs job names; the wildcard `needs.*.result` drops them.
-
-    `toJSON(needs.*.result)` yields a bare array of result strings, so the
-    talon waiver (which keys off job names) must instead receive the full
-    `needs` object and extract each entry's `result`. Pin both halves so a
-    refactor cannot silently reintroduce the nameless wildcard.
-    """
-    workflow = _load_workflow(CI_WORKFLOW)
-    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
-
-    assert step["env"]["NEEDS"] == "${{ toJSON(needs) }}"
-    assert "needs.*.result" not in step["env"]["NEEDS"]
-    assert 'entry["result"]' in step["run"]
-    assert 'job != "changes"' in step["run"]
-    # The advisory job reads the two talon job results by name, which only
-    # works if it needs exactly those jobs (plus `changes` for the filter).
-    advisory = workflow["jobs"]["talon-failure-advisory"]
-    assert sorted(advisory["needs"]) == ["changes", "lint-talon", "test-talon"]
-    assert "talon-failure-advisory" not in workflow["jobs"]["ci_success"]["needs"]
 
 
 def test_curated_apply_only_requires_bot_commit_and_green_parent_ci() -> None:
@@ -344,7 +683,7 @@ def test_curated_apply_only_requires_bot_commit_and_green_parent_ci() -> None:
         "${{ needs.changes.outputs.curated-apply-only }}"
     )
     assert 'if [ "$CURATED_APPLY_ONLY" = true ]' in gate["run"]
-    assert 'if [ "$CURATED_APPLY_PARENT_CONCLUSION" = success ]' in gate["run"]
+    assert 'if [ "$CURATED_APPLY_PARENT_CONCLUSION" != success ]' in gate["run"]
 
     helper_job = workflow["jobs"]["check-release-options"]
     assert helper_job["needs"] == "changes"
@@ -357,36 +696,6 @@ def test_curated_apply_only_requires_bot_commit_and_green_parent_ci() -> None:
         "needs.changes.outputs.release-scripts == 'true'"
     ) in helper_job["if"]
     assert workflow["jobs"]["ci_success"]["if"] == "always()"
-
-
-def test_ci_success_runs_gate_script_from_trusted_base_ref() -> None:
-    """The gate script must not come from the untrusted PR checkout.
-
-    On pull_request runs `actions/checkout` defaults to the PR merge commit,
-    so executing the helper from the default checkout would let a PR author
-    rewrite the gate to always pass. Pin the base-ref checkout, its
-    credential-less configuration, and that the run step invokes the base
-    copy (falling back to the PR copy only during the bootstrap window when
-    the script is not yet on the base branch).
-    """
-    workflow = _load_workflow(CI_WORKFLOW)
-    steps = workflow["jobs"]["ci_success"]["steps"]
-
-    base = _find_step(
-        workflow, job="ci_success", name="📋 Checkout gate script from trusted base ref"
-    )
-    assert base["with"]["ref"] == "${{ github.base_ref || github.sha }}"
-    assert base["with"]["path"] == ".ci-gate-base"
-    assert base["with"]["persist-credentials"] is False
-    assert ".github/scripts/checks/ci_gate.py" in base["with"]["sparse-checkout"]
-
-    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
-    # The base copy is preferred; the PR copy is only a bootstrap fallback.
-    assert ".ci-gate-base" in step["run"]
-    assert step["run"].index(".ci-gate-base") < step["run"].index(".ci-gate-pr")
-    # No step may execute the helper from the default (untrusted) checkout.
-    for s in steps:
-        assert "python3 .github/scripts/checks/ci_gate.py" not in s.get("run", "")
 
 
 @pytest.mark.parametrize(

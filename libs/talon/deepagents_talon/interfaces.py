@@ -106,6 +106,9 @@ class SendResult:
 
 ProgressMessageHandler = Callable[[str], Awaitable[SendResult]]
 
+FileSendHandler = Callable[[bytes, str, str | None], Awaitable[SendResult]]
+"""Sends file bytes, a display file name, and an optional caption to the turn's chat."""
+
 
 ToolApprovalDecision = Literal["approve", "reject"]
 
@@ -142,6 +145,7 @@ class AgentRequest:
         breakout_handler: Optional host callback for independent channel tasks.
         question_handler: Optional callback that asks the turn's sender clarifying
             questions over the originating chat and waits for the answers.
+        file_handler: Optional callback that sends a file to the originating chat.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
         model: `provider:model` spec the conversation selected with `/model`, or
@@ -176,6 +180,9 @@ class AgentRequest:
         default=None, kw_only=True, repr=False, compare=False
     )
     question_handler: QuestionHandler | None = field(
+        default=None, kw_only=True, repr=False, compare=False
+    )
+    file_handler: FileSendHandler | None = field(
         default=None, kw_only=True, repr=False, compare=False
     )
     model: str | None = field(default=None, kw_only=True)

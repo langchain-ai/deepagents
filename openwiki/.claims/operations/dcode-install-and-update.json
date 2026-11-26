@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:87a3a371b67024490f13f3aaa3a35d042769f00547667814867e79c276872e53",
+  "pageVersion": "sha256:29bc012cfb582c5d5720e96f131a47451dd8e1fab5e3f1d02cbdd012c4759d4c",
   "claims": [
     {
       "id": "claim_6c704a584c4b44e6af7764dc09bad035",
@@ -252,13 +252,107 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L24",
-          "version": "repo-lines-v1:sha256:ab38e98f46368b6f8d69c9e2e26c5fc9dbbf6f5f7b4970e436df3b5fae1bb2e3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyOWE0Zjc3YWZjNjVjOGJkZDMzNmZmNDBlNDQ4N2VlMDJkNjgyNDk5ZGJkMDcxOTAxNWYzN2Y4ODNkN2ZjZDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3Yjc5NzFiOTQ3MWNlODQyMjVkZjcyZmJhYWU5YWNiMTNhMzUzZDYzMTVhMzRlZDIzYWIxNGM3NTVhMWMyMTEifQ"
+          "version": "repo-lines-v1:sha256:171005f695f51835e84e7c2012877fb37c329ce0f5bdb025da37af31d1bac800:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyOWE0Zjc3YWZjNjVjOGJkZDMzNmZmNDBlNDQ4N2VlMDJkNjgyNDk5ZGJkMDcxOTAxNWYzN2Y4ODNkN2ZjZDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3Yjc5NzFiOTQ3MWNlODQyMjVkZjcyZmJhYWU5YWNiMTNhMzUzZDYzMTVhMzRlZDIzYWIxNGM3NTVhMWMyMTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c74cd934378d46bca038b26afe2d4980",
+      "statement": "The published `deepagents-code` 0.2.15 distribution exposes both `dcode` and `deepagents-code` console scripts, pins `deepagents==0.7.42`, and declares bounded compatibility ranges for its framework, client/server, and built-in provider dependencies.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/CHANGELOG.md#L5-L27",
+          "version": "repo-lines-v1:sha256:dcf852a0b10a63d3197a2f757cb8c3a87f0a1bca7e1e6b1cf852ac28ab1ed9bc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNzJmMzM3NmVkYmQ2NzM4N2RjYTcyMzQ3OGY4NjMwYTU0YzJlOTljMGM0MDg3ODBiNDhhZmVmMTczMzgyMDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5ZmUwMTk0MjE5YTZiZjMyNmE0YmU5N2YxMjcyOWQxMzBlNGQwMzJiN2JlZmQ0OWY5NzkwNGIzYTQxYTliYmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk2MTEwMTczNjQ1YmExZDZkNzk3YTFhYTUyNGY2ZTdmNmEzNjBiM2JmZDUzZmRiOTgwODJhMThkYjNmZThlNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYwN2E0NzI3Yjc2ZTlmYjc2ODAxYjYyOGFhZjMxOWNiNGVlOTBhOTg4MDhiODRmN2Q3MWNlNmNjODYzYjYyMTAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/_version.py#L1-L18",
+          "version": "repo-lines-v1:sha256:394f9b623e2930a04c42010e3e21b52ad072158bec705c872137a5f9deba6c46:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0NmJiNzU0NDg4ZTlmN2Q1ODdkMmI4ODcyZDdlNzAyMmVjNDExZWM0MmMyZTNkYjM2YzQwZWE1MmJhOGIzZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyODMzM2U4M2ViYTFmZDlmODMyOTZmODQ1ZGM2YWFjM2NkNTU1ODNkNGQ0N2Q5YzQ2ZjkxMjRlYzZiY2M1ZDEifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L157-L159",
+          "version": "repo-lines-v1:sha256:7cb5b20ef64ed337f9edb88d7b3602f2618c8e673386d6f655088ae52d138d2b:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGVhYjRlYzYzZGU1MTdkYTRjZDhlNWM4MzA3ZmIyYzc3MzdkMzkxOTBhYjY5ZjMyYTVlOWVmODFlYTQ0MTZkZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzIzYjdmMGUzZjQ0OGM0ZjU0ZGY3MTgzZWZjYTE5MDgzMTAxNDMzNWJlNjhkMjAwNDZiM2Q5NmNjNWM1OTkyMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjgxYzcwMWM1MjY3YjgxYzczZmQ2ZDkwMjZhOGRjMTFmNDE5NjdhZTZlODVhZTgzMjU5ZmM4M2Q2NjQ5MjY1MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGFhZGYyZTg5MDY1NzI1M2FjMTQ4NjNmNTU1M2RhODk0NzBjNmI1YTczMTJhMjk2YzUzMjlhMzA4YjRmNTE3MyJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L46",
+          "version": "repo-lines-v1:sha256:ca83dcc7cbe91d9fd59904cfe52fb571b2b2a150062f9a416c834e99fd677755:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzMTFjZGZkMzcwY2U1YzA2YTZmZjQwYTgzYzUzZTAwZmU1MTZiMjkzNDFlNWM4OWJlNjNmOWUwMDU0ODIwMWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkNDBhMWU0ODA1OTA1Mzc1YTc5Yjg0MTczNDAxMWZkNTkxYjRmN2M1MmIxOTk5NDUwMDZiNzcwZmU1NTAxODkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5b6615d210794d2387df177d9c21c8a2",
+      "statement": "The package publishes provider and sandbox dependency selections as named extras with `all-providers` and `all-sandboxes` aggregate extras; `media` adds AV support and `quickjs` is retained as an empty compatibility extra.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L110-L154",
+          "version": "repo-lines-v1:sha256:045301708b59dc9f2d839904a549edc4da895ad6590fb0d40f7ffb46b5caecae:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTIxYTcxYzBkNDU3MGMzODhkNjI5N2IzYjQ5OTJkZjNjMGZkYWIzMjZjYWZhY2E0YjQ4NzE4OGExZDZiMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOGRmYTk5ZDY2MDA2MDFhMGZiODVhNWI0YjUyYzI1NmNjMTIxNTE2NTQ1MWEyZDlhNWUyYWEwNGIyZGU3MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZmEzNjJjYjQ5NGE1MWE5YTQ3NTA0Yjk5OTFhYjZmNGVmZWUxODcxZWRiYTY0NDFmYjk1MDA3OTc0OTJjMDgifQ"
+        },
+        {
+          "resource": "repo://libs/code/uv.lock#L981-L1099",
+          "version": "repo-lines-v1:sha256:3db732413b1db339f04cdf1ad936649b86b442a16b05c9d58b395affc48aebc0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjOWY4ZTMwNWY0MTk3YWYzZWRkYWE0ZWY3ZmNiZjRkODEyMzIyZjg2ZDZmMTgzOWU1OGI5ZmE5OWEwNDA3OWQxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmOTQxNmUwOWY3OGJhMzE2YzAzMjU2ODIxM2I4NTVlZTc1NmU0MTU2NWQ5MThmMDk1MTljODFmZDYyMGY0MDYwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiMDkwNWQ5MjA3OGY4YjYwY2JiNDFlZTJhNDBiMzg5ZTMyNGU3MTIyZWUyMTc2MTZkMDcyNWUxN2IzZGQ4ODY3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2NTk0NGUxNDFiNjA3YmJlNGUzZDkxZDJhNGE2Nzk5NWMwZTgyMThkMjk4MDBhNWQ3ODk3NGFjYzQ3YzY5MTkxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_7d4f88c083f647afac60fd670170b237",
+      "statement": "MCP and ACP are base dependencies through `fastmcp`, `mcp`, and `deepagents-acp`; price estimation depends on bounded `genai-prices`, and uv overrides the resolved `filelock` requirement to `>=4.2.1,<4.3`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L216-L231",
+          "version": "repo-lines-v1:sha256:c4c0a294519b1e5e02a538943c598e2987b38180631af3ef22c808fe72870367:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzYTAwOWYwY2E1NjM0Yjc3MDIwMjA5NDJmZDE4OWNkY2Q4NGIxNjdhYjgwMTUwMTI4ZTZmNWI1ZGJmMjQwMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1MmZjNThiM2Y0Yjk3MzczNmIzYWQ3OWQxZDc0OTUxMDUyMzBmNjVlM2Q5ODYzN2E0NmFlOGUyZmVhMjk1MmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmZWI3MWU1ODRmY2Y2MTM5ZjE1ODg2ODhjNjQxNzc3NGNmYzkxY2YzYWRjZWJkYTM2MzI2NjViMjRiODcyZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkNWYxZjg4YzM4ZTNmMzE4NmZhNjhiZmJjYzVmNmVjMmYzNTZkOTVhNjk1MjI2OWJkNDQ0NTdmZGVjOGI5OGMifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L69-L76",
+          "version": "repo-lines-v1:sha256:9ee8fe2a1e90ee9708a820854b55f262b16023f11e6ebea833cd95c8f44fcdc9:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTA5NjNmMTdmNmJhNGQ1MDBlNmJjYTgzMmNkYjQzNjg3YzMyOGE2MjA1MGJiZjY5ODA3N2Y4YzZiOWY0MWU0MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDRlNWEzYjE1OTAxOWUzYWMwYTBlMzc5MTVjMWY3ZTMwNDI5MTE3ODljNDdmOWI2OTZiZTgzMTU3OGY4NzZlNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODUyOGRhNWZhZjRmNzg0NTM0NGMxMTkzZTM5ZjE5MmMwMGY5YTUwYWQzMzYyZWYzYTk3ZGY3YTg5NDQ1OWIwOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDIzYzcyYmQ5MDZlMjM4ZTk5NDMyNmJjZDgyNjg3Mzc4ZWY4ZDg1NzY1ZmYyNzk5MDc4NTMxYTQyOWFkNzJhOSJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L93-L107",
+          "version": "repo-lines-v1:sha256:69534e463cdb9dcf8c9a37383a79779af42f57c5bdf9d1df2a894186fbdabff2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExNjZmNmMxNmM3MmUxNjU5ODJkMGEwMDYyMzRkZGQzMTdhMDIwYmVkZmYwNjQ0OWM3MDM5ODFlMzZmMGM2NDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2YjA0MzAxMDg1MjVhZDdkNWEyMGQ2NTg3YjU3MWE0MzE1OGIzNmExOGVkZWE1NjQwOThmNTBlOWZmNDQyZGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3OTUyMDBjN2ZkM2RkMzczZDk0MDExMWM3MDgyYzg2OWNhYjI1ZjJiYjczMTU5MTY3YjgzOGIxYTgyMGM1YzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0MzRkYWViMjJjOGNhNTNiZjk5ZmYyZDZkZDIwMTJjYzYwM2FkMjcwYzg5NzhjM2JiMGNjNGNhY2QyMGViYWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/uv.lock#L1123-L1150",
+          "version": "repo-lines-v1:sha256:5e6303cca6d97250b9d6c340015e47b2e3c7d78fd25f0a40befd613188586cb4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2YTI4MDkzOTQwZjIyOWRmMzUwMjI1YWIxZjg3NmZiYWMxMTVkNzYxZDZkNGM3N2QyZTViOGFiY2IwZmFmYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4NjU1MDE5N2Y5YTY0ZDdlMDU4OGE0ZmU3NjlhNzYzY2M4ZmM3YmZhNmNiMzYwZDE2Yzc0YzI3ZDRmZTZmNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkMGUyNzRmZWQzY2MzMTZhMDVlOTkzNTkxYmM0NGZjOTJjNWY3ZTA2N2QwZDg2MDU0ODU1ODg5OGZjZmY1NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjOTZlOGU0YjUxZjAwMjM3OTgxN2ZjZTM5MGIzZWJiNDlhNjllZDk1NWU3ZTUwYjJjNGYwNmNjNGQ2NzM4ODEifQ"
+        },
+        {
+          "resource": "repo://libs/code/uv.lock#L939-L979",
+          "version": "repo-lines-v1:sha256:8e29d4ac17fd3adf821cbb12af91b00b6cdca065d70f26c7b729a14e6a383c4c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlZTdiNWQ5NTM5MWMxNmIxNWE2YTZkMzc5Nzg0NmM2Mzk3ZGM2ZDdlYWU4ZjEyZDA4YmMxNjY2OThmOWM2MmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2NTkyMGJhMmUzYzAwYjVkMGU1NzUzYjEyY2EzYTYxMDRjNmE3MDMxYjMwZDk3NGE3YTE3Y2UyOTE0NWMyM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3YTRjNTY3OTk5ZTNhYWU2NGMxZDU5M2ZjMDdkMWI4ODg4ZjAwZjgwZGQxNmI5MDE3MGRlNGU1Mzg4MGY5YWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_14041a5339fb4f5694c102e00f5b4836",
+      "statement": "The supported installer creates a uv tool installation, can be rerun for updates, accepts environment controls for extras, exact release, prerelease strategy, Python, and unattended approval, and specifies that uninstalling the tool does not remove the user profile data.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/scripts/install.sh#L2-L45",
+          "version": "repo-lines-v1:sha256:9f1af6f1eef06c187bc41b368ffa9461891b3b74caadff6cf9cb297bbae3af91:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmZTRkZmVmNjk5MzQ2MWY2YWMwNmZlZGI2MTlhNzk5ZTdiMDBlOGFiNDljYTI3MzhjNDAwOGFkYzUwNTJiODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjZDFlYjhmM2M2ZGFjMDU5NWNjZmQ0ZWQyYWZkODFiZmE2OTc2ZTk0NTQ4MTU1MWYyMDg5NTYzMDYyMDNhNDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFkOTVmYzA0YTgwYzk1MmY0OWNlNDE4ODYyN2M1M2IwZmJlOGM0NDA0MWI5NTJkNTkyYWNkMWRlOTk4NjE0NjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4MzljMjM1YTNhNDk5M2ViNTllMWMxZDEzMDI5NzdlMGRjOTFiZGVlYTg2MzkwMGQwOWIwNWYzMjVjNTdkNDkifQ"
+        },
+        {
+          "resource": "repo://libs/code/scripts/install.sh#L47-L93",
+          "version": "repo-lines-v1:sha256:24ca173ca23bcb17a04da77509b5cda3ee9de78a606ccdcadb3a80026857ae01:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhNWZlODJmYTNhZmYxMWNkNmYxYWE3NTIzZjI3NzM5YWY2N2JmMzkwZmVhOTJmYmI2MzI3OTc3MDhlMTAzMjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4NjYyYzdkNmZiYThmZDNiNDc5ZmQ4NmY3MDg2NzY5MGRjZTM5MWE3Nzk4MTViOWE2ZThiM2Y0MDVlMDkzMjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkwMzc1ZWFkNzMyYzQxZTkyYWQ3OTdjODQ4ZmNjYTQyNTdkOWM1ZGIyNzcwMjYyOGE0NjNiYmNmMDhiYzI4YzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFjYzdmN2FiZDc5NDBhZjRmOTA0ZGQ3NmQxMWI5OTc4MzNhODBlNzQ4ZTBkZGZjZjdlMWVhZDFmMmExZDExYjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5a0e86f2e4354000a485a3c1398d350d",
+      "statement": "The committed uv lock targets Python 3.14 and contains platform-specific resolution markers, while the package metadata is the declarative distribution contract.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L108",
+          "version": "repo-lines-v1:sha256:b066fa22a95a069d994526e45e3c10424dab7592c4513ff3a766333b3c5d9090:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3MDJhODFjMzgzNmVkZWYyZDBiYTExZDIzNTNmYjZkYWJjNzc3MTUwYTdjYTgzZWEwZDllOWE3MDMxM2ZlYWJiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmOTQxNmUwOWY3OGJhMzE2YzAzMjU2ODIxM2I4NTVlZTc1NmU0MTU2NWQ5MThmMDk1MTljODFmZDYyMGY0MDYwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMTM3YWFhYWM4YWY0ZjBjYmIwOGE3MWY2ZTU0YzI4ZmIwYTQ4MWI3ZWFkZWVhMTIxMzRjNDczODc1MzRlN2Y4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3OTYzOTlmZDJlMzZiMTg4ZjFhMDVlMWYzNWVlYWI3MTM0ZTNhNDIyMzdhNzQ4Nzc2ZWM4NjcxZDAxMDdiOGFmIn0"
+        },
+        {
+          "resource": "repo://libs/code/uv.lock#L1-L12",
+          "version": "repo-lines-v1:sha256:5393185f01017472afcba037b1a680698e728f8d2aea16bc2bb6d191a59790f6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiYWIxMjY2NWQ5OGFlZjAyMWJhNjQ5NTNjNjFiMGVkOGE5MDhjZmI1NmExYzAxZTJmY2I0YjA1MmI3MWEyYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyZGEwYjgwNWFkNzdjY2YwYWVkZjcwYjRmNDUyZGMwNDdhMjZjZDU5OGZjNjY5MDZjM2Y2ZDcwMDIzMTk5NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3YmU5NjBjMWI1ZTAzZjY5MjRjNDU1YjAyNjhiN2E5ZDdlYzU5YzBiMjVmNjRhMTU0ZGYwN2JkMjMzNGI5ZjAifQ"
+        },
+        {
+          "resource": "repo://libs/code/uv.lock#L939-L979",
+          "version": "repo-lines-v1:sha256:8e29d4ac17fd3adf821cbb12af91b00b6cdca065d70f26c7b729a14e6a383c4c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlZTdiNWQ5NTM5MWMxNmIxNWE2YTZkMzc5Nzg0NmM2Mzk3ZGM2ZDdlYWU4ZjEyZDA4YmMxNjY2OThmOWM2MmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2NTkyMGJhMmUzYzAwYjVkMGU1NzUzYjEyY2EzYTYxMDRjNmE3MDMxYjMwZDk3NGE3YTE3Y2UyOTE0NWMyM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU3YTRjNTY3OTk5ZTNhYWU2NGMxZDU5M2ZjMDdkMWI4ODg4ZjAwZjgwZGQxNmI5MDE3MGRlNGU1Mzg4MGY5YWUifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-24T08:04:12.461Z"
+    "at": "2026-11-26T08:03:59.911Z"
   }
 }

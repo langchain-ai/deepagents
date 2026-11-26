@@ -20,10 +20,7 @@ Exit-code contract:
     `main` returns a process exit code: 0 after printing the result, 2 when
     stdin is not a JSON array of strings. Nothing is written to stdout on the
     error path, so the workflow's `set -euo pipefail` aborts the step and the
-    gate fails closed. Note this is deliberately the opposite convention from
-    the sibling `ci_gate.py`, which always exits 0 and encodes its verdict in
-    the payload: that script's caller needs to distinguish "gate says fail"
-    from "gate crashed", whereas here both outcomes must block.
+    gate fails closed.
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ const MANIFEST_FILE = '.release-please-manifest.json';
 
 // Fail before touching GitHub if the install did not apply a patch. Each check
 // exercises the patched behavior directly rather than grepping source.
-function assertPatched() {
+async function assertPatched() {
   const commit = { sha: 'x', message: 'chore: relock', files: ['pkg/uv.lock'] };
   const kept = new CommitExclude({ pkg: { excludePaths: ['pkg/uv.lock'] } })
     .excludeCommits({ pkg: [commit] });
@@ -38,6 +38,42 @@ function assertPatched() {
   const tag = TagName.parse('deepagents-code==0.2.7');
   if (tag?.component !== 'deepagents-code' || tag.separator !== '==') {
     throw new Error('the tag-name.js change in the release-please patch is not applied: `==` tags parse with the wrong component');
+  }
+
+  await assertConcurrentLookups();
+}
+
+// Each stubbed lookup waits until all three lookups and the candidate build
+// have started. Run one after another, the first never finishes.
+async function assertConcurrentLookups() {
+  const message = 'the manifest.js change in the release-please patch is not applied: pull request lookups run one after another';
+  if (typeof Manifest.prototype.hasMergedReleasePullRequest !== 'function') throw new Error(message);
+  const started = new Set();
+  let release;
+  const allStarted = new Promise(resolve => { release = resolve; });
+  const start = async name => {
+    started.add(name);
+    if (started.size === 4) release();
+    await allStarted;
+  };
+  const stub = {
+    logger: { warn() {} },
+    sequentialCalls: true,
+    buildPullRequests: async () => { await start('build'); return [{}]; },
+    findMergedReleasePullRequests: async function* () { await start('merged'); },
+    findOpenReleasePullRequests: async () => { await start('open'); return []; },
+    findSnoozedReleasePullRequests: async () => { await start('snoozed'); return []; },
+    createOrUpdatePullRequest: async () => undefined,
+  };
+  stub.hasMergedReleasePullRequest = Manifest.prototype.hasMergedReleasePullRequest;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), 1000);
+  });
+  try {
+    await Promise.race([Manifest.prototype.createPullRequests.call(stub), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -50,7 +86,7 @@ function setOutput(name, value) {
 }
 
 async function main() {
-  assertPatched();
+  await assertPatched();
   console.log(`Running release-please version: ${VERSION}`);
 
   const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repository } = process.env;

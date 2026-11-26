@@ -9503,7 +9503,56 @@ class DeepAgentsApp(App):
     def _refresh_session_cost_display(self) -> None:
         """Show the server total plus any spend it has not accounted for yet."""
         if self._status_bar:
-            self._status_bar.set_cost(self._displayed_cost_usd)
+            self._status_bar.set_cost(
+                self._displayed_cost_usd, partial=self._thread_cost_is_partial()
+            )
+
+    def _has_unknown_restored_usage(self) -> bool:
+        """Report restored model usage whose pricing details were not persisted.
+
+        Returns:
+            `True` when the checkpoint shows model usage but no priced total.
+        """
+        return (
+            self._thread_has_restored_model_usage
+            and self._thread_restored_cost_usd <= 0
+        )
+
+    def _thread_cost_is_partial(self) -> bool:
+        """Report whether the thread total omits usage that could not be priced.
+
+        Shared by the footer marker and the `/cost` summary so they agree on
+        when the displayed total may understate the real spend.
+
+        Returns:
+            `True` when a recorded request was unpriced or restored usage has
+                no pricing details.
+        """
+        stats = self._thread_stats
+        return (
+            stats.priced_request_count < stats.request_count
+            or self._has_unknown_restored_usage()
+            or self._breakdown_has_unpriced_requests()
+        )
+
+    def _breakdown_has_unpriced_requests(self) -> bool:
+        """Report unpriced requests recorded in the thread-wide breakdown.
+
+        `_thread_stats` starts empty on resume, so a restored thread that mixed
+        priced and unpriced requests is only visible through the checkpointed
+        breakdown counts.
+
+        Returns:
+            `True` when the breakdown records more requests than it priced.
+        """
+        breakdown = self._session_cost_breakdown
+        if not isinstance(breakdown, Mapping):
+            return False
+        requests = breakdown.get("request_count")
+        priced = breakdown.get("priced_request_count")
+        return (
+            isinstance(requests, int) and isinstance(priced, int) and priced < requests
+        )
 
     def _reset_thread_usage(
         self,
@@ -9682,10 +9731,7 @@ class DeepAgentsApp(App):
         displayed_cost_usd = self._displayed_cost_usd
         request_count = self._thread_stats.request_count
         priced_request_count = self._thread_stats.priced_request_count
-        has_unknown_restored_usage = (
-            self._thread_has_restored_model_usage
-            and self._thread_restored_cost_usd <= 0
-        )
+        has_unknown_restored_usage = self._has_unknown_restored_usage()
         if displayed_cost_usd <= 0 and not priced_request_count:
             if not request_count:
                 if has_unknown_restored_usage:
@@ -9728,21 +9774,18 @@ class DeepAgentsApp(App):
             return "\n".join(lines)
 
         has_unpriced_requests = priced_request_count < request_count
+        is_partial = self._thread_cost_is_partial()
         heading = (
             "Estimated cost for priced requests"
-            if has_unpriced_requests or has_unknown_restored_usage
+            if is_partial
             else "Estimated thread cost"
         )
         lines = [f"{heading}: {format_cost(displayed_cost_usd)}"]
         if has_unpriced_requests:
-            included_verb = "is" if priced_request_count == 1 else "are"
             lines.extend(
                 [
                     "",
-                    (
-                        f"{priced_request_count} of {request_count} recorded requests "
-                        f"{included_verb} included."
-                    ),
+                    self._priced_agent_request_line(),
                     "",
                     *self._unpriced_request_lines(),
                 ]
@@ -9762,7 +9805,7 @@ class DeepAgentsApp(App):
             # requests priced, later ones could not. Gating this on a zero total
             # would leave those sessions blaming the models instead.
             lines.extend(["", _PRICING_UNAVAILABLE_MESSAGE])
-        if has_unpriced_requests or has_unknown_restored_usage:
+        if is_partial:
             lines.append("The full thread cost may be higher.")
         priced_kinds = [
             (kind, self._thread_stats.per_kind[kind])
@@ -9840,6 +9883,23 @@ class DeepAgentsApp(App):
                 "credits, or fees not represented here."
             )
         return "\n".join(lines)
+
+    def _priced_agent_request_line(self) -> str:
+        """Say how many agent requests were priced, and what that count omits.
+
+        The count comes from agent requests since this thread was loaded. Side
+        questions and thread names are charged outside it, so a non-zero total
+        beside "0 of 1" needs that said explicitly.
+
+        Returns:
+            One sentence for the cost summary.
+        """
+        priced = self._thread_stats.priced_request_count
+        total = self._thread_stats.request_count
+        line = f"Priced agent requests: {priced} of {total}."
+        if self._current_side_cost_usd() > 0:
+            line += " Side questions and thread names are counted separately."
+        return line
 
     def _unpriced_request_lines(self) -> list[str]:
         """Describe model requests omitted because no price was available.
@@ -20776,6 +20836,9 @@ class DeepAgentsApp(App):
                 self._inflight_turn_stats = None
                 self._inflight_thread_id = None
                 self._refresh_cache_display()
+                # Merged counts can newly make the total partial; an
+                # interrupted turn never reaches the checkpoint read below.
+                self._refresh_session_cost_display()
             # Settle the display on the committed total. Only a completed turn
             # is read back: `durability="exit"` may drop an aborted turn's
             # writes, and the streamed totals already seen are closer to what

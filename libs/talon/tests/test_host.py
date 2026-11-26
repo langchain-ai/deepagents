@@ -27,7 +27,6 @@ from deepagents_talon.host import (
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
-    ChannelMedia,
     ChannelMessage,
     ChannelReaction,
     SendResult,
@@ -1279,12 +1278,11 @@ async def test_suppressed_turn_does_not_requeue_when_also_discarded(
         await host.stop()
 
 
-async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
+async def test_host_sends_markdown_image_refs_as_plain_text(tmp_path: Path) -> None:
     channel = RecordingChannel()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    image = workspace / "result.png"
-    image.write_bytes(b"image")
+    (workspace / "result.png").write_bytes(b"image")
     agent = MediaAgent("result.png")
     host = TalonHost(
         config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
@@ -1297,34 +1295,43 @@ async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -
     await _wait_for_sent_count(channel, 1)
     await host.stop()
 
-    assert channel.media == [
-        (
-            "chat",
-            ChannelMedia(path=image.resolve(), media_type="image", caption="Here is the image."),
-        ),
-    ]
+    assert channel.media == []
+    assert channel.sent == [("chat", "Here is the image.\n\n![chart](result.png)")]
 
 
-async def test_host_rejects_markdown_media_outside_workspace(tmp_path: Path) -> None:
+class FileAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.results: list[SendResult] = []
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        assert request.file_handler is not None
+        self.results.append(await request.file_handler(b"a,b\n", "export.csv", "Export"))
+        return AgentResult(text="Sent the export.")
+
+
+async def test_host_sends_agent_files_to_the_originating_chat(tmp_path: Path) -> None:
     channel = RecordingChannel()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "secret.png"
-    outside.write_bytes(b"secret")
-    agent = MediaAgent(outside)
-    host = TalonHost(
-        config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
-        agent=agent,
-        channels=[channel],
-    )
+    agent = FileAgent()
+    config = _config(tmp_path)
+    host = TalonHost(config=config, agent=agent, channels=[channel])
     await host.start()
 
-    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="draw"))
-    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="export"))
+    await _wait_for_sent_count(channel, 2)
     await host.stop()
 
-    assert channel.media == []
-    assert channel.sent == [("chat", "Here is the image.\n\n_(Could not attach: chart.)_")]
+    assert agent.results == [SendResult(success=True)]
+    [(conversation_id, media)] = channel.media
+    assert conversation_id == "chat"
+    assert (media.path.name, media.media_type, media.caption) == (
+        "export.csv",
+        "document",
+        "Export",
+    )
+    assert media.path.is_relative_to(config.outbound_media_dir)
+    assert list(config.outbound_media_dir.iterdir()) == []
+    assert channel.sent[-1] == ("chat", "Sent the export.")
 
 
 async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> None:
@@ -2012,7 +2019,8 @@ async def _wait_for_request(agent: BlockingAgent, text: str) -> None:
 
 
 async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
-    for _ in range(100):
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
         if len(channel.sent) >= count:
             return
         await asyncio.sleep(0)

@@ -1,8 +1,11 @@
 ---
 type: backend architecture concept
 title: Backends, Virtual Filesystems, and Execution
-description: How DeepAgents backend contracts separate virtual file operations, graph state, durable stores, routing, and host shell execution. Covers LocalShellBackend process cleanup, cross-platform output capture, and why virtual paths are not a security boundary.
+description: How DeepAgents backend contracts separate virtual file operations, graph state, durable stores, routing, and host shell execution. Covers persisted UTF-8 normalization, LocalShellBackend process cleanup, cross-platform output capture, and why virtual paths are not a security boundary.
 tags: [backends, virtual-filesystem, state, durable-storage, routing, sandbox, security, process-lifecycle]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-26T08:03:59.911Z
 sources:
   - id: openwiki-source-6a9e782d8dda0eeaf00ce0d3
     resource: repo://libs/deepagents/deepagents/backends/_posix_process.py
@@ -38,10 +41,7 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
   - id: openwiki-source-d969accd0b5fc0acdd77cd6e
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_windows_process.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-17T08:03:47.818Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-17T08:03:47.818Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # Backends, Virtual Filesystems, and Execution
@@ -78,7 +78,7 @@ The current `FileData` form is a string plus an encoding and optional timestamps
 }
 ```
 
-Text uses UTF-8. Binary data is represented by base64 text with `encoding: "base64"`, enabling upload/download to round-trip bytes while text edit rejects binary files. File sizes in the state and store implementations are calculated from UTF-8 bytes of normalized content.
+Text uses UTF-8. Before persisting a `utf-8` value, the shared file-data constructors make the Python string UTF-8 encodable: a valid UTF-16 surrogate pair represented as two code points is rejoined, while each lone surrogate becomes U+FFFD. This matches the behavior of writing a JavaScript string and prevents later listing, reading, or downloading from failing on invalid Unicode. Base64 content is not changed by this normalization. Binary data is represented by base64 text with `encoding: "base64"`, enabling upload/download to round-trip bytes while text edit rejects binary files. File sizes in the state and store implementations are calculated from UTF-8 bytes of normalized content.
 
 Older state or store records may use `content: list[str]`. The compatibility conversion joins the strings with `"\n"` (and maps an empty list to `""`). Reads, listing size calculation, searches, globs, and downloads can use that normalized view without rewriting the persisted legacy record. Values other than a string or a list consisting solely of strings raise `TypeError`; malformed persisted data is not silently treated as text.
 
@@ -96,7 +96,7 @@ flowchart TD
 
 This is a lazy migration path: observation is non-mutating, but a successful content mutation writes the current representation.
 
-A write creates or replaces string content and records `utf-8`. An update retains an existing `created_at` when available and refreshes `modified_at`; an edit retains its existing encoding unless the file is rewritten as text. Failed edits do not persist a converted legacy value.
+A write creates or replaces string content, normalizes it to UTF-8-encodable text, and records `utf-8`. A successful text edit applies the same normalization. An update retains an existing `created_at` when available and refreshes `modified_at`; an edit retains its existing encoding unless the file is rewritten as text. Failed edits do not persist a converted legacy value.
 
 ## State and store are different persistence scopes
 
@@ -202,7 +202,7 @@ These timeout, output, environment, and cancellation controls are reliability fe
 
 ## Focused regression coverage
 
-The backend tests cover the compatibility boundary from both state and store: legacy list reads without mutation, failed malformed values, successful write/edit migration, timestamps, binary transfer round trips, and edit refusal for binary data. State tests additionally cover graph-context behavior; store tests cover namespace validation, paging, recursive literal-key deletion, and native async paths.
+The backend tests cover the compatibility boundary from both state and store: legacy list reads without mutation, failed malformed values, successful write/edit migration, timestamps, binary transfer round trips, and edit refusal for binary data. State tests also verify that a lone surrogate is persisted and downloaded as U+FFFD, while a split valid surrogate pair becomes its Unicode character before UTF-8 byte-size calculations. State tests additionally cover graph-context behavior; store tests cover namespace validation, paging, recursive literal-key deletion, and native async paths.
 
 Composite tests cover longest-prefix and route-root handling, remapped result paths, root listings, grouped transfers and response order, global grep budgets, anchored glob semantics, merge truncation, error propagation, and default-only execution.
 

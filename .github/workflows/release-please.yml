@@ -721,15 +721,18 @@ jobs:
 
       # Runs release-please from a pinned, patched npm package instead of
       # googleapis/release-please-action. See .github/release-please/README.md.
-      - name: "📦 Setup pnpm"
-        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          package_json_file: .github/release-please/package.json
-
       - name: "🟢 Setup Node"
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: "24"
+
+      # Installs the exact pnpm named by `packageManager` with npm. This
+      # replaces pnpm/action-setup, which spent ~9 s on every run bootstrapping
+      # its bundled pnpm and then downloading the pinned one.
+      - name: "📦 Setup pnpm"
+        run: |
+          PNPM_SPEC=$(node -p "require('./.github/release-please/package.json').packageManager")
+          npm install --global --ignore-scripts --no-audit --no-fund "$PNPM_SPEC"
 
       # pnpm applies `patchedDependencies` from pnpm-workspace.yaml during
       # install and fails if a patch no longer applies. `--ignore-scripts`

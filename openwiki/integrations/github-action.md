@@ -1,44 +1,34 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. This guide covers the composite action contract, published CLI boundary, state lifecycle, safeguards, verification, and release safety.
+description: Run one bounded, headless dcode task from a GitHub Actions job. Covers the composite action contract, its published deepagents-code runtime boundary, safety controls, state lifecycle, and verification.
 tags: [github-actions, dcode, deepagents-code, automation, memory, mcp, sandbox]
 sources:
-  - id: openwiki-source-9a1c436646ef8c4f6dde787a
-    resource: repo://.github/RELEASING.md
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-4d1d392666be6dfdd7a91a2e
-    resource: repo://.github/workflows/release.yml
   - id: openwiki-source-96d0addee4aedab20d360121
     resource: repo://action.yml
-  - id: openwiki-source-6c2e9cfaa20096e021221d47
-    resource: repo://libs/code/CHANGELOG.md
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+    at: 2026-11-26T08:03:59.911Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # GitHub Action Integration
 
-The repository-root composite action, `langchain-ai/deepagents`, adapts one headless `dcode` task to a GitHub Actions step. Root `action.yml` is the public action package: its declared `with:` inputs and three outputs are the supported contract, while GitHub executes its steps through the composite-action mechanism. The wrapper installs the published `deepagents-code` distribution, validates and maps inputs to CLI flags, then runs `dcode` in the selected workspace.
-
-This is a CLI adapter, not the application API: `create_deep_agent()` constructs and returns a compiled graph, whereas the action launches `dcode`. The distribution exposes both `dcode` and `deepagents-code` console-script names, each invoking `deepagents_code:cli_main`.
+The repository-root composite action, `langchain-ai/deepagents`, is the supported GitHub Actions adapter for one headless `dcode` task. `action.yml` declares its `with:` contract and three outputs; GitHub executes its setup, optional cache and skills steps, and run step as a composite action. It is a CLI adapter rather than the programmatic Deep Agents graph API: it installs the published `deepagents-code` distribution and invokes `dcode` in the requested workspace.
 
 ## Use in a job
 
-Check out the target repository before invoking the action. `working_directory` defaults to `.`, so it is the dcode workspace unless a sandbox is selected. Pin a production action reference to a reviewed commit SHA, pin `cli_version` when reproducibility matters, and grant the job only the permissions and secrets required by its task.
+Check out the repository before the action. `working_directory` defaults to `.`, which is the dcode workspace unless a sandbox is selected. Pin the action to a reviewed commit SHA and pin `cli_version` when repeatability is important. Grant only the job permissions and provider credentials needed for the task.
 
 ```yaml
 name: dcode review
@@ -64,7 +54,7 @@ jobs:
           quiet: "true"
 ```
 
-`github_token` defaults to `${{ github.token }}`. The run step exports it only as `GITHUB_TOKEN`; provider inputs become `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`. The optional skills clone uses the same supplied token. The task therefore has the authority of the job token and credentials made available to the job.
+`github_token` defaults to `${{ github.token }}`. The run step exports it as `GITHUB_TOKEN`; provider inputs become `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`. The optional skills clone uses the supplied GitHub token too. Consequently, the task can act with the job token and credentials made available to it.
 
 ## Execution lifecycle
 
@@ -86,76 +76,58 @@ flowchart TD
     Persist --> Finish
 ```
 
-*The composite action restores state before dcode and attempts cache saving after its run even when it fails.*
+*The action restores memory before dcode and attempts to save it after the run even if the task fails.*
 
-The installation step resolves latest `deepagents-code` with `uvx --from deepagents-code dcode --version`, or an exact `cli_version` with `uvx --from "deepagents-code==${INPUT_CLI_VERSION}" dcode --version`. A version below `0.1.0` fails before execution. That floor covers only always-used flags: an old pin can still reject an optional flag added in a later dcode release.
+The install step uses `uvx --from deepagents-code dcode --version` for the latest package, or `uvx --from "deepagents-code==${INPUT_CLI_VERSION}" dcode --version` for an exact version. It rejects a selected version below `0.1.0`; that floor only covers always-used flags, so an older valid pin may still lack an optional flag selected by the workflow.
 
-The run step requires a nonempty prompt and builds an argument array. Normally it calls `dcode ... --non-interactive "$prompt"`; `stdin: "true"` instead calls `dcode ... --stdin` and supplies the prompt on standard input. `stdin` cannot be combined with `skill`, because piped input with a skill takes dcode's interactive route rather than the intended headless route. `timeout` is the wrapper's outer wall-clock limit in minutes (default `30`); `task_timeout` becomes dcode's `--timeout` in seconds.
+The run step requires a nonempty prompt and assembles an argument array. The usual path runs `dcode ... --non-interactive "$prompt"`; `stdin: "true"` runs `dcode ... --stdin` and supplies the prompt on standard input. `stdin` cannot be combined with `skill`, because that combination without a positional prompt takes dcode's interactive path. `timeout` is the action's outer wall-clock limit in minutes (default `30`), while `task_timeout` is forwarded as dcode's `--timeout` in seconds.
 
-It rejects unsupported boolean forms, validates positive numeric budgets (`timeout`, `max_turns`, `task_timeout`, and `rubric_max_iterations`), permits zero `max_retries`, and validates nonempty `model_params` and `profile_override` as JSON objects when `jq` is available. `interpreter` is tri-state: `true` adds `--interpreter`, `false` adds `--no-interpreter`, and empty preserves dcode's default.
+The wrapper rejects invalid boolean forms and validates positive `timeout`, `max_turns`, `task_timeout`, and `rubric_max_iterations`; `max_retries` may be zero. When `jq` is available, nonempty `model_params` and `profile_override` must be JSON objects. `interpreter` is tri-state: `true` adds `--interpreter`, `false` adds `--no-interpreter`, and empty leaves dcode's default unchanged.
 
-## Inputs, authority, and safety boundary
+## Inputs, authority, and safety
 
-All `with:` values are strings. Empty optional value inputs are omitted; `true` boolean inputs add their mapped flag.
+All `with:` values are strings. Empty optional value inputs are omitted; a `true` boolean adds the associated CLI flag.
 
 | Concern | Inputs | Effect |
 | --- | --- | --- |
-| Task and identity | `prompt`, `working_directory`, `agent_name`, `cli_version` | Select the task, workspace, memory identity, and CLI distribution. |
-| Model | `model`, `model_params`, `max_retries`, `profile_override` | Map to model-selection and retry flags. |
-| Task bounds | `shell_allow_list`, `skill`, `startup_cmd`, `stdin`, `max_turns`, `task_timeout`, `timeout` | Set shell policy, startup behavior, prompt transport, and limits. |
-| Response | `quiet`, `no_stream`, `json` | Map to dcode output flags. |
-| Rubric | `rubric`, `rubric_model`, `rubric_max_iterations` | Pass acceptance criteria and grader controls. |
-| Integrations | `mcp_config`, `no_mcp`, `trust_project_mcp`, `interpreter`, `interpreter_tools`, `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, `sandbox_setup` | Map supported MCP, interpreter, and sandbox controls. |
-| Memory | `enable_memory`, `memory_scope` | Control the cache lifecycle. |
+| Task and identity | `prompt`, `working_directory`, `agent_name`, `cli_version` | Select task, workspace, memory identity, and package release. |
+| Model | `model`, `model_params`, `max_retries`, `profile_override` | Select the model and its configuration. |
+| Bounds and output | `shell_allow_list`, `skill`, `startup_cmd`, `stdin`, `max_turns`, `task_timeout`, `timeout`, `quiet`, `no_stream`, `json` | Select shell policy, prompt delivery, task bounds, and response format. |
+| Integrations | `mcp_config`, `no_mcp`, `trust_project_mcp`, `interpreter`, `interpreter_tools`, `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, `sandbox_setup` | Forward supported MCP, interpreter, and sandbox controls. |
+| Evaluation and memory | `rubric`, `rubric_model`, `rubric_max_iterations`, `enable_memory`, `memory_scope` | Configure rubric grading and persisted memory. |
 
-`--auto-approve` is intentionally absent from the action contract. Adding a dcode option does not expose it from the action; it must be declared and mapped deliberately in `action.yml`. `--non-interactive` runs one task and exits without human approvals, but it can still change files and access the network.
+`--auto-approve` is deliberately not exposed: adding a dcode option does not expose it through the action unless `action.yml` declares and maps it. `--non-interactive` runs one task without human tool approvals, and can modify files and access the network. At the dcode boundary, no shell allow list disables shell access; a restrictive list enables and gates shell commands; `all` permits any command and auto-approves tools. An empty `sandbox` means local runner execution, not isolation.
 
-At the dcode boundary, no shell allow list disables shell access; a restrictive list enables and gates shell commands; and `all` permits unrestricted shell commands and auto-approves tools. Project stdio MCP is untrusted by default. An explicit MCP config path takes precedence over auto-discovered configuration, `no_mcp` disables MCP tool loading, and `trust_project_mcp` explicitly permits project MCP loading. An empty `sandbox` means local runner execution, not isolation. Treat prompts, checked-out content, skills, MCP configuration, and agent output as untrusted.
+MCP is another execution boundary. An explicit MCP config has highest precedence over auto-discovered configuration, `no_mcp` disables MCP tool loading, and project stdio MCP remains disabled unless `trust_project_mcp` is set. Treat prompts, repository content, skills, MCP configuration, and agent output as untrusted input.
 
 ## Memory, skills, and outputs
 
-With `enable_memory: "true"` (the default), the action caches the named agent memory directory, the global SQLite session database plus WAL/SHM files, and `<working_directory>/.deepagents/AGENTS.md`. The cache namespace begins with `agent_name` (default `agent`) and uses `memory_scope`: `pr` selects an issue/PR number or ref, `branch` selects the ref, and `repo` is repository-wide and the default. Unknown scopes warn and fall back to the PR/ref calculation. Restore tries the selected prefix and then the agent-wide prefix; saves append `github.run_id` and run under `always()`. `cache_hit` is the restore result and is empty when memory is disabled.
+With `enable_memory: "true"` (the default), the action restores and saves the named agent directory, global SQLite session database and WAL/SHM files, and `<working_directory>/.deepagents/AGENTS.md` through `actions/cache`. The namespace starts with `agent_name` (default `agent`) and applies `memory_scope`: `pr` uses a PR/issue number or ref, `branch` uses the ref, and `repo` is repository-wide and default. Unknown scopes warn and use the conservative PR/ref calculation. Save keys include `github.run_id` and the save step runs under `always()`.
 
-If `skills_repo` is supplied, the action shallow-clones an `owner/repo`, `owner/repo@ref`, HTTPS, or SSH source into a temporary directory. Every directory containing `SKILL.md` is copied to `.deepagents/skills`; clone failure or no discovered skill fails the action. Pin a reviewed skill revision because this installs instructions into the agent workspace.
+When `skills_repo` is set, the action shallow-clones `owner/repo`, `owner/repo@ref`, or a full HTTPS/SSH URL into a temporary directory. It copies every directory containing `SKILL.md` into `.deepagents/skills`; clone failure or no discovered skill fails the action. Pin a reviewed skill revision because its contents become agent instructions.
 
 | Output | Meaning |
 | --- | --- |
-| `response` | Combined dcode stdout and stderr; raw, untrusted agent output. |
-| `exit_code` | Agent or outer-timeout status; the action exits with this code. |
-| `cache_hit` | Memory restore result, or empty when memory is off. |
+| `response` | Combined dcode stdout and stderr. Treat as raw, untrusted agent output. |
+| `exit_code` | Agent or outer-timeout status. The action exits with this code. |
+| `cache_hit` | Result of memory restore, or empty when memory is disabled. |
 
-The action pipes combined output to `tee` but captures `PIPESTATUS[0]`, so a successful `tee` cannot conceal a dcode or timeout failure. It writes `response` with a random `$GITHUB_OUTPUT` heredoc delimiter, preventing agent output from forging output records. The stdin branch uses process substitution rather than a `printf | timeout` pipeline, avoiding a producer SIGPIPE being reported as the task result.
+The action captures the first pipeline stage via `PIPESTATUS[0]`, so a successful `tee` cannot hide a dcode or timeout failure. It uses a random `$GITHUB_OUTPUT` heredoc delimiter so agent output cannot forge output records. The stdin route uses process substitution rather than a `printf | timeout` pipeline, avoiding a producer SIGPIPE being mistaken for the task outcome.
 
-## Published CLI and release contract
+## Published CLI compatibility
 
-The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`.
+The action reference and `cli_version` select different artifacts: `uses: langchain-ai/deepagents@<ref>` chooses the root composite action, while `cli_version` chooses the latest `deepagents-code` distribution or the exact release passed to `uvx`. The distribution exposes both `dcode` and `deepagents-code` console scripts, each invoking `deepagents_code:cli_main`.
 
-### Installer-visible package contract
-
-The source currently declares `deepagents-code` `0.2.14`. A normal package installation must satisfy its Python constraint, `>=3.14,<3.15`, and receives the exact runtime dependency `deepagents==0.7.41`; these are the constraints that matter to `uvx` and therefore to action consumers. The `0.2.0` changelog records the Python 3.14 requirement as a breaking change. Pin `cli_version` to a release compatible with the job environment and the flags supplied to the action.
-
-### Editable repository development is different
-
-The source checkout's `[tool.uv.sources]` maps `deepagents` and several integration packages to editable sibling directories. That mapping supports repository development and tests; it is not published package metadata and does not alter what the action's `uvx --from deepagents-code` installation resolves. In particular, do not infer the action's SDK from an editable checkout: keep the released exact SDK pin current when Code relies on SDK functionality, and validate the distribution path when changing this boundary.
-
-### Release process and integrity safeguards
-
-`deepagents-code` is a release-managed PyPI package. The release workflow maps it to `libs/code`, resolves and checks out an exact release SHA, and stamps that SHA into its build through `DEEPAGENTS_CODE_BUILD_COMMIT`; this keeps the distribution and eventual tag tied to the same source tree. Before publishing, the release checks that the code package's exact SDK pin is at least the workspace SDK version unless an operator explicitly enables `dangerous-skip-sdk-pin-check`. That bypass is for an intentional older pin, not routine release use.
-
-For normal releases, release-please creates a package release PR after releasable changes on `main`; merging it dispatches the package-release workflow. The workflow builds from the validated SHA, runs pre-release checks, publishes the built artifact to TestPyPI, then publishes the same artifact to PyPI before creating the GitHub release and tag. A manual dispatch requires a package, version, and normally an exact `release-sha`; the workflow verifies that the selected commit declares the requested version and is reachable from `main`.
-
-The workflow fails closed if it cannot determine whether that exact package version is already on PyPI, and rejects a version that is already published. It records checksums in the unprivileged build job and verifies the downloaded artifact against them before both TestPyPI and PyPI publication. Publishing is isolated in jobs with the `release` environment and OIDC `id-token: write`, while the build job has only read permissions. These boundaries reduce the opportunity for build-time code or an altered artifact to use publishing credentials.
-
-Do not move or recreate a tag for a version already published to PyPI: one version must continue to identify one artifact. On a successful release, the workflow tags the GitHub release at the resolved release SHA and transitions the corresponding release PR from its pending label to `auto:release-tagged`.
+The source package currently declares `deepagents-code` `0.2.15`, Python `>=3.14,<3.15`, and an exact runtime SDK dependency, `deepagents==0.7.42`. A runner resolving the current package therefore needs Python 3.14 and receives that SDK version. The editable mappings in `[tool.uv.sources]` are repository-development wiring, not published dependency metadata; they do not change what `uvx --from deepagents-code` resolves. When changing an action-used flag, consider both the action's parser compatibility test and the oldest supported `cli_version`.
 
 ## Verification and safe changes
 
-The focused action test parses `action.yml` and the dcode root parser to catch action-input-to-flag drift and ensure `--auto-approve` stays absent. It executes the actual action run body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, version command construction, timeout arithmetic, exit propagation, and stdin SIGPIPE behavior.
+The focused action test parses `action.yml` and dcode's root parser to detect action-input-to-flag drift and ensure `--auto-approve` remains absent. It then executes the actual action run body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, version construction, timeout arithmetic, exit propagation, and stdin SIGPIPE handling.
 
-Run it locally from the repository root:
+Run it from the repository root:
 
 ```bash
 python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
 ```
 
-Repository CI runs it through `python -m pytest .github/scripts/tests -v` in `Validate Release Options`, after installing `packaging`, `pyyaml`, and `pytest` on Python 3.14. The helper-script job runs unless change detection identifies a curated release-notes-only apply. When changing the action, update its input declarations, flag mapping, and this focused test together; when changing an action-used CLI flag, its parser compatibility assertion is the early warning that prevents publishing a broken adapter.
+CI runs that test inside the helper-script suite in the `Validate Release Options` job after installing `packaging`, `pyyaml`, and `pytest` on Python 3.14. Update input declarations, shell mapping, parser expectations, and behavioral tests together when changing this boundary.

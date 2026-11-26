@@ -26,8 +26,8 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+    at: 2026-11-26T08:03:59.911Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # Agent Client Protocol Integration
@@ -36,7 +36,7 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 
 ## Compatibility and embedding boundary
 
-`deepagents-acp` 0.1.0 is an alpha package for Python `>=3.11,<4.0`; its runtime dependencies include unpinned `deepagents`, `agent-client-protocol>=1.0.0,<2.0.0`, and `python-dotenv>=1.2.2`. `deepagents-code` 0.2.14 declares `deepagents-acp>=0.1.0,<1.0.0` as a direct runtime dependency, pins `deepagents==0.7.41`, and requires Python `>=3.14,<3.15`. Therefore, installing dcode resolves the ACP adapter transitively, but a dcode ACP process follows dcode's narrower Python range, its pinned Deep Agents SDK release, and its adapter range—not the adapter's standalone Python floor or unconstrained SDK dependency.
+`deepagents-acp` 0.1.0 is an alpha package for Python `>=3.11,<4.0`; its runtime dependencies include unpinned `deepagents`, `agent-client-protocol>=1.0.0,<2.0.0`, and `python-dotenv>=1.2.2`. `deepagents-code` 0.2.15 declares `deepagents-acp>=0.1.0,<1.0.0` as a direct runtime dependency, pins `deepagents==0.7.42`, and requires Python `>=3.14,<3.15`. Therefore, installing dcode resolves the ACP adapter transitively, but a dcode ACP process follows dcode's narrower Python range, its pinned Deep Agents SDK release, and its adapter range—not the adapter's standalone Python floor or unconstrained SDK dependency.
 
 This is package compatibility, not a dcode policy inherited by every adapter host. The generic server is served by `acp.run_agent` and accepts either a compiled graph or a factory accepting `AgentSessionContext(cwd, mode, model)`. Mode and model selectors are only meaningful with a factory and are rejected with a directly supplied compiled graph. The adapter dynamically resolves ACP's removed `SessionConfigOption` wrapper, so it can build config options under both ACP SDK 0.8.x and 0.9+ APIs even though its declared SDK dependency is ACP 1.x.
 
@@ -111,7 +111,7 @@ flowchart TD
 
 ACP permissions offer fixed decisions, so the adapter translates only Human-in-the-loop-style action requests. A free-form LangGraph `interrupt()` payload is rejected with a protocol error rather than guessed at. After receiving an interrupt update, it waits for the stream iterator to close before reading graph state, avoiding a stale persistent-checkpoint snapshot; it requests an ACP permission and resumes with `Command(resume={"decisions": ...})`. A cancelled editor permission dialog becomes rejection.
 
-An "always allow" grant lives only in adapter memory and is scoped to one ACP session. Non-`execute` tools are reused by name. `execute` is narrower: the key is canonical JSON for the complete arguments plus current cwd, mode, and model. A different command, arguments, context, or session needs review, and forgetting a session discards its grants. A `write_todos` update is auto-approved only while an existing plan is incomplete; rejected or cancelled plan review clears the recorded plan.
+An "always allow" grant lives only in adapter memory and is scoped to one ACP session. Non-`execute` tools are reused by name. `execute` is narrower: the key is canonical JSON for the complete arguments plus current cwd, mode, and model. A different command, arguments, context, or session needs review. The remembered approval state is adapter-local rather than durable checkpoint state. A `write_todos` update is auto-approved only while an existing plan is incomplete; rejected or cancelled plan review clears the recorded plan.
 
 Dcode resolves approval mode before ACP startup rather than trusting raw flags. YOLO requires a prior acknowledgement recorded in the interactive TUI, and `--auto-classifier-model` is accepted only in resolved Auto mode. In Auto mode dcode's ACP subclass writes trusted Auto state to its store, adds literal text-prompt metadata with a turn ID, and provides `CLIContextSchema` while streaming the graph.
 

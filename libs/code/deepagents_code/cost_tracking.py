@@ -884,6 +884,37 @@ def _start_price_updater() -> None:
             _PRICE_UPDATER = updater
 
 
+_PRICING_WARMUP: threading.Thread | None = None
+"""The thread `_warm_pricing` started, or `None` before the first turn.
+
+Kept so tests can join it; the thread is a daemon and is never joined in
+production.
+"""
+
+
+def _warm_pricing() -> None:
+    """Load pricing and start the catalog updater without blocking the caller.
+
+    Without this, the updater starts on the first priced response. That request
+    is then priced against the bundled catalog before the first refresh lands,
+    so a model released after the pinned genai-prices shows as unpriced for the
+    rest of the thread. Calling this when a turn begins gives the fetch the
+    whole model call to finish.
+
+    Pricing is still loaded only once a model turn runs, never at CLI startup.
+    The import and the updater start run on a daemon thread because the caller
+    may be on the event loop.
+    """
+    global _PRICING_WARMUP  # noqa: PLW0603
+    with _PRICE_UPDATER_LOCK:
+        if _PRICING_WARMUP is not None or _PRICE_UPDATER_ATTEMPTED:
+            return
+        _PRICING_WARMUP = threading.Thread(
+            target=_load_pricing, name="dcode-pricing-warmup", daemon=True
+        )
+    _PRICING_WARMUP.start()
+
+
 def pricing_data_available() -> bool:
     """Report whether `genai-prices` is currently able to price a request.
 
@@ -2994,12 +3025,13 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,  # noqa: ARG002
         runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Zero the cost channel before a nested agent run.
+        """Warm pricing for the turn, and zero the cost channel when nested.
 
         Returns:
             An overwrite of `_session_cost_usd` to `0.0` for a nested instance,
             otherwise `None`.
         """
+        _warm_pricing()
         if not self._nested:
             return None
         return {

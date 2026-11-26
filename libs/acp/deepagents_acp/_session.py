@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeAlias
 
@@ -11,6 +10,8 @@ from acp.schema import AcpMcpServer, HttpMcpServer, McpServerStdio, SseMcpServer
 from deepagents_acp._permissions import _Permissions
 
 if TYPE_CHECKING:
+    import asyncio
+
     from acp import PromptResponse
     from acp.schema import SessionModeState, StopReason
     from langgraph.graph.state import CompiledStateGraph
@@ -32,8 +33,6 @@ class AgentSessionContext:
     options: tuple[tuple[str, str], ...] = ()
     """Values the user picked for `extra_config_options`, as sorted `(id, value)` pairs."""
     session_id: str = ""
-    generation: int = 0
-    """Changes each time the session is opened; see `AgentServerACP.is_current`."""
     mcp_servers: tuple[McpServer, ...] = ()
     """MCP servers the client supplied for this session. They belong to it alone."""
 
@@ -46,15 +45,14 @@ class AgentSessionContext:
 class _Session:
     """Everything the server holds for one open session.
 
-    Do not keep a reference across an `await`: the session can close, or close
-    and reopen as a new record, meanwhile. Look it up by id again.
+    A session is never reopened while its record exists, and closing waits for
+    its turn and background tasks, so work started for a session ends with it.
     """
 
     cwd: str
-    generation: int = 0
-    """Which opening of the session this is; work from an earlier opening is retired."""
-    opening: bool = False
-    """A load or resume is still restoring the session; it takes no prompts yet."""
+    opening: asyncio.Task[Any] | None = None
+    """The load or resume still restoring the session; it takes no prompts yet."""
+    closing: bool = False
     mcp_servers: list[McpServer] = field(default_factory=list)
     mode: str | None = None
     mode_state: SessionModeState | None = None
@@ -68,10 +66,9 @@ class _Session:
     agent: CompiledStateGraph | None = None
     last_agent: CompiledStateGraph | None = None
     """The latest agent built, kept across option changes for metadata writes."""
-    option_revision: int = 0
-    """Bumped by every option change, so a build that started earlier is discarded."""
-    build_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn: asyncio.Task[PromptResponse] | None = None
+    tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    """Background work, such as titles and command announcements; closing cancels it."""
     permissions: _Permissions = field(default_factory=_Permissions)
 
 

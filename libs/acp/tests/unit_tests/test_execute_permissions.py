@@ -16,7 +16,8 @@ from acp.schema import (
 )
 from langgraph.types import Command, Interrupt
 
-from deepagents_acp.server import AgentServerACP, _Permissions, _Session
+from deepagents_acp._permissions import _Permissions
+from deepagents_acp.server import AgentServerACP, _Session
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -158,10 +159,14 @@ async def test_argument_key_order_does_not_change_command(server: GatedServer) -
 
 @pytest.mark.parametrize(
     ("attribute", "value"),
-    [("cwd", "/other"), ("mode", "different"), ("model", "other")],
+    [
+        ("cwd", "/other"),
+        ("mode", "different"),
+        ("model", "other"),
+    ],
 )
 async def test_changed_session_context_requires_approval(
-    server: GatedServer, attribute: str, value: str
+    server: GatedServer, attribute: str, value: object
 ) -> None:
     await request(server, {"command": "ls"})
     setattr(server._sessions[first_session(server)], attribute, value)

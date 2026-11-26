@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
@@ -83,7 +82,6 @@ from deepagents_acp._permissions import (
     _permission_options,
     _permission_request,
     _permission_tool_call_id,
-    _Permissions,
     _plan_text,
 )
 from deepagents_acp._replay import _history_messages, _replay_updates
@@ -236,16 +234,6 @@ class AgentServerACP(ACPAgent):
         self._client_capabilities = ClientCapabilities()
         self._agent_factory = agent
         self._sessions: dict[str, _Session] = {}
-        self._closing: set[str] = set()
-        """Not on the record: a session without one, such as one being deleted, can close."""
-        self._prompt_finished: dict[str, asyncio.Event] = {}
-        """Set when a session's `session/prompt` handler, including its cleanup, ends.
-
-        Not on the record: the cleanup outlives it when a reopen fails, and a close still waits.
-        """
-        self._session_tasks: dict[str, set[asyncio.Task[None]]] = {}
-        """Not on the record: tasks outlive it when a reopen fails; a close still cancels them."""
-        self._next_generation = itertools.count(1)
         self._load_sessions = load_sessions
 
         if isinstance(agent, CompiledStateGraph):
@@ -461,16 +449,7 @@ class AgentServerACP(ACPAgent):
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> LoadSessionResponse:
         """Restore and replay a persisted ACP session."""
-        agent, generation = await self._open_saved_session(
-            "session/load", cwd, session_id, mcp_servers
-        )
-        try:
-            await self._replay_session(session_id, agent, generation)
-            self._require_generation(session_id, generation)
-        except BaseException:
-            await self._abandon_opening(session_id, generation)
-            raise
-        self._finish_opening(session_id, generation)
+        await self._open_saved_session("session/load", cwd, session_id, mcp_servers, replay=True)
         self._spawn(session_id, self._announce_commands(session_id))
         return LoadSessionResponse(
             modes=self._peek(session_id).mode_state,
@@ -486,10 +465,7 @@ class AgentServerACP(ACPAgent):
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> ResumeSessionResponse:
         """Reopen a persisted ACP session without replaying its history."""
-        _, generation = await self._open_saved_session(
-            "session/resume", cwd, session_id, mcp_servers
-        )
-        self._finish_opening(session_id, generation)
+        await self._open_saved_session("session/resume", cwd, session_id, mcp_servers)
         self._spawn(session_id, self._announce_commands(session_id))
         return ResumeSessionResponse(
             modes=self._peek(session_id).mode_state,
@@ -497,59 +473,47 @@ class AgentServerACP(ACPAgent):
         )
 
     async def _open_saved_session(
-        self, method: str, cwd: str, session_id: str, mcp_servers: list[McpServer] | None
-    ) -> tuple[CompiledStateGraph, int]:
-        """Restore a saved session's options, check readiness, and build its agent.
+        self,
+        method: str,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[McpServer] | None,
+        *,
+        replay: bool = False,
+    ) -> None:
+        """Restore a saved session's options, check readiness, build its agent, and replay it.
 
         Raises:
-            RequestError: `method_not_found` without durable sessions, or the
-                saved-session and readiness errors.
+            RequestError: `method_not_found` without durable sessions, `invalid_request`
+                for a session that is already open, or the saved-session and readiness
+                errors.
         """
         if not self._load_sessions:
             raise RequestError.method_not_found(method)
         session = self._begin_session(session_id, cwd)
-        session.opening = True
-        generation = session.generation
+        # A close meanwhile cancels this task, which releases the session below.
+        session.opening = asyncio.current_task()
         try:
             metadata = await self._session_metadata(session_id)
-            session = self._require_generation(session_id, generation)
             _check_saved_session(session_id, cwd, metadata)
             session.mcp_servers = list(mcp_servers or [])
             self._initialize_session_options(session)
             self._restore_session_options(session, metadata)
             # Check the restored options, which can name another model than the launch default.
             await self.check_ready(self._session_context(session_id))
-            self._require_generation(session_id, generation)
             # Claim the thread now (an ownership override takes its lease here), so a
             # session another process holds fails to open instead of on first prompt.
             self._session_config(session_id)
             agent = await self._reset_agent(session_id)
-            self._require_generation(session_id, generation)
+            if replay:
+                await self._replay_session(session_id, agent)
         except BaseException:
-            # A close that started meanwhile releases and forgets the session itself.
-            await self._abandon_opening(session_id, generation)
-            if (session := self._at_generation(session_id, generation)) is not None:
-                session.opening = False
-            raise
-        return agent, generation
-
-    async def _abandon_opening(self, session_id: str, generation: int) -> None:
-        """Release and forget an opening that failed, unless it was already superseded.
-
-        Rechecked after releasing, since a close and a reopen can run meanwhile.
-        """
-        if self._live(session_id, generation) is None:
-            return
-        try:
-            await self._release_session(session_id)
-        finally:
-            if self._live(session_id, generation) is not None:
+            try:
+                await self._release_session(session_id)
+            finally:
                 self._forget_session(session_id)
-
-    def _finish_opening(self, session_id: str, generation: int) -> None:
-        """Admit prompts once this opening of the session is fully restored."""
-        if (session := self._at_generation(session_id, generation)) is not None:
-            session.opening = False
+            raise
+        session.opening = None
 
     async def _release_session(self, session_id: str) -> None:
         """Let an override release what it acquired for a session; never raises."""
@@ -559,29 +523,16 @@ class AgentServerACP(ACPAgent):
             logger.warning("Releasing session %s failed", session_id, exc_info=True)
 
     def _begin_session(self, session_id: str, cwd: str) -> _Session:
-        """Start a new opening of a session, retiring work from any earlier one.
+        """Add a record for a session that is not open.
 
-        A session reopened without closing keeps the rest of its record, such
-        as its title, plan, and unsaved options.
-
-        Returns:
-            The session's record, on a new generation.
+        Raises:
+            RequestError: `invalid_request` when the session is already open here.
         """
-        self._require_open(session_id)
-        session = self._sessions.get(session_id)
-        if session is None:
-            session = self._sessions[session_id] = _Session(cwd=cwd)
-        elif session.turn is not None:
-            # A turn waiting on permission would answer into the new opening.
+        if session_id in self._sessions:
             raise RequestError.invalid_request(
-                {"message": "A prompt is running in this session; cancel or close it first"}
+                {"message": "The session is already open; close it first"}
             )
-        session.cwd = cwd
-        session.generation = next(self._next_generation)
-        session.build_lock = asyncio.Lock()
-        # "Always" answers belong to the opening whose tools they were given for;
-        # a reopened session may bring other servers under the same tool names.
-        session.permissions = _Permissions()
+        session = self._sessions[session_id] = _Session(cwd=cwd)
         return session
 
     def _peek(self, session_id: str) -> _Session:
@@ -590,40 +541,6 @@ class AgentServerACP(ACPAgent):
         Changes to a blank record are not kept.
         """
         return self._sessions.get(session_id) or _Session(cwd="")
-
-    def _at_generation(self, session_id: str, generation: int) -> _Session | None:
-        """Return the session's record while it is still on this opening."""
-        session = self._sessions.get(session_id)
-        return session if session is not None and session.generation == generation else None
-
-    def _live(self, session_id: str, generation: int) -> _Session | None:
-        """Return the session's record while this opening is live and not closing."""
-        return None if session_id in self._closing else self._at_generation(session_id, generation)
-
-    def _require_generation(self, session_id: str, generation: int) -> _Session:
-        """Stop opening a session that closed or was reopened meanwhile.
-
-        Returns:
-            The session's record, safe to use until the next `await`.
-
-        Raises:
-            RequestError: `invalid_request` when this opening is no longer live.
-        """
-        session = self._live(session_id, generation)
-        if session is None:
-            raise RequestError.invalid_request({"message": "The session was closed"})
-        return session
-
-    def is_current(self, context: AgentSessionContext) -> bool:
-        """Return whether `context` belongs to the live opening of its session.
-
-        A factory that acquires resources, such as MCP connections, checks
-        this before keeping them, since its session may close while it builds.
-        """
-        return (
-            context.generation != 0
-            and self._live(context.session_id, context.generation) is not None
-        )
 
     async def list_sessions(
         self,
@@ -678,36 +595,33 @@ class AgentServerACP(ACPAgent):
     ) -> CloseSessionResponse:
         """Cancel the session's running turn and release everything it holds.
 
-        Closing is terminal: prompts and option changes are refused until the
-        session is forgotten, and a later load starts from fresh state. Work
-        that outlives the deadline is retired, never adopted by a reload. A
-        session still opening can be closed; its load or resume then fails.
+        Waits for the turn and background work to end, so nothing from this
+        session runs after the close returns. A session still opening is
+        closed by cancelling its load or resume, which then fails.
         """
-        if session_id in self._closing:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return CloseSessionResponse()
+        if session.closing:
             raise RequestError.invalid_request({"message": "The session is closing"})
-        self._closing.add(session_id)
+        if session.opening is not None:
+            session.opening.cancel()
+            await asyncio.wait({session.opening})
+            return CloseSessionResponse()
+        session.closing = True
         try:
-            pending: set[asyncio.Future[Any]] = set()
-            if (turn := self._peek(session_id).turn) is not None and not turn.done():
-                turn.cancel()
-            if (finished := self._prompt_finished.get(session_id)) is not None:
-                pending.add(asyncio.ensure_future(finished.wait()))
-            for task in self._session_tasks.pop(session_id, set()):
+            work = {task for task in (session.turn, *session.tasks) if task is not None}
+            for task in work:
                 task.cancel()
-                pending.add(task)
-            if pending:
-                _, late = await asyncio.wait(pending, timeout=_CLOSE_DEADLINE_SECONDS)
-                for future in late:
-                    future.cancel()
+            if work:
+                await asyncio.wait(work)
             await self._save_before_close(session_id)
         finally:
             # A cancelled release must still forget the session, or it stays "closing".
             try:
                 await self._release_session(session_id)
             finally:
-                self._prompt_finished.pop(session_id, None)
                 self._forget_session(session_id)
-                self._closing.discard(session_id)
         return CloseSessionResponse()
 
     async def _save_before_close(self, session_id: str) -> None:
@@ -735,7 +649,14 @@ class AgentServerACP(ACPAgent):
         if metadata.get(_ACP_SESSION_METADATA_KEY) is not True:
             raise RequestError.resource_not_found(session_id)
         await self.close_session(session_id)
-        await self.delete_saved_session(session_id)
+        session = self._begin_session(session_id, str(metadata.get("cwd", "")))
+        session.closing = True
+        try:
+            # Claim the thread as an open does, so one another process holds is not deleted.
+            self._session_config(session_id)
+            await self.delete_saved_session(session_id)
+        finally:
+            self._forget_session(session_id)
         return DeleteSessionResponse()
 
     async def delete_saved_session(self, session_id: str) -> None:
@@ -779,10 +700,10 @@ class AgentServerACP(ACPAgent):
 
         Raises:
             RequestError: `invalid_params` for an unknown option or a value the
-                session doesn't offer, `invalid_request` for a closing session.
+                session doesn't offer, `resource_not_found` for a session that is
+                not open, `invalid_request` while it opens or closes.
         """
-        self._require_open(session_id)
-        session = self._peek(session_id)
+        session = self._require_open(session_id)
         if config_id == "mode" and self._modes is not None:
             state = session.mode_state or self._modes
             if not any(mode.id == value for mode in state.available_modes):
@@ -800,7 +721,8 @@ class AgentServerACP(ACPAgent):
         else:
             self._check_extra_option(session_id, config_id, value)
             session.options[config_id] = value
-        self._invalidate_agent(session)
+        # The next use rebuilds the agent; a turn already running keeps its own.
+        session.agent = None
         await self._persist_options(session_id)
         config_options = self._build_config_options(session_id)
         with contextlib.suppress(ConnectionError):
@@ -817,22 +739,21 @@ class AgentServerACP(ACPAgent):
                 )
         return config_options
 
-    def _require_open(self, session_id: str) -> None:
-        """Refuse work on a session that is closing or still being restored.
+    def _require_open(self, session_id: str) -> _Session:
+        """Return an open session's record, refusing one that is closing or still being restored.
 
         Raises:
-            RequestError: `invalid_request` while the session closes or opens.
+            RequestError: `resource_not_found` for a session that is not open,
+                `invalid_request` while it closes or opens.
         """
-        if session_id in self._closing:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise RequestError.resource_not_found(session_id)
+        if session.closing:
             raise RequestError.invalid_request({"message": "The session is closing"})
-        if self._peek(session_id).opening:
+        if session.opening is not None:
             raise RequestError.invalid_request({"message": "The session is still opening"})
-
-    @staticmethod
-    def _invalidate_agent(session: _Session) -> None:
-        """Drop the cached agent so the next use builds one from current options."""
-        session.agent = None
-        session.option_revision += 1
+        return session
 
     def extra_config_options(
         self,
@@ -1033,7 +954,7 @@ class AgentServerACP(ACPAgent):
         if not self._load_sessions:
             return
         session = self._peek(session_id)
-        if session.turn is not None or session_id in self._closing:
+        if session.turn is not None or session.closing:
             session.unsaved_options = True
         else:
             await self._persist_session(session_id)
@@ -1051,14 +972,10 @@ class AgentServerACP(ACPAgent):
         self,
         session_id: str,
         agent: CompiledStateGraph,
-        generation: int,
     ) -> None:
         """Replay persisted conversation entries before `session/load` returns."""
         history = agent.aget_state_history(self._session_config(session_id))
-        for update in _replay_updates(await _history_messages(history)):
-            # A close or reopen during a slow send retires this replay.
-            self._require_generation(session_id, generation)
-            await self._send(session_id, update)
+        await self._send_all(session_id, _replay_updates(await _history_messages(history)))
 
     def _forget_session(self, session_id: str) -> None:
         """Discard everything the server holds for a session."""
@@ -1074,49 +991,35 @@ class AgentServerACP(ACPAgent):
             model=session.model if self._models is not None else None,
             options=tuple(sorted(session.options.items())),
             session_id=session_id,
-            generation=session.generation,
             mcp_servers=tuple(session.mcp_servers),
         )
 
     async def _agent_for(self, session_id: str) -> CompiledStateGraph:
         """Return the session's cached agent, building it on first use."""
         agent = self._peek(session_id).agent
-        return agent if agent is not None else await self._reset_agent(session_id, force=False)
+        return agent if agent is not None else await self._reset_agent(session_id)
 
-    async def _reset_agent(self, session_id: str, *, force: bool = True) -> CompiledStateGraph:
+    async def _reset_agent(self, session_id: str) -> CompiledStateGraph:
         """Build the session's agent from its current options and cache it.
 
-        Option changes only drop the cached agent, so the next turn rebuilds
-        it; a turn already running keeps the agent it started with. Builds for
-        a session run one at a time, and a build that an option change
-        overtook is thrown away and redone, so a slow old build never wins.
+        A build that an option change overtook still serves the caller that
+        asked for it, but is not cached, so the next use builds the new choice.
         """
-        session = self._peek(session_id)
-        generation = session.generation
-        async with session.build_lock:
-            while True:
-                session = self._require_generation(session_id, generation)
-                if session.agent is not None and not force:
-                    return session.agent
-                revision = session.option_revision
-                agent = await self._build_agent(session_id)
-                session = self._require_generation(session_id, generation)
-                if session.option_revision == revision:
-                    session.agent = session.last_agent = agent
-                    return agent
-                force = True
-
-    async def _build_agent(self, session_id: str) -> CompiledStateGraph:
-        """Run the agent factory with the session's current context."""
-        if isinstance(self._agent_factory, CompiledStateGraph):
-            agent = self._agent_factory
-        else:
-            built = self._agent_factory(self._session_context(session_id))
-            # A narrowed `Awaitable[CompiledStateGraph]` loses its type argument under ty.
-            agent = cast(
-                "CompiledStateGraph", await built if isinstance(built, Awaitable) else built
-            )
+        session = self._sessions[session_id]
+        context = self._session_context(session_id)
+        agent = await self._build_agent(context)
+        session.last_agent = agent
+        if self._session_context(session_id) == context:
+            session.agent = agent
         return agent
+
+    async def _build_agent(self, context: AgentSessionContext) -> CompiledStateGraph:
+        """Run the agent factory with the session's context."""
+        if isinstance(self._agent_factory, CompiledStateGraph):
+            return self._agent_factory
+        built = self._agent_factory(context)
+        # A narrowed `Awaitable[CompiledStateGraph]` loses its type argument under ty.
+        return cast("CompiledStateGraph", await built if isinstance(built, Awaitable) else built)
 
     async def prompt(  # ty: ignore[invalid-method-override]  # keeps public positional order; ACP calls by keyword
         self,
@@ -1136,16 +1039,12 @@ class AgentServerACP(ACPAgent):
         The turn runs as its own task so `session/cancel` can stop it at any
         await, including inside a long tool call.
         """
-        self._require_open(session_id)
-        session = self._sessions.get(session_id)
-        if session is None:
-            raise RequestError.resource_not_found(session_id)
+        session = self._require_open(session_id)
         if session.turn is not None:
             raise RequestError.invalid_request(
                 {"message": "A prompt is already running in this session"}
             )
         turn = session.turn = asyncio.create_task(self._run_turn(prompt, session_id))
-        finished = self._prompt_finished[session_id] = asyncio.Event()
         try:
             return await turn
         except asyncio.CancelledError:
@@ -1153,21 +1052,32 @@ class AgentServerACP(ACPAgent):
             if turn.cancelled() and (current is None or not current.cancelling()):
                 return PromptResponse(stop_reason="cancelled")
             raise
-        finally:
-            try:
-                # A closing session saves its own options before it is forgotten.
-                session = self._peek(session_id)
-                if session.turn is turn and session_id not in self._closing:
-                    session.turn = None
-                    if session.unsaved_options:
-                        session.unsaved_options = False
-                        await self._persist_session(session_id)
-            finally:
-                finished.set()
-                if self._prompt_finished.get(session_id) is finished:
-                    del self._prompt_finished[session_id]
 
     async def _run_turn(self, prompt: Sequence[Any], session_id: str) -> PromptResponse:
+        """Run one turn, then save option changes it held back.
+
+        The save runs inside the turn's task, so a close that waits for the
+        turn also waits for it.
+        """
+        try:
+            return await self._stream_turn(prompt, session_id)
+        finally:
+            session = self._peek(session_id)
+            session.turn = None
+            # A closing session saves its own options before it is forgotten.
+            if session.unsaved_options and not session.closing:
+                await self._save_held_options(session_id)
+
+    async def _save_held_options(self, session_id: str) -> None:
+        """Save option changes held back during a turn; a failure keeps them for the next try."""
+        try:
+            await self._persist_session(session_id)
+        except Exception:  # noqa: BLE001  # the turn's own outcome must not be replaced
+            logger.warning("Could not save options for session %s", session_id, exc_info=True)
+        else:
+            self._peek(session_id).unsaved_options = False
+
+    async def _stream_turn(self, prompt: Sequence[Any], session_id: str) -> PromptResponse:
         """Stream the agent until it finishes, resolving interrupts along the way."""
         agent = await self._agent_for(session_id)
         if getattr(agent, "checkpointer", None) is None:
@@ -1362,7 +1272,7 @@ class AgentServerACP(ACPAgent):
     def _spawn(self, session_id: str, work: Coroutine[Any, Any, None]) -> None:
         """Run session work after the current request; closing the session cancels it."""
         task = asyncio.create_task(work)
-        tasks = self._session_tasks.setdefault(session_id, set())
+        tasks = self._sessions[session_id].tasks
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 
@@ -1505,13 +1415,9 @@ class AgentServerACP(ACPAgent):
         execute_key: _ExecuteKey | None,
         *,
         allow: bool,
-        turn: _Turn,
     ) -> None:
         """Record an "always" answer for the rest of this opening of the session."""
-        session = self._peek(session_id)
-        if session.generation != turn.context.generation:
-            return  # answered after the session reopened; it applies to this call only
-        session.permissions.remember(tool_name, execute_key, allow=allow)
+        self._peek(session_id).permissions.remember(tool_name, execute_key, allow=allow)
 
     async def _hitl_decisions(
         self,
@@ -1549,7 +1455,7 @@ class AgentServerACP(ACPAgent):
         choice = await self._ask_permission(session_id, action, execute_key, turn, scope)
         if choice in {"approve_always", "reject_always"}:
             allow = choice == "approve_always"
-            self._remember_decision(session_id, tool_name, execute_key, allow=allow, turn=turn)
+            self._remember_decision(session_id, tool_name, execute_key, allow=allow)
             choice = "approve" if allow else "reject"
         if tool_name == "write_todos":
             return await self._plan_decision(session_id, tool_args, approved=choice == "approve")

@@ -775,6 +775,7 @@ async def test_acp_agent_load_session_rejects_different_cwd() -> None:
     server = AgentServerACP(agent=build_agent, load_sessions=True)
     server.on_connect(FakeACPClient())  # type: ignore[arg-type]
     session = await server.new_session(cwd="/tmp/original", mcp_servers=[])
+    await server.close_session(session_id=session.session_id)
 
     with pytest.raises(RequestError) as exc_info:
         await server.load_session(

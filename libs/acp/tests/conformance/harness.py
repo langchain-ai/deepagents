@@ -345,8 +345,8 @@ class Harness:
 
     async def settle(self) -> None:
         """Wait for background work, such as titles and command announcements."""
-        for tasks in list(self.server._session_tasks.values()):
-            await asyncio.gather(*tasks)
+        for session in list(self.server._sessions.values()):
+            await asyncio.gather(*session.tasks)
 
     async def cancel(self, session_id: str) -> None:
         await self.server.cancel(session_id=session_id)

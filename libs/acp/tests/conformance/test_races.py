@@ -81,8 +81,9 @@ async def test_a_slow_old_build_never_replaces_a_newer_choice() -> None:
     await server.set_session_mode(mode_id="manual", session_id=session.session_id)
     release_auto.set()
     await turn
+    await server.prompt([TextContentBlock(type="text", text="hi")], session_id=session.session_id)
 
-    # The auto build finished after the switch, so it was thrown away and redone.
+    # The auto build finished after the switch, so it served its turn but wasn't kept.
     assert built[-2:] == ["auto", "manual"]
 
 
@@ -111,53 +112,6 @@ async def test_prompts_are_refused_while_a_session_closes() -> None:
         await server.prompt(
             [TextContentBlock(type="text", text="hi")], session_id=session.session_id
         )
-
-
-async def test_a_turn_that_ignores_cancel_is_retired_and_the_session_reopens(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(server_module, "_CLOSE_DEADLINE_SECONDS", 0)
-    checkpointer = MemorySaver()
-    started = asyncio.Event()
-    ignored = asyncio.Event()
-    stop = asyncio.Event()
-
-    async def stubborn(reason: str) -> str:
-        """Ignore the first cancellation."""
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            ignored.set()
-            await stop.wait()
-        return "late"
-
-    tool = StructuredTool.from_function(coroutine=stubborn, name="stubborn")
-    models = iter(
-        [scripted_model(reply("", call("stubborn", {"reason": "x"}))), scripted_model("ok")]
-    )
-
-    def build(context: AgentSessionContext) -> Any:
-        return deep_agent(next(models), tools=[tool], checkpointer=checkpointer)
-
-    server = Harness.start(build, load_sessions=True, checkpointer=checkpointer).server
-    session = await server.new_session(cwd="/tmp", mcp_servers=[])
-
-    first = asyncio.create_task(
-        server.prompt([TextContentBlock(type="text", text="go")], session_id=session.session_id)
-    )
-    await asyncio.wait_for(started.wait(), timeout=5)
-    await server.close_session(session_id=session.session_id)
-    await server.resume_session(session_id=session.session_id, cwd="/tmp", mcp_servers=[])
-
-    # The reopened session takes prompts while the retired turn is still stuck.
-    again = await server.prompt(
-        [TextContentBlock(type="text", text="again")], session_id=session.session_id
-    )
-    assert again.stop_reason == "end_turn"
-    await asyncio.wait_for(ignored.wait(), timeout=5)
-    stop.set()
-    await first
 
 
 async def test_a_bare_slash_is_an_ordinary_prompt() -> None:
@@ -200,8 +154,8 @@ async def test_a_build_paused_across_close_neither_blocks_nor_pollutes_a_reopen(
     )
     release.set()
 
-    with pytest.raises(RequestError):
-        await change
+    stale = await change
+    assert server._sessions[session.session_id].agent is not stale
     assert all(cwd == "/tmp" for cwd, _mode in built)
     response = await server.prompt(
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id
@@ -262,6 +216,7 @@ async def test_a_resume_in_flight_when_close_starts_fails_instead_of_vanishing()
         build, load_sessions=True, checkpointer=checkpointer, server_class=Server
     ).server
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await server.close_session(session_id=session.session_id)
 
     pausing["value"] = True
     resume = asyncio.create_task(
@@ -272,7 +227,7 @@ async def test_a_resume_in_flight_when_close_starts_fails_instead_of_vanishing()
     await asyncio.sleep(0)
     release_check.set()
 
-    with pytest.raises(RequestError):
+    with pytest.raises(asyncio.CancelledError):
         await resume
     await closing
     pausing["value"] = False
@@ -306,6 +261,7 @@ async def test_a_load_replaying_when_close_starts_fails_instead_of_vanishing() -
     ).server
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
     await server.prompt([TextContentBlock(type="text", text="hi")], session_id=session.session_id)
+    await server.close_session(session_id=session.session_id)
 
     client.pause = True
     load = asyncio.create_task(
@@ -315,8 +271,9 @@ async def test_a_load_replaying_when_close_starts_fails_instead_of_vanishing() -
     await server.close_session(session_id=session.session_id)
     release.set()
 
-    with pytest.raises(RequestError):
+    with pytest.raises(asyncio.CancelledError):
         await load
+    assert session.session_id not in server._sessions
 
 
 async def test_close_with_a_pending_mode_change_never_builds_the_new_agent() -> None:
@@ -371,9 +328,55 @@ async def test_a_failed_resume_releases_what_the_session_acquired() -> None:
         build, load_sessions=True, checkpointer=checkpointer, server_class=Server
     ).server
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await server.close_session(session_id=session.session_id)
 
     with pytest.raises(RuntimeError):
         await server.resume_session(session_id=session.session_id, cwd="/tmp", mcp_servers=[])
 
-    assert released == [session.session_id]
+    assert released == [session.session_id, session.session_id]
     assert session.session_id not in server._sessions
+
+
+async def test_close_waits_for_a_turn_that_ignores_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server_module, "_CLOSE_DEADLINE_SECONDS", 0)
+    checkpointer = MemorySaver()
+    ignored = asyncio.Event()
+    stop = asyncio.Event()
+
+    async def stubborn(reason: str) -> str:
+        """Ignore the first cancellation."""
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            ignored.set()
+            await stop.wait()
+        return "late"
+
+    tool = StructuredTool.from_function(coroutine=stubborn, name="stubborn")
+
+    def build(_context: AgentSessionContext) -> Any:
+        model = scripted_model(reply("", call("stubborn", {"reason": "x"})), "late reply")
+        return deep_agent(model, tools=[tool], checkpointer=checkpointer)
+
+    harness = Harness.start(build, load_sessions=True, checkpointer=checkpointer)
+    server, client = harness.server, harness.client
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    first = asyncio.create_task(
+        server.prompt([TextContentBlock(type="text", text="go")], session_id=session.session_id)
+    )
+    await asyncio.sleep(0.1)
+
+    closing = asyncio.create_task(server.close_session(session_id=session.session_id))
+    await asyncio.wait_for(ignored.wait(), timeout=5)
+    done, _ = await asyncio.wait({closing}, timeout=0.1)
+    assert not done
+    stop.set()
+    await asyncio.wait_for(closing, timeout=5)
+    await first
+
+    sent = len(client.session_updates(session.session_id))
+    await server.resume_session(session_id=session.session_id, cwd="/tmp", mcp_servers=[])
+    await harness.settle()
+    assert len(client.session_updates(session.session_id)) == sent

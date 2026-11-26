@@ -45,6 +45,7 @@ async def test_prompts_wait_until_a_restore_finishes() -> None:
         build, server_class=Server, load_sessions=True, checkpointer=checkpointer
     ).server
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await server.close_session(session_id=session.session_id)
 
     pausing["value"] = True
     resume = asyncio.create_task(
@@ -202,6 +203,7 @@ async def test_prompts_wait_until_load_replay_finishes() -> None:
     ).server
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
     await server.prompt([TextContentBlock(type="text", text="hi")], session_id=session.session_id)
+    await server.close_session(session_id=session.session_id)
 
     client.pause = True
     load = asyncio.create_task(
@@ -252,6 +254,7 @@ async def test_always_answers_do_not_carry_into_a_reopened_session() -> None:
     harness = Harness.start(graph, client=client, load_sessions=True, checkpointer=checkpointer)
     session_id = await harness.new_session()
     await harness.prompt(session_id, "One")
+    await harness.server.close_session(session_id=session_id)
 
     await harness.server.resume_session(session_id=session_id, cwd="/tmp", mcp_servers=[])
     await harness.prompt(session_id, "Two")
@@ -309,12 +312,13 @@ async def test_a_load_whose_replay_fails_releases_the_session() -> None:
     ).server
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
     await server.prompt([TextContentBlock(type="text", text="hi")], session_id=session.session_id)
+    await server.close_session(session_id=session.session_id)
 
     client.fail = True
     with pytest.raises(ConnectionError):
         await server.load_session(cwd="/tmp", session_id=session.session_id, mcp_servers=[])
 
-    assert released == [session.session_id]
+    assert released == [session.session_id, session.session_id]
     assert session.session_id not in server._sessions
 
 
@@ -366,9 +370,10 @@ async def test_a_close_cancelled_while_releasing_still_forgets_the_session() -> 
 
     with pytest.raises(asyncio.CancelledError):
         await server.close_session(session_id=session.session_id)
-    await server.close_session(session_id=session.session_id)
 
-    assert releases == [session.session_id, session.session_id]
+    assert session.session_id not in server._sessions
+    await server.close_session(session_id=session.session_id)
+    assert releases == [session.session_id]
 
 
 async def test_a_load_closed_mid_replay_sends_nothing_more() -> None:
@@ -395,6 +400,7 @@ async def test_a_load_closed_mid_replay_sends_nothing_more() -> None:
     ).server
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
     await server.prompt([TextContentBlock(type="text", text="hi")], session_id=session.session_id)
+    await server.close_session(session_id=session.session_id)
     sent_before = len(client.session_updates(session.session_id))
 
     client.pause = True
@@ -404,8 +410,132 @@ async def test_a_load_closed_mid_replay_sends_nothing_more() -> None:
     await asyncio.wait_for(replaying.wait(), timeout=2)
     await server.close_session(session_id=session.session_id)
     release.set()
-    with pytest.raises(RequestError):
+    with pytest.raises(asyncio.CancelledError):
         await load
 
-    replayed = client.session_updates(session.session_id)[sent_before:]
-    assert [type(update) for update in replayed] == [UserMessageChunk]
+    assert session.session_id not in server._sessions
+    # The close cancelled the send in flight, so the client got none of the replay.
+    assert client.session_updates(session.session_id)[sent_before:] == []
+
+
+async def test_reopening_an_open_session_is_refused_and_leaves_it_running() -> None:
+    checkpointer = MemorySaver()
+    released: list[str] = []
+
+    class Server(AgentServerACP):
+        async def session_closed(self, session_id: str) -> None:
+            released.append(session_id)
+
+    def build(_context: AgentSessionContext) -> Any:
+        return deep_agent(scripted_model("ok", "ok"), checkpointer=checkpointer)
+
+    server = Harness.start(
+        build, server_class=Server, load_sessions=True, checkpointer=checkpointer
+    ).server
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+
+    with pytest.raises(RequestError):
+        await server.resume_session(session_id=session.session_id, cwd="/tmp", mcp_servers=[])
+    with pytest.raises(RequestError):
+        await server.load_session(cwd="/tmp", session_id=session.session_id, mcp_servers=[])
+
+    response = await server.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert response.stop_reason == "end_turn"
+    assert released == []
+
+
+async def test_a_failed_deferred_save_keeps_the_turn_and_the_option() -> None:
+    checkpointer = MemorySaver()
+    failing = {"value": False}
+
+    class Server(AgentServerACP):
+        async def _persist_session(self, session_id: str) -> None:
+            if failing["value"]:
+                failing["value"] = False
+                msg = "checkpointer unavailable"
+                raise ConnectionError(msg)
+            await super()._persist_session(session_id)
+
+    @tool
+    def echo(text: str) -> str:
+        """Echo."""
+        return text
+
+    class SwitchingClient(RecordingClient):
+        async def request_permission(self, session_id: str, *args: Any, **kwargs: Any) -> Any:
+            await server.set_session_mode(mode_id="auto", session_id=session_id)
+            failing["value"] = True
+            return await super().request_permission(session_id, *args, **kwargs)
+
+    def build(_context: AgentSessionContext) -> Any:
+        model = scripted_model(reply("", call("echo", {"text": "hi"})), "Done")
+        return deep_agent(
+            model, tools=[echo], checkpointer=checkpointer, interrupt_on={"echo": True}
+        )
+
+    modes = SessionModeState(
+        current_mode_id="manual",
+        available_modes=[
+            SessionMode(id="manual", name="Manual"),
+            SessionMode(id="auto", name="Auto"),
+        ],
+    )
+    client = SwitchingClient(permission_replies=["approve"])
+    server = Harness.start(
+        build,
+        client=client,
+        server_class=Server,
+        modes=modes,
+        load_sessions=True,
+        checkpointer=checkpointer,
+    ).server
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await server.prompt(
+        [TextContentBlock(type="text", text="Echo hi")], session_id=session.session_id
+    )
+    assert response.stop_reason == "end_turn"
+
+    await server.close_session(session_id=session.session_id)
+    resumed = await server.resume_session(session_id=session.session_id, cwd="/tmp", mcp_servers=[])
+    assert resumed.modes is not None
+    assert resumed.modes.current_mode_id == "auto"
+
+
+async def test_option_changes_on_a_session_that_is_not_open_are_refused() -> None:
+    models = [{"value": "a", "name": "A"}, {"value": "b", "name": "B"}]
+    server = Harness.start(lambda _context: deep_agent(scripted_model()), models=models).server
+
+    with pytest.raises(RequestError):
+        await server.set_config_option(config_id="model", session_id="missing", value="b")
+
+
+async def test_delete_claims_the_thread_like_an_open_does() -> None:
+    checkpointer = MemorySaver()
+    held_elsewhere: set[str] = set()
+
+    class Server(AgentServerACP):
+        def _session_config(self, session_id: str) -> Any:
+            if session_id in held_elsewhere:
+                raise RequestError.invalid_request({"message": "open elsewhere"})
+            return super()._session_config(session_id)
+
+    def build(_context: AgentSessionContext) -> Any:
+        return deep_agent(scripted_model("ok"), checkpointer=checkpointer)
+
+    server = Harness.start(
+        build, server_class=Server, load_sessions=True, checkpointer=checkpointer
+    ).server
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await server.close_session(session_id=session.session_id)
+
+    held_elsewhere.add(session.session_id)
+    with pytest.raises(RequestError):
+        await server.delete_session(session_id=session.session_id)
+
+    assert [info.session_id for info in (await server.list_sessions()).sessions] == [
+        session.session_id
+    ]
+    assert session.session_id not in server._sessions

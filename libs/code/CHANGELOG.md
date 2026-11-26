@@ -4,14 +4,12 @@
 
 ## [0.2.15](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.14...deepagents-code==0.2.15) (2026-11-26)
 
-
 ### Bug Fixes
 
-* **code:** flag partial cost totals in the status bar ([#8023](https://github.com/langchain-ai/deepagents/issues/8023)) ([11318c3](https://github.com/langchain-ai/deepagents/commit/11318c398bc64957602ed0f86125f2fe264cd53c))
-* **code:** keep unpriced usage out of priced cost rows ([#8024](https://github.com/langchain-ai/deepagents/issues/8024)) ([c1ead6a](https://github.com/langchain-ai/deepagents/commit/c1ead6a1e149453d8a3ae578e21d92dccb19ba6f))
-* **code:** replace Baseten models retiring 12/18 in `/model` recommendations ([#8009](https://github.com/langchain-ai/deepagents/issues/8009)) ([c8a11c9](https://github.com/langchain-ai/deepagents/commit/c8a11c9af3d664e02d38b89f324fac7efc992eb0))
-* **code:** start the price catalog refresh when a turn begins ([#8026](https://github.com/langchain-ai/deepagents/issues/8026)) ([3023beb](https://github.com/langchain-ai/deepagents/commit/3023bebc2ff6f08f6cdee7a11f5c8a0a3ac82088))
-* **code:** upgrade `genai-prices` to 0.2 ([#8021](https://github.com/langchain-ai/deepagents/issues/8021)) ([cdde453](https://github.com/langchain-ai/deepagents/commit/cdde453bf8e43049f48d9201f4bf84d9b8e9b59f))
+- Flag partial cost totals in the status bar and keep unpriced usage out of priced cost rows. ([#8023](https://github.com/langchain-ai/deepagents/pull/8023), [#8024](https://github.com/langchain-ai/deepagents/pull/8024))
+- Replace Baseten models retiring on December 18 in `/model` recommendations. ([#8009](https://github.com/langchain-ai/deepagents/pull/8009))
+- Start refreshing the price catalog when a turn begins. ([#8026](https://github.com/langchain-ai/deepagents/pull/8026))
+- Upgrade `genai-prices` to version 0.2. ([#8021](https://github.com/langchain-ai/deepagents/pull/8021))
 
 ### Dependencies
 

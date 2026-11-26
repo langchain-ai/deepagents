@@ -281,6 +281,11 @@ class TalonConfig:
         """Directory reserved for downloaded inbound channel media."""
         return self.home / "media" / "inbound"
 
+    @property
+    def outbound_media_dir(self) -> Path:
+        """Directory where files the agent sends are staged for channel upload."""
+        return self.home / "media" / "outbound"
+
 
 def _create_home(home: Path) -> None:
     home.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

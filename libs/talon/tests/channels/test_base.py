@@ -6,12 +6,14 @@ import pytest
 
 from deepagents_talon.channels.base import (
     DEFAULT_MAX_MEDIA_BYTES,
+    MAX_INLINE_PHOTO_BYTES,
     ChannelExposure,
     ChannelMediaError,
     ExposureMode,
     chunk_text,
     format_markdown_for_channel,
     max_media_bytes_from_env,
+    media_type_for_path,
     message_with_media_paths,
     send_with_retry,
     validate_media,
@@ -98,6 +100,37 @@ def test_validate_media_accepts_relative_path_under_root(tmp_path: Path) -> None
     media = validate_media(ChannelMedia(path=Path("image.png"), media_type="image"), root=root)
 
     assert media == ChannelMedia(path=path.resolve(), media_type="image")
+
+
+@pytest.mark.parametrize("name", ["report.pdf", "data.csv", "archive.tar.gz", "README"])
+def test_validate_media_accepts_any_file_as_a_document(tmp_path: Path, name: str) -> None:
+    path = tmp_path / name
+    path.write_bytes(b"contents")
+
+    media = validate_media(ChannelMedia(path=path, media_type="document"), root=tmp_path)
+
+    assert media == ChannelMedia(path=path.resolve(), media_type="document")
+
+
+@pytest.mark.parametrize(
+    ("name", "size", "expected"),
+    [
+        ("photo.jpg", 10, "image"),
+        ("photo.png", MAX_INLINE_PHOTO_BYTES, "image"),
+        ("photo.png", MAX_INLINE_PHOTO_BYTES + 1, "document"),
+        ("chart.svg", 10, "document"),
+        ("clip.mp4", 10, "video"),
+        ("clip.mov", 10, "document"),
+    ],
+)
+def test_only_inline_safe_media_gets_a_native_category(
+    tmp_path: Path, name: str, size: int, expected: str
+) -> None:
+    path = tmp_path / name
+    with path.open("wb") as stream:
+        stream.truncate(size)
+
+    assert media_type_for_path(path) == expected
 
 
 def test_validate_media_rejects_configured_global_cap(tmp_path: Path) -> None:

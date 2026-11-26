@@ -58,6 +58,7 @@ from deepagents_talon.background import (
     _track_consumed_results,
 )
 from deepagents_talon.breakout import BREAKOUT_HANDLER, breakout
+from deepagents_talon.channels.base import max_media_bytes_from_env
 from deepagents_talon.claude_sessions import (
     SEND_TOOL,
     ClaudeSessions,
@@ -78,6 +79,7 @@ from deepagents_talon.dcode_sessions import (
     enabled as dcode_sessions_enabled,
 )
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
+from deepagents_talon.file_sending import build_send_file_tool, file_scope
 from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -882,6 +884,7 @@ class DeepAgentRuntime:
                 _track_consumed_results(request.conversation_id, pending),
                 progress_messages(request.message_handler, self.verbosity),
                 question_scope(_question_handler_from_request(request)),
+                file_scope(request.file_handler),
                 _history_context(request),
             ):
                 async with (
@@ -1084,7 +1087,12 @@ class DeepAgentRuntime:
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = [current_time, breakout, ask_user]
+        tools: list[BaseTool | Callable[..., object]] = [
+            current_time,
+            breakout,
+            ask_user,
+            build_send_file_tool(self.backend, max_bytes=max_media_bytes_from_env(self.env)),
+        ]
         if self.verbosity > 1:
             guidance = {
                 2: " Use extremely sparingly: only for significant updates while working, "

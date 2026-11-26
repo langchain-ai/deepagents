@@ -32,7 +32,6 @@ from deepagents_talon.channels.base import (
     dispatch_message,
     max_media_bytes_from_env,
     message_with_media_paths,
-    outbound_media_root_from_env,
     parse_content_length,
     parse_float,
     safe_filename_part,
@@ -179,7 +178,7 @@ class DiscordChannelConfig:
         return cls(
             bot_token=token,
             inbound_media_dir=inbound_media_dir,
-            outbound_media_dir=outbound_media_root_from_env(env),
+            outbound_media_dir=config.outbound_media_dir,
             exposure=exposure,
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS", "")),

@@ -41,7 +41,6 @@ from deepagents_talon.channels.base import (
     max_media_bytes_from_env,
     message_with_media_paths,
     optional_str,
-    outbound_media_root_from_env,
     parse_content_length,
     parse_float,
     safe_filename_part,
@@ -201,7 +200,7 @@ class SlackChannelConfig:
                     str(config.inbound_media_dir / "slack"),
                 ),
             ),
-            outbound_media_dir=outbound_media_root_from_env(env),
+            outbound_media_dir=config.outbound_media_dir,
             exposure=exposure,
             include_other_thread_participants=include_participants == "1",
             allowed_user_ids=frozenset(

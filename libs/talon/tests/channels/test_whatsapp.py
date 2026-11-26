@@ -112,7 +112,7 @@ def test_config_from_talon_env_maps_exposure(
 
     assert whatsapp.session_dir == tmp_path / "assistant" / "channels" / "whatsapp"
     assert whatsapp.inbound_media_dir == tmp_path / "assistant" / "media" / "inbound" / "whatsapp"
-    assert whatsapp.outbound_media_dir == tmp_path
+    assert whatsapp.outbound_media_dir == tmp_path / "assistant" / "media" / "outbound"
     assert whatsapp.max_media_bytes == DEFAULT_WHATSAPP_MAX_MEDIA_BYTES
     assert whatsapp.exposure == ChannelExposure(
         mode=ExposureMode.ALLOWLIST,

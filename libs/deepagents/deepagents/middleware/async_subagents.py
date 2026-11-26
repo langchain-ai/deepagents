@@ -57,7 +57,7 @@ from pydantic import BaseModel, Field
 from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _ahydrate_tool_messages, _hydrate_tool_messages
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from deepagents.middleware.subagents import _fork_messages, _refusal_in, _refusal_notice
+from deepagents.middleware.subagents import _FORKED_CONTEXT_KEY, _fork_messages, _refusal_in, _refusal_notice
 from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
 
 logger = logging.getLogger(__name__)
@@ -1058,7 +1058,11 @@ def _resolve_tracked_task(
     tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
     tracked = tasks.get(task_id.strip())
     if not tracked:
-        return f"No tracked task found for task_id: {task_id!r}"
+        msg = f"No tracked task found for task_id: {task_id!r}"
+        if runtime.state.get(_FORKED_CONTEXT_KEY):
+            # A fork sees the parent's launches in its history but not the parent's tasks.
+            msg += ". Tasks started before this fork belong to the agent that started you; you can't check, update, or cancel them from here."
+        return msg
     return tracked
 
 

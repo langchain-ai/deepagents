@@ -110,7 +110,7 @@ async def test_fork_inherits_async_tools_without_parent_tasks(mode: str, middlew
     assert result["async_tasks"] == {"parent-task": task}
     replies = [m for m in worker.call_history[1]["messages"] if isinstance(m, ToolMessage) and m.tool_call_id in {c["id"] for c in calls}]
     assert len(replies) == len(calls)
-    assert all("No tracked task found for task_id: 'parent-task'" in str(reply.content) for reply in replies)
+    assert all("belong to the agent that started you" in str(reply.content) for reply in replies)
     assert not client.mock_calls
 
 

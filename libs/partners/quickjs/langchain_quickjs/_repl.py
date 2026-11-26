@@ -35,9 +35,11 @@ from langchain_quickjs import _fs
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
+    ptc_tool_error,
     stringify,
 )
 from langchain_quickjs._ptc import (
+    FAILED_KEY,
     TOOLS_CALL,
     TOOLS_NAMES,
     PTCCallBudgetExceededError,
@@ -498,6 +500,9 @@ class _Slot:
                 outer_loop=state.outer_loop,
             )
             send_state_updates(state.outer_runtime, f"tools.{camel}", result)
+            error = ptc_tool_error(result)
+            if error is not None:
+                return {FAILED_KEY: error}
             return coerce_tool_output_for_ptc(result)
 
         ctx.register(TOOLS_NAMES, _names)

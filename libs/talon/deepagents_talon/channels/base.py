@@ -256,7 +256,7 @@ def validate_media(
     """
     try:
         path = (
-            resolve_bounded_media_path(media.path, root, require_relative=False)
+            resolve_bounded_media_path(media.path, root)
             if root is not None
             else media.path.expanduser()
         )

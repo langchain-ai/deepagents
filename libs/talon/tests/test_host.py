@@ -27,7 +27,6 @@ from deepagents_talon.host import (
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
-    ChannelMedia,
     ChannelMessage,
     ChannelReaction,
     SendResult,
@@ -1279,12 +1278,11 @@ async def test_suppressed_turn_does_not_requeue_when_also_discarded(
         await host.stop()
 
 
-async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
+async def test_host_sends_markdown_image_refs_as_plain_text(tmp_path: Path) -> None:
     channel = RecordingChannel()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    image = workspace / "result.png"
-    image.write_bytes(b"image")
+    (workspace / "result.png").write_bytes(b"image")
     agent = MediaAgent("result.png")
     host = TalonHost(
         config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
@@ -1297,34 +1295,8 @@ async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -
     await _wait_for_sent_count(channel, 1)
     await host.stop()
 
-    assert channel.media == [
-        (
-            "chat",
-            ChannelMedia(path=image.resolve(), media_type="image", caption="Here is the image."),
-        ),
-    ]
-
-
-async def test_host_rejects_markdown_media_outside_workspace(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "secret.png"
-    outside.write_bytes(b"secret")
-    agent = MediaAgent(outside)
-    host = TalonHost(
-        config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
-        agent=agent,
-        channels=[channel],
-    )
-    await host.start()
-
-    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="draw"))
-    await _wait_for_sent_count(channel, 1)
-    await host.stop()
-
     assert channel.media == []
-    assert channel.sent == [("chat", "Here is the image.\n\n_(Could not attach: chart.)_")]
+    assert channel.sent == [("chat", "Here is the image.\n\n![chart](result.png)")]
 
 
 async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> None:

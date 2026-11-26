@@ -15,7 +15,7 @@ from textual.widgets import Static
 
 from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD
-from deepagents_code.config import ASCII_GLYPHS, reset_glyphs_cache
+from deepagents_code.config import ASCII_GLYPHS, get_glyphs, reset_glyphs_cache
 from deepagents_code.tui.widgets.status import (
     _PICKER_TARGET_META,
     BranchLabel,
@@ -312,6 +312,25 @@ class TestCostDisplay:
             await pilot.pause()
             assert app.opened_pickers == ["cost"]
             assert app.unhandled_clicks == unhandled
+
+    async def test_partial_marker_is_part_of_cost_click_target(self) -> None:
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            bar = app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(1.25, partial=True)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            rendered = str(display.render())
+            assert rendered.endswith(f"$1.25 {get_glyphs().warning}")
+            inset = display.content_region.x - display.region.x
+            await pilot.click(display, offset=(inset + len(rendered) - 1, 0))
+            await pilot.pause()
+            assert app.opened_pickers == ["cost"]
+
+            bar.set_cost(1.25)
+            await pilot.pause()
+            assert str(display.render()).endswith("$1.25")
 
     async def test_hidden_cost_leaves_no_click_target(self) -> None:
         app = StatusBarApp()

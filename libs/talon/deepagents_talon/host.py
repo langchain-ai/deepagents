@@ -36,7 +36,6 @@ from deepagents_talon.authorization import (
 from deepagents_talon.channels.base import (
     ChannelExposure,
     ExposureMode,
-    outbound_media_root_from_env,
     send_with_retry,
 )
 from deepagents_talon.channels.discord import DiscordChannel
@@ -51,7 +50,6 @@ from deepagents_talon.interfaces import (
     AgentRuntime,
     BackgroundRuntime,
     ChannelAdapter,
-    ChannelMedia,
     ChannelMessage,
     ChannelReaction,
     ContextDoctorRuntime,
@@ -73,11 +71,8 @@ from deepagents_talon.mcp_auth import (
     extract_oauth_callback_url,
 )
 from deepagents_talon.media import (
-    MarkdownMediaRef,
     build_inbound_text,
     build_model_content,
-    extract_markdown_media,
-    outbound_channel_media,
 )
 from deepagents_talon.observability import (
     USER_INTERRUPTED,
@@ -2170,38 +2165,10 @@ class TalonHost:
         conversation_id: str,
         result: AgentResult,
     ) -> str | None:
-        cleaned, refs = extract_markdown_media(result.text)
-        if not refs:
-            if result.text:
-                sent = await send_with_retry(
-                    lambda: channel.send_message(conversation_id, result.text)
-                )
-                return result.text if sent.success else None
+        if not result.text:
             return None
-
-        media, failed = _outbound_media_from_refs(
-            refs,
-            cleaned,
-            root=outbound_media_root_from_env(self.config.env),
-        )
-        text = _with_failed_attachment_text(cleaned, failed)
-        sent_media, send_failed, captions = await _send_channel_media(
-            channel,
-            conversation_id,
-            media,
-            fallback_caption=text,
-        )
-        if text and not sent_media:
-            sent = await send_with_retry(lambda: channel.send_message(conversation_id, text))
-            return text if sent.success else None
-        if send_failed and sent_media:
-            await send_with_retry(
-                lambda: channel.send_message(
-                    conversation_id,
-                    f"_(Could not attach: {', '.join(send_failed)}.)_",
-                )
-            )
-        return "\n".join(captions) or None
+        sent = await send_with_retry(lambda: channel.send_message(conversation_id, result.text))
+        return result.text if sent.success else None
 
     def _track_conversation_task(
         self,
@@ -2381,24 +2348,6 @@ def _format_provider_models(provider: str, catalog: Mapping[str, Sequence[str]])
     return f"{listing}\n\nSend /model <provider:model> to switch."
 
 
-def _outbound_media_from_refs(
-    refs: list[MarkdownMediaRef],
-    cleaned_text: str,
-    *,
-    root: Path,
-) -> tuple[list[ChannelMedia], list[str]]:
-    media: list[ChannelMedia] = []
-    failed: list[str] = []
-    for index, ref in enumerate(refs):
-        caption = cleaned_text if index == 0 and cleaned_text else getattr(ref, "alt", "") or None
-        try:
-            media.append(outbound_channel_media(ref, caption=caption, root=root))
-        except ValueError:
-            path = getattr(ref, "path", None)
-            failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
-    return media, failed
-
-
 def _scheduled_metadata(job: CronJob) -> dict[str, object]:
     """Return the turn metadata identifying one scheduled job's thread.
 
@@ -2428,50 +2377,6 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
 
 def _conversation_key(provider: str, conversation_id: str) -> str:
     return f"{provider}:{conversation_id}"
-
-
-def _with_failed_attachment_text(text: str, failed: list[str]) -> str:
-    if not failed:
-        return text
-    return f"{text.rstrip()}\n\n_(Could not attach: {', '.join(failed)}.)_".strip()
-
-
-async def _send_channel_media(
-    channel: ChannelAdapter,
-    conversation_id: str,
-    media: list[ChannelMedia],
-    *,
-    fallback_caption: str,
-) -> tuple[bool, list[str], list[str]]:
-    sent = False
-    failed: list[str] = []
-    captions: list[str] = []
-    for index, item in enumerate(media):
-        payload = _media_with_fallback_caption(item, fallback_caption, is_first=index == 0)
-        result = await send_with_retry(lambda p=payload: channel.send_media(conversation_id, p))
-        if result.success:
-            sent = True
-            if payload.caption:
-                captions.append(payload.caption)
-        else:
-            logger.warning(
-                "Could not send outbound media: %s (%s)",
-                payload.path,
-                result.error,
-            )
-            failed.append(payload.caption or payload.path.name)
-    return sent, failed, captions
-
-
-def _media_with_fallback_caption(
-    media: ChannelMedia,
-    fallback: str,
-    *,
-    is_first: bool,
-) -> ChannelMedia:
-    if not is_first or media.caption is not None or not fallback:
-        return media
-    return ChannelMedia(path=media.path, media_type=media.media_type, caption=fallback)
 
 
 async def _send_typing(channel: ChannelAdapter, conversation_id: str) -> None:

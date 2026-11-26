@@ -2,6 +2,15 @@
 
 # Deep Agents Changelog
 
+## [0.7.42](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.41...deepagents==0.7.42) (2026-11-26)
+
+
+### Bug Fixes
+
+* **sdk:** drop retiring Baseten Nemotron 3 Ultra ID from its harness profile ([#8011](https://github.com/langchain-ai/deepagents/issues/8011)) ([ad19c49](https://github.com/langchain-ai/deepagents/commit/ad19c499982112006c56ca814a8f75aa54132a0f))
+* **sdk:** let `glob` pass interrupts and parent commands through ([#7820](https://github.com/langchain-ai/deepagents/issues/7820)) ([2cc7901](https://github.com/langchain-ai/deepagents/commit/2cc7901e46371840500d5e7ad4b6c45b96bd3de5))
+* **sdk:** store lone surrogates in file text as `U+FFFD` ([#7972](https://github.com/langchain-ai/deepagents/issues/7972)) ([0101de2](https://github.com/langchain-ai/deepagents/commit/0101de28d24bfc3bc055790fed0f0725877dfba1))
+
 ## [0.7.41](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.40...deepagents==0.7.41) (2026-11-20)
 
 ### Bug Fixes

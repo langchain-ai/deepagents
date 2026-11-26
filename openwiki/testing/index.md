@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for Deep Agents streaming, Talon runtime boundaries, QuickJS tool bridging, and release and workflow automation. Use package Makefiles for package test commands and assert observable ownership, correlation, and failure behavior.
+- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for Deep Agents subagents and streaming, dcode cost accounting, Talon controls, and CI workflow gates. Choose tests that assert observable protocol, state, and failure behavior rather than implementation interactions.

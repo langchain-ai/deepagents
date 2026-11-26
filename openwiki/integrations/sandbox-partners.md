@@ -1,20 +1,25 @@
 ---
 type: integration architecture
 title: Sandbox and Partner Integrations
-description: QuickJS embeds a persistent, in-process JavaScript REPL in Deep Agents, with checkpointed snapshots and explicit host-capability bridges. This page explains lifecycle, authority boundaries, resource limits, subagent and cost transport, and the tests that protect them.
+description: Optional partner packages provide remote sandbox backends or an in-process QuickJS interpreter for Deep Agents. This page distinguishes provider selection from a complete security boundary and documents QuickJS lifecycle, authority bridges, persistence, and cost transport.
 tags: [quickjs, javascript, middleware, sandbox, persistence, security, integrations]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-21T08:04:00.255Z
 sources:
   - id: openwiki-source-d4716b8ae162796c2c7ad991
     resource: repo://libs/code/deepagents_code/_js_cost.py
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-84638d6cd0c222d6264dbef8
     resource: repo://libs/code/tests/unit_tests/test_js_cost_sync.py
   - id: openwiki-source-8574be7f7f29e3e1dd328837
     resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
+  - id: openwiki-source-7c1cff57fb2b25a4a7848547
+    resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
   - id: openwiki-source-7aacd0cb896e1f405740f0f4
     resource: repo://libs/partners/quickjs/langchain_quickjs/_ptc.py
   - id: openwiki-source-f774b021a408b0156ed93a4b
@@ -31,20 +36,56 @@ sources:
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_slot_cleanup.py
   - id: openwiki-source-7f225a40788309863f345e08
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_subagent_replay.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-21T08:04:00.255Z" }
+  - id: openwiki-source-cbe167006ecbe803d01c6520
+    resource: repo://libs/partners/runloop/langchain_runloop/provider.py
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-40e8a550220e87f9adcd8bec
+    resource: repo://libs/partners/runloop/tests/unit_tests/test_provider.py
+  - id: openwiki-source-edb310aff3786a7a99593231
+    resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
+  - id: openwiki-source-c64591d362571e75b3dc3c64
+    resource: repo://libs/partners/vercel/tests/unit_tests/test_sandbox.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-26T08:03:59.911Z
 ---
 
 # Sandbox and Partner Integrations
 
-`langchain-quickjs` 0.4.0 is an optional Deep Agents middleware, not a remote sandbox provider. `CodeInterpreterMiddleware` contributes a configurable `eval` tool and prompt guidance, then runs QuickJS through `quickjs-rs` **inside the agent process**. It lets a model retain JavaScript values between evaluations and orchestrate loops or `Promise.all` work without returning to the model after every host call.
+This repository distributes two deliberately different kinds of optional integration:
 
-QuickJS guest isolation starts with no ambient filesystem, network, `fetch`, `require`, process, or real-clock capability. That containment applies only to pure guest JavaScript: it does **not** authorize PTC, `task()`, or filesystem bridges. Each bridge is an explicit grant of host authority and must be configured as such. In particular, `fs` bypasses normal filesystem permission and approval middleware.
+- **Remote sandbox backends** run shell commands and hold files in a provider-managed sandbox or devbox. Select one when shell/file execution needs the provider's isolation boundary.
+- **`langchain-quickjs`** is in-process JavaScript middleware, not a remote sandbox provider. `CodeInterpreterMiddleware` contributes a configurable `eval` tool and prompt guidance, then runs QuickJS through `quickjs-rs` **inside the agent process**. It lets a model retain JavaScript values between evaluations and orchestrate loops or `Promise.all` work without returning to the model after every host call.
 
-## Installation and attachment
+This distinction is a security invariant, not a naming detail. Choosing a remote backend changes the authority boundary for the backend's `execute()` and file APIs; it does not isolate model calls, MCP/web tools, or other host-process integrations. Conversely, QuickJS guest isolation starts with no ambient filesystem, network, `fetch`, `require`, process, or real-clock capability, but it is not a process boundary. Its PTC, `task()`, and filesystem bridges are explicit grants of host authority; in particular, `fs` bypasses normal filesystem permission and approval middleware.
+
+## Optional packages and compatibility
+
+Install only the backend package required by the provider, or install QuickJS when the in-process interpreter is intended:
 
 ```bash
+uv add langchain-daytona
+uv add langchain-modal
+uv add langchain-runloop
+uv add langchain-vercel-sandbox
 uv add langchain-quickjs
 ```
+
+| Distribution | Current version | Python / Deep Agents contract | Provider SDK contract |
+| --- | --- | --- | --- |
+| `langchain-daytona` | `0.0.9` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `daytona>=0.197.0,<1` |
+| `langchain-modal` | `0.0.8` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `modal>=1.5.3` |
+| `langchain-runloop` | `0.0.7` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `runloop-api-client` (unbounded) |
+| `langchain-vercel-sandbox` | `0.0.2` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `vercel>=0.5.9` |
+| `langchain-quickjs` | `0.4.0` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `quickjs-rs>=0.3.0,<0.4.0`; also bounded LangChain and LangGraph dependencies plus `bsdiff4` |
+
+`deepagents-code` pins `langchain-quickjs>=0.4.0,<0.5.0` in its base install. Its optional `daytona`, `modal`, `runloop`, and `vercel` extras name the corresponding partner distributions; `all-sandboxes` combines those remote-provider extras. Pin the SDK and integration versions together in deployments and re-test when widening an unbounded provider SDK range.
+
+### Attach QuickJS middleware
 
 ```python
 from deepagents import create_deep_agent
@@ -56,9 +97,20 @@ agent = create_deep_agent(
 )
 ```
 
-The package requires Python `>=3.11,<4.0`; its bounded dependencies include Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4`. Defaults are a 64 MiB runtime heap limit, five-second VM timeout, `max_ptc_calls=256`, console capture, subagent bridging when an eligible `task` tool is present, and `mode="thread"`.
+Defaults are a 64 MiB runtime heap limit, five-second VM timeout, `max_ptc_calls=256`, console capture, subagent bridging when an eligible `task` tool is present, and `mode="thread"`. `timeout` counts VM execution time, not Python time spent awaiting a tool, task, or filesystem host call. A slow bridge can therefore exceed the wall-clock duration implied by `timeout`. `timeout=None` removes the VM deadline and should only be used with an external process or workflow limit that can stop runaway code. The runtime memory limit is shared by contexts below that runtime; result text and captured stdout are independently capped by `max_result_chars` (4,000 by default).
 
-`timeout` counts VM execution time, not Python time spent awaiting a tool, task, or filesystem host call. A slow bridge can therefore exceed the wall-clock duration implied by `timeout`. `timeout=None` removes the VM deadline and should only be used with an external process or workflow limit that can stop runaway code. The runtime memory limit is shared by contexts below that runtime; result text and captured stdout are independently capped by `max_result_chars` (4,000 by default).
+### Select and operate a remote backend
+
+Each partner wrapper implements the Deep Agents sandbox backend contract over an already-created provider resource. It supplies an ID plus `execute()`, `download_files()`, and `upload_files()`; the wrapper does not create a universal policy layer over the provider. Configure provider account credentials, sandbox image/blueprint, mounts, egress, lifetime, and cleanup according to the provider's own controls.
+
+`deepagents-code` selects a remote sandbox as its backend: its file operations and `execute` tool are then supplied by that backend rather than local shell middleware. It refuses `enable_interpreter=True` with a remote sandbox, preventing its in-process `js_eval` interpreter from being confused with or silently combined with the selected remote execution boundary.
+
+- **Daytona:** `DaytonaSandbox` wraps an existing SDK sandbox. Every command gets a fresh Daytona session, polls it to an exit code, formats retrieved stdout/stderr, and deletes the session in `finally`. A finite timeout covers the command-phase requests as one deadline; timeout returns exit code `124`, tries to recover partial logs, and has a shared two-second best-effort deletion budget. Upload/download reject relative paths.
+- **Modal:** `ModalSandbox` runs `bash -c` in the supplied `modal.Sandbox`, with a default 30-minute command timeout. It maps known SDK filesystem exceptions to structured file errors and continues a batch after those per-file errors; unmapped SDK exceptions remain visible rather than being reclassified.
+- **Runloop:** `RunloopProvider` creates or attaches a devbox and returns `RunloopSandbox`. An attached missing ID becomes `KeyError`; a newly created devbox can start empty or from a blueprint. Blueprint ID from `RUNLOOP_SANDBOX_BLUEPRINT_ID` wins, followed by an explicit `snapshot` name and then `RUNLOOP_SANDBOX_BLUEPRINT_NAME`; a named blueprint is reused only when complete, otherwise a missing one is built and non-ready ones fail rather than being duplicated. Call `delete(sandbox_id=...)` to shut down a devbox.
+- **Vercel:** `VercelSandbox` starts a detached `bash -lc` command and implements its own local timeout wait. On timeout it tries `kill()` and returns `124`; a failed kill is logged because the command can continue and incur cost. Completed-command log-fetch failures preserve the exit code with an explicit unavailable-output response. Combined output is capped at 100,000 characters and uploads use one provider batch, so a provider write failure is reported for every otherwise valid path in that batch.
+
+None of these wrappers proves the provider configuration is appropriate for untrusted work. Treat a backend choice as one layer beneath tool permissions and approval, and ensure credentials exposed to the sandbox are scoped for its expected workload.
 
 ## Interpreter, context, and slot lifecycle
 
@@ -154,6 +206,8 @@ For an outer `js_eval`, the wrapper gives the active task tool a proxy. Each dis
 After the eval's active dispatches settle, the outermost owner aggregates its receipts and returns an `_session_cost_transfers` update to the parent checkpoint scope. Nested owners do not emit a second transfer, preventing double counting. The design transports accounting only: it does not cache JavaScript or forward subagent state. It preserves graph cancellation and interrupt control flow; ordinary subagent exceptions become retryable JavaScript-visible failure objects. A checkpointer is required for this receipt path, so no receipt transfer is produced without one.
 
 ## Focused verification
+
+The partner packages use the shared sandbox integration suite for live-provider coverage. Their focused tests cover different adapter risks: Daytona's integration fixture creates and deletes a real sandbox; Modal tests structured filesystem error mapping and batch continuation; Runloop tests blueprint precedence, reuse/build behavior, attachment, deletion, and credential/connection failure translation; and Vercel tests timeout-and-kill behavior, output/log failures and truncation, plus ordered batch file errors. Run provider integration tests only with an account and resource-cleanup policy appropriate to the provider.
 
 Run the QuickJS package tests with its Makefile:
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:7d8ba054c8d0bb72e2e8531ebc39a2c97e1fcd6371c1564ba218f0416b3bf130",
+  "pageVersion": "sha256:2a7c75b79ec015666e79da9deaae7143394844a4e45ba56fd457707463fddd10",
   "claims": [
     {
       "id": "claim_2a93acd37522475ea6d1c03bb477e8aa",
@@ -162,7 +162,7 @@
       "evidence": [
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml#L21-L32",
-          "version": "repo-lines-v1:sha256:25246019e4a7d1d3625760db4d22f4184b315d669b86ca78931895237e02d459:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhMTg5NjNiM2QwN2EwOTE5MTQ0OGY3ZTI1MGQ5ZTg3ZmQwMDZjMWNiMmZiYWE2YzJiNGYzZTkyOTRkMjFjOWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlOTA4ZjgxMjcxYzVhNmU1MTg1MDVkODhmZGM2ZTllM2Y4ZDlkOGNjNzc4MjEzN2FlNzM4MmFiYTIxZGIyZDcifQ"
+          "version": "repo-lines-v1:sha256:6b71edc185cd0a4dd284673bfc8d28e849ad2c07e8cbd8d4d95a5ce261ff9bfb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhMTg5NjNiM2QwN2EwOTE5MTQ0OGY3ZTI1MGQ5ZTg3ZmQwMDZjMWNiMmZiYWE2YzJiNGYzZTkyOTRkMjFjOWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlOTA4ZjgxMjcxYzVhNmU1MTg1MDVkODhmZGM2ZTllM2Y4ZDlkOGNjNzc4MjEzN2FlNzM4MmFiYTIxZGIyZDcifQ"
         }
       ]
     },
@@ -267,10 +267,114 @@
           "version": "repo-lines-v1:sha256:ef3d4dc661853ad21d88ebe10c2a62376d8c2525b02d8214df16f7c1e8d9cc91:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2ZDRjMzNjZmNhNWQ0Y2E2MTdhNGE4MjU1ZjE0M2QxMDVkYWM2NTk2YTBlNzEyZTlkNjg3NzdhM2Q4ZThhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhNTA5Yzg3MTRmNjRkMzQzNmRhNjI0MjE4NjYxNTU2NzliYmY5NDU5MjNhMTI1MzhiMDI1MTc4ZDRjZDE4NTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3MzQzYWQ2ODc2YTJlMjZhM2Y4NTBmNWVkYWZlYTMyOGI3ZjNlM2JhNDQwODMwODBhYzIwMzllYzBlOTg0YzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFlMzE1Nzc3OWQzMjgxNmEzNjhhY2IxYmM2ZDZlMDMyMDlhZjJmZGY1N2QyNTRmYmUxZGU3OTMxOGU4M2I1MDgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_f06365fc28884b31826be249c9550a2d",
+      "statement": "The optional partner distributions currently publish distinct compatibility contracts: Daytona 0.0.9, Modal 0.0.8, Runloop 0.0.7, and Vercel Sandbox 0.0.2 all require Python >=3.11,<4.0 and Deep Agents >=0.7.41,<0.8.0, while their provider SDK requirements respectively are daytona>=0.197.0,<1, modal>=1.5.3, unbounded runloop-api-client, and vercel>=0.5.9.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/daytona/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:d74dcac8ba6fc2a1be92714bd06d7125a604e59d7fd9585f13c77ddcf005ef66:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMwYjc1OThjMmJmMzg1NzgyMmIwZDMwODZmZmVmYTQ3ZDBkZTA5MTUwODRmNjdkY2YzNGRmMmNkZGI4OGNjNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmI5ZjUwN2E5Y2FiMjFhN2UyNWUzN2JkY2Y5MDQ4Mzc4YmRhNzVhZGY2M2Q4OWZjOGY5ZjQzMjgzY2E2MWFlYyJ9"
+        },
+        {
+          "resource": "repo://libs/partners/modal/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:3dbc699c475b058680e55483902a0a800598b2774f00b4099102f15cd38a7193:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjA2MWYwYjc0ZTQ2NmE3NThkNDNhOGViZmEzNzQ4NjE3ZGRhY2FkYTExNWNmMGQ1NTJjOTRmNGZjNGRmN2M3MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjUxYTcwZGZhM2EyNWZjZWNmZjhjZWFiZDEzZjA2YTVhZTg1YTdhZDYwOTUzZTQxOTYxYTQ3NzBkYzJmNmY5NiJ9"
+        },
+        {
+          "resource": "repo://libs/partners/runloop/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:1f1482529ccafd83ed361d72aee6c1c8b112a037487ba0bdd10ac9a00e8c5593:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjIwMWIwZTE2ZDEwMjZjNTUyOTRjNzA5ZmVjNjAyMWEzMjU4M2JmMjIzOTNmMTdlM2Q2YTY5ZWE3MDMwN2Y5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzcwNTM1Yjk0NGZjYWRiZWZjMjk1MTk5MzQ1NDcwMDc1MTIzMGE2NTNkYjQyOTY1YzJkZjM0ZTlmZDkwOTM0YSJ9"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:c61eceea63e6695db255ff3a60687522a027ab3d02a52ccf3722f4c6153883ec:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2Q2NTQ3N2Y3MGVhMjEyZWFjNjFlZWZjZDAzNTM3ZjI1OTkzMWZmMTE3NDE0NzAxMmI3ZGE3M2FjMDRlZWRhYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmQ3MWM3MWM3MGFiYjEwMjY0OWI3YTNkOTI5MTlhZjM1OTFmZTQ5MTVmYjc2MDZhYjdkM2JkZDMwMWI5NjQ4OSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_cfd32221cf8544879e6d22ce860d06f4",
+      "statement": "deepagents-code declares QuickJS as a base dependency, exposes the Daytona, Modal, Runloop, and Vercel integrations as optional sandbox extras, and groups those remote-provider extras under all-sandboxes.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L140-L154",
+          "version": "repo-lines-v1:sha256:0d2eaf2d00f2e683af172bf7e8579511cd6a2edf333e9e87e1c10ed1218445ce:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZDNkMjhiMTFhN2RhMTQyM2JlODdlOTZjMTQ3NWJlM2UwMjIxNzA0YjcxZDcxYjMxYzgyZDBlNjg1MTcwMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTIxYTcxYzBkNDU3MGMzODhkNjI5N2IzYjQ5OTJkZjNjMGZkYWIzMjZjYWZhY2E0YjQ4NzE4OGExZDZiMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYwYmMxYmQzMjEyODlkOTI4NDlkYmFmNzMxYTliN2VkYWJiMzE4YmIyYmViMmVhMGE4OWE5MzFlY2RmYmZmMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZmEzNjJjYjQ5NGE1MWE5YTQ3NTA0Yjk5OTFhYjZmNGVmZWUxODcxZWRiYTY0NDFmYjk1MDA3OTc0OTJjMDgifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L62-L68",
+          "version": "repo-lines-v1:sha256:d7bb210cd78d98189bf3bfd7be73847f0f320075d3239a6266023ae2a6819b84:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2ZiZTRkNTVmMTgzNDcwNGQ2Mjc4NDNiYjA2ZmJjNDFmYjRhNDgzMWYxYzY0NTJiMzNlMWFiZGUyMDAwYjZiOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTllYTQ4MDY2MzY5NjQwMmY0MDMxOGYwNGIxMTUwZTNhODE0M2FkNGNmNTMzODQ4MTFmMzY1YTE1NjExZjBiMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzBjMDk0ZTY4Yjg2NWEzMDI3ODQ5NDZjZDUzZGI0YjhhMzZjNDE1MGIyZGMxYmY1M2I1MWU4MDVlNjQ2MDQyYSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_864d8238872b4ed8ba62c3fdd3ae6eb5",
+      "statement": "When deepagents-code receives a remote sandbox, it uses that object as the backend supplying file and execution tools instead of local shell middleware, and it rejects enable_interpreter=True rather than combining the in-process JavaScript interpreter with that remote-sandbox mode.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L3198-L3238",
+          "version": "repo-lines-v1:sha256:61f4bc5b848545ebc2a4164313a4822dc37be5b76cdf5c467d98d4af726c2a32:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwZjgxMGMwNzU2OWUzY2FhN2VjNjIyYmY5NmQxNGY2MDUwM2I4MmVlNzg4ODg5YWExMjBkNDUyMGQzMDdjYmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhNTVjNTdlZWIyYmJkNDQ3NTJhY2JjZTIyYWViMWQyZGM5MTViM2IzY2UwYjRmZjA1MDE0NjY5YWZhNDJmMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI4MTAxYmViNTc0NDg1ZDI3OGUxNzZlNjVmMmRkNzA2YjBhZmYyODI0MzliYmU3ZDkzMjQzNzZiYmJlZGRmOTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkxNzdlMDExNjQ1YmY3ZGE4YmZlYWQ4NDRhZmFlYzFkZjgzM2Q3NGVkYWIyODNlYzcwMDA4Y2VlYWNkMjFjZjgifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L3243-L3281",
+          "version": "repo-lines-v1:sha256:19fa5ecbb1e17146d720e4f8785829b87c5e866aa55f756c9cfab554a3bc0069:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3YjQwYWU0YzRhMmUxYTFlZWY2ZjZlMTBmODFmZDg1YzI4NjVkYjYxY2NlMzYxODM0NGQ4YWQ5ZWM4Y2U1MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMjVkZTBmY2VkYmYyNjA1YmVlNTAwZWU1NGM5OTRmZDNmNDRiNDA5Y2JkNDMyZmIxNzY0YjY4ZjRlNDc5ZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5OTIyYTA5MTk2ZmM3MWQ4NThiZjMyZTZlY2U1ODZkOGY3ZjUwOTRiMGYyMGYxMTI0MGQ1YTAyZGI5NjM1M2UifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7cc4d13be8b74f7b8fe0c90bf48e8346",
+      "statement": "DaytonaSandbox isolates each command in a newly created Daytona session and deletes that session in finally; a bounded command deadline produces exit code 124, attempts partial-log recovery, and shares a two-second best-effort cleanup budget with session deletion.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/daytona/langchain_daytona/sandbox.py#L166-L215",
+          "version": "repo-lines-v1:sha256:c6624c22daf29ede137aea65a51a11086242bfb25459f0c4483d910ce9aef387:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1ODhhMTBmZDNkZDliNzk5MzZmYjk1YTNmZjVmYjEyNDhmNzk3NTdhY2RlYWM3NjRjMzZiYTBiMjRkYzBlMmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0YjRjOGQ4ZGQ2ZDRiZWUyNjZiYzA3ZGI1ZTEzZThlZWIwZWJmZWRmOTExYzQzM2ZiMGVhMDU2OWI3MjE0MDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjZGJmYWQ0OWExMzVkMjAwY2IxMmY0MTMxNTE5YjZjYzk3MTEwMGJhOGI1MGMzYmRjYjY1NThkNDM5YmZiNTcifQ"
+        },
+        {
+          "resource": "repo://libs/partners/daytona/langchain_daytona/sandbox.py#L345-L414",
+          "version": "repo-lines-v1:sha256:cbd38a0616ac9bbee891ea73b890fc6eb7e08b95780c49e6152626baa67f060b:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzNTVkNTVmNGU1MzY2MTczM2RhYzk0YjE4MTgxNjQzYmZjMTkxODI3YTMwNDIzYWI3MjFhOWQyNmFmZTViNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3N2IwY2MwMWIxOWU4NjM0ZjU3OTQ2MjA5ZjhlNDZkZTg0YWU0M2NmZWM1YmM5MTQ3ODdkZGNlMTU4ZmZhYTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZlY2Q2ZmYxN2U1ZGZkYzM2YTNiNWQxZGFhNzEwMDcwYThiYmU5Y2Q4ZGVlNmM0NmNlYjkyZWJhOTk4ZjA3ZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZlZjJhMDRlYTY4Mjc3ZTAyNTk5MTYwYjJkZDZiMWM4MTdhMWE1ZDFhZDBjY2JiMmYyOTdlOGU3MzU5ODA5OWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c7c4fa5cb43d4090bcfba4bd9eaa0ff8",
+      "statement": "RunloopProvider attaches to an explicit devbox ID or creates a new devbox, with blueprint selection ordered as RUNLOOP_SANDBOX_BLUEPRINT_ID, explicit snapshot name, then RUNLOOP_SANDBOX_BLUEPRINT_NAME; named blueprints are built only when missing and non-ready matches fail rather than being rebuilt.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/runloop/langchain_runloop/provider.py#L143-L237",
+          "version": "repo-lines-v1:sha256:2f99b5f66ce2ee6f08190c764904aaf934b13aec370c74dee990c2849e0ff631:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4MTRjMjc0YTU3NDM2ZDQ1MTJkNGMyM2JlYjJmYzBhNjJkOTk1NTEyODY0M2FlYThlNGYxN2EwZTcwMDZmYTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3YTY4ZWE1YzU5NGMzOTMwNDYxNjgyMDI3OTlmM2VmY2Y0NjkzYWI0ZTU0OTM5MzJjZmRjN2EzMjNhNzgwODQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3OGI3ZDhmZDA3MGFmNDQyMjg1NmQ4YzIyZmQzYWM4ZmJkMzNkMDA5MjE0ZWY5OWU3NWFjYjlmZDExMDQ5YTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVhNjMwZGVlNjlkY2U3YTZiY2YwZWVlMzU0MWNjOThlMjZkODQ0YjM4MTQ3NmI0ODE3ZWMyZjZkYzVjNzA3NjIifQ"
+        },
+        {
+          "resource": "repo://libs/partners/runloop/tests/unit_tests/test_provider.py#L243-L333",
+          "version": "repo-lines-v1:sha256:0187f5357d5abe0b2387dbfd6f4d9a6cd8490f3ce2e3dcfa94535ed072c28832:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5YWRlYzE4MTEzYzIxNjNhMjNiNjA1MWY5ZGRhYmZhYmI0NzdmMTU3NjQ3YmJhYThlOWY2ZWVjMmE5ZDU4YTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3OWVkN2EwMWYwNzA4NGQxZjllZThhNmY5YjU0YjY5YTEwMDkxYzU0YTliZmIzOTE4YmQxMDE0ZTFlMjgwNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0YjY3YjNlYmIxYWRjNzIzNjE4MjJmNjhmYzBiNTVhOGZjYmU2ZTc2YWY4YzkzYWRkNzNhODU2NzBhZWQzYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyNDUxYTlkNDliNWNiNjY2OGQxZjUwNTNlZmE5MTI3ZTdjZGUxMGFjNDk3MDQzZDY1ZGEyMTU5MmJlNDJiMTgifQ"
+        },
+        {
+          "resource": "repo://libs/partners/runloop/tests/unit_tests/test_provider.py#L36-L140",
+          "version": "repo-lines-v1:sha256:03d946dff9dbdaab8648fcac6f8cfaf2a5e271c5dc9271510fcfb434f9ccba1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNjRiMWM4NjE3NzQxZDE0NWMwNTZkNzY1YWFjZWFhMjhkZGZkYjVlZjgwOTY5Nzk4ZTVlNzliMWFhZmQ0MWYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlZjIyNTliNDM4ZDYzNzkwYzc5NjcyNzczYjc5ZDNhY2Q3YzkzMmRmYjE1NDc4YjlkZGViNWYyMDY5YWExNTI1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4YjgzNTFjNDMyMDg2ZGVjZTcyOTU5ZWI2NzZlNWFjNTYwNmE3NWY5MThiNTBiZGYyNWY2N2U2ODYxY2IxM2RlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwMDdlMzk0NjZlMDcxMjZmMDY1YjNhYjE0MjgyMTMzNDUzM2ZmOGViNTAzNjAzNWI5NzE0YmFjNmZjYjdiZDNmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_a2698b52de5e4abead71c199091d2a3f",
+      "statement": "VercelSandbox runs commands detached and locally waits for completion; on timeout it attempts to kill the provider command and returns exit code 124, while a completed-command log-fetch failure retains the exit code with an unavailable-output response and combined output is truncated at 100,000 characters.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py#L235-L270",
+          "version": "repo-lines-v1:sha256:27517bae546983fa2c7e40d523db967859d63a68ec90cdfb71a15a9200a25082:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4MmU1ZDRlNzc0OGRmYWI3ODI1YjQ3YzQ5NzAyZDhkY2RhNWM1YTVkOTNlZTVlNjQwYjY4ZTliNzA0Y2IxNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmNmU1NTEyNWQxMDhkYWYyZmZiMjIyYWY5OTNhYjQ2YTI0NGI5NTZkYTMwNDU2OGVjZmNiNjkwM2IzNzkxNjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0YmQwYTdjMGQyMjE1YjI1OTg0ZmQyMzgwZjk1NjM4OTZiMTRiMTkxYzg3M2MyZWQwZWY3MzAzM2I3ZWMyNWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlNWQ1NWE3ZjE3YmNhMTIyMzc2MTM1Y2IzMDIwZjVhNGIyN2VkNjIzYThkOTBlODg0MjczMzkyNzZlYmZjNjQifQ"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py#L28-L131",
+          "version": "repo-lines-v1:sha256:09581766d32d08022e81f7cee321c9a376c879b6d93f4e516fdc8e6c013ee1b1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0Mjc3N2I5NWUxZTRiNTk5YWM5N2Q2YzI4M2NkMGY3YjRhYjM1MmU5NmY5ZTUyYjViMzU2Yjc5ZGExNGNjOTVmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNWMxYzQ2MmUyYTM5ZDc0NzU5ZjVlMWIxMjZmNzY4M2EyYjczMDExOGUxOGY1MTIyYjA4Y2VkZWViNjUwZTIzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmZWYyYTA0ZWE2ODI3N2UwMjU5OTE2MGIyZGQ2YjFjODE3YTFhNWQxYWQwY2NiYjJmMjk3ZThlNzM1OTgwOTliIn0"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/tests/unit_tests/test_sandbox.py#L124-L166",
+          "version": "repo-lines-v1:sha256:b222a4025ee32b4bdeb5b4b4482b46c1737f528ea0c834a7e845239fbef15054:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmNjg1ODZmZTUwYWRhMzA0OGFhM2JkNmMyYmYwOGI3YjBjOTAwYThjOWJiN2JlNDZhZWU4ZWNmMzczYjEyNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0YmMwNGE4OWU2MGE0MDZkYTE2NjE3ZjEyNGNlODk0MzRlYzI4MTkzMjBiYTE1YTQyNzhkMzlhODEzYzhiZjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjMDg1Y2RhMTc3YWVhZDA3YWRkZDYyMTk1MGUxNTUwZDdkNmM4NGMxN2JmOWFhOTkyNWE4NjliNjE2MTFkMzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkZmVmN2UzYjM4YjAwMzE5MjA3MDFjZWViZGRmODdhOTIwMGUzZDgzMzA1NzgzZmRlOTZjNmY0YTU2ZjRhMmIifQ"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/tests/unit_tests/test_sandbox.py#L412-L429",
+          "version": "repo-lines-v1:sha256:81c00c5f26209f3b18578cb53425aeaa62fff7a84c3ecb4f1cdeede5883dc2bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmZmQ3ZWFkYmM2YzJhOTE5NzU5ZjNkMjBkN2M3Y2U1N2I1MGUzYWEyZTVmZTQ3YTc1ZGMzY2Q5NzZmMGU3MjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5NTA0OWI2NjNhMjk3OTIzYTgwYTNjMGE5MzIwNTFmYTY0OWYwMDVmMGE1MzA0NzQ0MGIzNmQzYWYxMmQxZWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxYTM5Y2I1NDQ3YzhjMjg5MzU2MDViOWMwMWVmNTM1ZTVlZGEzMjk5YzUyNmM0NDU5YzA1ZDliMmQ2MDRhZTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJkMTg1NjExMDg2NTViOGI1OWZjYzc4ZDBiYzQ2OGUyNGY1MWQyNWY2MzBjMmMxYmVjODk2ZWM3MjczYWRkZGQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-21T08:04:00.255Z"
+    "at": "2026-11-26T08:03:59.911Z"
   }
 }

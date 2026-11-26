@@ -1,13 +1,17 @@
 ---
 type: runtime integration
 title: Talon Runtime Integration
-description: Talon composes a channel-owning host with a replaceable Deep Agents runtime. It documents graph assembly, per-invocation authority, process-local delegation, diagnostics, lifecycle, and compatibility with dcode and the SDK.
+description: Talon is an experimental local host that composes channel adapters, schedules, a Deep Agents runtime, media preparation, and model-specific reasoning controls. This page explains request ownership, lifecycle, local-host limitations, graph reload, and delegation.
 tags: [talon, runtime, host, subagents, hooks, mcp, scheduling]
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
+  - id: openwiki-source-8a4e357da1dab3192e01eb13
+    resource: repo://libs/talon/deepagents_talon/attachments.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-0ad7ce4799b63dc215741642
+    resource: repo://libs/talon/deepagents_talon/channels/base.py
   - id: openwiki-source-8feffa040b2e9614a8d53cd4
     resource: repo://libs/talon/deepagents_talon/claude_sessions.py
   - id: openwiki-source-41ff73b838d042459b2a69ca
@@ -16,6 +20,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/context_doctor.py
   - id: openwiki-source-2a219768ba2f2599d951e7bb
     resource: repo://libs/talon/deepagents_talon/dcode_sessions.py
+  - id: openwiki-source-9ee5b3034d091a886c8fdda4
+    resource: repo://libs/talon/deepagents_talon/effort.py
   - id: openwiki-source-cbf86ab9c145113d54045954
     resource: repo://libs/talon/deepagents_talon/hooks.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
@@ -24,6 +30,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-ccdb88feadbc25be2fc7b63b
+    resource: repo://libs/talon/deepagents_talon/media.py
   - id: openwiki-source-ca1a2f0041cc7c11f4a22b63
     resource: repo://libs/talon/deepagents_talon/memory.py
   - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
@@ -34,6 +42,10 @@ sources:
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
+  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
+    resource: repo://libs/talon/README.md
+  - id: openwiki-source-e0db085f967450f48196d999
+    resource: repo://libs/talon/tests/test_media.py
   - id: openwiki-source-4d6726e17c8a0c78539a7d33
     resource: repo://libs/talon/tests/test_runtime.py
   - id: openwiki-source-a1c0f013d30da0d68f4ae10b
@@ -44,6 +56,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
   - id: openwiki-source-40c11e4c205e2dd133c4f0c3
     resource: repo://libs/talon/tests/unit_tests/test_dcode_sessions.py
+  - id: openwiki-source-022c52172483653e0c3a3eaf
+    resource: repo://libs/talon/tests/unit_tests/test_effort.py
   - id: openwiki-source-7dcd7e37c18e77553a46cce3
     resource: repo://libs/talon/tests/unit_tests/test_hooks.py
   - id: openwiki-source-5a8aa5b5c59e407fc5a424c1
@@ -52,15 +66,17 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_subagent_reload.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+    at: 2026-11-26T08:03:59.911Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # Talon Runtime Integration
 
 Talon is an experimental local host for long-running Deep Agents channels and schedules. Its boundary is deliberate: channel adapters translate provider events, `TalonHost` owns routing, interactive callbacks, delivery, and shutdown, while `DeepAgentRuntime` owns graph construction, checkpointed execution, and process-local background jobs. Adapters do not invoke the runtime directly.
 
-See [Runtime behavior](../architecture/runtime-behavior.md), [Subagents and skills](../concepts/subagents-skills.md), [Talon scheduling](../concepts/talon-scheduling.md), [MCP integration](mcp.md), [Security](../operations/security.md), and the [Testing guide](../testing/testing-guide.md).
+See [Runtime behavior](../architecture/runtime-behavior.md), [Profiles and models](../concepts/profiles-models.md), [Talon channel admission](../concepts/talon-channel-admission.md), [Talon scheduling](../concepts/talon-scheduling.md), [MCP integration](mcp.md), [Security](../operations/security.md), and the [Testing guide](../testing/testing-guide.md).
+
+> **Experimental local host, not a security boundary.** Talon is alpha software intended for a single operator, not production or enterprise multi-tenant deployment. It does not provide complete production-grade HITL policy, channel-administrator controls, or tenant isolation. Treat channel access—including paired senders—as direct use of the operator's configured agent, credentials, MCP tools, and local resources. Channel admission and approval prompts are useful controls, not containment; incoming text, transcripts, attachment metadata and files, tool output, and cross-session replies remain untrusted data.
 
 ## Composition and ownership
 
@@ -107,6 +123,20 @@ The graph includes filesystem support, selected-model summarization and selectio
 Before an invocation, the runtime refreshes supplied tools, then holds its tools lock while reading approval policy and rebuilding only if that snapshot changed. It publishes a replacement graph only after construction succeeds and places the selected graph and approval snapshot in context variables. Consequently, failed reloads preserve the prior graph and an in-flight turn cannot gain or lose capabilities mid-execution. `reload_subagent_configuration()` follows the same build-before-publish approach for later turns.
 
 Selected model choice is turn-scoped. An unavailable saved selection falls back to the default, and summarization caches a selected-model-specific summarizer while subagents use their startup summarizer.
+
+### Model-specific reasoning effort
+
+`/effort` is separate from `/model`: it does not discover, construct, or admit a model. The host uses the currently selected model (or the runtime default) to list supported controls; only an operator may change a nonempty value. It persists a `provider:model` to effort mapping in `effort.json`, so switching models restores that model's setting, and `/effort default` removes only the current model's entry. Invalid controls and a failed state write leave the prior mapping intact. The host captures the model and effort together when it creates a turn, so a change applies across chats from the next turn and cannot alter work already in flight.
+
+Supported values are an allowlist rather than a generic provider promise. Talon normalizes gateway-style specifications, recognizes documented DeepSeek, Qwen, and GLM families where necessary, otherwise uses SDK model metadata or documented fallbacks. After validation it translates a choice into provider settings: Qwen uses a thinking budget, DeepSeek and GLM use thinking payloads, and other supported models use `reasoning_effort`. During invocation the runtime binds the selected client and settings in context variables, merges nested `extra_body.thinking` settings without mutating the graph request, and resets both afterward. A stale selected model falls back to the default **without** applying its effort override; delegated subagents retain their startup model and do not inherit main-turn effort.
+
+### Channel media and model content
+
+Channels pass normalized local media paths and MIME metadata to the host; they do not make attachment bytes trusted instructions. Before invoking a normal turn, the host optionally transcribes eligible voice/audio/video, lets a sandbox-aware runtime stage documents, augments the text for attachments, and places photo content in request metadata. Documents are represented by a JSON-escaped full-path notice that tells the agent to treat both the attachment and its path as untrusted data; their bytes are not inlined. Video and other binary media similarly become path notices. A preparation failure preserves any user text and adds only a generic unavailable-attachment notice.
+
+Only an image-classified file at or below 5 MiB is read into a provider-neutral base64 image block; inaccessible, oversized, or non-image files are omitted from those blocks. With a remote execution sandbox, documents are copied to a generated `.talon/attachments` sandbox path only after containment under an inbound root is rechecked after symlink resolution, the source is opened without following symlinks, and it is confirmed to be a bounded regular file. This staging changes document path aliases, not the trust level of the file.
+
+The same path discipline protects outbound media. A media path must resolve beneath its configured outbound root and be a regular file; URL paths, home expansion, traversal, and symlink escapes are rejected. Channel adapters also verify the requested image/video/document type and apply their configured size cap before uploading. Markdown image syntax in ordinary model text is not an implicit upload request.
 
 ### Memory and context doctor
 
@@ -180,7 +210,9 @@ The host dispatches eligible completed results using an unattended `background_d
 
 Talon is an alpha package named `deepagents-talon` (version `0.1.2`), requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. It depends on the Deep Agents SDK (`deepagents>=0.7.41`), `deepagents-code>=0.2.14,<1.0.0`, LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. dcode remains outside Talon's channel and worker lifecycle; when enabled, the dcode session bridge is a narrowly scoped local Unix-socket messaging integration.
 
-Relevant configuration includes the assistant manifest/home, model and context settings, optional sandbox, MCP configuration, `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, and `DEEPAGENTS_TALON_VERBOSITY`. Validate a normal attended turn and a cron turn separately: their authority and delegation lifecycle intentionally differ.
+Relevant configuration includes the assistant manifest/home, model and context settings, optional sandbox, MCP configuration, `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, `DEEPAGENTS_TALON_VERBOSITY`, and channel media roots and caps. The `media` and `media-cpu` extras provide optional local media dependencies; on Linux `media-cpu` uses the PyTorch CPU index and conflicts with `media`.
+
+Sandboxing is opt-in and applies to shell/file execution; it does not contain MCP tools, web tools, or channel media handling, which run in the host process. Skills and memory also stay on the host. Run Talon under an OS account and with credentials appropriate to the most privileged enabled integration, and keep state and MCP configuration outside an agent-editable workspace. Validate a normal attended turn and a cron turn separately: their authority and delegation lifecycle intentionally differ.
 
 When changing this integration:
 
@@ -197,9 +229,11 @@ When changing this integration:
 
 `tests/unit_tests/test_memory_reload.py` is the regression guard for fresh sources: after a checkpointed turn, changes to every configured memory file—including a file edited through the agent's filesystem tools—appear on the next turn without duplicate memory blocks or stale text. `tests/unit_tests/test_context_doctor.py` verifies content-free, non-mutating diagnostics and command behavior. Hook and research-subagent tests cover hook wire payloads, denial versus approval, trusted file loading, fresh context, explicit attachments, MCP protections, and opaque-agent approval enforcement.
 
+`tests/test_media.py` verifies that documents are path notices rather than inlined instruction text, image content is bounded and MIME-gated, unavailable attachments do not disclose their error detail, and unsafe or symlink-escaping paths are rejected. `tests/test_host.py` verifies host-side photo blocks, video path notices, lifecycle unwind, replacement/cancellation, and delivery behavior. `tests/unit_tests/test_effort.py` covers operator and allowlist enforcement, secure per-model persistence, next-turn capture, failed-write preservation, provider wire settings, nested model-setting merge, and concurrent context-variable cleanup.
+
 The focused session-bridge suites are security and routing regression tests. `test_claude_sessions.py` covers private socket discovery, peer/frame correlation, escape framing, idle notifications, owner routing, operator/approval gates, and shutdown. `test_codex_sessions.py` covers app-server handshake and turn correlation, outbound bounds, escaping, cancellation races, and approval-policy behavior. `test_dcode_sessions.py` covers private live-socket discovery, correlation acknowledgements, and the same operator, subagent, and approval-policy boundaries.
 
 ```bash
 cd libs/talon
-uv run pytest tests/test_runtime.py tests/test_host.py tests/unit_tests/test_context_doctor.py tests/unit_tests/test_memory_reload.py tests/unit_tests/test_hooks.py tests/unit_tests/test_research_subagents.py tests/unit_tests/test_claude_sessions.py tests/unit_tests/test_codex_sessions.py tests/unit_tests/test_dcode_sessions.py
+uv run pytest tests/test_runtime.py tests/test_host.py tests/test_media.py tests/unit_tests/test_effort.py tests/unit_tests/test_context_doctor.py tests/unit_tests/test_memory_reload.py tests/unit_tests/test_hooks.py tests/unit_tests/test_research_subagents.py tests/unit_tests/test_claude_sessions.py tests/unit_tests/test_codex_sessions.py tests/unit_tests/test_dcode_sessions.py
 ```

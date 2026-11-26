@@ -3,9 +3,6 @@ type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents distinguishes synchronous local child graphs, context-sharing forks, and durable remote Agent Protocol tasks. Talon adapts delegation for conversational delivery, while skills progressively disclose instructions and selected tools without granting authority.
 tags: [deepagents, subagents, delegation, skills, talon, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -21,6 +18,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-e05fd90c9d31b1aafef834ba
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_fork_response_format.py
   - id: openwiki-source-454da083c2cc29febd156c7e
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
@@ -41,7 +40,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-26T08:03:59.911Z
 ---
 
 # Subagents and Skills
@@ -88,7 +90,9 @@ By default, a local child receives a fresh `HumanMessage` containing the delegat
 
 The child response is serialized into the parent call's correlated `ToolMessage`: a `structured_response` is JSON-serialized; otherwise the middleware selects the last non-empty AI text. A refusal content block or a `ModelRefusalError`/structured-output refusal becomes a bounded explanatory task result (including available category or explanation and a retry hint), rather than terminating the parent delegation. This behavior applies to synchronous `task`/`atask` invocation; it does not mean the parent model itself suppresses refusals by default.
 
-Experimental `mode="fork"` reconstructs the effective parent history after applying its summarization event, removes the in-flight spawning tool call, and appends a preamble plus the delegated description. A declarative fork retains its parent's system-prompt prefix and prompt-producing middleware (and carries non-excluded parent state, including private channels); its own `system_prompt` is delivered with the task to preserve the prefix cache. A compiled fork is opaque, so it receives only non-private, non-excluded state. Forks cannot define independent `skills`; they inherit the parent skill sources. The fork still has a `task` tool so its tool shape matches the parent, but a private fork marker makes nested `task` or `atask` return a refusal instructing it to complete the work itself. Forking shares context at invocation time; it is not recursive delegation.
+A declarative spec can set `response_format`; alternatively, a caller can put a format in `configurable[SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY]` for one `task` call. That dynamic format recompiles the declarative child for that call and overrides the spec's static format. It is deliberately unsupported for a `CompiledSubAgent`, whose runnable cannot be safely recompiled. The child format controls both its provider request and the JSON result returned to the parent; it is independent of the parent's `response_format`.
+
+Experimental `mode="fork"` reconstructs the effective parent history after applying its summarization event, removes the in-flight spawning tool call, and appends a preamble plus the delegated description. A declarative fork retains its parent's system-prompt prefix and prompt-producing middleware (and carries non-excluded parent state, including private channels); its own `system_prompt` is delivered with the task to preserve the prefix cache. A compiled fork is opaque, so it receives only non-private, non-excluded state. A fork does not inherit the parent's `response_format`: set a matching child format—or a matching dynamic format—when the child needs structured output and provider request equivalence matters for prompt-cache reuse. Forks cannot define independent `skills`; they inherit the parent skill sources. The fork still has a `task` tool so its tool shape matches the parent, but a private fork marker makes nested `task` or `atask` return a refusal instructing it to complete the work itself. Forking shares context at invocation time; it is not recursive delegation.
 
 When a local child saves checkpoints, the returned `ToolMessage.artifact` carries its actual `checkpoint_ns`, allowing a client to inspect that child history under the parent thread. Compiled graphs are streamed to learn the namespace, including the namespace of a retry that actually completed; nested child namespaces retain their parent segments. There is no artifact when a graph configured with `checkpointer=False` saved nothing. A non-graph runnable uses the task call's fallback namespace. The known exception is a runnable wrapped with `.with_retry()`: it must be invoked for retry behavior, so the recorded fallback can name the failed run while the successful retry saved under a suffixed namespace.
 
@@ -181,7 +185,7 @@ The focused tests make the intended boundaries executable:
 
 - `libs/deepagents/tests/unit_tests/test_subagents.py` covers correlated local results, state isolation and parallel updates, fork context, and checkpoint artifacts. In particular, it verifies nested namespaces, retry-aware namespace reporting, `checkpointer=True` and `False`, and the `.with_retry()` namespace limitation.
 - `libs/deepagents/tests/unit_tests/test_subagent_refusal.py` verifies that declarative and compiled local children turn returned or raised model refusals—including structured-output refusals—into a task result, while a main agent still raises by default.
-- `libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py` verifies the fork's inherited prompt prefix, task-local instructions, skill prohibition, state distinctions, and recursion refusal; `middleware/test_fork_payload.py` additionally checks provider payload equivalence, inherited history, cache-control placement, and task-message boundaries.
+- `libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py` verifies the fork's inherited prompt prefix, task-local instructions, skill prohibition, state distinctions, recursion refusal, and that dynamic structured formats compile only declarative children; `middleware/test_fork_payload.py` additionally checks provider payload equivalence, inherited history, cache-control placement, and task-message boundaries. `middleware/test_fork_response_format.py` exercises synchronous and asynchronous fork calls across tool and provider response strategies, including dynamic-format precedence and the resulting child JSON tool result.
 - `libs/deepagents/tests/unit_tests/test_async_subagents.py` verifies tool construction and validation, task-state reduction, launch records, isolated versus fork launch payloads, and the remote task lifecycle. In particular, the launch-payload test is the boundary test for a fork being a snapshot of messages rather than inheritance of the parent graph.
 - The skills middleware tests should cover the distinction between merely listed, read, and pinned skills; resolver failure or drift; deferred request tools; and provider-specific inline placement. The key invariant is that tool-time dispatch agrees with what the immediately preceding model call was actually shown.
 - `libs/talon/tests/unit_tests/test_background.py` covers owner isolation, capacity, cancellation, independent worker thread IDs, acknowledgement/requeue/drop delivery semantics, timeout and sanitized error behavior, result text projection, remote streaming, and scheduled inline fan-out.

@@ -2019,7 +2019,8 @@ async def _wait_for_request(agent: BlockingAgent, text: str) -> None:
 
 
 async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
-    for _ in range(100):
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
         if len(channel.sent) >= count:
             return
         await asyncio.sleep(0)

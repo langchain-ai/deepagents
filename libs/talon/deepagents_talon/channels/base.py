@@ -32,6 +32,12 @@ ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video", "audio"})
 OutboundMediaType = Literal["image", "video", "document"]
 """Categories Talon assigns to files it sends; channels attach documents as files."""
 
+MAX_INLINE_PHOTO_BYTES = 10 * 1024 * 1024
+"""Telegram's limit for photos; larger images still send as documents."""
+
+_INLINE_PHOTO_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+_INLINE_VIDEO_TYPES = frozenset({"video/mp4"})
+
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
 _BOLD_PATTERN = re.compile(r"\*\*([^*]+)\*\*|__([^_]+)__")
@@ -532,21 +538,33 @@ def _split_index(text: str, limit: int) -> int:
 
 
 def media_type_for_path(path: Path) -> OutboundMediaType:
-    """Classify a file for channel delivery by its name.
+    """Classify a file for channel delivery.
+
+    Only formats every channel shows inline get a native category. Other images
+    and videos, such as SVG, TIFF, or MOV, and photos over Telegram's photo limit
+    would be rejected by native photo and video uploads, so they go as documents,
+    which every channel accepts.
 
     Args:
-        path: File whose name determines the category.
+        path: File to classify; its size is checked for photos.
 
     Returns:
-        `image` or `video` when the name maps to one, otherwise `document`, which
-            every channel delivers as a plain file attachment.
+        `image`, `video`, or `document`.
     """
     mime, _ = mimetypes.guess_type(path)
-    if mime is not None and mime.startswith("image/"):
+    size = _size(path)
+    if mime in _INLINE_PHOTO_TYPES and size is not None and size <= MAX_INLINE_PHOTO_BYTES:
         return "image"
-    if mime is not None and mime.startswith("video/"):
+    if mime in _INLINE_VIDEO_TYPES:
         return "video"
     return "document"
+
+
+def _size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 _RETRYABLE_ERROR_FRAGMENTS = frozenset(

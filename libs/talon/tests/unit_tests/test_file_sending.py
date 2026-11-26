@@ -157,6 +157,11 @@ class _ReadingChannel(RecordingChannel):
         ("Q3 report (final).txt", "document"),
         ("résumé ✓.pdf", "document"),
         (".env", "document"),
+        ("chart.svg", "document"),
+        ("scan.tiff", "document"),
+        ("anim.gif", "document"),
+        ("clip.mov", "document"),
+        ("photo.webp", "image"),
     ],
 )
 async def test_staged_file_keeps_its_name_and_type_then_is_removed(

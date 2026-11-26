@@ -1242,8 +1242,11 @@ class AgentServerACP(ACPAgent):
         arguments = _execute_arguments(tool_args)
         if session_id not in self._sessions or arguments is None:
             return None
-        mode, model = turn.context.mode, turn.context.model
-        return AgentSessionContext(cwd=turn.cwd, mode=mode, model=model), arguments
+        context = turn.context
+        key = AgentSessionContext(
+            cwd=turn.cwd, mode=context.mode, model=context.model, options=context.options
+        )
+        return key, arguments
 
     async def _after_turn(
         self, session_id: str, turn: _Turn, state: Any

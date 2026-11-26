@@ -163,6 +163,7 @@ async def test_argument_key_order_does_not_change_command(server: GatedServer) -
         ("cwd", "/other"),
         ("mode", "different"),
         ("model", "other"),
+        ("options", {"effort": "high"}),
     ],
 )
 async def test_changed_session_context_requires_approval(

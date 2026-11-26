@@ -12,25 +12,6 @@ from pathlib import Path, PureWindowsPath
 from urllib.parse import urlparse
 
 MAX_INBOUND_IMAGE_BYTES = 5 * 1024 * 1024
-MAX_TEXT_DOCUMENT_BYTES = 100 * 1024
-
-READABLE_DOCUMENT_EXTENSIONS = frozenset(
-    {
-        ".txt",
-        ".md",
-        ".csv",
-        ".json",
-        ".xml",
-        ".yaml",
-        ".yml",
-        ".log",
-        ".py",
-        ".js",
-        ".ts",
-        ".html",
-        ".css",
-    },
-)
 
 ContentBlock = dict[str, object]
 

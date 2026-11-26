@@ -156,6 +156,7 @@ class CostBreakdown(TypedDict):
     cache_read_cost_complete: bool
     reasoning_cost_complete: bool
     historical_complete: bool
+    priced_cost_complete: NotRequired[dict[str, bool]]
     unpriced_input_tokens: NotRequired[int]
     unpriced_output_tokens: NotRequired[int]
     unpriced_cache_creation_tokens: NotRequired[int]
@@ -224,6 +225,9 @@ def _empty_cost_breakdown(*, historical_complete: bool = True) -> CostBreakdown:
         "cache_read_cost_complete": True,
         "reasoning_cost_complete": True,
         "historical_complete": historical_complete,
+        "priced_cost_complete": {
+            key.removesuffix("_tokens"): True for _, key in _UNPRICED_TOKEN_KEYS
+        },
         "unpriced_input_tokens": 0,
         "unpriced_output_tokens": 0,
         "unpriced_cache_creation_tokens": 0,
@@ -294,7 +298,24 @@ def _merge_cost_breakdowns(
         ):
             result[key] = bool(result[key] and source.get(key) is True)  # type: ignore[literal-required]
         _merge_unpriced_tokens(result, source)
+        _merge_priced_cost_completeness(result, source)
     return result
+
+
+def _merge_priced_cost_completeness(
+    result: CostBreakdown, source: Mapping[str, Any]
+) -> None:
+    """Preserve pricing gaps independently of unpriced usage."""
+    if source.get("priced_request_count") == 0:
+        return
+    flags = source.get("priced_cost_complete")
+    for category, complete in result["priced_cost_complete"].items():
+        value = (
+            flags.get(category)
+            if isinstance(flags, Mapping)
+            else source.get(f"{category}_cost_complete")
+        )
+        result["priced_cost_complete"][category] = complete and value is True
 
 
 def _merge_unpriced_tokens(result: CostBreakdown, source: Mapping[str, Any]) -> None:
@@ -368,6 +389,10 @@ def _breakdown_for_estimate(
         result["cache_read_cost_usd"] = estimate.cache_read_cost_usd
     if estimate.reasoning_cost_usd is not None:
         result["reasoning_cost_usd"] = estimate.reasoning_cost_usd
+    result["priced_cost_complete"] = {
+        category: result.get(f"{category}_cost_complete") is True
+        for category in result["priced_cost_complete"]
+    }
     return result
 
 

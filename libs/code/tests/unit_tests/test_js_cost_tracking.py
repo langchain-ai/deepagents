@@ -171,10 +171,11 @@ async def _assert_accounting(
     breakdown = snapshot.values["_session_cost_breakdown"]
     # The unpriced subset has its own coverage in `test_cost_breakdown`.
     assert breakdown["unpriced_tokens_known"] is True
+    assert all(breakdown["priced_cost_complete"].values())
     assert {
         key: value
         for key, value in breakdown.items()
-        if not key.startswith("unpriced_")
+        if not key.startswith("unpriced_") and key != "priced_cost_complete"
     } == pytest.approx(
         {
             "version": 1,

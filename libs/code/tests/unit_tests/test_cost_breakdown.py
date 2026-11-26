@@ -2,6 +2,8 @@
 
 from typing import cast
 
+import pytest
+
 from deepagents_code.cost_tracking import (
     CostBreakdown,
     _breakdown_for_estimate,
@@ -54,6 +56,35 @@ def test_unpriced_usage_stays_out_of_priced_rows() -> None:
     assert "| **Unpriced output** | n/a | 11 | no price data |" in table
     assert "| **Total** | n/a | 35,224 | 0.0003 (partial) |" in table
     assert "1 of 2 requests in this thread" in table
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_split_keeps_priced_category_cost_gaps_partial(*, legacy: bool) -> None:
+    priced = _breakdown_for_estimate(
+        _CostEstimate(
+            total_cost_usd=0.00029,
+            input_cost_usd=0.0002,
+            output_cost_usd=0.00009,
+            input_tokens=106,
+            output_tokens=9,
+            cache_creation_tokens=5,
+            cache_read_tokens=5,
+            reasoning_tokens=5,
+            cache_creation_cost_usd=None,
+            cache_read_cost_usd=None,
+            reasoning_cost_usd=None,
+        )
+    )
+    if legacy:
+        priced.pop("priced_cost_complete")
+    mixed = _merge_cost_breakdowns(priced, _unpriced_main_request())
+    breakdown = _merge_cost_breakdowns(_priced_side_request(), mixed)
+    table = format_cost_breakdown_table(0.00058, breakdown)
+
+    for category in ("cache creation", "cache read", "reasoning"):
+        assert f"| {category} | 0.0% | 5 | 0.0000 (partial) |" in table
+    assert "| **Input** | 69.0% | 212 | 0.0004 |" in table
+    assert "**Unpriced input**" in table
 
 
 def test_breakdown_without_unpriced_counts_marks_mixed_tokens() -> None:

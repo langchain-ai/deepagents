@@ -94,11 +94,13 @@ class _BreakdownView:
         value = self.number(f"{category}_cost_usd")
         if value is None:
             return "unavailable"
-        # With unpriced usage split out, the cost flag is false for every
-        # category merely because an unpriced request exists. Missing usage
-        # detail on a priced request still shows up in its token flag.
-        flag = "tokens" if self.split else "cost"
-        if self.complete(f"{category}_{flag}_complete"):
+        flags = self._data.get("priced_cost_complete")
+        complete = (
+            flags.get(category) is True
+            if self.split and isinstance(flags, Mapping)
+            else self.complete(f"{category}_cost_complete")
+        )
+        if complete:
             return _format_usd(value)
         return f"{_format_usd(value)} (partial)"
 

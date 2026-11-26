@@ -743,6 +743,119 @@ async def test_unfinished_work_controls_goal_wake(tmp_path: Path, state: str) ->
     assert json.loads(history[0]["workstreams"])[1]["next_action"] == pending["next_action"]
 
 
+async def test_subimage_continues_until_handoff_is_received(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    store.journal = JobJournal(InMemoryStore(), "test")
+    goal = store.create_job(mode="objective", origin=ORIGIN, prompt="Review SubImage governance")
+    tomorrow = datetime.now(UTC) + timedelta(days=1)
+    followup = tomorrow - timedelta(hours=12)
+    fivetran = Workstream(
+        state="blocked",
+        actor="tenant admin",
+        next_action="Confirm Fivetran access",
+        evidence="Access request F1 pending",
+        check_at=tomorrow,
+    )
+    datadog = Workstream(
+        state="delegated", actor="Robin", next_action="Verify Datadog PR scope request"
+    )
+    sends = []
+
+    class SubImageAgent(BlockingAgent):
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            self.requests.append(request)
+            if len(self.requests) == 2:
+                assert datadog.next_action in request.text
+                sends.append("Datadog PR scope request")
+                datadog.receipt = "Robin acknowledged in thread D1"
+                datadog.check_at = followup
+            if len(self.requests) == 3:
+                assert datadog.receipt in request.text
+            return AgentResult(
+                text=ObjectiveReport(
+                    status="blocked",
+                    summary="Awaiting Fivetran access",
+                    next_wake_at=tomorrow.isoformat(),
+                    workstreams=[fivetran, datadog],
+                ).model_dump_json()
+            )
+
+    agent = SubImageAgent()
+    host = TalonHost(config=_config(tmp_path), channels=[RecordingChannel("slack")], agent=agent)
+    _attach_scheduler(host, store)
+    assert await host.run_scheduled_job(goal) == "[SILENT]"
+    goal = store.get_job(goal.id)
+    assert goal.next_run_at == followup.replace(microsecond=0)
+    assert not store.due_jobs(now=followup - timedelta(minutes=1))
+    assert await host.run_scheduled_job(goal) == "[SILENT]"
+    assert len(agent.requests) == 3
+    assert len(sends) == 1
+
+
+async def test_budget_exit_preserves_action_from_same_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.host._SCHEDULED_RUN_TIMEOUT_SECONDS", 0.5)
+    action = "Verify Robin received the Datadog scope request in thread D1"
+
+    class BudgetAgent(BlockingAgent):
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            if SCHEDULER_FINALIZING.get():
+                return AgentResult(text='{"status":"partial","summary":"Time expired"}')
+            if self.requests:
+                await asyncio.Event().wait()
+            self.requests.append(request)
+            return AgentResult(
+                text=ObjectiveReport(
+                    status="partial",
+                    summary="Scope issue",
+                    workstreams=[Workstream(state="ready", actor="Talon", next_action=action)],
+                ).model_dump_json()
+            )
+
+    agent = BudgetAgent()
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    store.journal = JobJournal(InMemoryStore(), "test")
+    goal = store.create_job(mode="objective", origin=ORIGIN, prompt="Review Datadog")
+    host = TalonHost(config=_config(tmp_path), channels=[RecordingChannel("slack")], agent=agent)
+    _attach_scheduler(host, store)
+    assert await host.run_scheduled_job(goal) == "[SILENT]"
+    assert action in (await store.journal.history(goal.id, ORIGIN))[0]["workstreams"]
+    assert (
+        datetime.now(UTC)
+        < store.get_job(goal.id).next_run_at
+        <= datetime.now(UTC) + timedelta(minutes=1)
+    )
+
+
+async def test_external_blocker_without_check_parks_until_deadline(tmp_path: Path) -> None:
+    agent = _WorkingGoalAgent()
+    agent.released.set()
+    agent.report = {
+        "status": "blocked",
+        "summary": "Waiting for tenant access",
+        "workstreams": [
+            {
+                "state": "blocked",
+                "actor": "tenant admin",
+                "next_action": "Grant access",
+                "evidence": "Access request F1 pending",
+            }
+        ],
+    }
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path)
+    goal = store.create_job(
+        mode="objective",
+        origin=ORIGIN,
+        prompt="Verify Fivetran",
+        target_at=datetime.now(UTC).replace(microsecond=0) + timedelta(days=3),
+    )
+    host = TalonHost(config=_config(tmp_path), channels=[RecordingChannel("slack")], agent=agent)
+    _attach_scheduler(host, store)
+    assert await host.run_scheduled_job(goal) == "[SILENT]"
+    assert store.get_job(goal.id).next_run_at == goal.target_at
+
+
 async def test_received_handoff_waits_until_agreed_check_and_respects_pause(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     followup = now + timedelta(hours=6)

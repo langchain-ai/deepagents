@@ -94,12 +94,20 @@ class ObjectiveReport(BaseModel):
     completion_criteria: list[str] | None = None
     evidence: dict[str, str | None] = Field(default_factory=dict, max_length=64)
 
+    @property
+    def needs_action(self) -> bool:
+        """Whether a checkpoint reports work that can still progress."""
+        return any(stream.needs_action for stream in self.workstreams)
+
     def checkpoint_workstreams(self, row: dict[str, object]) -> ObjectiveReport:
         """Keep the next steps in run history and reconcile the aggregate status."""
         if not self.workstreams:
+            if saved := row.get("workstreams"):
+                streams = [Workstream.model_validate(item) for item in json.loads(str(saved))]
+                return self.model_copy(update={"workstreams": streams}).checkpoint_workstreams(row)
             return self
         row["workstreams"] = json.dumps([s.model_dump(mode="json") for s in self.workstreams])
-        ready = any(stream.needs_action for stream in self.workstreams)
+        ready = self.needs_action
         unfinished = any(stream.state != "done" for stream in self.workstreams)
         if (ready and self.status in {"blocked", "checked", "complete"}) or (
             unfinished and self.status == "complete"
@@ -112,9 +120,9 @@ class ObjectiveReport(BaseModel):
     ) -> datetime | None:
         """Double the observed polling interval after consecutive unchanged checks."""
         missing_checkpoint = (
-            not self.workstreams and self.next_wake_at and self.wake_reason == "poll"
+            not self.workstreams and self.next_wake_at and self.wake_reason != "owner_timing"
         )
-        if missing_checkpoint or any(stream.needs_action for stream in self.workstreams):
+        if missing_checkpoint or self.needs_action:
             wake = now + timedelta(minutes=1)
             return min(wake, deadline) if deadline else wake
         checks = [
@@ -521,6 +529,14 @@ class JobJournal:
             yield
         finally:
             _SAVE_WORK.reset(token)
+
+    async def save_workstreams(self, run: str, report: ObjectiveReport) -> None:
+        """Persist remaining actions before continuing within the same work budget."""
+        async with self.records.access():
+            row = await self.records.get(run)
+            if row and row["status"] == "started":
+                report.checkpoint_workstreams(row)
+                await self.records.commit([(run, row)])
 
     async def append_work(self, run: str, note: str) -> None:
         """Keep a bounded note, preserving the next step at the end of long checkpoints."""

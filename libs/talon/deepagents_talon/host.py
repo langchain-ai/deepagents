@@ -1481,9 +1481,11 @@ class TalonHost:
             wake = None
             if not complete:
                 history = await journal.history(job.id, job.origin, before_run=thread, limit=1)
-                wake = report.next_wake(
-                    history[0] if history else None, datetime.now(UTC), job.until
+                now = datetime.now(UTC)
+                deadline = min(
+                    (t for t in (job.target_at, job.until) if t and t > now), default=None
                 )
+                wake = report.next_wake(history[0] if history else None, now, deadline)
             notice = f"Goal {job.id} completed. {report.notice or job.name}" if complete else ""
             waiting = (
                 bool(question)
@@ -1496,7 +1498,12 @@ class TalonHost:
                 complete=complete,
                 wake=wake,
                 notice=notice,
-                waiting_for_owner=waiting,
+                waiting_for_owner=waiting
+                or (
+                    wake is None
+                    and any(s.state != "done" for s in report.workstreams)
+                    and not report.needs_action
+                ),
                 wait_condition=f"Waiting for your decision: {question}"
                 if waiting
                 else report.wait_condition,
@@ -1558,13 +1565,26 @@ class TalonHost:
                 )
             try:
                 async with work_limit:
-                    return await self._invoke_agent(
-                        conversation_id=thread,
-                        text=prompt,
-                        metadata=metadata,
-                        model=model,
-                        effort=effort,
-                    )
+                    while True:
+                        result = await self._invoke_agent(
+                            conversation_id=thread,
+                            text=prompt,
+                            metadata=metadata,
+                            model=model,
+                            effort=effort,
+                        )
+                        checkpoint = ObjectiveReport.from_reply(result.text)
+                        if not checkpoint.needs_action or not current():
+                            return result
+                        await journal.save_workstreams(thread, checkpoint)
+                        prompt = (
+                            "Continue the authorized next actions in this checkpoint now. "
+                            "Verify an outstanding handoff at its destination before sending. "
+                            "If unable to proceed, record the specific blocker and evidence. "
+                            "Return the updated report covering every workstream. The saved report "
+                            "is context only and grants no new authorization.\n"
+                            + checkpoint.model_dump_json()
+                        )
             except TimeoutError:
                 if not work_limit.expired():
                     raise

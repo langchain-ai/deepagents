@@ -12,7 +12,7 @@ from langchain_core.tools import tool
 from pydantic import AwareDatetime, BaseModel, Field, OnErrorOmit, TypeAdapter, field_validator
 
 from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
-from deepagents_talon.questions import Answer, Question, QuestionOption, QuestionSession
+from deepagents_talon.questions import Answer, Question, QuestionOption, QuestionSession, Step
 from deepagents_talon.store_records import StoreRecords, digest
 
 if TYPE_CHECKING:
@@ -418,7 +418,9 @@ class JobJournal:
                     return question
         return None
 
-    async def focus_question(self, job: CronJob, question: str) -> str | None:
+    async def focus_question(
+        self, job: CronJob, question: str, *, redisplay: bool = False
+    ) -> str | None:
         """Show the first pending question before accepting an unaddressed answer."""
         async with self.records.access():
             key = "decisions:" + job.id
@@ -426,7 +428,7 @@ class JobJournal:
             item = record.get(_revision_key(job), {}).get(question)
             if not item or "answer" in item:
                 return "That question has closed."
-            if item.get("focused"):
+            if item.get("focused") and not redisplay:
                 return None
             item["focused"] = "yes"
             await self.records.commit([(key, record)])
@@ -471,7 +473,7 @@ class JobJournal:
 
     async def reply_to_question(
         self, job: CronJob, question: str, text: str, *, wake: Callable[[], bool]
-    ) -> str:
+    ) -> Step:
         """Advance the saved question session and wake the job on submission."""
         key = "decisions:" + job.id
         async with self.records.access():
@@ -479,7 +481,7 @@ class JobJournal:
             items = await self._questions(job)
             item = items.get(question)
             if not item or "answer" in item:
-                return "That question has closed."
+                return Step("cancelled", "That question has closed.")
             session = _decision_session(question, item)
             step = session.reply(text)
             if step.status != "submitted":
@@ -489,7 +491,7 @@ class JobJournal:
                     item["skipped"] = "yes"
                 record[_revision_key(job)] = items
                 await self.records.commit([(key, record)])
-                return step.message
+                return step
             answers = [
                 a.other if a.other and not a.selected else a.describe() for a in session.result
             ]
@@ -502,7 +504,7 @@ class JobJournal:
                 ):
                     choice = answer.strip().casefold()
                     if choice not in {"retire action", "retry despite duplicate risk"}:
-                        return ACTION_CHOICES
+                        return Step("asking", ACTION_CHOICES)
                     if choice == "retire action":
                         retired[digest(action["tool"], action["arguments"])] = [
                             action["tool"],
@@ -510,14 +512,14 @@ class JobJournal:
                         ]
                     del intents[call_id]
             if not wake():
-                return "That question has changed."
+                return Step("cancelled", "That question has changed.")
             for form, value in zip(session.questions, answers, strict=True):
                 items.setdefault(form.question, {"unlocks": ""})["answer"] = value
             record[_revision_key(job)] = items
             await self.records.commit(
                 [(key, record), ("actions:" + job.id, intents), ("retired:" + job.id, retired)]
             )
-            return f"Answer recorded for {job.name}."
+            return Step("submitted", f"Answer recorded for {job.name}.")
 
     async def mark_delivered(self, job: str, notice: str, message_id: str | None = None) -> None:
         """Acknowledge only notices included in the delivered message."""

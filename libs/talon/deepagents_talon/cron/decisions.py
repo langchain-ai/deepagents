@@ -19,21 +19,10 @@ async def decision_reply(
     origin = CronOrigin(
         channel=provider, conversation_id=message.conversation_id, sender_id=message.sender_id
     )
-    root = message.metadata.get("thread_root_message_id")
-    if (
-        isinstance(root, str)
-        and provider == "slack"
-        and message.conversation_id.endswith(f":{root}")
-    ):
-        root = None
-    reply_to = (
-        message.metadata.get("quoted_message_id")
-        or message.metadata.get("reply_to_message_id")
-        or root
-    )
+    reply_to = _reply_target(message, provider)
     async with store.open_journal() as journal:
-        pending = [
-            (job, question)
+        jobs = [
+            job
             for job in store.list_jobs(origin=origin)
             if job.mode == "objective"
             and job.enabled
@@ -41,11 +30,11 @@ async def decision_reply(
                 not job.origin.account_id
                 or job.origin.account_id == message.metadata.get("channel_account_id")
             )
-            if (
-                question := await journal.open_decision(
-                    job, reply_to if isinstance(reply_to, str) else None
-                )
-            )
+        ]
+        pending = [
+            (job, question)
+            for job in jobs
+            if (question := await journal.open_decision(job, reply_to))
         ]
         if not pending:
             return None
@@ -57,6 +46,28 @@ async def decision_reply(
                 return "Questions skipped. You can continue chatting."
             if prompt := await journal.focus_question(job, question):
                 return prompt
-        return await journal.reply_to_question(
+        step = await journal.reply_to_question(
             job, question, message.text, wake=lambda: store.wake_for_answer(job)
         )
+        if step.status == "submitted":
+            for candidate in jobs:
+                if candidate.id != job.id and (question := await journal.open_decision(candidate)):
+                    prompt = await journal.focus_question(candidate, question, redisplay=True)
+                    return f"{step.message}\n\n{prompt}"
+        return step.message
+
+
+def _reply_target(message: ChannelMessage, provider: str | None) -> str | None:
+    root = message.metadata.get("thread_root_message_id")
+    if (
+        isinstance(root, str)
+        and provider == "slack"
+        and message.conversation_id.endswith(f":{root}")
+    ):
+        root = None
+    value = (
+        message.metadata.get("quoted_message_id")
+        or message.metadata.get("reply_to_message_id")
+        or root
+    )
+    return value if isinstance(value, str) else None

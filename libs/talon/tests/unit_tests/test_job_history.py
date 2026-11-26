@@ -1137,7 +1137,7 @@ async def test_multiple_decisions_show_one_question_or_return_to_chat(
     host = TalonHost(config=_config(tmp_path), channels=[channel], agent=agent)
     _attach_scheduler(host, store)
     goals = []
-    for name in ("build", "release"):
+    for name in ("build", "release", "deploy"):
         goal = store.create_job(
             prompt=name,
             name=name,
@@ -1175,10 +1175,11 @@ async def test_multiple_decisions_show_one_question_or_return_to_chat(
         return
     assert "Approve build?" in await chat("yes")
     assert not store.due_jobs()
-    assert "recorded" in await chat("use beta")
+    assert "Approve release?" in await chat("use beta")
     assert [job.id for job in store.due_jobs()] == [goals[0].id]
     assert not store.get_job(goals[0].id).wait_condition
-    assert "recorded" in await chat("2")
+    assert "Approve deploy?" in await chat("2")
+    assert await chat("1") == "Answer recorded for deploy."
     async with store.open_journal() as journal:
         assert await journal.decision_answer(goals[0], "Approve build?") == "use beta"
 

@@ -13,6 +13,21 @@
 * **code:** start the price catalog refresh when a turn begins ([#8026](https://github.com/langchain-ai/deepagents/issues/8026)) ([3023beb](https://github.com/langchain-ai/deepagents/commit/3023bebc2ff6f08f6cdee7a11f5c8a0a3ac82088))
 * **code:** upgrade `genai-prices` to 0.2 ([#8021](https://github.com/langchain-ai/deepagents/issues/8021)) ([cdde453](https://github.com/langchain-ai/deepagents/commit/cdde453bf8e43049f48d9201f4bf84d9b8e9b59f))
 
+### Dependencies
+
+- `deepagents`: `==0.7.41` → `==0.7.42`
+- `genai-prices`: `>=0.1.13,<0.2.0` → `>=0.2.5,<0.3.0`
+- `langchain-anthropic`: `>=1.7.12,<2.0.0` → `>=1.7.13,<2.0.0`
+- `langchain-baseten`: `>=0.2.6,<1.0.0` → `>=0.2.7,<1.0.0` (`baseten` extra)
+- `langchain-core`: `>=1.8.4,<2.0.0` → `>=1.8.5,<2.0.0`
+- `langchain-fireworks`: `>=1.7.3,<2.0.0` → `>=1.8.0,<2.0.0` (`fireworks` extra)
+- `langchain-huggingface`: `>=1.2.3,<2.0.0` → `>=1.3.0,<2.0.0` (`huggingface` extra)
+- `langchain-ollama`: `>=1.1.0,<2.0.0` → `>=1.2.0,<2.0.0` (`ollama` extra)
+- `langchain-perplexity`: `>=1.4.2,<2.0.0` → `>=1.5.0,<2.0.0` (`perplexity` extra)
+- `langgraph-cli`: `>=0.4.43,<1.0.0` → `>=0.4.44,<1.0.0`
+- `langgraph-runtime-inmem`: `>=0.38.4,<1.0.0` → `>=0.38.6,<1.0.0`
+- `langsmith`: `>=0.16.0` → `>=0.16.2`
+
 ## [0.2.14](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.13...deepagents-code==0.2.14) (2026-11-23)
 
 ### Bug Fixes

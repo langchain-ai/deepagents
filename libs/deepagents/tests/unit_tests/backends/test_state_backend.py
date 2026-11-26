@@ -150,6 +150,26 @@ def test_state_backend_reports_utf8_byte_sizes(monkeypatch: pytest.MonkeyPatch) 
     assert matches[0]["size"] == expected_size
 
 
+def test_state_backend_stores_lone_surrogates_as_replacement_characters(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Text with lone UTF-16 surrogates, as JavaScript strings can hold, stays listable and readable."""
+    backend = StateBackend()
+    files: dict[str, Any] = {}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", files.update)
+
+    backend.write("/dir/cut.txt", "\ude00 hi")
+    backend.write("/dir/pair.txt", "\ud83d\ude00")
+    assert backend.edit("/dir/pair.txt", "\U0001f600", "\U0001f600 \ud800").error is None
+
+    sizes = {"/dir/cut.txt": 6, "/dir/pair.txt": 8}
+    assert {entry["path"]: entry["size"] for entry in backend.ls("/dir").entries or []} == sizes
+    assert {entry["path"]: entry["size"] for entry in backend.glob("*.txt", path="/dir").matches or []} == sizes
+    assert backend.read("/dir/cut.txt").file_data["content"] == "\ufffd hi"
+    [cut, pair] = backend.download_files(["/dir/cut.txt", "/dir/pair.txt"])
+    assert cut.content == "\ufffd hi".encode()
+    assert pair.content == "\U0001f600 \ufffd".encode()
+
+
 def test_state_backend_reads_legacy_list_content_for_non_text_path(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = StateBackend()
     legacy_content = ["aGVsbG8="]

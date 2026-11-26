@@ -43,19 +43,16 @@ def test_sync_tool_execution(
         ),
         disable_streaming=True,
     )
-    try:
-        agent = create_agent(model, tools=[ordinary_tool], middleware=[interpreter])
-        inputs = {"messages": [("user", "Run the tool.")]}
-        if streaming:
-            result = list(agent.stream(inputs, stream_mode="values"))[-1]
-        else:
-            result = agent.invoke(inputs)
-        messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
-        assert len(messages) == 1
-        assert messages[0].status == "success"
-        assert messages[0].tool_call_id == "test-call"
-        assert messages[0].content == (
-            "<result>2</result>" if tool_name == "js_eval" else "ordinary result"
-        )
-    finally:
-        interpreter._registry.close()
+    agent = create_agent(model, tools=[ordinary_tool], middleware=[interpreter])
+    inputs = {"messages": [("user", "Run the tool.")]}
+    if streaming:
+        result = list(agent.stream(inputs, stream_mode="values"))[-1]
+    else:
+        result = agent.invoke(inputs)
+    messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(messages) == 1
+    assert messages[0].status == "success"
+    assert messages[0].tool_call_id == "test-call"
+    assert messages[0].content == (
+        "<result>2</result>" if tool_name == "js_eval" else "ordinary result"
+    )

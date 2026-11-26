@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, package-local test routes and behavioral invariants for Deep Agents graph assembly, synchronous subagent delegation, refusal handling, checkpoint artifacts, and the dependency minimum-floor updater.
+- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for Deep Agents streaming, Talon runtime boundaries, QuickJS tool bridging, and release and workflow automation. Use package Makefiles for package test commands and assert observable ownership, correlation, and failure behavior.

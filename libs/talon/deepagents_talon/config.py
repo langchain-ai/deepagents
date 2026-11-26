@@ -267,11 +267,6 @@ class TalonConfig:
         """JSON file holding reasoning effort overrides by model."""
         return self._state_path("effort.json", "reasoning effort state")
 
-    @property
-    def smart_model_state_path(self) -> Path:
-        """JSON file holding the assistant's `/smart-model` override."""
-        return self._state_path("smart-model.json", "smart model selection state")
-
     def _state_path(self, name: str, description: str) -> Path:
         home = self.home.resolve()
         expected_home = self.home.parent.resolve() / self.home.name

@@ -17,6 +17,7 @@ SCRIPT_PATH = SCRIPT_DIR / "build_release_notes.py"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import build_release_notes as brn  # noqa: E402  # import requires the script path above
+import update_changelog_dependencies as ucd  # noqa: E402  # same reason
 
 PACKAGE_PATH = Path("libs/example")
 REPOSITORY = "langchain-ai/deepagents"
@@ -3788,6 +3789,386 @@ class TestChangelogFailuresAreNeverSilent:
             working_dir=str(PACKAGE_PATH),
         )
         assert any("missing-tags check could not run" in w for w in warnings), warnings
+
+
+# ── Dependency section ───────────────────────────────────────────────────────
+
+_OLD_PYPROJECT = """\
+[project]
+name = "example"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-core>=1.8.0,<2.0.0",
+    "langgraph >= 1.2.20, < 2.0.0",
+    "removed-dep>=1.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+vertex = ["langchain-google-vertexai>=3.2.0,<4.0.0"]
+
+[dependency-groups]
+test = ["pytest>=8.0"]
+"""
+
+_NEW_PYPROJECT = """\
+[project]
+name = "example"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain_core>=1.8.3,<2.0.0",
+    "langgraph<2.0.0,>=1.2.20",
+    "added-dep[extra]>=0.5",
+    "tomli>=2.2; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+vertex = ["langchain-google-vertexai>=3.2.5,<4.0.0"]
+
+[dependency-groups]
+test = ["pytest>=9.0"]
+"""
+
+
+def _release_with_manifests(
+    repo: Path, old: str | None, new: str, *, changelog: str = "## 1.0.1\n"
+) -> str:
+    """Tag a release with *old* as its manifest, then commit *new* and return HEAD.
+
+    *old* of None tags a release that has no `pyproject.toml` at all.
+    """
+    _init_repo(repo)
+    if old is None:
+        _commit(repo, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): base")
+    else:
+        _commit(repo, PACKAGE_PATH / "pyproject.toml", old, "feat(example): base")
+    _git(repo, "tag", "example==1.0.0")
+    _commit(repo, PACKAGE_PATH / "pyproject.toml", new, "chore(deps): raise floors")
+    return _commit(
+        repo, PACKAGE_PATH / "CHANGELOG.md", changelog, "release(example): 1.0.1"
+    )
+
+
+def _build(repo: Path, release_sha: str) -> tuple[str, list[str]]:
+    return brn.build_release_notes(
+        repo,
+        package="example",
+        version="1.0.1",
+        release_sha=release_sha,
+        repository=REPOSITORY,
+        offline=True,
+        working_dir=str(PACKAGE_PATH),
+    )
+
+
+_EXPECTED_CHANGES = [
+    "- Python: `>=3.11` → `>=3.12`",
+    "- Added `added-dep` `>=0.5`",
+    "- `langchain_core`: `>=1.8.0,<2.0.0` → `>=1.8.3,<2.0.0`",
+    (
+        "- `langchain-google-vertexai`: `>=3.2.0,<4.0.0` → `>=3.2.5,<4.0.0`"
+        " (`vertex` extra)"
+    ),
+    "- Removed `removed-dep`",
+    # `tomli` 2.0 → 2.2 is a routine third-party floor raise.
+    "- Other minimum version raised: `tomli; python_version < '3.11'` 2.0 → 2.2.",
+]
+
+_GENERATED_CHANGELOG = """\
+# Changelog
+
+## [1.0.1](https://example.test/compare) (2026-11-20)
+
+### Bug Fixes
+
+* fix something ([#2](https://example.test/pull/2))
+
+## [1.0.0](https://example.test/compare) (2026-11-01)
+
+### Features
+
+* initial ([#1](https://example.test/pull/1))
+"""
+
+
+class TestDependencyChangeLines:
+    """The `pyproject.toml` diff that feeds the changelog's Dependencies list."""
+
+    def test_lists_runtime_changes_only(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
+        warnings: list[str] = []
+        lines = brn.dependency_change_lines(
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", head, warnings
+        )
+        assert lines == _EXPECTED_CHANGES
+        # A reordered or re-spaced specifier is not a change, and dev-only
+        # dependency groups never ship, so neither is listed.
+        assert not any("langgraph" in line or "pytest" in line for line in lines)
+        assert warnings == []
+
+    def test_empty_for_initial_release(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
+        warnings: list[str] = []
+        assert (
+            brn.dependency_change_lines(tmp_path, str(PACKAGE_PATH), "", head, warnings)
+            == []
+        )
+        assert warnings == []
+
+    def test_unreadable_manifest_warns(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, None, _NEW_PYPROJECT)
+        warnings: list[str] = []
+        lines = brn.dependency_change_lines(
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", head, warnings
+        )
+        assert lines == []
+        assert any("pyproject.toml at example==1.0.0" in w for w in warnings), warnings
+
+    def test_invalid_toml_warns(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(tmp_path, _OLD_PYPROJECT, "[project\n")
+        warnings: list[str] = []
+        lines = brn.dependency_change_lines(
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", head, warnings
+        )
+        assert lines == []
+        assert any("Could not parse" in w for w in warnings), warnings
+
+
+def _manifest(core: list[str], **extras: list[str]) -> dict[str, object]:
+    return {"project": {"dependencies": core, "optional-dependencies": extras}}
+
+
+def _changes(old: dict[str, object], new: dict[str, object]) -> list[str]:
+    return brn._dependency_change_lines(old, new)
+
+
+class TestDependencyListNoise:
+    """Which changes the list shows, and how they are grouped and ordered."""
+
+    def test_one_line_per_package_across_extras(self) -> None:
+        old = _manifest(
+            ["deepagents-code>=0.2.11"],
+            media=["deepagents-code[media]>=0.2.11", "voyageai>=0.5.0"],
+            voyage=["voyageai>=0.5.0"],
+        )
+        new = _manifest(
+            ["deepagents-code>=0.2.14"],
+            media=["deepagents-code[media]>=0.2.14", "voyageai>=0.6.0"],
+            voyage=["voyageai>=0.6.0"],
+        )
+        assert _changes(old, new) == [
+            # A core dependency needs no extras note.
+            "- `deepagents-code`: `>=0.2.11` → `>=0.2.14`",
+            "- `voyageai`: `>=0.5.0` → `>=0.6.0` (`media`, `voyage` extras)",
+        ]
+
+    @pytest.mark.parametrize(
+        ("old", "new", "shown"),
+        [
+            ("pydantic>=2.14.2", "pydantic>=2.14.4", False),  # patch
+            ("slack-sdk>=3.46.0", "slack-sdk>=3.48.0", False),  # minor on 1.x+
+            ("voyageai>=0.5.0", "voyageai>=0.6.0", True),  # minor on 0.x
+            ("acp>=0.10.1", "acp>=1.0.0", True),  # new major
+            ("numpy>=2.5.4", "numpy>=2.5.4,<3", True),  # new cap
+            ("langchain-core>=1.8.3", "langchain-core>=1.8.4", True),  # first-party
+        ],
+    )
+    def test_third_party_needs_a_notable_change(
+        self, old: str, new: str, shown: bool
+    ) -> None:
+        lines = _changes(_manifest([old]), _manifest([new]))
+        if shown:
+            assert len(lines) == 1
+            assert not lines[0].startswith("- Other")
+        else:
+            name, was = old.split(">=")
+            now = new.split(">=")[1]
+            assert lines == [f"- Other minimum version raised: `{name}` {was} → {now}."]
+
+    def test_closing_line_names_each_package_with_old_and_new_minimum(self) -> None:
+        old = _manifest(["numpy>=2.5.4", "pydantic>=2.14.2,<3", "slack-sdk>=3.46.0"])
+        new = _manifest(["numpy>=2.5.5", "pydantic>=2.14.4,<3", "slack-sdk>=3.48.0"])
+        assert _changes(old, new) == [
+            "- Other minimum versions raised: `numpy` 2.5.4 → 2.5.5,"
+            " `pydantic` 2.14.2 → 2.14.4, and `slack-sdk` 3.46.0 → 3.48.0."
+        ]
+
+    def test_toggle_counts_each_routine_package(self) -> None:
+        body = (
+            "### Dependencies\n\n- `a`: `>=1` → `>=2`\n"
+            "- Other minimum versions raised: `b` 1.0 → 1.1 and `c` 2.0 → 2.1."
+        )
+        assert "<summary>Dependencies (3 changes)</summary>" in (
+            brn.collapse_dependency_section(body)
+        )
+
+    def test_sorted_alphabetically_with_closing_line_last(self) -> None:
+        old = _manifest(["zeta>=0.1", "numpy>=2.5.4", "alpha>=1.0", "langsmith>=0.15"])
+        new = _manifest(["zeta>=0.2", "numpy>=2.5.5", "alpha>=2.0", "langsmith>=0.16"])
+        assert _changes(old, new) == [
+            "- `alpha`: `>=1.0` → `>=2.0`",
+            "- `langsmith`: `>=0.15` → `>=0.16`",
+            "- `zeta`: `>=0.1` → `>=0.2`",
+            "- Other minimum version raised: `numpy` 2.5.4 → 2.5.5.",
+        ]
+
+
+class TestUpsertDependencySection:
+    """Writing the Dependencies list into one version's changelog entries."""
+
+    def test_appends_after_generated_sections(self) -> None:
+        updated = brn.upsert_dependency_section(
+            _GENERATED_CHANGELOG, "1.0.1", ["- `a`: `>=1` → `>=2`"]
+        )
+        assert updated == _GENERATED_CHANGELOG.replace(
+            "([#2](https://example.test/pull/2))\n\n",
+            "([#2](https://example.test/pull/2))\n\n"
+            "### Dependencies\n\n- `a`: `>=1` → `>=2`\n\n",
+        )
+
+    def test_rerun_is_a_no_op_and_new_lines_replace_old(self) -> None:
+        once = brn.upsert_dependency_section(_GENERATED_CHANGELOG, "1.0.1", ["- old"])
+        assert once is not None
+        assert brn.upsert_dependency_section(once, "1.0.1", ["- old"]) == once
+        replaced = brn.upsert_dependency_section(once, "1.0.1", ["- new"])
+        assert replaced is not None
+        assert "- new" in replaced
+        assert "- old" not in replaced
+        assert replaced.count("### Dependencies") == 1
+
+    def test_empty_lines_remove_the_section(self) -> None:
+        once = brn.upsert_dependency_section(_GENERATED_CHANGELOG, "1.0.1", ["- a"])
+        assert once is not None
+        assert brn.upsert_dependency_section(once, "1.0.1", []) == _GENERATED_CHANGELOG
+
+    def test_replaces_a_section_that_is_not_last(self) -> None:
+        curated = _GENERATED_CHANGELOG.replace(
+            "### Bug Fixes", "### Dependencies\n\n- stale\n\n### Bug Fixes"
+        )
+        updated = brn.upsert_dependency_section(curated, "1.0.1", ["- fresh"])
+        assert updated is not None
+        section = brn.extract_changelog_section_text(updated, "1.0.1", "test")[0]
+        assert section == (
+            "### Bug Fixes\n\n* fix something ([#2](https://example.test/pull/2))"
+            "\n\n### Dependencies\n\n- fresh"
+        )
+
+    def test_leaves_other_versions_alone(self) -> None:
+        updated = brn.upsert_dependency_section(_GENERATED_CHANGELOG, "1.0.0", ["- a"])
+        assert updated is not None
+        assert updated.endswith(
+            "* initial ([#1](https://example.test/pull/1))\n\n"
+            "### Dependencies\n\n- a\n"
+        )
+        assert "## [1.0.1]" in updated
+
+    def test_missing_version_returns_none(self) -> None:
+        assert brn.upsert_dependency_section(_GENERATED_CHANGELOG, "9.9.9", ["- a"]) is None
+
+
+class TestUpdateChangelogDependencies:
+    """The release-PR step that writes the list into CHANGELOG.md."""
+
+    @pytest.fixture(autouse=True)
+    def _register_example(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(brn.PACKAGE_MAP, "example", str(PACKAGE_PATH))
+
+    def test_writes_the_list_into_the_release_section(self, tmp_path: Path) -> None:
+        _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=_GENERATED_CHANGELOG
+        )
+        warnings = ucd.update_changelog(tmp_path, "example", "1.0.1")
+
+        assert warnings == []
+        text = (tmp_path / PACKAGE_PATH / "CHANGELOG.md").read_text()
+        section = brn.extract_changelog_section_text(text, "1.0.1", "test")[0]
+        assert section.endswith(
+            "### Dependencies\n\n" + "\n".join(_EXPECTED_CHANGES)
+        ), section
+
+    def test_unknown_component_is_a_warning(self, tmp_path: Path) -> None:
+        _release_with_manifests(tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT)
+        warnings = ucd.update_changelog(tmp_path, "nope", "1.0.1")
+        assert any("Unknown component 'nope'" in w for w in warnings), warnings
+
+    def test_missing_version_section_leaves_the_file_alone(
+        self, tmp_path: Path
+    ) -> None:
+        _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=_GENERATED_CHANGELOG
+        )
+        warnings = ucd.update_changelog(tmp_path, "example", "2.0.0")
+        assert any("No 2.0.0 section" in w for w in warnings), warnings
+        changelog = (tmp_path / PACKAGE_PATH / "CHANGELOG.md").read_text()
+        assert changelog == _GENERATED_CHANGELOG
+
+    def test_cli_fails_open(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_DIR / "update_changelog_dependencies.py"),
+                "--component",
+                "deepagents",
+                "--version",
+                "1.0.1",
+                "--repo-root",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "::warning::" in result.stdout
+
+
+class TestReleaseBodyDependencies:
+    """The release body carries only what CHANGELOG.md says about the package."""
+
+    def test_body_collapses_the_changelog_list(self, tmp_path: Path) -> None:
+        changelog = brn.upsert_dependency_section(
+            _GENERATED_CHANGELOG, "1.0.1", _EXPECTED_CHANGES
+        )
+        assert changelog is not None
+        head = _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=changelog
+        )
+        body, _ = _build(tmp_path, head)
+
+        toggle = (
+            "<details>\n<summary>Dependencies (6 changes)</summary>\n\n"
+            + "\n".join(_EXPECTED_CHANGES)
+            + "\n\n</details>"
+        )
+        assert toggle in body
+        assert "### Dependencies" not in body
+        assert (
+            body.index("* fix something")
+            < body.index(toggle)
+            < body.index("[Full changelog]")
+            < body.index("<summary>Git log")
+        )
+        # CHANGELOG.md itself keeps the plain heading.
+        assert "<details>" not in changelog
+
+    def test_collapse_keeps_later_sections(self) -> None:
+        body = "### Dependencies\n\n- `a`: `>=1` → `>=2`\n\n### Bug Fixes\n\n* fix"
+        assert brn.collapse_dependency_section(body) == (
+            "<details>\n<summary>Dependencies (1 change)</summary>\n\n"
+            "- `a`: `>=1` → `>=2`\n\n</details>\n\n### Bug Fixes\n\n* fix"
+        )
+
+    def test_collapse_ignores_bodies_without_the_section(self) -> None:
+        body = "### Bug Fixes\n\n* fix"
+        assert brn.collapse_dependency_section(body) == body
+
+    def test_body_adds_nothing_the_changelog_lacks(self, tmp_path: Path) -> None:
+        head = _release_with_manifests(
+            tmp_path, _OLD_PYPROJECT, _NEW_PYPROJECT, changelog=_GENERATED_CHANGELOG
+        )
+        body, _ = _build(tmp_path, head)
+        assert "Dependencies" not in body
+        assert "langchain_core" not in body
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

@@ -2273,6 +2273,19 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         empty_env_is_false=True,
     ),
     ConfigOption(
+        key="display.terminal_status",
+        group="Display",
+        summary=(
+            "Report agent status (working, waiting on you, done, failed) to terminals "
+            "that support OSC 7501."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.TERMINAL_STATUS,
+        toml_keys=("ui", "terminal_status"),
+        empty_env_is_false=True,
+    ),
+    ConfigOption(
         key="terminal.tab_title",
         group="Display",
         summary=(
@@ -2499,7 +2512,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         summary="Default model spec ('provider:model') used at launch.",
         kind=OptionKind.STR,
         toml_keys=("models", "default"),
-        cli_flag="--set-default-model",
+        cli_flag="--default-model",
     ),
     ConfigOption(
         key="models.recent",
@@ -2729,9 +2742,9 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         key="models.openai_prompt_cache_key",
         group="Tools",
         summary=(
-            "Attach a per-thread prompt_cache_key to OpenAI-provider model calls "
-            "for reliable prompt-cache routing; disable for endpoints that reject "
-            "unknown request fields."
+            "Attach a per-install prompt_cache_key to OpenAI-provider model calls "
+            "so threads share prompt-cache routing; disable for endpoints that "
+            "reject unknown request fields."
         ),
         kind=OptionKind.BOOL,
         default=True,
@@ -3139,7 +3152,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         default=True,
         env_var=_env_vars.AUTO_UPDATE,
         toml_keys=("update", "auto_update"),
-        cli_flag="--set-auto-update",
+        cli_flag="--auto-update",
     ),
     ConfigOption(
         key="update.no_update_check",

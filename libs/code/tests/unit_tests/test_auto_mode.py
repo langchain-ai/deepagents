@@ -6560,6 +6560,35 @@ async def test_oversized_unresolvable_write_path_keeps_the_plan_valid(
     assert len(decision["reason"]) <= _REASON_LIMIT
 
 
+@pytest.mark.parametrize(
+    ("file_path", "allowed"),
+    [
+        pytest.param("{root}/app.py", True, id="absolute-in-worktree"),
+        # Auto used to resolve this under the worktree; the tool writes it next to it.
+        pytest.param(
+            "{parent}/other-project/app.py", False, id="relative-names-a-sibling"
+        ),
+        pytest.param("app.py", False, id="relative-lands-at-root"),
+    ],
+)
+def test_routine_writes_judge_the_path_the_tool_writes(
+    tmp_path: Path, file_path: str, *, allowed: bool
+) -> None:
+    root = tmp_path.resolve()
+    call: ToolCall = {
+        "name": "write_file",
+        "args": {
+            "file_path": file_path.format(
+                root=root, parent=str(root.parent).lstrip("/")
+            )
+        },
+        "id": "call-1",
+        "type": "tool_call",
+    }
+
+    assert _routine_write_allowed(root, call) is allowed
+
+
 def test_unresolvable_home_path_is_reviewed_not_raised(tmp_path: Path) -> None:
     """An unknown `~name` denies the shortcut instead of failing the gate.
 

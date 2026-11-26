@@ -95,6 +95,25 @@ def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
     assert canonical_hooks_bytes(loaded.config).startswith(b'{"hooks":')
 
 
+def test_on_error_default_preserves_snapshot_identity() -> None:
+    def config(policy: str | None) -> HooksConfig:
+        handler = {"type": "command", "command": "echo"}
+        if policy is not None:
+            handler["onError"] = policy
+        return HooksConfig.model_validate(
+            {"hooks": {"PreToolUse": [{"hooks": [handler]}]}}
+        )
+
+    original = config(None)
+    assert canonical_hooks_bytes(original) == (
+        b'{"hooks":{"PreToolUse":[{"hooks":[{"command":"echo","type":"command"}]}]}}'
+    )
+    assert compute_snapshot_id(original) == compute_snapshot_id(config("continue"))
+    assert compute_snapshot_id(original) != compute_snapshot_id(config("deny"))
+    with pytest.raises(ValueError, match="onError"):
+        config("invalid")
+
+
 def test_legacy_migration_maps_equivalent_lifecycle_events(
     tmp_path: Path,
 ) -> None:

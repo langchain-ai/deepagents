@@ -198,6 +198,53 @@ def _closing_run_worker_mock(
     return MagicMock()
 
 
+@pytest.mark.parametrize("times_out", [False, True])
+async def test_unmount_waits_for_cancelled_database_worker(
+    monkeypatch: pytest.MonkeyPatch, *, times_out: bool
+) -> None:
+    """Database cleanup is awaited, but cannot block shutdown indefinitely."""
+    from deepagents_code import sessions
+
+    monkeypatch.setattr(
+        "deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01 if times_out else 5
+    )
+
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    threads: list[threading.Thread] = []
+
+    async def background() -> None:
+        async with sessions._connect() as conn:
+            threads.append(conn._thread)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+
+    async with app.run_test():
+        worker = app.run_worker(background, group="database-cleanup")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app.workers.cancel_all()
+        await asyncio.wait_for(cleaning.wait(), timeout=5)
+        unmount = asyncio.create_task(app.on_unmount())
+        await asyncio.sleep(0)
+        try:
+            if times_out:
+                await asyncio.wait_for(asyncio.shield(unmount), timeout=1)
+                assert threads[0].is_alive()
+            else:
+                assert not unmount.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(unmount, timeout=5)
+            await asyncio.gather(worker.wait(), return_exceptions=True)
+        assert not threads[0].is_alive()
+
+
 class TestDisplayModelLabel:
     """Tests for stripping the provider prefix off a model spec for display."""
 
@@ -25979,6 +26026,72 @@ class TestFormatMcpServerChanges:
         assert _format_mcp_server_changes(None, current) == (
             "MCP server changes couldn't be determined (no baseline metadata); "
             "currently loaded: github, notion."
+        )
+
+    def test_names_project_server_awaiting_approval(self) -> None:
+        """A renamed project server skipped for trust is named, not dropped."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="open-swe",
+                transport="http",
+                status="disabled",
+                error="Disabled by user (F2 to re-enable).",
+            ),
+        ]
+        current = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Removed: open-swe\n"
+            "  - Needs approval: robin (restart to review project MCP servers, "
+            "or launch with --trust-project-mcp)"
+        )
+
+    def test_flags_server_that_lost_approval(self) -> None:
+        """An edited server whose approval no longer matches is not "no change"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="robin", transport="http")]
+        current = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Needs approval: robin (restart to review project MCP servers, "
+            "or launch with --trust-project-mcp)"
+        )
+
+    def test_still_untrusted_server_is_named_as_needing_attention(self) -> None:
+        """A server left unapproved across reloads is not reported as fine."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="robin",
+                transport="http",
+                status="untrusted",
+                error="Not approved for this project.",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no metadata changes detected "
+            "(still needs attention: robin; use /mcp)."
         )
 
     def test_flags_server_that_kept_its_name_but_started_failing(self) -> None:

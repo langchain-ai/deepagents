@@ -1,34 +1,12 @@
 ---
 type: runtime architecture
 title: Runtime Behavior and Failure Boundaries
-description: Execution ownership, synchronous subagent delegation boundaries, persistence, retry, interruption, and delivery semantics across Deep Agents, dcode, and Talon.
-tags: [deepagents, runtime, subagents, dcode, talon, offload, persistence, retries]
+description: How Talon owns detached subagent work, runs scheduled delegation inline, contains worker failures and approvals, and reconciles result processing with channel delivery.
+tags: [talon, runtime, subagents, scheduling, delivery, retries, security]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-13T08:03:55.116Z
+    at: 2026-11-24T08:04:12.461Z
 sources:
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
-  - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
-    resource: repo://libs/code/deepagents_code/client/non_interactive.py
-  - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
-    resource: repo://libs/code/deepagents_code/cost_tracking.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-f763e99e439a1356866a7aa4
-    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-  - id: openwiki-source-8e7076889e81540fe4fcb8c5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
-  - id: openwiki-source-917b61d56e652536ba962f3a
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
@@ -37,148 +15,79 @@ sources:
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-13T08:03:55.116Z" }
+  - id: openwiki-source-a4cc4beb110c42a169caf195
+    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
 ---
 
 # Runtime Behavior and Failure Boundaries
 
-A successful model call, a durable graph checkpoint, and a delivered reply are deliberately different events. Deep Agents owns graph composition, synchronous `task` delegation, and checkpointed state; dcode owns local streaming presentation and server-side checkpoint mutations; Talon owns the conversion of an agent result into channel delivery. This separation makes interruption and retry behavior intelligible rather than treating every completed coroutine as user-visible success. See [Middleware Stack](/openwiki/architecture/middleware-stack.md), [SDK Construction and Execution](/openwiki/architecture/sdk-construction-execution.md), [Context Management](/openwiki/concepts/context-management.md), [Subagents and Skills](/openwiki/concepts/subagents-skills.md), and [Talon](/openwiki/integrations/talon.md).
+Talon distinguishes a completed worker, a main-agent turn that processed its result, and a reply confirmed by a channel. Those are separate lifecycle milestones with different owners. This page covers the delegation and delivery boundary; see [State Persistence](/openwiki/concepts/state-persistence.md), [Subagents and Skills](/openwiki/concepts/subagents-skills.md), [Talon Scheduling](/openwiki/concepts/talon-scheduling.md), [Talon](/openwiki/integrations/talon.md), and [Security](/openwiki/operations/security.md).
 
-## Ownership and durability
+## Lifecycle and ownership
 
-| Concern | Durable authority | Important boundary |
-|---|---|---|
-| Agent conversation | LangGraph state through its configured checkpointer | A thread can resume graph state, but that does not establish channel delivery. |
-| Synchronous subagent history | The parent checkpointer, under the subagent's checkpoint namespace when it saves | The parent receives a final `ToolMessage`; its `artifact` can identify the child's saved history but is not model-visible. |
-| History compaction | Raw messages plus a summarization event, or a conditional server offload update | Effective history is derived without discarding raw history on the normal summarization path. |
-| dcode cost | Private graph checkpoint channels | The client renders and locally aggregates streaming information; it does not own the thread-lifetime total. |
-| dcode server process | `ServerProcess` | Reachable server health and usable graph readiness are separate startup barriers. |
-| Attended Talon delegation | Process-local `BackgroundSubagents` job table | A worker result is not durable and must be reconciled with a later main-agent turn and send outcome. |
-| Scheduled Talon delegation | The scheduled graph turn itself | A cron run waits for delegated work inline because it has no later attended turn to receive it. |
-| User-visible reply | `TalonHost` plus channel adapter | Persistent delivery-backed history follows a confirmed send, not graph completion. |
+`DeepAgentRuntime.start()` resolves subagents, snapshots the approval policy, and builds the graph. Each `invoke()` refreshes runtime tools and, under a tool lock, rebuilds the graph if the approval snapshot changed. The invocation uses the request conversation ID as LangGraph's `thread_id`; a `ConversationSaver` session is protected for the invocation when configured.
 
-## SDK synchronous delegation: state, configuration, and failures
-
-`create_deep_agent()` routes ordinary declarative and compiled subagents through the synchronous `task` tool. A `task` call prepares either an isolated child state—only the delegated human task in `messages`—or, for experimental `mode="fork"`, an effective parent conversation followed by a preamble and task. Forking folds the parent summarization event into the copied messages, omits parent-only state such as prior structured output, pending skills, rubric, and the summarization session ID, and marks the child to reject recursive `task` calls. The declarative fork retains the parent's system-prompt prefix and delivers its own instructions with the task, preserving prompt-prefix cache reuse; it cannot declare separate skills.
-
-The parent does not merge a child's entire state back. It returns a `Command` whose `ToolMessage` contains either JSON for `structured_response`, a refusal notice, or the last non-empty child `AIMessage` text. It forwards only changed, non-private state fields that are not explicitly excluded; messages, todos, child structured response, skills metadata, pinned skills, and rubric stay child-local. This permits parallel tasks without duplicating inherited additive state or allowing a child to overwrite parent-only coordination state.
-
-The task wrapper deliberately relies on LangGraph ambient-config inheritance rather than copying parent callbacks, tags, and configurable fields itself. Parent user metadata and tags reach the child, while child-bound settings such as its declared agent name and recursion limit win collisions. The wrapper only adds `ls_agent_type="subagent"` and the task call ID in metadata, avoiding duplicate tags under LangGraph's merge rules. That call ID is copied into child checkpoints, connecting a stored child run to the parent tool call.
+`BackgroundSubagents` is an in-memory middleware owned by that runtime. Its job table, task handles, final results, and delivery counters are process-local: they are not checkpoint state and are lost on restart. A job has an owning conversation thread. Listing, inspection, messaging, cancellation, and result injection are scoped to that owner, so another conversation cannot control or consume it. The table also holds limited externally supplied results, which follow the same acknowledgement and requeue rules.
 
 ```mermaid
 sequenceDiagram
-    participant Parent as parent Deep Agents graph
-    participant Task as synchronous task tool
-    participant Child as child runnable
-    participant Store as checkpointer
-    Parent->>Task: description and subagent type
-    Task->>Task: prepare isolated or forked state
-    Task->>Child: invoke or stream with inherited config
-    Child->>Store: save child checkpoints
-    Child-->>Task: final state and checkpoint namespace
-    Task-->>Parent: Command with ToolMessage and artifact
-```
-
-*The parent receives a compact task result, while a checkpoint-capable child exposes its actual storage namespace as a non-model artifact.*
-
-For compiled graph subagents, `task`/`atask` stream `values` and `checkpoints` to discover the namespace that actually saved the final result. That namespace is placed in `ToolMessage.artifact["checkpoint_ns"]`; nested calls retain the outer namespace prefix. A child with `checkpointer=False` produces no artifact, while a non-graph runnable uses the enclosing task namespace as a fallback. A known limitation applies to a child wrapped with `.with_retry()`: it must be invoked rather than streamed, so the artifact can name the failed-run namespace even though the successful retry saved under its `|1` sibling. Prefer retrying `task` with `ToolRetryMiddleware` when artifact-to-history accuracy matters.
-
-A delegated child has narrower, intentional error translation than its parent. For both synchronous `task` and asynchronous `atask`, a final refusal message, `ModelRefusalError`, or refusal-bearing structured-output validation becomes a parent-visible refusal result. Other exceptions propagate: a parent may report a refusal as task outcome, but must not silently convert an execution failure into one. The separately deployed asynchronous-subagent result formatter follows the same final-message refusal rendering; it is not the implementation of local synchronous `task` delegation.
-
-### Main-agent refusal versus child refusal
-
-`create_deep_agent()` assembles built-in filesystem, synchronous-subagent, summarization, interrupted-tool-call repair, and optional deployed async-subagent middleware. Ordering is behavioral: skills see already-compacted, routed model state, and the default `ModelRefusalMiddleware` is installed after the ordinary main-stack fallback opportunity. Consequently, a main-agent refusal normally raises `ModelRefusalError`; an earlier fallback can handle it, while a harness can exclude that middleware when the provider refusal message is the desired result. The child boundary above is intentionally different: it turns a refusal into a task result so the parent can continue.
-
-Summarization retains raw `messages` and records the effective-history `_summarization_event`. Automatic and manual events include both a cutoff index and `cutoff_message_id`; reconstruction anchors to the ID when it remains in raw state and uses the index only for legacy or missing-ID data. The synchronous path saves historical content before generating a summary, whereas the asynchronous path concurrently runs independent persistence and summary work. History offload failure remains non-fatal and produces `file_path=None`.
-
-## dcode client streaming and durable cost accounting
-
-The graph, not a dcode UI process, owns the cumulative cost estimate. `CostTrackingMiddleware` checkpoints normal graph deltas; server-owned work prepares a rollback-safe delta that commits with its state update. A process-wide recorder observes completed model requests—including direct summarization/offload calls and subagents—and the middleware drains and prices them on the parent checkpoint path. It avoids double-counting the agent response when its message ID has already been charged, while still falling back to message usage when callbacks are unavailable. Nested graphs checkpoint their private spend first and transfer completed deltas through owner-scoped state to the parent, protecting completed work from a later approval interruption.
-
-Pricing is explicitly best effort: missing rates or malformed usage do not fail a model turn. The private breakdown preserves request/token detail and completeness flags, so an unpriceable request is distinguishable from a genuine zero-cost estimate. The pricing package is lazily imported; its periodic catalog update can be disabled with `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0` or `[update].prices_auto_update = false`, and `DEEPAGENTS_CODE_OFFLINE` suppresses the network update.
-
-In non-interactive dcode, `StreamState.stats` is presentation-oriented per-run accounting. Its request ledger is monotonic across HITL resume passes and finalizes each pass so replayed messages or chunks do not add tokens and cost again. The stream records usage even for hidden internal model calls; it suppresses synthetic summarization messages from user rendering rather than from accounting. A terminal display total is useful telemetry, not a substitute for checkpointed thread cost.
-
-```mermaid
-flowchart TD
-    Model["Completed model request"] --> Recorder["Process-wide cost recorder"]
-    Recorder --> Drain["Cost middleware drains records"]
-    Drain --> Delta["Graph checkpoint delta"]
-    Delta --> Ledger["Durable thread total and breakdown"]
-    Ledger --> Event["Absolute session cost event"]
-    Event --> Client["dcode display"]
-    Side["Side question or thread naming"] --> SideStore["Sessions database subtotal"]
-    SideStore --> Client
-```
-
-*The graph checkpoint is the cost authority; independently persisted side-operation spend is combined only when the client presents a session total.*
-
-## dcode server lifecycle and offload commit boundary
-
-The client launcher manages `langgraph dev` as a subprocess. Lifecycle operations are serialized; startup cleans up a spawned process on failure or cancellation. `start()` waits for server health, while `wait_for_graph_ready()` separately fetches the registered graph and turns an exited process, transport failure, or non-200 result into a diagnostic startup error with logs. A stop generation prevents a restart racing a terminal `stop()` from respawning the server.
-
-The server offload API is a server-owned, checkpoint-conditional mutation. It accepts only idle or error threads, separately requires checkpoint quiescence, allows only `OffloadStateUpdate` channels rather than `messages`, and conflicts if the checkpoint advanced. An `operation_id` identifies replayable work: a hook interrupt returns to the caller without retaining a suspended server coroutine; a subsequent request re-executes with accumulated hook responses. Keep that ID stable through hook rounds.
-
-The HTTP request cannot choose credentialed model transport. The service strips client endpoint, proxy, client, and header transport settings, substitutes checkpointed model specification/parameters where present, and takes summarization-model selection from server configuration. This prevents a local caller from redirecting server-credentialed model work.
-
-```mermaid
-flowchart TD
-    Request["Offload request and stable operation ID"] --> Eligible{"Idle or error and quiescent"}
-    Eligible -- "no" --> Conflict["Conflict with no write"]
-    Eligible -- "yes" --> Run["Hydrate checkpoint and run offload"]
-    Run --> Hook{"Hook interrupt"}
-    Hook -- "yes" --> Replay["Return and replay next request"]
-    Hook -- "no" --> Write["Conditional allowed-channel update"]
-    Write --> Settled{"Checkpoint write outcome"}
-    Settled -- "success" --> Commit["Commit prepared cost"]
-    Settled -- "failed and unchanged" --> Rollback["Restore drained cost records"]
-    Settled -- "advanced or unreadable" --> Indeterminate["Keep records and report indeterminate"]
-```
-
-*An offload interruption is replay-based, and cost rollback is safe only when readback proves that the state update did not land.*
-
-If the state write fails, the service rolls back drained cost records only after readback proves the checkpoint is unchanged. An advanced or unreadable checkpoint is indeterminate: records remain committed to avoid a future double charge. Treat an indeterminate response as an investigation boundary rather than blindly retrying an offload that might already have committed.
-
-## Talon invocation, attended work, and scheduled work
-
-`DeepAgentRuntime.start()` resolves subagents, snapshots approvals, and builds its Deep Agents graph. Every `invoke()` refreshes runtime tools; if approvals changed, it rebuilds the graph under a tool lock. Invocation uses the request conversation ID as LangGraph `thread_id`, and `ConversationSaver.protect_session()` protects that session for the call. Retryable graph failures repeat the asynchronous invocation with exponential backoff capped at ten seconds, while cancellation propagates. Empty-output continuation prompts are also fresh graph invocations, not model-call retries.
-
-Attended `task` and `start_async_task` calls detach work into in-memory jobs keyed by the owning conversation and return a task ID. Capacity is shared across conversations and configured with `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`; only the owning thread can inspect, message, or cancel a worker. Workers run on their own thread IDs, inherit required scoped context, clear authorization handling, prohibit nested delegation, convert failure, timeout, and approval interruption into safe result text, and do not survive a process restart. The runtime acknowledges results only after a main-agent turn succeeds; `AgentResult.background_results` tells the host exactly which IDs were acknowledged so it can undo that acknowledgement when no reply is delivered. Results repeatedly unprocessable by the main turn are eventually dropped rather than retried forever.
-
-A scheduled request (`trigger: "cron"`) changes that contract. Its delegation runs inline to completion in the same graph turn and leaves no job for a later delivery turn. Scheduled-specific guidance hides asynchronous worker-management tools, nested delegation stays blocked, and a separate semaphore queues inline fan-out without consuming attended-worker capacity. Timeout and ordinary failure become safe tool-error results so an escaping error cannot cause a graph retry that relaunches sibling delegations.
-
-```mermaid
-sequenceDiagram
-    participant Host as TalonHost
+    participant Host as Talon host
     participant Runtime as DeepAgentRuntime
-    participant Worker as background worker
-    participant Graph as Deep Agents graph
-    participant Channel as channel adapter
-    Host->>Runtime: attended request and conversation ID
-    Runtime->>Worker: detach task and return task ID
-    Worker-->>Runtime: pending keyed result
-    Runtime->>Graph: later main turn with result data
-    Graph-->>Runtime: final text
-    Runtime-->>Host: text and acknowledged result IDs
+    participant Worker as Background worker
+    participant Graph as Main graph
+    participant Channel as Channel adapter
+    Host->>Runtime: attended request
+    Runtime->>Worker: detach task with owner
+    Worker-->>Runtime: pending result
+    Runtime->>Graph: later turn with keyed result
+    Graph-->>Runtime: text and acknowledged IDs
+    Runtime-->>Host: candidate reply
     Host->>Channel: send reply
-    alt confirmed send
-        Host->>Host: retain acknowledgement and archive reply
-    else stale cancelled or send failure
-        Host->>Runtime: requeue returned result IDs
+    alt confirmed
+        Host->>Runtime: archive delivery
+    else stale cancelled or failed
+        Host->>Runtime: requeue acknowledged IDs
     end
 ```
 
-*For attended work, consumption by a successful graph turn precedes delivery; the host reconciles that optimistic acknowledgement with the real channel outcome.*
+*An attended result is only settled after both the graph turn and reply-delivery boundary have been reconciled.*
 
-The host serializes work by conversation root and uses generations to keep a stale turn from sending after replacement. It records a final reply in persistent conversation history only after confirmed channel delivery. If settlement is stale, cancelled, or undeliverable, consumed background results are requeued rather than treated as delivered. Scheduled runs instead use a separate conversation ID, have a bounded runtime, and use interruption recovery on timeout or sender revocation where possible.
+## Attended delegation: detached and deliberately bounded
 
-## Focused change and test boundaries
+For an ordinary conversation, the middleware intercepts the SDK `task` and `start_async_task` calls and returns a task ID immediately. It creates a worker only when the call has a non-empty conversation `thread_id`; otherwise it returns a tool error. The runtime-wide worker limit is shared by configured middleware copies and all conversations. When either the total job table or active-worker limit is reached, the tool refuses the new launch rather than queueing it. `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS` configures the positive active-worker limit; the default is four.
 
-- Preserve middleware order when altering SDK graph construction: it determines main-agent fallback/refusal behavior, state visibility, and compaction inputs.
-- Exercise `task` and `atask` together when changing local delegation. The focused refusal tests cover returned refusals, raised `ModelRefusalError`, refusal-bearing structured-output validation, and the requirement that non-refusal failures still escape.
-- Test inherited configuration rather than assuming the wrapper forwards it: child-bound recursion limits and agent name must win, while parent tags and user metadata remain visible.
-- Test checkpoint artifacts through the checkpointer, not only `get_state_history`: compiled children record their actual `checkpoint_ns`, nested calls retain namespace ancestry, and retry wrapper behavior is a documented limitation.
-- Test dcode accounting separately at the durable checkpoint and non-interactive stream layers; HITL replay must not inflate the latter, and missing pricing must not fail turns.
-- For offload, exercise hook replay, thread/checkpoint conflicts, forbidden `messages` updates, trusted model settings, write readback, and prepared-cost settlement.
-- Run `libs/talon/tests/unit_tests/test_background.py` after changing worker ownership, capacity, authorization isolation, acknowledgement/requeue, inline cron behavior, failure limits, or shutdown. It specifically verifies that scheduled delegation creates no detached job and that an undelivered attended result can be offered again.
-- Test delivery independently from graph completion: channel confirmation gates archive promotion, while stale or cancelled settlement must preserve a path to reprocess background results.
+The worker runs with a fresh task ID as its LangGraph `thread_id`, a recursion limit of 500, and a copied state. It retains scoped context needed by supported tools, such as history scope and cron origin, but marks itself as a subagent, prevents nested `task` or `start_async_task` delegation, and clears the authorization handler. That removal is intentional: a detached worker can outlive the originating host turn, so it must not leave an authorization prompt stranded in a conversation. Approval interrupts likewise cannot wait for a human in the background: an interrupted child becomes the safe result text that the protected action needs approval and did not run.
+
+A local worker can be sent guidance only when it is a Talon-built local subagent; messages are queued for its next model step, not an interruption of a running model or tool call. Remote `start_async_task` targets stream to their configured graph with cancellation on disconnect. Task definitions and tool capability are fixed for a running worker: later reloads affect subsequent turns, not that worker.
+
+Detached execution has a one-hour timeout. Cancellation marks the job cancelled and produces no result; ordinary exceptions and timeouts become bounded, safe text rather than propagating tool arguments, credentials, or provider payloads into the main conversation. Recognized HTTP status codes produce a generic actionable hint, while unknown failures use a generic message. Result extraction includes answer text only, excludes reasoning blocks, and limits output to 64,000 characters.
+
+## Scheduled delegation is inline
+
+A request whose metadata has `trigger: "cron"` enters a different mode. It hides the attended-only management tools and tells the model that `task` and `start_async_task` return their completed result in the same turn. The middleware waits inline instead of creating a job record, so scheduled delegation neither consumes the attended-worker capacity nor relies on a future delivery turn. A background-delivery turn is still an attended conversation for this decision and therefore detaches new work.
+
+Inline work sets the subagent guard, preserving the no-nested-delegation invariant. A distinct semaphore permits scheduled fan-out while bounding concurrent inline calls; calls beyond the limit wait rather than fail, and their timeout begins only after obtaining a slot. The default inline timeout is ten minutes and can be set with `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` as a positive integer in seconds.
+
+Timeouts and ordinary exceptions are caught and returned as error `ToolMessage` values. Nothing escapes the inline wrapper because an escaping retryable timeout could make the runtime rerun the whole graph and relaunch sibling tool calls from the same assistant message. The error text is sanitized just as it is for detached workers.
+
+## Result processing, retry, and delivery settlement
+
+On each runtime invocation, pending results for that conversation are injected as keyed synthetic user messages before the current request. A context-local tracker records only results actually exposed to the main-agent turn, including results read through `list_subagents`. The runtime acknowledges those IDs only after the turn completes successfully and returns them in `AgentResult.background_results`. If the graph fails, it increments the offered results' delivery count; after three failed processing turns, the result is marked dropped rather than retried forever. Cancellation does not count as a failed delivery.
+
+The graph invocation itself retries retryable exceptions up to the configured attempt count, with exponential backoff of 1, 2, 4 seconds and a ten-second cap; cancellation propagates. Empty-output continuation nudges are separate graph invocations, not a replay of an individual model call. Inline delegation must therefore convert its own failures before they meet that retry boundary.
+
+The host dispatches a completed background result only when its conversation has no active turn and is not blocked, then starts a follow-up turn marked `background_delivery`. That marker removes operator approval authority for the delivery turn. After a successful graph turn, the host still cannot regard the result as user-visible: the reply may be suppressed, replaced by a newer generation, cancelled during settlement, or fail channel delivery. In the non-deliberate loss paths, it requeues exactly the acknowledged IDs from `AgentResult`; already delivered, cancelled, or pruned IDs are not resurrected. Persistent history promotion likewise happens only after the channel confirms a non-silent send.
+
+## Operations and shutdown
+
+The default limits are intentionally different: detached work can run up to 3,600 seconds because it costs an independent worker, whereas a scheduled inline call defaults to 600 seconds because it holds up the scheduled turn. Monitor capacity refusals, worker timeouts, repeated result-processing failures, and generic safe failure text; the latter deliberately omits sensitive exception detail.
+
+Shutdown first cancels background workers and waits up to ten seconds. If a worker survives that wait, `DeepAgentRuntime.stop()` raises and leaves the graph/checkpointer resources open rather than allowing a live worker to write against closed resources. The host treats this as a component failure and continues its own shutdown.
+
+## Focused regression coverage
+
+- `libs/talon/tests/unit_tests/test_background.py` exercises owner isolation, shared capacity and its environment setting, independent worker thread IDs, cancellation, sanitised timeout/failure results, authorization removal, acknowledgement/requeue, delivery-attempt dropping, shutdown, and the separate inline cron path.
+- Its scheduled tests verify no job is created, nested delegation is blocked, fan-out is concurrent but semaphore-bounded, queued work does not spend its execution timeout while waiting, and inline failures cannot escape into graph retry.
+- `libs/talon/tests/unit_tests/test_research_subagents.py` verifies fresh subagent context and explicit tool capability boundaries, including that a background subagent cannot obtain an interactive approval and reports an approval interrupt as its result.
+- Delivery tests should always distinguish graph success from confirmed send: a result acknowledged by the runtime must be requeued if the host discards or cannot deliver that turn's reply.

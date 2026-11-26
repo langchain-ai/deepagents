@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
+    from deepagents_code.program_status import ProgramStatusReporter
     from deepagents_code.thread_ownership import ThreadLease
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
@@ -110,6 +111,28 @@ def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
         re-invokes `stop()` as the exception unwinds, resuming the teardown.
     """
     raise SystemExit(128 + signum)
+
+
+def _start_headless_program_status() -> ProgramStatusReporter:
+    """Report a headless run as `working` with `OSC 7501`.
+
+    The run's final `done` or `error` must outlive the process, so the
+    reporter does not clear at exit; terminals drop `working` on their own.
+
+    Returns:
+        The reporter for the run's final report.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+    from deepagents_code.program_status import (
+        ProgramState,
+        ProgramStatus,
+        ProgramStatusReporter,
+    )
+
+    enabled = load_bool_display_preference("display.terminal_status", fallback=True)
+    reporter = ProgramStatusReporter(enabled=enabled, clear_on_exit=False)
+    reporter.report(ProgramStatus(ProgramState.WORKING))
+    return reporter
 
 
 def _install_termination_signal_handlers() -> None:
@@ -4920,7 +4943,9 @@ def _check_mcp_project_trust(
         ProjectServerSummary,
         discover_mcp_config_sources,
         extract_project_server_summaries,
+        is_user_mcp_config_path,
         load_merged_mcp_configs_lenient,
+        resolve_mcp_server_sources,
     )
     from deepagents_code.project_utils import ProjectContext
 
@@ -5016,9 +5041,35 @@ def _check_mcp_project_trust(
 
     prompt_console.print()
     prompt_console.print("[bold yellow]Approve project MCP servers:[/bold yellow]")
+    server_sources = resolve_mcp_server_sources(project_configs)
     for name, kind, summary in prompt_servers:
         prompt_console.print(
             f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
+        )
+        source = server_sources.get(name)
+        if source is not None:
+            prompt_console.print(
+                f"    [dim]from {escape(PATHS.display(source))}[/dim]",
+                highlight=False,
+                soft_wrap=True,
+            )
+    # Outside a git repository the project root falls back to the working
+    # directory, so starting from home makes the user config a project
+    # candidate too. Discovery keeps it at project scope on purpose; say why.
+    # A profile configured inside a real repo collides the same way, but there
+    # the project framing is accurate, so the note is limited to the fallback.
+    if project_context.project_root is None and any(
+        is_user_mcp_config_path(server_sources[name])
+        for name, _kind, _summary in prompt_servers
+        if name in server_sources
+    ):
+        prompt_console.print(
+            "  [dim]This is your user MCP config. It is gated as a project "
+            f"config because {escape(PATHS.display(project_root))} is not in a "
+            "git repository; start inside a repository to load it without "
+            "approval.[/dim]",
+            highlight=False,
+            soft_wrap=True,
         )
     prompt_console.print()
 
@@ -5864,10 +5915,13 @@ def cli_main() -> None:
                 from acp import run_agent as run_acp_agent
                 from deepagents_acp.server import AgentServerACP
             except ImportError as exc:
+                from deepagents_code.update_check import upgrade_command
+
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: uv tool install --reinstall -U deepagents-code "
-                    "--with deepagents-acp\n"
+                    "This usually means an incompatible deepagents-acp or "
+                    "agent-client-protocol version is installed. "
+                    f"Upgrade with: {upgrade_command()}\n"
                 )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
@@ -6726,6 +6780,9 @@ def cli_main() -> None:
                 sys.exit(2)
 
             timeout = getattr(args, "timeout", None)
+            program_status = _start_headless_program_status()
+            exit_code: int | None = None
+            failure = ""
             try:
                 exit_code = asyncio.run(
                     asyncio.wait_for(
@@ -6781,13 +6838,26 @@ def cli_main() -> None:
                     f"{timeout}s. Retry with a larger --timeout, or use "
                     "--max-turns for a turn-count limit."
                 )
-                sys.exit(124)
+                exit_code = 124
+                failure = f"Timed out after {timeout}s"
             except KeyboardInterrupt:
                 # `asyncio.run` re-raises `KeyboardInterrupt` past the inner
                 # `run_non_interactive` handler when the signal hits during
                 # `wait_for`; mirror its exit code 130 here so Ctrl-C is a
                 # quiet exit instead of a traceback.
-                sys.exit(130)
+                exit_code = 130
+            except Exception as exc:
+                # An unexpected crash exits 1 with a traceback; report it as
+                # `error` instead of clearing. A signal's `SystemExit` is not
+                # caught here, so it still clears. Only the type is reported:
+                # the message can hold paths or data meant for the log.
+                exit_code = 1
+                failure = f"Crashed with {type(exc).__name__}"
+                raise
+            finally:
+                from deepagents_code.program_status import exit_status
+
+                program_status.report(exit_status(exit_code, reason=failure))
             sys.exit(exit_code)
         else:
             _print_configured_profile_notice()

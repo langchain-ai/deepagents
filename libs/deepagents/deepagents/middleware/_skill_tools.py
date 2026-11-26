@@ -1,10 +1,9 @@
 """Disclose the tools a skill names once its `SKILL.md` has been read.
 
 `SkillsMiddleware` owns the behavior; this module holds the pieces it is
-built from: which reads of a `SKILL.md` count, how the include names a skill
-lists resolve to tools and which of those are disclosed, where the disclosure
-goes in the conversation, and the provider-native blocks that carry each tool's
-definition.
+built from: which reads of a `SKILL.md` count, and how the include names a skill
+lists resolve to tools and which of those are disclosed. Placing the disclosure
+in the request is `_tool_disclosure`'s job.
 
 An include name is one entry in a skill's `metadata.include_tools`: a tool's
 exact name, or a name a resolver maps to tools.
@@ -14,23 +13,19 @@ from __future__ import annotations
 
 import inspect
 import logging
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.runnables import RunnableBinding
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool as create_tool
-from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from deepagents.backends.utils import validate_path
-from deepagents.middleware._utils import is_anthropic_chat_model
+from deepagents.middleware._tool_disclosure import DEFER_LOADING, ToolDisclosure, tool_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from langchain_openai.chat_models.base import BaseChatOpenAI
     from langgraph.runtime import Runtime
 
     from deepagents.middleware.skills import SkillMetadata, SkillToolResolver
@@ -42,15 +37,6 @@ _INCLUDE_TOOLS_KEY = "include_tools"
 
 _SKILL_TOOLS_DISCLOSED_KEY = "_skill_tools_disclosed"
 """Private state key mapping each skill tool disclosed to the latest model call to the include name that produced it."""
-
-_DEFER_LOADING = "defer_loading"
-"""Tool `extras` key (and provider field) that withholds a tool's schema until searched for."""
-
-_ANTHROPIC_ROOT_COMBINATORS = ("oneOf", "anyOf", "allOf")
-"""Root `input_schema` keys the Anthropic API rejects, failing the whole request."""
-
-_ToolDisclosure = dict[str, Any]
-"""A provider-native content block that makes one tool callable from its position on."""
 
 
 def _normalize_skill_tools(tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None) -> SkillToolResolver:
@@ -150,33 +136,24 @@ def _disclosed_record(state: Mapping[str, object]) -> dict[str, str]:
 
 
 @dataclass
-class _Disclosure:
-    """The tools one model call discloses, and where each is anchored."""
+class _Disclosure(ToolDisclosure):
+    """The tools one model call discloses, and where each is anchored.
 
-    deferred: dict[str, BaseTool] = field(default_factory=dict)
-    """Deferred tools from `request.tools`: disclosed early, never gated."""
-
-    gated: dict[str, BaseTool] = field(default_factory=dict)
-    """Skill tools: callable only while disclosed."""
-
-    anchors: dict[str, int] = field(default_factory=dict)
-    """Index of the earliest skill read producing each tool."""
+    Deferred tools from `request.tools` are disclosed early and never gated.
+    Added ones are skill tools: callable only while disclosed.
+    """
 
     produced_by: dict[str, str] = field(default_factory=dict)
     """The include name that produced each gated tool at its anchor, for tool-time lookup."""
 
-    def tools(self) -> dict[str, BaseTool]:
-        """Return every disclosed tool by name."""
-        return {**self.deferred, **self.gated}
-
     def record(self) -> dict[str, str]:
         """Return the include name that produced each gated tool, sorted by tool name, for the tool-time gate."""
-        return {name: self.produced_by[name] for name in sorted(self.gated)}
+        return {name: self.produced_by[name] for name in sorted(self.added)}
 
     def discard(self, name: str) -> None:
         """Withhold the tool `name`, so the model isn't shown it and the gate doesn't admit it."""
-        for disclosed in (self.deferred, self.gated, self.anchors, self.produced_by):
-            disclosed.pop(name, None)
+        super().discard(name)
+        self.produced_by.pop(name, None)
 
 
 _SkillRead = tuple[int, "SkillMetadata"]
@@ -185,7 +162,7 @@ _SkillRead = tuple[int, "SkillMetadata"]
 
 def _unclaimed_include_names(reads: Sequence[_SkillRead], request_tools: Sequence[BaseTool | dict[str, Any]]) -> list[str]:
     """Return each distinct include name the read skills list that no request tool claims, in read order."""
-    present = {_tool_name(t) for t in request_tools}
+    present = {tool_name(t) for t in request_tools}
     return list(
         dict.fromkeys(name for _, skill in reads for name in (skill.get("metadata") or {}).get(_INCLUDE_TOOLS_KEY, "").split() if name not in present)
     )
@@ -202,7 +179,7 @@ def _plan_disclosure(
     other produces what the resolver returned for it (`resolved`).
     """
     disclosure = _Disclosure()
-    present = {_tool_name(t): t for t in request_tools}
+    present = {tool_name(t): t for t in request_tools}
     unresolved: set[str] = set()
     for index, skill in reads:
         for include_name in (skill.get("metadata") or {}).get(_INCLUDE_TOOLS_KEY, "").split():
@@ -235,21 +212,13 @@ def _classify(
         return
     entry = present.get(tool.name)
     if entry is None:
-        disclosure.gated[tool.name] = tool
+        disclosure.added[tool.name] = tool
         disclosure.produced_by[tool.name] = include_name
-    elif isinstance(entry, BaseTool) and (entry.extras or {}).get(_DEFER_LOADING) is True:
+    elif isinstance(entry, BaseTool) and (entry.extras or {}).get(DEFER_LOADING) is True:
         disclosure.deferred[tool.name] = entry
     else:
         return
     disclosure.anchors[tool.name] = index
-
-
-def _tool_name(tool: BaseTool | dict[str, Any]) -> str | None:
-    """Return a bound tool's name, whether it is a `BaseTool` or a provider dict."""
-    if isinstance(tool, BaseTool):
-        return tool.name
-    function = tool.get("function")
-    return tool.get("name") or (function.get("name") if isinstance(function, dict) else None)
 
 
 def _normalized_path(path: object) -> str | None:
@@ -298,128 +267,3 @@ def _find_skill_reads(messages: Sequence[AnyMessage], skills: Sequence[SkillMeta
         if skill is not None:
             reads.append((index, skill))
     return reads
-
-
-def _insertion_point(messages: Sequence[AnyMessage], anchor: int) -> int:
-    """Index after the anchor's tool-result batch and any follow-ups queued behind it.
-
-    Anthropic needs the disclosure after a user turn and before an assistant turn,
-    so it may not split a tool-result batch or sit in front of a user message;
-    OpenAI needs it to keep its position. An empty reply is skipped too: Anthropic
-    drops it, leaving no assistant turn there.
-    """
-    index = anchor + 1
-    while index < len(messages) and (
-        isinstance(message := messages[index], ToolMessage | HumanMessage)
-        or (isinstance(message, AIMessage) and not message.content and not message.tool_calls)
-    ):
-        index += 1
-    return index
-
-
-def _insert_disclosures(
-    messages: Sequence[AnyMessage],
-    disclosure: _Disclosure,
-    build: Callable[[BaseTool], _ToolDisclosure],
-) -> list[AnyMessage]:
-    """Insert one `SystemMessage` per insertion point, carrying the tools anchored there.
-
-    Each message lands at the same index with the same bytes on every call while
-    its anchor stays visible, so the provider's cached prefix survives.
-    """
-    tools = disclosure.tools()
-    names_by_index: dict[int, list[str]] = {}
-    for name in tools:
-        names_by_index.setdefault(_insertion_point(messages, disclosure.anchors[name]), []).append(name)
-    result = list(messages)
-    # Indexes were computed against the unmodified list, so insert back to front.
-    for index in sorted(names_by_index, reverse=True):
-        # Authored in `content`: the standard-content path drops provider-native blocks.
-        result.insert(index, SystemMessage(content=[build(tools[name]) for name in sorted(names_by_index[index])]))
-    return result
-
-
-def _bind_disclosures(request_tools: Sequence[BaseTool | dict[str, Any]], disclosure: _Disclosure) -> list[BaseTool | dict[str, Any]]:
-    """Return `request_tools` with deferred disclosures undeferred and gated ones appended."""
-    tools: list[BaseTool | dict[str, Any]] = []
-    for tool in request_tools:
-        if isinstance(tool, BaseTool) and disclosure.deferred.get(tool.name) is tool:
-            # A copy without `defer_loading`, so its schema is sent up front.
-            extras = {key: value for key, value in (tool.extras or {}).items() if key != _DEFER_LOADING}
-            tools.append(tool.model_copy(update={"extras": extras}))
-        else:
-            tools.append(tool)
-    return [*tools, *(disclosure.gated[name] for name in sorted(disclosure.gated))]
-
-
-def _discard_rejected_schemas(disclosure: _Disclosure, model: object) -> None:
-    """Withhold each disclosed tool whose schema `model`'s provider rejects, failing the whole request.
-
-    Anthropic rejects a root `oneOf`, `anyOf` or `allOf` in a tool's input schema,
-    in `tools` and inline alike. `bind_tools` drops such a tool from `tools`
-    (bar `allOf`), but an inline disclosure never passes through it, and
-    withholding it on every path keeps the record equal to what the model was
-    shown.
-    """
-    if not is_anthropic_chat_model(_unwrap_bound(model)):
-        return
-    # Already loaded: the model is a `ChatAnthropic`.
-    from langchain_anthropic import convert_to_anthropic_tool  # noqa: PLC0415
-
-    for name, tool in disclosure.tools().items():
-        schema = convert_to_anthropic_tool(tool).get("input_schema")
-        keys = [key for key in _ANTHROPIC_ROOT_COMBINATORS if isinstance(schema, dict) and key in schema]
-        if keys:
-            logger.warning(
-                "Not disclosing tool '%s': its input_schema has a top-level %s, which the Anthropic API does not support", name, "/".join(keys)
-            )
-            disclosure.discard(name)
-
-
-def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure] | None:
-    """Return how `model` is given a tool mid-conversation, or `None` if it can't be."""
-    chat_model = _unwrap_bound(model)
-    if is_anthropic_chat_model(chat_model):
-        build = _anthropic_tool_addition
-    elif _is_openai_chat_model(chat_model):
-        build = _openai_additional_tools
-    else:
-        return None
-    return build if (chat_model.profile or {}).get("mid_conversation_tools") else None
-
-
-def _is_openai_chat_model(model: object) -> TypeGuard[BaseChatOpenAI]:
-    """Return whether `model` is a `langchain_openai` chat model.
-
-    Reads `sys.modules` rather than importing `langchain_openai`: an instance of
-    its classes implies the module is loaded, and importing it eagerly would add
-    the `openai` SDK to every `deepagents` import.
-    """
-    base = sys.modules.get("langchain_openai.chat_models.base")
-    return base is not None and isinstance(model, base.BaseChatOpenAI)
-
-
-def _unwrap_bound(model: object) -> object:
-    """Return the chat model inside `model.bind(...)` or `model.with_config(...)`.
-
-    Chained calls merge into one `RunnableBinding`, so one unwrap is enough.
-    """
-    return model.bound if isinstance(model, RunnableBinding) else model
-
-
-def _anthropic_tool_addition(tool: BaseTool) -> _ToolDisclosure:
-    """Build the Anthropic `tool_addition` block carrying `tool`'s full definition."""
-    # Deferred: only an Anthropic model needs this, and it loads the `anthropic` SDK.
-    from langchain_anthropic import convert_to_anthropic_tool  # noqa: PLC0415
-
-    definition: dict[str, Any] = dict(convert_to_anthropic_tool(tool))
-    definition.pop(_DEFER_LOADING, None)
-    definition.pop("cache_control", None)
-    return {"type": "tool_addition", "tool": {"type": "tool_definition", "definition": definition}}
-
-
-def _openai_additional_tools(tool: BaseTool) -> _ToolDisclosure:
-    """Build the OpenAI Responses `additional_tools` item carrying `tool`'s function schema."""
-    function: dict[str, Any] = {"type": "function", **convert_to_openai_tool(tool)["function"]}
-    function.pop(_DEFER_LOADING, None)
-    return {"type": "additional_tools", "role": "developer", "tools": [function]}

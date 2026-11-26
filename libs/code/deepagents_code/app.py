@@ -934,8 +934,9 @@ def _format_mcp_server_changes(
 ) -> str:
     """Format MCP server changes for the `/reload` report.
 
-    Every server in `current` lands in exactly one bucket — loaded, failed,
-    unavailable, recovered, status-changed, reconfigured, or still-broken — so a
+    Every server in `current` lands in exactly one bucket — loaded, needs
+    approval, failed, unavailable, recovered, status-changed, reconfigured, or
+    still-broken — so a
     status the app grows later cannot silently fall through into "no changes".
     Config files whose parse status changed are flagged separately, since they
     arrive as synthetic entries rather than as servers.
@@ -1006,10 +1007,21 @@ def _format_mcp_server_changes(
         # self-comparison that would report it as unchanged.
         and (name not in before or before[name].status != "error")
     )
+    # Approval happens only in the startup prompt, so a project server added or
+    # edited mid-session lands here. Named on its own line with the way out,
+    # since a generic "unavailable" gives no hint that a restart is the fix.
+    needs_approval = sorted(
+        name
+        for name, server in servers.items()
+        if server.status == "untrusted"
+        and (name not in before or before[name].status != "untrusted")
+    )
     unavailable = sorted(
         name
         for name, server in servers.items()
-        if name not in before and server.status not in {"ok", "error"}
+        if name not in before
+        and server.status not in {"ok", "error"}
+        and name not in needs_approval
     )
     recovered = sorted(
         name
@@ -1024,6 +1036,7 @@ def _format_mcp_server_changes(
             and before[name].status != server.status
             and name not in failing
             and name not in recovered
+            and name not in needs_approval
         )
     )
     # A same-name server whose status held steady can still have been edited
@@ -1051,6 +1064,7 @@ def _format_mcp_server_changes(
     # so name it in both branches below rather than only when nothing changed.
     reported = (
         set(loaded)
+        | set(needs_approval)
         | set(failing)
         | set(unavailable)
         | set(recovered)
@@ -1062,7 +1076,7 @@ def _format_mcp_server_changes(
             name
             for name, server in servers.items()
             if name not in reported
-            and (server.status == "error" or server.needs_attention())
+            and (server.status in {"error", "untrusted"} or server.needs_attention())
         ]
         # Unrepaired config errors are excluded from `servers` entirely, and are
         # the one thing `/reload` most exists to surface.
@@ -1072,6 +1086,7 @@ def _format_mcp_server_changes(
     if not (
         loaded
         or removed
+        or needs_approval
         or failing
         or unavailable
         or recovered
@@ -1092,6 +1107,11 @@ def _format_mcp_server_changes(
         lines.append(f"  - Loaded: {', '.join(loaded)}")
     if removed:
         lines.append(f"  - Removed: {', '.join(removed)}")
+    if needs_approval:
+        lines.append(
+            f"  - Needs approval: {', '.join(needs_approval)} (restart to review "
+            "project MCP servers, or launch with --trust-project-mcp)"
+        )
     if failing:
         lines.append(f"  - Failed to load: {', '.join(failing)} (use /mcp for details)")
     if unavailable:
@@ -1751,6 +1771,33 @@ def _load_terminal_progress_preference() -> bool:
     return _load_bool_display_preference("display.terminal_progress", fallback=True)
 
 
+def _approval_status_message(action_requests: Any) -> str:  # noqa: ANN401  # ActionRequest uses dynamic typing
+    """Return a one-line `OSC 7501` message naming the tools awaiting approval.
+
+    Tool arguments are left out: terminals may show the message in desktop
+    notifications.
+    """
+    names = [
+        name
+        for request in action_requests or []
+        if isinstance(request, dict) and isinstance(name := request.get("name"), str)
+    ]
+    return f"Approval needed: {', '.join(dict.fromkeys(names))}" if names else ""
+
+
+def _load_terminal_status_preference() -> bool:
+    """Resolve whether to emit `OSC 7501` program status reports.
+
+    Turn off with `DEEPAGENTS_CODE_TERMINAL_STATUS=0` or
+    `[ui].terminal_status = false`. `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` still
+    disables all terminal escapes regardless of this value.
+
+    Returns:
+        The resolved preference, or `True` when unset, unreadable, or malformed.
+    """
+    return _load_bool_display_preference("display.terminal_status", fallback=True)
+
+
 def _save_terminal_theme_mapping_result(
     term_program: str,
     name: str,
@@ -2343,6 +2390,9 @@ class _ThreadHistoryPayload:
         default=None, kw_only=True
     )
     """Persisted thread-wide cost detail, or `None` when absent."""
+
+    session_side_cost_usd: float = field(default=0.0, kw_only=True)
+    """Side-question and thread-naming spend included in `session_cost_usd`."""
 
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
@@ -3667,6 +3717,16 @@ class DeepAgentsApp(App):
         self._terminal_progress_enabled = _load_terminal_progress_preference()
         """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
 
+        from deepagents_code.program_status import (
+            AgentStatusTracker,
+            ProgramStatusReporter,
+        )
+
+        self._agent_status = AgentStatusTracker(
+            ProgramStatusReporter(enabled=_load_terminal_status_preference())
+        )
+        """Reports agent status to terminals such as Herdr with `OSC 7501`."""
+
         self.sync_terminal_background()
 
         # Injected session config
@@ -4804,6 +4864,9 @@ class DeepAgentsApp(App):
         self._thread_restored_cost_usd: float = 0.0
         """Checkpoint cost without a local per-model breakdown."""
 
+        self._thread_restored_side_cost_usd: float = 0.0
+        """Side-request spend already included in `_thread_restored_cost_usd`."""
+
         self._thread_has_restored_model_usage: bool = False
         """Whether checkpoint history proves model usage predating local stats."""
 
@@ -5130,6 +5193,7 @@ class DeepAgentsApp(App):
         gc.freeze()
         self._terminal_title.start()
         self._update_terminal_title()
+        self._agent_status.start()
         self.screen_change_signal.subscribe(self, self._on_thread_name_screen_change)
         self.app_resume_signal.subscribe(self, self._on_terminal_resume)
 
@@ -6712,6 +6776,7 @@ class DeepAgentsApp(App):
         self._connecting = False
         self._reconnecting = False
         self._connection_ready_event.set()
+        self._agent_status.clear_error()
         self._agent = event.agent
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
@@ -6870,6 +6935,9 @@ class DeepAgentsApp(App):
             )
         else:
             text = f"Server failed to start: {self._server_startup_error}"
+        from deepagents_code.program_status import TurnOutcome
+
+        self._agent_status.set_outcome(TurnOutcome.ERROR, text)
         if had_deferred_actions:
             text += (
                 "\n\nCommands you ran while the server was starting were "
@@ -9443,6 +9511,7 @@ class DeepAgentsApp(App):
         *,
         has_restored_model_usage: bool = False,
         breakdown: Mapping[str, object] | None = None,
+        side_cost_usd: float = 0.0,
     ) -> None:
         """Start local usage details for a newly activated thread.
 
@@ -9450,10 +9519,12 @@ class DeepAgentsApp(App):
             cost_usd: Cumulative cost restored from that thread's checkpoint.
             has_restored_model_usage: Whether restored history contains model usage.
             breakdown: Structured cost detail restored from the checkpoint.
+            side_cost_usd: Side-request spend already included in `cost_usd`.
         """
         self._thread_stats = SessionStats()
         self._session_cost_breakdown = breakdown
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._thread_restored_side_cost_usd = _coerce_session_cost_usd(side_cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
@@ -9478,6 +9549,9 @@ class DeepAgentsApp(App):
 
     def _mark_thread_turn_completed(self) -> None:
         """Record a clean stream end for the thread that owns the active turn."""
+        from deepagents_code.program_status import TurnOutcome
+
+        self._agent_status.set_outcome(TurnOutcome.DONE)
         if self._inflight_thread_id == self._lc_thread_id:
             self._thread_has_completed_turn = True
 
@@ -9580,6 +9654,25 @@ class DeepAgentsApp(App):
 
         return not pricing_data_available()
 
+    def _current_side_cost_usd(self) -> float:
+        """Side-question and thread-naming spend since this thread was loaded.
+
+        These requests are charged outside the turn stream, so they never reach
+        the per-type or per-model stats.
+
+        Returns:
+            Spend in USD, or `0.0` without a server-backed agent.
+        """
+        remote = self._remote_agent()
+        if remote is None or not self._lc_thread_id:
+            return 0.0
+        side_cost_usd = _coerce_session_cost_usd(
+            remote.get_cached_side_cost(
+                {"configurable": {"thread_id": self._lc_thread_id}}
+            )
+        )
+        return max(side_cost_usd - self._thread_restored_side_cost_usd, 0.0)
+
     def _format_cost_summary(self) -> str:
         """Build the running total and type/model breakdown for `/cost`.
 
@@ -9677,11 +9770,16 @@ class DeepAgentsApp(App):
             if kind in self._thread_stats.per_kind
             and self._thread_stats.per_kind[kind].priced_request_count
         ]
-        if priced_kinds:
+        side_cost_usd = self._current_side_cost_usd()
+        if priced_kinds or side_cost_usd > 0:
             lines.extend(["", "By type since this thread was loaded:"])
             for kind, kind_stats in priced_kinds:
                 lines.append(
                     f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
+                )
+            if side_cost_usd > 0:
+                lines.append(
+                    f"- Side questions and thread names: {format_cost(side_cost_usd)}"
                 )
         priced_models = [
             model
@@ -9713,7 +9811,9 @@ class DeepAgentsApp(App):
             0.0,
         )
         detail_gap_usd = (
-            authoritative_current_cost_usd - self._thread_stats.total_cost_usd
+            authoritative_current_cost_usd
+            - side_cost_usd
+            - self._thread_stats.total_cost_usd
         )
         comparison_tolerance = max(authoritative_current_cost_usd * 1e-6, 1e-9)
         if detail_gap_usd > comparison_tolerance:
@@ -10074,7 +10174,7 @@ class DeepAgentsApp(App):
         ):
             return
         self._idle_compaction_seen[thread_id] = expires_at
-        self._set_agent_running(True)
+        self._set_agent_running(True, report_status=False)
         try:
             self._offload_worker = self.run_worker(
                 self._run_offload_task(idle_window=(thread_id, expires_at)),
@@ -11475,6 +11575,13 @@ class DeepAgentsApp(App):
         # remaining case where a future is abandoned without completing.
         self._pause_loading_spinner_for_approval()
         result_future.add_done_callback(self._resume_loading_spinner_after_approval)
+        from deepagents_code.program_status import BlockedKind
+
+        self._agent_status.track(
+            result_future,
+            BlockedKind.PERMISSION,
+            _approval_status_message(action_requests),
+        )
 
         # Create menu with unique ID to avoid conflicts
         from deepagents_code.tui.widgets.approval import ApprovalMenu
@@ -11942,6 +12049,13 @@ class DeepAgentsApp(App):
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
         menu.set_future(result_future)
+        from deepagents_code.program_status import BlockedKind
+
+        self._agent_status.track(
+            result_future,
+            BlockedKind.QUESTION,
+            questions[0]["question"] if questions else "",
+        )
 
         self._pending_ask_user_widget = menu
 
@@ -12088,6 +12202,11 @@ class DeepAgentsApp(App):
             id=unique_id,
         )
         menu.set_future(result_future)
+        from deepagents_code.program_status import BlockedKind
+
+        self._agent_status.track(
+            result_future, BlockedKind.PERMISSION, "Review the goal's criteria"
+        )
         self._pending_goal_review_widget = menu
         self._pending_goal_review_future = result_future
 
@@ -15198,13 +15317,22 @@ class DeepAgentsApp(App):
         while self._agent_running or self._agent_reconciling:
             await self._agent_quiescent.wait()
 
-    def _set_agent_running(self, running: bool) -> None:
-        """Keep the agent-running flag and quiescence event synchronized."""
+    def _set_agent_running(self, running: bool, *, report_status: bool = True) -> None:
+        """Keep the agent-running flag and quiescence event synchronized.
+
+        Args:
+            running: Whether the agent (or exclusive app work) is busy.
+            report_status: Report the change as `OSC 7501` status. Background
+                maintenance passes `False` so it does not replace an unseen
+                `done` with `working` and then `idle`.
+        """
         if running:
             self._agent_quiescent.clear()
         self._agent_running = running
         if not running and not self._agent_reconciling:
             self._agent_quiescent.set()
+        if report_status:
+            self._agent_status.set_working(running)
 
     @asynccontextmanager
     async def _goal_state_mutation_boundary(self) -> AsyncIterator[None]:
@@ -18503,10 +18631,15 @@ class DeepAgentsApp(App):
                 )
             )
             return False
+        from deepagents_code.program_status import BlockedKind
+
         try:
-            allowed = await self._push_screen_wait(
-                SkillTrustScreen(skill_name, directory)
-            )
+            with self._agent_status.blocked(
+                BlockedKind.PERMISSION, f"Trust skill {skill_name}?"
+            ):
+                allowed = await self._push_screen_wait(
+                    SkillTrustScreen(skill_name, directory)
+                )
         except Exception:
             # Fail closed: a prompt that cannot display is a deny.
             logger.warning(
@@ -19566,11 +19699,13 @@ class DeepAgentsApp(App):
             cwd=self._cwd,
             branch=self._status_bar.branch if self._status_bar else "",
         )
+        self._agent_status.set_title(self._thread_name)
 
     def _on_terminal_resume(self, _app: App) -> None:
-        """Reclaim the tab title from programs that ran while suspended."""
+        """Reclaim the tab title and status from programs that ran meanwhile."""
         self._terminal_title.invalidate()
         self._update_terminal_title()
+        self._agent_status.refresh()
 
     async def _load_thread_name(self) -> None:
         """Restore a name without letting an old read replace the active name."""
@@ -19882,12 +20017,18 @@ class DeepAgentsApp(App):
         self.push_screen(ThreadNameScreen(name), apply_name)
 
     async def on_unmount(self) -> None:
-        """Cancel pending thread-naming tasks and restore the terminal title."""
+        """Allow bounded background cleanup and restore the terminal title."""
         tasks = list(self._thread_name_tasks.values())
         for task in tasks:
             task.cancel()
         self._terminal_title.restore()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        self._agent_status.close()
+        cleanup = asyncio.gather(
+            *tasks,
+            *(worker.wait() for worker in self.workers),
+            return_exceptions=True,
+        )
+        await asyncio.wait({cleanup}, timeout=_GRACEFUL_EXIT_WAIT_SECONDS)
 
     def _effective_model_spec(self) -> str | None:
         """Return the `provider:model` spec in effect for the next invocation.
@@ -20297,6 +20438,7 @@ class DeepAgentsApp(App):
 
         from deepagents_code.config import runtime_state
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.program_status import TurnOutcome
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
             RubricEvaluationEnd,
@@ -20534,6 +20676,9 @@ class DeepAgentsApp(App):
                 # would blame the model or the backend for a bug in this file —
                 # and run credential-mismatch detection that cannot apply.
                 logger.exception("Agent turn setup failed before streaming began")
+                self._agent_status.set_outcome(
+                    TurnOutcome.ERROR, "Internal error preparing this turn"
+                )
                 with suppress(Exception):
                     await self._mount_message(
                         ErrorMessage(
@@ -20552,6 +20697,7 @@ class DeepAgentsApp(App):
                 # The formatter itself must never mask the original error.
                 logger.exception("format_agent_exception failed")
                 error_text = f"Agent error: {e!r}"
+            self._agent_status.set_outcome(TurnOutcome.ERROR, error_text)
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
@@ -20770,7 +20916,10 @@ class DeepAgentsApp(App):
         """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
-        self._set_agent_running(False)
+        # Report the stop in `finally` below, and only if no queued message or
+        # goal continuation started a new turn: reporting it here would flash
+        # `done` between back-to-back turns.
+        self._set_agent_running(False, report_status=False)
         self._agent_worker = None
         # Tie the flag's lifetime to the worker's: left `True` across turns it
         # would disable `_recover_unstarted_agent_worker` for every later turn.
@@ -20901,6 +21050,8 @@ class DeepAgentsApp(App):
             # `_goal_state_lock` — would never be woken and would deadlock.
             if not self._agent_running and not self._agent_reconciling:
                 self._agent_quiescent.set()
+            if not self._agent_running:
+                self._agent_status.set_working(False)
             # Scheduled after goal reconciliation so the refreshed rows include
             # every checkpoint this turn produced.
             self._schedule_thread_cache_refresh()
@@ -21238,6 +21389,9 @@ class DeepAgentsApp(App):
                     payload,
                     session_cost_usd=cost["total"],
                     session_cost_breakdown=cost["breakdown"],
+                    session_side_cost_usd=remote.get_cached_side_cost(
+                        {"configurable": {"thread_id": thread_id}}
+                    ),
                 )
         messages = state_values.get("messages", [])
 
@@ -21596,6 +21750,7 @@ class DeepAgentsApp(App):
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
                 breakdown=payload.session_cost_breakdown,
+                side_cost_usd=payload.session_side_cost_usd,
             )
             if payload.cache_state is not None:
                 # Raw values on purpose: `_sync_cache_state_from_state` is the
@@ -22757,6 +22912,7 @@ class DeepAgentsApp(App):
     async def _clear_messages_unlocked(self) -> None:
         """Clear the messages area and message store."""
         self._transcript_generation += 1
+        self._agent_status.start_new_conversation()
         # Drop buffered `!` shell output so it never leaks across a thread
         # reset, switch, or resume.
         self._pending_shell_messages.clear()
@@ -23749,6 +23905,7 @@ class DeepAgentsApp(App):
         for task in self._thread_name_tasks.values():
             task.cancel()
         self._terminal_title.restore()
+        self._agent_status.close()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
         # Cancellation alone is not enough: the task's `finally` block runs
@@ -26132,13 +26289,18 @@ class DeepAgentsApp(App):
             return True
 
         env_var = status.env_var or get_credential_env_var(provider)
-        result = await self._push_screen_wait(
-            AuthPromptScreen(
-                provider,
-                env_var,
-                reason=f"Required to use {model_spec}",
+        from deepagents_code.program_status import BlockedKind
+
+        with self._agent_status.blocked(
+            BlockedKind.AUTH, f"API key required to use {model_spec}"
+        ):
+            result = await self._push_screen_wait(
+                AuthPromptScreen(
+                    provider,
+                    env_var,
+                    reason=f"Required to use {model_spec}",
+                )
             )
-        )
         return result is AuthResult.SAVED
 
     def _register_custom_themes(self) -> None:
@@ -29446,12 +29608,17 @@ class DeepAgentsApp(App):
         await asyncio.sleep(0)
 
         login_error: Exception | None = None
+        from deepagents_code.program_status import BlockedKind
+
         try:
-            await mcp_login(
-                server_name=server_name,
-                server_config=selection.server_config,
-                ui=screen,
-            )
+            with self._agent_status.blocked(
+                BlockedKind.AUTH, f"Sign in to MCP server {server_name}"
+            ):
+                await mcp_login(
+                    server_name=server_name,
+                    server_config=selection.server_config,
+                    ui=screen,
+                )
         except MCPLoginCancelledError:
             screen.finish(success=False, message="Login cancelled.")
             await asyncio.wait_for(outcome_future, timeout=5.0)

@@ -341,11 +341,12 @@ class AgentRuntime(Protocol):
 class ContextDoctorRuntime(Protocol):
     """Optional runtime capability for read-only context diagnostics."""
 
-    async def context_doctor(self, conversation_id: str) -> str:
+    async def context_doctor(self, conversation_id: str, *, model: str | None = None) -> str:
         """Audit the current conversation without invoking the model.
 
         Args:
             conversation_id: Host-resolved agent thread to inspect.
+            model: Selected model spec, if the host has an override.
 
         Returns:
             Context token estimates, without prompt or conversation contents.
@@ -373,18 +374,6 @@ class ModelSelectableRuntime(Protocol):
             Whether `spec` is a selectable model. A model that is selectable but
             cannot be built raises instead.
         """
-
-
-@runtime_checkable
-class SmartModelRuntime(Protocol):
-    """Optional runtime capability for the assistant-wide one-off help model."""
-
-    @property
-    def smart_model(self) -> str | None:
-        """Current helper model, or None when consultations are disabled."""
-
-    async def select_smart_model(self, spec: str | None) -> bool:
-        """Validate and activate a helper model for subsequent turns."""
 
 
 @runtime_checkable

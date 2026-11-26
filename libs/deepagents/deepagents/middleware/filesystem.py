@@ -38,6 +38,7 @@ from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.channels.untracked_value import UntrackedValue
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -1608,7 +1609,7 @@ READ_FILE_VIDEO_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
-- You must read the file before editing; this tool errors otherwise.
+- You must read the file before editing.
 - Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.
 - Prefer editing an existing file over creating a new one.
 - Only use emojis if the user explicitly requests it."""
@@ -1657,15 +1658,15 @@ _EXECUTE_GLOB_SEARCH_GUIDANCE = "You MUST avoid using shell find for searches. I
 _EXECUTE_GLOB_BAD_EXAMPLE = "\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead"
 _EXECUTE_GREP_BAD_EXAMPLE = "\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead"
 
+# Only shown to the model when the backend implements SandboxBackendProtocol
+# (see `supports_execution`); otherwise `execute` is removed from the tool list.
 _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).
 
 Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
 - Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
-- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
-
-Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
+- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}"""
 
 EXECUTE_TOOL_DESCRIPTION = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.format(
     search_guidance=_EXECUTE_SEARCH_GUIDANCE,
@@ -2781,6 +2782,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             try:
                 glob_result = future.result()
+            except GraphBubbleUp:
+                # Interrupts and parent commands are control flow, not a failed search.
+                raise
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
                 # run_glob's finally already released the slot before the
                 # exception propagated, so do not release again here.
@@ -2859,6 +2863,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             try:
                 glob_result = task.result()
+            except GraphBubbleUp:
+                # Interrupts and parent commands are control flow, not a failed search.
+                raise
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
                 return ToolMessage(
                     content=f"Error: glob failed: {e}",

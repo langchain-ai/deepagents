@@ -1206,3 +1206,30 @@ class TestModuleLevelHelpers:
             error="Run: dcode mcp login github",
         )
         assert _visible_tools_for(info, []) == ()
+
+
+class TestUntrustedServerHeader:
+    """Project servers skipped for missing approval render with guidance."""
+
+    def test_header_says_needs_approval_with_reason(self) -> None:
+        from deepagents_code.config import get_glyphs
+        from deepagents_code.tui.widgets.mcp_viewer import (
+            _render_server_header,
+            _sort_servers_for_display,
+        )
+
+        glyphs = get_glyphs()
+        server = MCPServerInfo(
+            name="robin",
+            transport="http",
+            status="untrusted",
+            error="Not approved for this project.",
+        )
+
+        header = _render_server_header(server, glyphs.warning, "yellow", (), glyphs)
+
+        assert "robin" in header.plain
+        assert "needs approval" in header.plain
+        assert "Not approved for this project." in header.plain
+        ok = MCPServerInfo(name="ok", transport="stdio")
+        assert _sort_servers_for_display([ok, server]) == [server, ok]

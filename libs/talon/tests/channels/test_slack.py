@@ -1137,3 +1137,24 @@ async def test_thread_context_failure_preserves_control_text(tmp_path: Path) -> 
     )
     assert messages[0].text == "/stop"
     assert "history unavailable" in messages[0].metadata["slack_thread_context"]
+
+
+@pytest.mark.parametrize(
+    "notice", ["Goal release completed. OK", "Job release missed its deadline."]
+)
+async def test_reconcile_goal_notice_checks_sender_and_goal_in_thread(notice: str) -> None:
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
+
+    class Web:
+        async def conversations_replies(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "messages": [
+                    {"user": "owner", "text": "Goal other completed. Done."},
+                    {"user": "bot", "text": notice},
+                ]
+            }
+
+    gateway._web = Web()  # type: ignore[assignment]
+    gateway._bot_id = "bot"
+    assert await gateway.completion_notice_received("C1", "1.0", "release")
+    assert not await gateway.completion_notice_received("C1", "1.0", "other")

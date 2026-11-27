@@ -29,7 +29,8 @@ When cron restricts both day-of-month and day-of-week, either can match.
 For first Tuesday or last Friday, use `*` for day-of-month and `2#1` or `5L` for day-of-week."""
 
 UNTIL_HELP = """For recurring jobs, repeat_times caps runs and until sets an inclusive deadline
-(`YYYY-MM-DD HH:MM TZ`). After the deadline the job expires and missed runs are dropped."""
+(`YYYY-MM-DD HH:MM TZ`). Use target_at in the same format for a soft target.
+A missed soft target is reported and work continues."""
 
 DELIVER_TO_HELP = """In Slack channel threads and public Discord threads, prefer channel delivery
 for later days and thread delivery for short follow-ups."""
@@ -74,6 +75,7 @@ class CronTools:
         until: str | None = None,
         deliver_to: DeliverTo = "channel",
         skills: list[str] | None = None,
+        target_at: str | None = None,
     ) -> dict[str, Any]:
         """Create a scheduled job in the current conversation.
 
@@ -82,6 +84,7 @@ class CronTools:
             schedule: Schedule text, in any form `SCHEDULE_HELP` lists.
             name: Optional human-readable label.
             repeat_times: Optional cap for recurring schedules.
+            target_at: Soft target in the same format as until.
             until: Optional end time, in the form `UNTIL_HELP` describes.
             deliver_to: Where results post, as `DELIVER_TO_HELP` describes.
             skills: Skills to pin to each run, as `SKILLS_HELP` describes.
@@ -95,6 +98,7 @@ class CronTools:
             origin=self.origin(),
             name=name,
             repeat_times=repeat_times,
+            target_at=parse_until(target_at) if target_at else None,
             until=parse_until(until) if until else None,
             deliver_to=deliver_to,
             skills=skills or (),
@@ -121,6 +125,7 @@ class CronTools:
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
         skills: list[str] | None = None,
+        target_at: str | None = None,
     ) -> dict[str, Any]:
         """Edit a scheduled job in the current conversation.
 
@@ -132,6 +137,7 @@ class CronTools:
                 `SCHEDULE_HELP` lists.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
+            target_at: Soft target in the same format as until.
             until: Optional replacement end time, in the form `UNTIL_HELP`
                 describes. An empty string removes the end time.
             deliver_to: Optional replacement delivery target.
@@ -149,7 +155,9 @@ class CronTools:
             schedule=parsed,
             enabled=enabled,
             repeat_times=repeat_times,
+            target_at=parse_until(target_at) if target_at else None,
             until=parse_until(until) if until else None,
+            clear_target=target_at == "",
             clear_until=until == "",
             deliver_to=deliver_to,
             skills=skills,
@@ -198,6 +206,8 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         until: str | None = None,
         deliver_to: DeliverTo = "channel",
         skills: list[str] | None = None,
+        *,
+        target_at: str | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.create_job(
@@ -205,6 +215,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 schedule=schedule,
                 name=name,
                 repeat_times=repeat_times,
+                target_at=_strip_optional_quotes(target_at),
                 until=_strip_optional_quotes(until),
                 deliver_to=deliver_to,
                 skills=skills,
@@ -236,6 +247,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
         skills: list[str] | None = None,
+        target_at: str | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.edit_job(
@@ -245,6 +257,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 schedule=_strip_optional_quotes(schedule),
                 enabled=enabled,
                 repeat_times=repeat_times,
+                target_at=_strip_optional_quotes(target_at),
                 until=_strip_optional_quotes(until),
                 deliver_to=deliver_to,
                 skills=skills,
@@ -284,6 +297,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "last_status": data["last_status"],
         "last_error": data["last_error"],
         "until": data["until"],
+        **({"target_at": data["target_at"]} if data["target_at"] else {}),
         "deliver_to": data["deliver_to"],
         "skills": data["skills"],
     }

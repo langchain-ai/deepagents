@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -308,3 +309,120 @@ async def test_expired_paused_job_with_an_error_is_pruned_after_retention(tmp_pa
 
     store.prune_completed(retain_for=timedelta(days=1), now=NOON + timedelta(days=2))
     assert store.get_job(job.id) is None
+
+
+async def test_missed_deadline_reports_last_recorded_work_without_running(tmp_path) -> None:
+    store = _store(tmp_path)
+    job = _hourly_until(store, NOON + timedelta(hours=1))
+    runner = _Runner()
+    notices: list[str] = []
+
+    async def deliver(_job: CronJob, text: str) -> None:
+        notices.append(text)
+
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=runner.run,
+        deliver_result=deliver,
+        now=lambda: NOON + timedelta(hours=6),
+    )
+    await scheduler.tick_once()
+    await scheduler.tick_once()
+    assert runner.ran == []
+    assert len(notices) == 1
+    assert job.id in notices[0]
+    assert "deadline" in notices[0]
+
+
+async def test_soft_target_reports_delay_and_resumes_after_six_missed_checks(tmp_path) -> None:
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="poll",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=ORIGIN,
+        target_at=NOON + timedelta(hours=3),
+        now=NOON,
+    )
+    now = NOON + timedelta(hours=6, minutes=2)
+    runner = _Runner()
+    notices: list[str] = []
+
+    async def deliver(_job: CronJob, text: str) -> None:
+        notices.append(text)
+
+    scheduler = PersistentCronScheduler(
+        store=_store(tmp_path),
+        run_job=runner.run,
+        deliver_result=deliver,
+        now=lambda: now,
+    )
+    await asyncio.gather(scheduler.tick_once(), scheduler.tick_once())
+    assert runner.ran == [job.id]
+    assert len(notices) == 1
+    assert "target" in notices[0]
+    assert "done" in notices[0]
+    now = NOON + timedelta(hours=7)
+    await scheduler.tick_once()
+    assert runner.ran == [job.id, job.id]
+    assert notices[1:] == ["done"]
+
+
+async def test_final_run_starts_with_tick_latency_and_finishes_after_until(tmp_path) -> None:
+    store = _store(tmp_path)
+    until = NOON + timedelta(hours=1)
+    job = _hourly_until(store, until)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    notices: list[str] = []
+
+    async def run(_job: CronJob) -> str:
+        entered.set()
+        await release.wait()
+        return "done"
+
+    async def deliver(_job: CronJob, text: str) -> None:
+        notices.append(text)
+
+    now = until + timedelta(seconds=30)
+    scheduler = PersistentCronScheduler(
+        store=store, run_job=run, deliver_result=deliver, now=lambda: now
+    )
+    first_tick = asyncio.create_task(scheduler.tick_once())
+    await asyncio.wait_for(entered.wait(), 2)
+    now = until + timedelta(minutes=10)
+    await scheduler.tick_once()
+    release.set()
+    await first_tick
+    assert store.get_job(job.id).last_status == "ok"
+    await scheduler.tick_once()
+    assert notices == ["done"]
+
+
+async def test_soft_target_crossed_during_run(tmp_path) -> None:
+    store = _store(tmp_path)
+    target = NOON + timedelta(minutes=2)
+    store.create_job(
+        prompt="work",
+        schedule=CronSchedule.parse("every 1m"),
+        origin=CronOrigin(conversation_id="chat", sender_id="owner", channel="discord"),
+        now=NOON,
+        target_at=target,
+    )
+    now = NOON + timedelta(minutes=1)
+    notices: list[str] = []
+
+    async def run(_claimed: CronJob) -> str:
+        nonlocal now
+        now = target + timedelta(seconds=1)
+        return "done"
+
+    async def deliver(_job: CronJob, text: str) -> None:
+        notices.append(text)
+
+    scheduler = PersistentCronScheduler(
+        store=store, run_job=run, deliver_result=deliver, now=lambda: now
+    )
+    await scheduler.tick_once()
+    assert len(notices) == 1
+    assert "missed its target" in notices[0]
+    assert notices[0].endswith("done")

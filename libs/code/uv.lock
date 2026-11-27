@@ -2699,12 +2699,16 @@ version = "0.0.8"
 source = { editable = "../partners/modal" }
 dependencies = [
     { name = "deepagents" },
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
     { name = "modal" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
+    { name = "langchain-core", specifier = ">=1.8.4,<2.0.0" },
+    { name = "langchain-openai", specifier = ">=1.8.5,<2.0.0" },
     { name = "modal", specifier = ">=1.5.3" },
 ]
 

@@ -40,10 +40,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-26T08:03:59.911Z
+    at: 2026-11-27T08:04:01.405Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
 ---
 
 # Subagents and Skills

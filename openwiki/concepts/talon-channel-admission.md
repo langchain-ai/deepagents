@@ -1,8 +1,11 @@
 ---
-type: channel admission and turn routing
+type: channel admission and host routing
 title: Talon Channel Admission
-description: How Talon admits provider events, treats attachments at the inbound-media boundary, and routes admitted messages through host-owned commands, turns, delivery, cancellation, and cleanup.
-tags: [talon, channels, admission-control, commands, pairing, turn-routing, security]
+description: Talon adapters admit and normalize provider events; the host constructs trusted agent requests, manages turns and delivery, and binds per-turn file sending. Inbound attachment preparation and outbound uploads have separate trust boundaries.
+tags: [talon, channels, admission-control, media, turn-routing, file-sending, security]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-27T08:04:01.405Z
 sources:
   - id: openwiki-source-8a4e357da1dab3192e01eb13
     resource: repo://libs/talon/deepagents_talon/attachments.py
@@ -14,123 +17,97 @@ sources:
     resource: repo://libs/talon/deepagents_talon/channels/slack.py
   - id: openwiki-source-8b5bca648d1b15423f889af2
     resource: repo://libs/talon/deepagents_talon/channels/telegram.py
-  - id: openwiki-source-80976c09402c30d4f886a2fa
-    resource: repo://libs/talon/deepagents_talon/commands.py
+  - id: openwiki-source-3d157a5857f325aceaade7f1
+    resource: repo://libs/talon/deepagents_talon/channels/whatsapp.py
+  - id: openwiki-source-fd3cc27f279ed4fb8aaca360
+    resource: repo://libs/talon/deepagents_talon/file_sending.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-ccdb88feadbc25be2fc7b63b
     resource: repo://libs/talon/deepagents_talon/media.py
-  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
-    resource: repo://libs/talon/deepagents_talon/pairing.py
-  - id: openwiki-source-7d5b64d12a06c1e53f89d47c
-    resource: repo://libs/talon/deepagents_talon/questions.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-d41d7ef7f9d2f53eb0bd40e8
-    resource: repo://libs/talon/deepagents_talon/speech.py
   - id: openwiki-source-1c86f8e1d9b6cb62f342d9ed
     resource: repo://libs/talon/tests/channels/test_base.py
-  - id: openwiki-source-94758cb9b3302b8f80f516f9
-    resource: repo://libs/talon/tests/channels/test_discord.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-e0db085f967450f48196d999
-    resource: repo://libs/talon/tests/test_media.py
-  - id: openwiki-source-1dcbe1149c3884ccb5b7db9b
-    resource: repo://libs/talon/tests/test_speech.py
-  - id: openwiki-source-817808ec0e85107297729a56
-    resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
-  - id: openwiki-source-3d684c645b34f5e3a3092ca9
-    resource: repo://libs/talon/tests/unit_tests/test_questions.py
-  - id: openwiki-source-24a3ab902230428c874f14d8
-    resource: repo://libs/talon/tests/unit_tests/test_speech.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-26T08:03:59.911Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
+  - id: openwiki-source-54e71837eba2502331d41e03
+    resource: repo://libs/talon/tests/unit_tests/test_discord_attachments.py
+  - id: openwiki-source-412987bb51db9ba8f655d511
+    resource: repo://libs/talon/tests/unit_tests/test_file_sending.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-27T08:04:01.405Z" }
 ---
 
-Talon channel adapters are the policy boundary between provider events and an agent turn. An adapter normalizes a provider event into `ChannelMessage` or `ChannelReaction`, applies provider-specific addressing, exposure, and pairing policy, prepares admitted attachments, and dispatches only admitted events to the callback installed by `TalonHost`. The host—not the adapter—owns commands, conversation identity, pending interaction state, model and effort selection, runtime invocation, cancellation, delivery, and turn-state cleanup.
+Talon channel admission is the boundary between a provider event and a host-managed agent turn. An adapter turns an eligible provider message or reaction into transport-neutral data and dispatches it to `TalonHost`; the host decides what that event can do. In particular, the adapter does **not** get to select the agent conversation, model, effort, operator authority, or delivery lifecycle.
 
-> **Security boundary:** admission controls who may invoke a configured personal agent; it is not tenant isolation or execution containment. `open` lets arbitrary external senders invoke an agent with the host's configured credentials and local access. Pairing grants invocation, not operator authority. Attachment preparation and voice transcription happen after admission and never authorize a sender.
+> **Scope:** channel admission controls who may invoke a configured agent. It is not tenant isolation or execution containment. In particular, `open` exposure permits arbitrary senders to invoke an agent that has the host's configured credentials and local access.
 
-See [profiles and models](/openwiki/concepts/profiles-models.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [the Talon integration](/openwiki/integrations/talon.md), and [security operations](/openwiki/operations/security.md).
+See [Talon integration](/openwiki/integrations/talon.md), [runtime behavior](/openwiki/architecture/runtime-behavior.md), [security operations](/openwiki/operations/security.md), and [testing guide](/openwiki/testing/testing-guide.md).
 
-## Contract and component lifecycle
+## Contract and ownership
 
-`ChannelAdapter` is the transport-neutral contract for lifecycle, handler registration, text and media delivery, editing, typing, and status. `ChannelMessage` and `ChannelReaction` carry stable channel-specific conversation and sender identities plus adapter metadata. Reactions are optional: only a `ReactionChannelAdapter` receives the host reaction callback.
+`ChannelAdapter` supplies lifecycle, inbound-handler registration, text/media delivery and editing, typing, and status. Its common inbound values are immutable `ChannelMessage` and `ChannelReaction`, carrying a provider-local conversation ID, sender identity, optional message ID, and metadata. Reactions are optional: the host only registers a reaction callback with adapters that implement `ReactionChannelAdapter`.
 
-`TalonHost.start()` ensures the home and starts the runtime, binds callbacks before starting each channel, then starts the scheduler after the channels are live. It records a channel *before* calling `start()`, so an adapter that raises after opening a subprocess or polling task is included in reverse-order startup unwind. A failed start stops the scheduler if it started, all attempted channels, and the runtime. Normal shutdown stops the background loop, cancels work, then stops channels, scheduler, and runtime; a failed stop is logged without preventing later cleanup.
+`AgentRequest` is a host-to-runtime contract. Along with text and host-selected `conversation_id`, `model`, and `effort`, it can carry request-scoped callbacks for progress, approval, authorization, questions, breakout work, and sending a file. The `FileSendHandler` accepts file bytes, a display name, and an optional caption; it is not an adapter-supplied capability.
 
 ```mermaid
 sequenceDiagram
     participant Sender
     participant Adapter
-    participant Policy
     participant Host
     participant Runtime
+    participant Chat
 
     Sender->>Adapter: provider message or reaction
-    Adapter->>Policy: addressing exposure pairing
+    Adapter->>Adapter: normalize and apply admission policy
     alt rejected
-        Policy-->>Adapter: reject
-        Adapter->>Adapter: optional pairing offer
+        Adapter->>Adapter: drop or offer pairing
     else admitted message
-        Policy-->>Adapter: admit
-        Adapter->>Adapter: prepare inbound attachment
+        Adapter->>Adapter: download and normalize inbound media
         Adapter->>Host: ChannelMessage
-        Host->>Host: command and pending-state routing
-        Host->>Host: replace or start a turn
-        Host->>Runtime: host-built request
-        Runtime-->>Host: result or interaction request
-        Host-->>Adapter: progress or final reply
+        Host->>Host: derive trusted route and handle pending state
+        Host->>Host: replace or start serialized turn
+        Host->>Runtime: host-built AgentRequest
+        Runtime-->>Host: result or callback
+        Host->>Chat: deliver to origin conversation
     else admitted reaction
-        Policy-->>Adapter: admit
         Adapter->>Host: ChannelReaction
-        Host->>Host: settle matching approval only
+        Host->>Host: resolve matching pending approval only
     end
 ```
 
-*Adapters admit and prepare a provider event before dispatch; the host controls the authority-bearing request and the turn lifecycle.*
+*Adapters admit and normalize provider events; the host owns authority-bearing request fields and delivery.*
 
-## Adapter admission and pairing
+## Adapter admission and normalized input
 
-`ChannelExposure` defaults to `self`: `from_self` or a configured operator ID is admitted. In `allowlist`, configured conversation IDs or text glob patterns are admitted. `open` admits every message, but requires an explicit risk acknowledgement and logs that arbitrary senders can invoke the agent with host access. Discord, Slack, and Telegram apply exposure or pairing before preparing inbound media; Slack and Telegram also gate reactions independently, while Telegram derives `from_self` from the bot identity.
+Shared `ChannelExposure` defaults to `self`, which admits messages marked `from_self` or sent by configured operator IDs. `allowlist` admits configured conversation IDs or message-text glob patterns. `open` admits every message, but configuration requires the explicit `allow-arbitrary-senders` acknowledgement and logs the arbitrary-sender risk.
 
-Discord adds a guild-addressing gate: a human message must mention the bot or its integration role unless `DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS` permits that channel. After a top-level guild message is admitted, Discord opens a public thread for the turn, falling back to the parent channel if thread creation fails. An application interaction is normalized to a `ChannelMessage`, checked for admission before it is deferred, and uses a task-local interaction sink so concurrent output cannot be captured by the wrong interaction.
+Discord, Slack, and Telegram apply exposure or pairing before they download inbound attachments; WhatsApp first parses bridge-provided normalized paths, applies exposure, then enforces its inbound size cap before dispatch. This ordering avoids fetching provider media for rejected Discord, Slack, and Telegram events. Discord also ignores its own gateway echoes before exposure checks, requires guild messages to address the bot unless a configured mention-optional channel allows a human message, and creates a public thread only after the message is admitted. Reactions are independently admitted and are merely candidates for a host-side pending approval, not approvals by themselves.
 
-Pairing is a separate, revocable admission route. It grants normal sender invocation but never operator authority: environment-configured operators and allowlisted IDs remain authoritative, `/pair` is handled outside the model, and only an explicitly configured operator may administer it. Pairing records are provider-scoped; codes expire after one hour and are consumed on approval. Store mutations are locked and atomically replaced, while unreadable or invalid persisted state fails closed. Revocation removes future paired access, cancels the sender's tracked conversations, and pauses that sender's provider-scoped cron jobs.
+A successful downloaded attachment is normalized into `media_paths`, `media_path`, aligned MIME metadata, and—for voice—`voice_path`. Discord and Slack keep successfully downloaded attachments even when others fail and record `media_error`; Telegram retains a deliverable message with `has_media` false and `media_error` when its download fails. The host later turns an unavailable attachment into a generic notice, rather than exposing the provider/download failure to the model.
 
-## Commands, context, and pending interactions
+## Host-built request and turn replacement
 
-The shared command registry supplies host-visible definitions, help text, and Discord's visible application-command set. Hidden commands remain typeable but are excluded from help and platform registration. The host dispatches recognized commands before ordinary turns and before treating text as an approval, authorization callback, or `ask_user` reply. `/model` and `/effort` changes require operator authority; the host, rather than channel metadata, captures their selected values for later `AgentRequest` instances.
+On receipt, the host obtains the provider identity from the adapter and combines it with the adapter's provider-local conversation ID to form a conversation root. It serializes work under that root, derives the current agent conversation ID (including a reset suffix when applicable), and preserves the original channel ID as the reply target. Commands and pending approval, authorization, and question handling take precedence over a normal turn.
 
-For a non-`/help` message, `receive_message` derives a provider-qualified conversation root from the trusted channel identity and the adapter conversation ID, serializes work by that root, and derives the agent conversation ID including any persisted reset suffix. It keeps the original channel ID as the reply destination. Adapter metadata is request context, not authority to select a conversation, model, or operator privilege; host and route values overwrite authority-bearing fields.
+Before invoking the runtime, the host builds metadata from normalized message context and host route context, with host route fields applied last. It separately supplies the host-derived conversation ID, selected model, effort, delivery callbacks, and operator flag. Consequently, adapter metadata is contextual input, not a way to restate authority-bearing request fields.
 
-An admitted reaction is not automatically an approval. The host resolves it only against the pending approval for the matching provider-qualified conversation, prompt, sender, and accepted decision emoji. `ask_user` is separately request-scoped and serialized, unavailable to subagents or when no handler exists, and distinguishes unanswered questions from tool approval. For an identified attended sender, the host persists a `QuestionSession` and accepts replies only from that sender; failed delivery ends it without answers, and a transcribed voice reply is checked against the still-current session. Cron and background-delivery work are unattended: question, approval, and authorization handlers are withheld and operator authority for tool approval is false.
+A newer ordinary input replaces a running turn for the same agent conversation. The host increments its generation, cancels the task, and allows cancellation plus runtime interruption recovery a shared 30-second budget. A timeout blocks further work for that conversation; a recovery exception permits the replacement but marks it degraded. Delivery and progress callbacks check generation and current conversation identity so a superseded turn cannot post into the chat.
 
-## Attachment boundary and model input
+## Inbound attachments are not outbound uploads
 
-Adapters normalize successfully downloaded attachment paths and MIME metadata. If preparation fails, they retain a deliverable message but set `has_media` false and record `media_error`; the host turns that condition into a generic "Attachment was unavailable" notice without exposing error details. This keeps a download failure from suppressing the sender's text.
+Inbound paths originate with an adapter or WhatsApp bridge and must be treated as untrusted. For document input, Talon adds a JSON-escaped path notice that explicitly tells the model that the attachment and its path are data rather than instructions; it does not inline document bytes in the prompt. When a remote runtime needs documents, its staging step revalidates containment under an inbound media root after resolution, opens without following symlinks, requires a bounded regular file, and enforces the configured size cap before uploading bytes to the sandbox. Eligible images can become base64 model-content blocks only when image MIME handling succeeds and the local file is no larger than 5 MiB.
 
-Inbound attachment metadata is data, not instructions. Document attachments become a JSON-escaped path notice telling the model that both attachment and path are untrusted; document bytes are not inlined into the prompt. Runtime sandbox staging revalidates a document path against configured inbound roots after symlink resolution, opens it without following symlinks, requires a bounded regular file, and enforces the configured byte cap before uploading it. Images may become base64 model-content blocks only when their MIME is image-like and their local size is at most 5 MiB; inaccessible or oversized images are omitted. Video and other binary media are represented as path notices rather than injected bytes.
+Outbound provider media is a separate boundary: adapters validate a `ChannelMedia` path against their configured outbound root, require a regular contained file, require its recognized type to match the requested category, and enforce `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` (1 GiB by default). Do not weaken this because inbound media was already downloaded: inbound-root acceptance does not authorize an outbound upload.
 
-Outbound attachment paths are a distinct trusted-root boundary. `validate_media` resolves paths under the configured outbound root (or workspace/cwd default), rejects URL, home-expansion, parent-traversal, symlink-escape, missing, and non-regular paths, verifies that the extension-derived supported image/video type matches the requested type, and applies the configured `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` cap (1 GiB by default). Adapters call this before their provider upload.
+## Per-turn `send_file`
 
-## Turn replacement, delivery, and cleanup
+The `send_file` tool reads through the active agent backend, so it works for either local workspaces or remote sandboxes. It is unavailable to subagents and to requests with no chat-bound handler; it reads at most the configured tool limit and returns a generic failure message rather than provider transport detail.
 
-A new ordinary input replaces an active turn for its conversation: the host increments the generation, cancels the task, and attempts runtime recovery within the same 30-second budget. A cancellation or recovery timeout blocks further work for that agent conversation; a recovery exception permits the replacement but marks it `interruption_recovery: failed`. Stale or cancelled undelivered turns requeue their consumed background-subagent results.
-
-Settlement reacquires the conversation lock and compares both generation and current agent conversation ID. A stale result is dropped; a current result is sent to the origin conversation with transient failures retried using exponential backoff. Markdown image references in result text remain ordinary text—they are not implicitly converted into outbound uploads. Ordinary channel turns transcribe eligible downloaded voice, audio, or video before optional runtime media preparation and model-content construction. A successful transcript appends to a caption or supplies the body and sets `voice_transcribed`; missing, empty, or failed transcription retains the admitted message. Background-delivery turns skip this preprocessing.
-
-Each created turn is tracked in both the current-task map and a per-conversation task set. Completion removes the task from that set; once the conversation lock has no holders or waiters, the host drops idle task, generation, and sender state unless active work, background routing, a block, approval, question, or authorization state still needs it. Thus completed ordinary conversations do not accumulate in-memory turn bookkeeping, while interactive or background state remains reachable until it settles.
+For an attended channel turn, the host binds a file handler to the exact origin channel and conversation and refuses delivery after that turn no longer reaches its chat. The handler stages supplied bytes in a fresh private directory below the outbound staging root, sanitizes the recipient-facing file name, writes using exclusive no-follow creation with mode `0600`, selects a channel media category from the staged name, retries the adapter upload, and removes the staging directory whether upload succeeds or fails. This is intentionally different from an adapter's path-based outbound upload validation: the host has already materialized bounded bytes in its own private staging location before calling `send_media`.
 
 ## Change and test guidance
 
-- Add or change a command in `CHAT_COMMANDS`, not in a provider-specific list. Preserve visibility and argument metadata so typed help and Discord registration cannot drift.
-- Preserve adapter-before-media ordering and host ownership of conversation keys, selection, and authority flags. Do not trust attachment paths from a new adapter merely because they are metadata.
-- Preserve command and pending-state precedence. A reply intended for approval, authorization, or `ask_user` must not launch an ordinary turn.
-- Keep generation checks, background-result requeueing, cancellation blocking, and idle-state cleanup when changing task management or delivery.
-- `libs/talon/tests/test_host.py` covers startup unwind, shutdown cleanup, channel-keyed routing, media model input, cancellation, delivery, and reclamation of finished conversation state. `libs/talon/tests/test_media.py` covers untrusted document notices, image conversion limits, unsafe-path rejection, and symlink escapes. `libs/talon/tests/channels/test_base.py` covers outbound root, type, and byte-cap validation.
+- Preserve admission-before-download ordering for adapters that fetch provider media. A new adapter should normalize only local paths and MIME metadata, never provider URLs as model input.
+- Treat `ChannelMessage.metadata` as untrusted context. Keep provider qualification, conversation IDs, selected model/effort, callback binding, and delivery decisions in `TalonHost`.
+- Preserve generation checks on progress, final results, and file delivery when changing turn cancellation or routing.
+- Keep inbound document staging and outbound uploads separate: each needs its own root containment, regular-file, and byte-limit checks.
+- Focused coverage includes `libs/talon/tests/unit_tests/test_discord_attachments.py` for admission before attachment dispatch and partial failures, `libs/talon/tests/channels/test_telegram.py` and `libs/talon/tests/channels/test_whatsapp.py` for provider normalization and limits, `libs/talon/tests/channels/test_base.py` for exposure and outbound validation, and `libs/talon/tests/unit_tests/test_file_sending.py` for scoped delivery, filename handling, private staging, cleanup, and runtime binding.

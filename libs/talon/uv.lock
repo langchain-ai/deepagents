@@ -2033,7 +2033,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-api"
-version = "0.19.0"
+version = "0.19.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2075,9 +2075,9 @@ dependencies = [
     { name = "websockets" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9d/5e/9de6434eaf5b9bdabeed5d46ccac03275b50f105ff151dbe859a07baacf5/langgraph_api-0.19.0.tar.gz", hash = "sha256:79be58ff67107b447daf1e04bbc976da26b478c23944ead4a5abca11a5d43287", size = 1005690, upload-time = "2026-11-25T23:49:19.404Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/d4/038943a8e0624020f81d8e297647b1a301548b2c15a8e7c0a5758fa9f423/langgraph_api-0.19.1.tar.gz", hash = "sha256:5639eb1c86fa218d2f811b620e6258ae81278f9810abafeff593ab8a2fac8a7c", size = 1005876, upload-time = "2026-11-26T16:00:46.732Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ba/5b/55127650fc0d4d05dbec2892b4c962accbcb0f39e997b728e21d947104d8/langgraph_api-0.19.0-py3-none-any.whl", hash = "sha256:c8efc0daf05e766b4df0b8e1e0e7520f71719d5c590113e937a09623ecd9f3f8", size = 771257, upload-time = "2026-11-25T23:49:18.08Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/7f/a1fa5c6f9ebfd76c19631f5ec812c5650919b4d06aa28a861d90550d775c/langgraph_api-0.19.1-py3-none-any.whl", hash = "sha256:abf6b849f49f58dfdc13b1bcc8d1e11df4fb982ff2a19528100cc81b15a26560", size = 771426, upload-time = "2026-11-26T16:00:45.029Z" },
 ]
 
 [package.optional-dependencies]
@@ -2089,15 +2089,15 @@ inmem = [
 
 [[package]]
 name = "langgraph-api-core-bin"
-version = "0.19.0"
+version = "0.19.1"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/c8/ae2f8c29b154af8d1d38f139866f8d1834649f9d5e7cbb6e0e79dcf7f95f/langgraph_api_core_bin-0.19.0-py3-none-macosx_12_0_arm64.whl", hash = "sha256:90e48d9e47b4f52fb1800f58c49fde94dae39e85c5c96d2c976d8111f69c1b5e", size = 15635221, upload-time = "2026-11-25T23:48:18.176Z" },
-    { url = "https://files.pythonhosted.org/packages/17/c5/bac26dd892e2fc0aac8f69b89b5eb9504fca2254228af0ca7cb6800a01a1/langgraph_api_core_bin-0.19.0-py3-none-macosx_12_0_x86_64.whl", hash = "sha256:2727e4dccc2b6f9f1fec1064053a29efa94c6d5d73c039ddc13461cd91bd28a1", size = 17451677, upload-time = "2026-11-25T23:48:21.117Z" },
-    { url = "https://files.pythonhosted.org/packages/c5/04/3d3e32a22b4a9a8f81585f9a150fed1d9c7174fc31d2c0d3bb9e0137ffb9/langgraph_api_core_bin-0.19.0-py3-none-manylinux2014_aarch64.musllinux_1_1_aarch64.whl", hash = "sha256:63eee1b488b835a7a942dafce22036d3d717fb69d5ed8255f0d239ef69d8c66e", size = 15036000, upload-time = "2026-11-25T23:48:24.106Z" },
-    { url = "https://files.pythonhosted.org/packages/75/9f/6725b9466c94ee780af6c49f81119ab9ecf6962bc1502ecd302dc4004a63/langgraph_api_core_bin-0.19.0-py3-none-manylinux2014_x86_64.musllinux_1_1_x86_64.whl", hash = "sha256:96f5c65a67689b14a1dac726daf1c3a50997292ddc3d92aa7640d2831848913d", size = 16826368, upload-time = "2026-11-25T23:48:27.224Z" },
-    { url = "https://files.pythonhosted.org/packages/cf/62/18dad66845588d663150521e21de430877587bd00212825cc3c81b301f06/langgraph_api_core_bin-0.19.0-py3-none-win_amd64.whl", hash = "sha256:9cf26162084bd3c051e9438348e0aa0fbd635654108aaa5109d351500dbfbaec", size = 17468752, upload-time = "2026-11-25T23:48:30.293Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/a3/566932894e7fdff34907206959a50bc9c5cdfd35cbdc0722c58b8bf0a59b/langgraph_api_core_bin-0.19.0-py3-none-win_arm64.whl", hash = "sha256:57c501e02bebece0049515526326a31f909fa083c850d2c8d0fe0da8cf9198e6", size = 15426285, upload-time = "2026-11-25T23:48:33.461Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/a3/e0d5bd86cc828176aad5ed285d93231f54f012cabcd5e31bccc52e35f52b/langgraph_api_core_bin-0.19.1-py3-none-macosx_12_0_arm64.whl", hash = "sha256:889fac1b338ba75f88a65be1a3bfe9da02efd5601435878befaa3935b0bc24c4", size = 15635221, upload-time = "2026-11-26T15:59:44.472Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/a5/c9fa21c7dc089c8e18eee65d1ac9f67567346b5ca29748ffbbff902f8502/langgraph_api_core_bin-0.19.1-py3-none-macosx_12_0_x86_64.whl", hash = "sha256:acabf9deb1f4c76c6e7b35fb6e350f52c24313a0582b8c5a854440b2ca7fb352", size = 17451677, upload-time = "2026-11-26T15:59:46.675Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/69/7638fbe4cb01b99ddb53201ce9a773464d3ae3fbb0d64650d3ec8f0d05be/langgraph_api_core_bin-0.19.1-py3-none-manylinux2014_aarch64.musllinux_1_1_aarch64.whl", hash = "sha256:7d0dbf1d81e73d29a37480a44e84b480c96a19fc4a3920b3fae71b2c99764b15", size = 15036009, upload-time = "2026-11-26T15:59:49.075Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/a3/e6e020d9f49c3d38ef1b19bd79a6685efcd2164959973c4aab87b05f528f/langgraph_api_core_bin-0.19.1-py3-none-manylinux2014_x86_64.musllinux_1_1_x86_64.whl", hash = "sha256:a05c967950a7f47ed7385cbc13fc1a290e4acae6b9ea3ffb5041ba74dbe03c6b", size = 16826361, upload-time = "2026-11-26T15:59:51.613Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/ba/de01d58d3a085e1b65a9a4e07b2b08921c9e44b9934d965b87c58baaf673/langgraph_api_core_bin-0.19.1-py3-none-win_amd64.whl", hash = "sha256:f215a7bfcbf998da77e3f42b6a1a51bed58a83c290062abdfaaa9927b78f2d75", size = 17468754, upload-time = "2026-11-26T15:59:54.25Z" },
+    { url = "https://files.pythonhosted.org/packages/46/a7/0265e7ed94e73b78948582a28b81b5e4768017b5a3e3ea10f0ab04b9545e/langgraph_api_core_bin-0.19.1-py3-none-win_arm64.whl", hash = "sha256:39bc1cb1c08c2a5f888d3f6d33ed76141fbb4de76980d81d4816baeea59fe7f2", size = 15426286, upload-time = "2026-11-26T15:59:56.692Z" },
 ]
 
 [[package]]

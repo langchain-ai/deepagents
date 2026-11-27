@@ -12,6 +12,7 @@ import pytest
 from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 from httpx2 import ConnectError
 from langchain_core.tools import StructuredTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import SecretStr
@@ -304,9 +305,6 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
 
     tools = {tool.name: tool for tool in loaded.tools}
     status_tool = tools["get_mcp_server_status"]
-    assert status_tool.description == (
-        "Report configured MCP server availability. Current servers: notion (unauthenticated)."
-    )
     assert status_tool.invoke({}) == (
         {
             "server_name": "notion",
@@ -328,6 +326,30 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
     result = await provider._authenticate("unconfigured", "tool-call")
     assert result["status"] == "failed"
     assert "auth set to oauth" in result["message"]
+
+
+async def test_mcp_status_schema_is_stable_across_status_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(config_path, {"notion": {"url": "https://mcp.example", "auth": "oauth"}})
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    schemas = []
+
+    for get_tokens, status in [(_no_tokens, "unauthenticated"), (_stored_tokens, "ok")]:
+        monkeypatch.setattr(
+            "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+            lambda _self, get_tokens=get_tokens: get_tokens(),
+        )
+        loaded = await provider.load()
+        status_tool = next(tool for tool in loaded.tools if tool.name == "get_mcp_server_status")
+        schemas.append(convert_to_openai_tool(status_tool))
+        assert status_tool.invoke({}) == (
+            {"server_name": "notion", "status": status, "can_authenticate": True},
+        )
+
+    assert schemas[0] == schemas[1]
 
 
 async def test_mcp_reload_tool_schedules_refresh_without_configuration(
@@ -711,9 +733,6 @@ async def test_server_connection_error_is_reported(
     provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
     loaded = await provider.load()
     status_tool = loaded.tools[0]
-    assert status_tool.description == (
-        "Report configured MCP server availability. Current servers: remote (error)."
-    )
     assert status_tool.invoke({}) == (
         {"server_name": "remote", "status": "error", "can_authenticate": False},
     )

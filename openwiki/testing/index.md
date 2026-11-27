@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, hermetic regression routes for Deep Agents subagents and streaming, dcode cost accounting, Talon controls, and CI workflow gates. Choose tests that assert observable protocol, state, and failure behavior rather than implementation interactions.
+- [Testing Guide](testing-guide.md) - Focused Talon regression routes for channel admission and media normalization, model selection, MCP lifecycle status, and backend-to-channel file delivery. Use the package-owned Make target so its bridge prerequisite, socket policy, timeout, and coverage behavior remain active.

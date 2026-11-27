@@ -1,29 +1,14 @@
 ---
 type: runtime integration
 title: Talon Runtime Integration
-description: Talon is an experimental local host that composes channel adapters, schedules, a Deep Agents runtime, media preparation, and model-specific reasoning controls. This page explains request ownership, lifecycle, local-host limitations, graph reload, and delegation.
-tags: [talon, runtime, host, subagents, hooks, mcp, scheduling]
+description: Talon is an experimental local host that composes channel adapters, schedules, a Deep Agents runtime, media preparation, scoped tools, and model-specific reasoning controls. This page explains request ownership, lifecycle, local-host limitations, graph reload, delegation, and host-mediated file delivery.
+tags: [talon, runtime, host, subagents, hooks, mcp, scheduling, file-delivery]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-27T08:04:01.405Z
 sources:
-  - id: openwiki-source-6a038e6e1a11f450bcafce54
-    resource: repo://libs/talon/deepagents_talon/__main__.py
-  - id: openwiki-source-8a4e357da1dab3192e01eb13
-    resource: repo://libs/talon/deepagents_talon/attachments.py
-  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
-    resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-0ad7ce4799b63dc215741642
-    resource: repo://libs/talon/deepagents_talon/channels/base.py
-  - id: openwiki-source-8feffa040b2e9614a8d53cd4
-    resource: repo://libs/talon/deepagents_talon/claude_sessions.py
-  - id: openwiki-source-41ff73b838d042459b2a69ca
-    resource: repo://libs/talon/deepagents_talon/codex_sessions.py
-  - id: openwiki-source-4b1e381713dec742c675816b
-    resource: repo://libs/talon/deepagents_talon/context_doctor.py
-  - id: openwiki-source-2a219768ba2f2599d951e7bb
-    resource: repo://libs/talon/deepagents_talon/dcode_sessions.py
-  - id: openwiki-source-9ee5b3034d091a886c8fdda4
-    resource: repo://libs/talon/deepagents_talon/effort.py
-  - id: openwiki-source-cbf86ab9c145113d54045954
-    resource: repo://libs/talon/deepagents_talon/hooks.py
+  - id: openwiki-source-fd3cc27f279ed4fb8aaca360
+    resource: repo://libs/talon/deepagents_talon/file_sending.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
@@ -32,42 +17,15 @@ sources:
     resource: repo://libs/talon/deepagents_talon/mcp.py
   - id: openwiki-source-ccdb88feadbc25be2fc7b63b
     resource: repo://libs/talon/deepagents_talon/media.py
-  - id: openwiki-source-ca1a2f0041cc7c11f4a22b63
-    resource: repo://libs/talon/deepagents_talon/memory.py
   - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
     resource: repo://libs/talon/deepagents_talon/model_selection.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-2d1f686d24d8182f60108ae7
-    resource: repo://libs/talon/deepagents_talon/subagents.py
-  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
-    resource: repo://libs/talon/pyproject.toml
-  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
-    resource: repo://libs/talon/README.md
   - id: openwiki-source-e0db085f967450f48196d999
     resource: repo://libs/talon/tests/test_media.py
-  - id: openwiki-source-4d6726e17c8a0c78539a7d33
-    resource: repo://libs/talon/tests/test_runtime.py
-  - id: openwiki-source-a1c0f013d30da0d68f4ae10b
-    resource: repo://libs/talon/tests/unit_tests/test_claude_sessions.py
-  - id: openwiki-source-a2224df8e6d0c4947ebe6499
-    resource: repo://libs/talon/tests/unit_tests/test_codex_sessions.py
-  - id: openwiki-source-1e472b2d67bd29dc25c17e85
-    resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
-  - id: openwiki-source-40c11e4c205e2dd133c4f0c3
-    resource: repo://libs/talon/tests/unit_tests/test_dcode_sessions.py
-  - id: openwiki-source-022c52172483653e0c3a3eaf
-    resource: repo://libs/talon/tests/unit_tests/test_effort.py
-  - id: openwiki-source-7dcd7e37c18e77553a46cce3
-    resource: repo://libs/talon/tests/unit_tests/test_hooks.py
-  - id: openwiki-source-5a8aa5b5c59e407fc5a424c1
-    resource: repo://libs/talon/tests/unit_tests/test_memory_reload.py
-  - id: openwiki-source-ba64217fcf5745a7cb863296
-    resource: repo://libs/talon/tests/unit_tests/test_subagent_reload.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-26T08:03:59.911Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
+  - id: openwiki-source-412987bb51db9ba8f655d511
+    resource: repo://libs/talon/tests/unit_tests/test_file_sending.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-27T08:04:01.405Z" }
 ---
 
 # Talon Runtime Integration
@@ -100,13 +58,15 @@ flowchart TD
     Runtime --> Bridge["Claude and Codex bridges"]
     Bridge --> Delivery["Background delivery queue"]
     Runtime --> Dcode["dcode bridge"]
+    Graph --> FileTool["send_file tool"]
+    FileTool --> Host
     Graph --> Result["AgentResult"]
     Result --> Host
     Delivery --> Host
     Host --> Channel
 ```
 
-*Channels and the scheduler enter through the host. The runtime executes a request but does not own channel delivery or the lifetime of host callbacks. Claude and Codex replies enter the host's existing background-delivery path; dcode confirms a direct prompt delivery and has no reply path.*
+*Channels and the scheduler enter through the host. The runtime executes a request but does not own channel delivery or the lifetime of host callbacks. `send_file` returns bytes to the per-turn host callback; the host stages and uploads them through the originating channel rather than granting the runtime an adapter shortcut. Claude and Codex replies enter the host's existing background-delivery path; dcode confirms a direct prompt delivery and has no reply path.*
 
 ### Lifecycle and failure containment
 
@@ -137,6 +97,14 @@ Channels pass normalized local media paths and MIME metadata to the host; they d
 Only an image-classified file at or below 5 MiB is read into a provider-neutral base64 image block; inaccessible, oversized, or non-image files are omitted from those blocks. With a remote execution sandbox, documents are copied to a generated `.talon/attachments` sandbox path only after containment under an inbound root is rechecked after symlink resolution, the source is opened without following symlinks, and it is confirmed to be a bounded regular file. This staging changes document path aliases, not the trust level of the file.
 
 The same path discipline protects outbound media. A media path must resolve beneath its configured outbound root and be a regular file; URL paths, home expansion, traversal, and symlink escapes are rejected. Channel adapters also verify the requested image/video/document type and apply their configured size cap before uploading. Markdown image syntax in ordinary model text is not an implicit upload request.
+
+### Host-mediated file delivery
+
+`send_file` is a normal main-agent tool assembled over the same filesystem backend as the agent's file tools, so its path works for both the local workspace and a remote sandbox. It reads one backend file subject to the configured media-byte limit, derives a display filename, and invokes only the `AgentRequest.file_handler` bound for that invocation. There is no handler for a non-chat invocation, and subagents are refused: they must report a path rather than upload a file.
+
+The host supplies that handler only while an active turn can still reach its originating conversation. It passes bytes, sanitized display name, and optional caption to `send_file_to_channel`, which creates a unique `0700` staging directory under the configured outbound-media root, writes a `0600` no-follow file, calls the channel's `send_media` with retry, then removes the staging directory even after failure. Thus the model/backend never calls a channel adapter directly and a sandbox-visible source file is not exposed as a persistent host path. Channel transport error details are logged but replaced with a generic tool response.
+
+Display names retain ordinary Unicode and punctuation but replace separators and control/format characters, turn dot-only names into `file`, and cap the UTF-8 name at 200 bytes while preserving a reasonable extension. The byte limit is applied before the callback; unreadable or oversized backend files are not staged. This delivery path is distinct from outbound media references in ordinary model text, which are validated under a configured root before upload.
 
 ### Memory and context doctor
 
@@ -210,7 +178,7 @@ The host dispatches eligible completed results using an unattended `background_d
 
 Talon is an alpha package named `deepagents-talon` (version `0.1.2`), requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. It depends on the Deep Agents SDK (`deepagents>=0.7.41`), `deepagents-code>=0.2.14,<1.0.0`, LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. dcode remains outside Talon's channel and worker lifecycle; when enabled, the dcode session bridge is a narrowly scoped local Unix-socket messaging integration.
 
-Relevant configuration includes the assistant manifest/home, model and context settings, optional sandbox, MCP configuration, `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, `DEEPAGENTS_TALON_VERBOSITY`, and channel media roots and caps. The `media` and `media-cpu` extras provide optional local media dependencies; on Linux `media-cpu` uses the PyTorch CPU index and conflicts with `media`.
+Relevant configuration includes the assistant ID/home (`DEEPAGENTS_TALON_ASSISTANT_ID` or `AGENT_ASSISTANT_ID`, `DEEPAGENTS_TALON_HOME`), model (`DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL`), model/context settings, optional sandbox, checkpoint/history URIs, MCP configuration (`DEEPAGENTS_TALON_MCP_CONFIG` or `~/.deepagents/.mcp.json`), `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, `DEEPAGENTS_TALON_VERBOSITY`, and channel media roots and caps. The per-turn `send_file` limit uses the configured media-byte cap; its temporary upload staging root is the assistant home's `media/outbound/`. The `media` and `media-cpu` extras provide optional local media dependencies; on Linux `media-cpu` uses the PyTorch CPU index and conflicts with `media`.
 
 Sandboxing is opt-in and applies to shell/file execution; it does not contain MCP tools, web tools, or channel media handling, which run in the host process. Skills and memory also stay on the host. Run Talon under an OS account and with credentials appropriate to the most privileged enabled integration, and keep state and MCP configuration outside an agent-editable workspace. Validate a normal attended turn and a cron turn separately: their authority and delegation lifecycle intentionally differ.
 
@@ -229,11 +197,13 @@ When changing this integration:
 
 `tests/unit_tests/test_memory_reload.py` is the regression guard for fresh sources: after a checkpointed turn, changes to every configured memory file—including a file edited through the agent's filesystem tools—appear on the next turn without duplicate memory blocks or stale text. `tests/unit_tests/test_context_doctor.py` verifies content-free, non-mutating diagnostics and command behavior. Hook and research-subagent tests cover hook wire payloads, denial versus approval, trusted file loading, fresh context, explicit attachments, MCP protections, and opaque-agent approval enforcement.
 
-`tests/test_media.py` verifies that documents are path notices rather than inlined instruction text, image content is bounded and MIME-gated, unavailable attachments do not disclose their error detail, and unsafe or symlink-escaping paths are rejected. `tests/test_host.py` verifies host-side photo blocks, video path notices, lifecycle unwind, replacement/cancellation, and delivery behavior. `tests/unit_tests/test_effort.py` covers operator and allowlist enforcement, secure per-model persistence, next-turn capture, failed-write preservation, provider wire settings, nested model-setting merge, and concurrent context-variable cleanup.
+`tests/test_media.py` verifies that documents are path notices rather than inlined instruction text, image content is bounded and MIME-gated, unavailable attachments do not disclose their error detail, and unsafe or symlink-escaping paths are rejected. `tests/unit_tests/test_file_sending.py` verifies backend reads, per-turn binding, subagent refusal, byte limits, safe recipient names, generic transport errors, private staging, and cleanup after both successful and failed uploads. `tests/test_host.py` verifies host-side photo blocks, video path notices, lifecycle unwind, replacement/cancellation, and delivery behavior. `tests/unit_tests/test_model_selection.py` covers operator-only model switching, persistent next-turn selection, unavailable-model fallback, credentialed model discovery, and selected-model context budgets. `tests/unit_tests/test_effort.py` covers operator and allowlist enforcement, secure per-model persistence, next-turn capture, failed-write preservation, provider wire settings, nested model-setting merge, and concurrent context-variable cleanup.
+
+`tests/test_mcp.py` covers server status contracts, standard or overridden configuration paths, schema loading and server-prefixed tool names, OAuth capability exposure, deferred refresh, serialized concurrent refresh, cancellation retry, failed-refresh behavior, and redacted connection/authentication failures.
 
 The focused session-bridge suites are security and routing regression tests. `test_claude_sessions.py` covers private socket discovery, peer/frame correlation, escape framing, idle notifications, owner routing, operator/approval gates, and shutdown. `test_codex_sessions.py` covers app-server handshake and turn correlation, outbound bounds, escaping, cancellation races, and approval-policy behavior. `test_dcode_sessions.py` covers private live-socket discovery, correlation acknowledgements, and the same operator, subagent, and approval-policy boundaries.
 
 ```bash
 cd libs/talon
-uv run pytest tests/test_runtime.py tests/test_host.py tests/test_media.py tests/unit_tests/test_effort.py tests/unit_tests/test_context_doctor.py tests/unit_tests/test_memory_reload.py tests/unit_tests/test_hooks.py tests/unit_tests/test_research_subagents.py tests/unit_tests/test_claude_sessions.py tests/unit_tests/test_codex_sessions.py tests/unit_tests/test_dcode_sessions.py
+uv run pytest tests/test_runtime.py tests/test_host.py tests/test_mcp.py tests/test_media.py tests/unit_tests/test_file_sending.py tests/unit_tests/test_model_selection.py tests/unit_tests/test_effort.py tests/unit_tests/test_context_doctor.py tests/unit_tests/test_memory_reload.py tests/unit_tests/test_hooks.py tests/unit_tests/test_research_subagents.py tests/unit_tests/test_claude_sessions.py tests/unit_tests/test_codex_sessions.py tests/unit_tests/test_dcode_sessions.py
 ```

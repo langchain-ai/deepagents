@@ -5,6 +5,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -14,7 +15,7 @@ import tempfile
 import threading
 import uuid
 import weakref
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.expression import iter_local_matches, parse_expression
+from deepagents_talon.cron.journal import revision_id
 from deepagents_talon.timezones import TimeZoneError, resolve_zone
 
 if TYPE_CHECKING:
@@ -109,6 +111,7 @@ class CronOriginDict(TypedDict):
     message_id: str | None
     sender_id: NotRequired[str | None]
     history_chat: NotRequired[str | None]
+    account_id: NotRequired[str]
 
 
 class CronScheduleDict(TypedDict):
@@ -193,6 +196,8 @@ class CronJobDict(TypedDict):
     completion_criteria: NotRequired[list[str]]
     read_sources: NotRequired[list[str]]
     context_notes: NotRequired[list[str]]
+    evidence_sources: NotRequired[dict[str, list[str]]]
+    instruction_revision: NotRequired[str]
     owner_context_revision: NotRequired[int]
 
 
@@ -239,6 +244,7 @@ class CronOrigin:
         sender_id: Optional channel sender id of whoever created the job, so
             revoking a paired sender can find jobs they made in shared chats.
         history_chat: Optional parent channel used for history in public Discord or Slack threads.
+        account_id: Authenticated adapter account for routing across conversations.
     """
 
     conversation_id: str
@@ -246,6 +252,7 @@ class CronOrigin:
     message_id: str | None = None
     sender_id: str | None = None
     history_chat: str | None = None
+    account_id: str | None = field(default=None, kw_only=True)
 
     def to_dict(self) -> CronOriginDict:
         """Serialize this origin for disk storage.
@@ -259,6 +266,7 @@ class CronOrigin:
             "message_id": self.message_id,
             "sender_id": self.sender_id,
             "history_chat": self.history_chat,
+            **({"account_id": self.account_id} if self.account_id else {}),
         }
 
     @classmethod
@@ -281,6 +289,7 @@ class CronOrigin:
             message_id=_optional_str_field(record, "message_id"),
             sender_id=_optional_str_field(record, "sender_id"),
             history_chat=_optional_str_field(record, "history_chat"),
+            account_id=_optional_str_field(record, "account_id"),
         )
 
 
@@ -736,6 +745,8 @@ class CronJob:
     completion_criteria: tuple[str, ...] | None = field(default=None, kw_only=True)
     read_sources: tuple[str, ...] | None = field(default=None, kw_only=True)
     handoffs: tuple[str, ...] = field(default=(), kw_only=True, compare=False)
+    evidence_sources: dict[str, list[str]] = field(default_factory=dict, kw_only=True)
+    instruction_revision: str = field(default="", kw_only=True)
     owner_context_revision: int = field(default=0, kw_only=True)
 
     def target_delay(self, finished: datetime) -> str:
@@ -814,6 +825,12 @@ class CronJob:
                 else {}
             ),
             **({"read_sources": list(self.read_sources)} if self.read_sources is not None else {}),
+            **({"evidence_sources": self.evidence_sources} if self.evidence_sources else {}),
+            **(
+                {"instruction_revision": self.instruction_revision}
+                if self.instruction_revision
+                else {}
+            ),
             **({"context_notes": list(self.handoffs)} if self.handoffs else {}),
             **(
                 {"owner_context_revision": self.owner_context_revision}
@@ -869,6 +886,7 @@ class CronJob:
             CronJobError: If a field is missing or has the wrong type.
         """
         record = _as_record(data)
+        sources = _as_record(record.get("evidence_sources", {}))
         return cls(
             id=_str_field(record, "id"),
             assistant_id=_str_field(record, "assistant_id"),
@@ -910,6 +928,8 @@ class CronJob:
             handoffs=tuple(_string_list(record, "context_notes"))
             if "context_notes" in record
             else tuple(f"Owner: {note}" for note in _string_list(record, "handoffs")),
+            evidence_sources={criterion: _string_list(sources, criterion) for criterion in sources},
+            instruction_revision=_optional_str_field(record, "instruction_revision") or "",
             owner_context_revision=_optional_int_field(record, "owner_context_revision") or 0,
             completion_criteria=tuple(_string_list(record, "completion_criteria"))
             if "completion_criteria" in record
@@ -952,6 +972,7 @@ class CronJobStore:
             cron_dir: Directory that contains `jobs.json`.
         """
         self.journal: JobJournal | None = None
+        self._journal_startup = asyncio.Lock()
         self.assistant_id = assistant_id
         self.cron_dir = cron_dir.resolve()
         self.path = self.cron_dir / "jobs.json"
@@ -969,7 +990,11 @@ class CronJobStore:
         from deepagents_talon.cron.journal import JobJournal  # noqa: PLC0415
 
         home = self.cron_dir.parent if self.cron_dir.name == "cron" else self.cron_dir
-        async with JobJournal.open(TalonConfig(self.assistant_id, home)) as journal:
+        async with AsyncExitStack() as stack:
+            async with self._journal_startup:
+                journal = await stack.enter_async_context(
+                    JobJournal.open(TalonConfig(self.assistant_id, home))
+                )
             yield journal
 
     def create_job(  # noqa: PLR0913  # job creation exposes the persisted CRON_JOB fields
@@ -1177,7 +1202,8 @@ class CronJobStore:
                     result.append(job)
                     continue
                 if run_now and (
-                    not (job.enabled if enabled is None else enabled) or job.next_run_at is None
+                    not (job.enabled if enabled is None else enabled)
+                    or (job.next_run_at is None and not (job.mode == "objective" and job.enabled))
                 ):
                     msg = "Resume the job before requesting a run."
                     raise CronJobError(msg)
@@ -1187,6 +1213,7 @@ class CronJobStore:
                 next_run_at = (
                     _first_run_at(schedule, current) if schedule is not None else job.next_run_at
                 )
+                next_run_at = next_run_at or (current if run_now else None)
                 new_schedule = job.schedule if job.mode == "objective" else schedule or job.schedule
                 new_repeat = job.repeat
                 if repeat_times is not None:
@@ -1219,12 +1246,51 @@ class CronJobStore:
                     deliver_to=job.deliver_to if deliver_to is None else deliver_to,
                     skills=job.skills if pinned is None else pinned,
                 )
+                updated = self._revise_objective(
+                    job,
+                    updated,
+                    criteria_confirmed=completion_criteria is not None,
+                    wake_now=current if schedule is None else None,
+                )
                 result.append(updated)
             if updated is None:
                 msg = f"cron job not found in current conversation: {job_id}"
                 raise CronJobError(msg)
             self._write_jobs(result)
             return updated
+
+    def _revise_objective(
+        self,
+        previous: CronJob,
+        updated: CronJob,
+        *,
+        criteria_confirmed: bool,
+        wake_now: datetime | None,
+    ) -> CronJob:
+        if previous.mode != "objective":
+            return updated
+        if previous.enabled != updated.enabled:
+            updated = replace(updated, owner_context_revision=previous.owner_context_revision + 1)
+        if _instructions(previous) == _instructions(updated):
+            return updated
+        updated = replace(
+            updated,
+            instruction_revision=uuid.uuid4().hex,
+            wait_condition="",
+            next_run_at=wake_now if wake_now and updated.enabled else updated.next_run_at,
+        )
+        sources = {}
+        if (
+            (criteria_confirmed or previous.prompt == updated.prompt)
+            and previous.required_sources == updated.required_sources
+            and previous.read_sources == updated.read_sources
+        ):
+            for criterion in updated.completion_criteria or ():
+                sources[criterion] = [
+                    revision_id(previous),
+                    *previous.evidence_sources.get(criterion, []),
+                ]
+        return replace(updated, evidence_sources=sources)
 
     def remove_job(self, job_id: str, *, origin: CronOrigin) -> CronJob:
         """Remove a job within the current conversation scope.
@@ -1334,7 +1400,7 @@ class CronJobStore:
             )
             self._write_jobs(jobs)
 
-    def apply_objective_result(  # Scheduling and notice fields are independent.
+    def apply_objective_result(  # noqa: PLR0913  # Scheduling and notice fields are independent.
         self,
         snapshot: CronJob,
         *,
@@ -1342,6 +1408,7 @@ class CronJobStore:
         wake: datetime | None = None,
         notice: str = "",
         wait_condition: str = "",
+        waiting_for_owner: bool = False,
     ) -> bool:
         """Apply a scheduling decision and report whether the run is still current."""
         with self._lock:
@@ -1358,6 +1425,15 @@ class CronJobStore:
                     wait_condition="",
                     completion_notice=notice,
                     notice_state="pending" if notice else "",
+                )
+            elif waiting_for_owner:
+                future_targets = [
+                    t for t in (current.target_at, current.until) if t and t > _coerce_utc()
+                ]
+                updated = replace(
+                    current,
+                    next_run_at=min(future_targets, default=None),
+                    wait_condition=wait_condition,
                 )
             elif wake is not None and snapshot.enabled:
                 wake = _coerce_utc(wake)
@@ -1384,6 +1460,24 @@ class CronJobStore:
             ):
                 updated = replace(updated, completion_notice="", claimed_at=None, last_status="ok")
             jobs[jobs.index(snapshot)] = updated
+            self._write_jobs(jobs)
+            return True
+
+    def wake_for_answer(self, snapshot: CronJob) -> bool:
+        """Wake an unchanged active assignment and invalidate its earlier running check."""
+        with self._lock:
+            jobs = self.list_jobs()
+            if not snapshot.enabled or snapshot not in jobs:
+                return False
+            index = jobs.index(snapshot)
+            current = jobs[index]
+            jobs[index] = replace(
+                current,
+                next_run_at=_coerce_utc(),
+                wait_condition="",
+                run_requested=True,
+                owner_context_revision=current.owner_context_revision + 1,
+            )
             self._write_jobs(jobs)
             return True
 
@@ -1660,6 +1754,18 @@ class CronJobStore:
         self.cron_dir.chmod(0o700)
         if self.path.exists():
             self.path.chmod(0o600)
+
+
+def _instructions(job: CronJob) -> tuple[object, ...]:
+    return (
+        job.prompt,
+        job.completion_criteria,
+        job.required_sources,
+        job.read_sources,
+        job.skills,
+        job.target_at,
+        job.until,
+    )
 
 
 def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:

@@ -103,23 +103,42 @@ class PersistentCronScheduler:
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
         started = []
-        notices = [
-            job for job in self.store.list_jobs() if job.notice_state in {"pending", "uncertain"}
-        ]
+        notices = await self._pending_notices(jobs)
         for job in [*jobs, *notices]:
             if job.id not in self._running:
-                task = asyncio.create_task(self._dispatch(job, current))
+                task = asyncio.create_task(self._dispatch(job, current, notice_only=job in notices))
                 self._running[job.id] = task
                 started.append(task)
         if wait:
             await asyncio.gather(*started)
 
-    async def _dispatch(self, job: CronJob, now: datetime) -> None:
+    async def _pending_question(self, job: CronJob) -> str:
+        async with self.store.open_journal() as journal:
+            return await journal.pending_question(job)
+
+    async def _pending_notices(self, jobs: list[CronJob]) -> list[CronJob]:
+        due = {job.id for job in jobs}
+        return [
+            job
+            for job in self.store.list_jobs()
+            if job.notice_state in {"pending", "uncertain"}
+            or (
+                job.enabled
+                and job.mode == "objective"
+                and job.id not in due
+                and await self._pending_question(job)
+            )
+        ]
+
+    async def _dispatch(self, job: CronJob, now: datetime, *, notice_only: bool) -> None:
         try:
-            if job.completion_notice:
-                await self._deliver_completion(job)
-            else:
+            if not notice_only:
                 await self._run_due_job(job, now)
+            elif self.store.get_job(job.id) == job:
+                if job.completion_notice:
+                    await self._deliver_completion(job)
+                elif notice := await self._pending_question(job):
+                    await self.deliver_result(job, notice)
         except Exception:
             logger.exception("Failed to dispatch job %s", job.id)
         finally:

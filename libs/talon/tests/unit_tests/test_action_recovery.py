@@ -9,14 +9,18 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
+from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.store.memory import InMemoryStore
 from langgraph.store.sqlite.aio import AsyncSqliteStore
+from langgraph.types import Command
 
 from deepagents_talon.cron.actions import reconcile_job_action
 from deepagents_talon.cron.journal import JobJournal
 from deepagents_talon.cron.scope import JobScopeMiddleware
+from deepagents_talon.interfaces import AgentRequest
+from deepagents_talon.runtime import _job_scope
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -117,3 +121,43 @@ async def test_returned_failure_clears_write_intent(result: ToolMessage) -> None
             == result
         )
         assert await actions.unresolved() == []
+
+
+async def test_interrupted_history_search_leaves_no_write_intent() -> None:
+    async def interrupted(_request):
+        raise asyncio.CancelledError
+
+    with JobJournal(InMemoryStore(), "test").capture_actions("goal", "run") as actions:
+        with pytest.raises(asyncio.CancelledError):
+            await JobScopeMiddleware().awrap_tool_call(
+                request("search_conversations", "lookup"), interrupted
+            )
+        assert await actions.unresolved() == []
+
+
+@pytest.mark.parametrize("receipt_id", ["task-call", "other-call"])
+async def test_command_receipt_matches_dispatched_action(receipt_id: str) -> None:
+    message = ToolMessage("research", tool_call_id=receipt_id)
+    result = Command(update={"messages": [message]})
+    with JobJournal(InMemoryStore(), "test").capture_actions("goal", "run") as actions:
+        await asyncio.to_thread(
+            JobScopeMiddleware().wrap_tool_call, request("task", "task-call"), lambda _: result
+        )
+        assert [row["call_id"] for row in await actions.unresolved()] == (
+            [] if receipt_id == "task-call" else ["task-call"]
+        )
+
+
+@pytest.mark.parametrize("has_scope", [True, False])
+def test_scheduled_search_requires_chat_scope(*, has_scope: bool) -> None:
+    metadata = {"trigger": "cron"}
+    if has_scope:
+        metadata.update(history_channel="telegram", history_chat="123")
+    tools = [request(name, name).tool for name in ("search_conversations", "execute")]
+    with _job_scope(AgentRequest(conversation_id="run", text="", metadata=metadata)):
+        visible = (
+            JobScopeMiddleware()
+            .wrap_model_call(ModelRequest(model=None, messages=[], tools=tools), lambda req: req)
+            .tools
+        )
+    assert visible == (tools if has_scope else tools[1:])

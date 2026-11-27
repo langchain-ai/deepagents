@@ -9,9 +9,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, OnErrorOmit, TypeAdapter, field_validator
 
 from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
+from deepagents_talon.questions import Answer, Question, QuestionOption, QuestionSession, Step
 from deepagents_talon.store_records import StoreRecords, digest
 
 if TYPE_CHECKING:
@@ -29,6 +30,16 @@ _SAVE_WORK: ContextVar[Callable[[str], Awaitable[None]] | None] = ContextVar(
 _NOTE_LIMIT = 2000
 
 
+ACTION_CHOICES = 'Reply "retire action" or "retry despite duplicate risk".'
+
+
+def _action_question(tool_name: str, call_id: str) -> str:
+    return (
+        f"The outcome of {tool_name} ({call_id}) is uncertain. Can you verify the "
+        "result at its destination or decide whether to accept the risk of a duplicate?"
+    )
+
+
 @tool
 async def record_job_work(note: str) -> str:
     """Checkpoint verified work, evidence references, and the next step during a job run."""
@@ -41,6 +52,26 @@ async def record_job_work(note: str) -> str:
     return "Work saved to job history."
 
 
+class Workstream(BaseModel):
+    """The next step and its supporting evidence at this checkpoint."""
+
+    next_action: str = Field(min_length=1)
+    actor: str = Field(min_length=1)
+    state: Literal["ready", "blocked", "delegated", "done"]
+    evidence: str = ""
+    receipt: str = ""
+    check_at: AwareDatetime | None = None
+
+    @property
+    def needs_action(self) -> bool:
+        """An unsupported wait needs verification before the objective can sleep."""
+        return (
+            self.state == "ready"
+            or (self.state == "delegated" and not self.receipt.strip())
+            or (self.state in {"blocked", "done"} and not self.evidence.strip())
+        )
+
+
 class ObjectiveReport(BaseModel):
     """One check's private work summary and optional owner-facing message."""
 
@@ -49,20 +80,67 @@ class ObjectiveReport(BaseModel):
     notice: str = Field(default="", max_length=2000)
 
     requires_signoff: bool = False
+    deadline_risk: str = Field(default="", max_length=1000)
+    decision_question: str = Field(default="", max_length=1000)
+    owner_questions: list[Question] = Field(default_factory=list)
+    decision_unlocks: str = Field(default="", max_length=1000)
+
     blocker_key: str = Field(default="", max_length=200)
 
     verified: list[str] = Field(default_factory=list, max_length=64)
 
+    workstreams: list[OnErrorOmit[Workstream]] = Field(default_factory=list)
     wait_condition: str = Field(default="", max_length=2000)
     next_wake_at: datetime | None = None
     wake_reason: Literal["poll", "owner_timing", "expected_event"] = "poll"
     completion_criteria: list[str] | None = None
     evidence: dict[str, str | None] = Field(default_factory=dict, max_length=64)
 
+    @property
+    def needs_action(self) -> bool:
+        """Whether a checkpoint reports work that can still progress."""
+        return any(stream.needs_action for stream in self.workstreams)
+
+    def checkpoint_workstreams(self, row: dict[str, object]) -> ObjectiveReport:
+        """Keep the next steps in run history and reconcile the aggregate status."""
+        if (
+            "workstreams" not in self.model_fields_set
+            and self.status
+            not in {
+                "blocked",
+                "complete",
+            }
+            and (saved := row.get("workstreams"))
+        ):
+            streams = [Workstream.model_validate(item) for item in json.loads(str(saved))]
+            return self.model_copy(update={"workstreams": streams}).checkpoint_workstreams(row)
+        row["workstreams"] = json.dumps([s.model_dump(mode="json") for s in self.workstreams])
+        ready = self.needs_action
+        unfinished = any(stream.state != "done" for stream in self.workstreams)
+        if (ready and self.status in {"blocked", "checked", "complete"}) or (
+            unfinished and self.status == "complete"
+        ):
+            return self.model_copy(update={"status": "partial"})
+        return self
+
     def next_wake(
         self, previous: dict[str, str] | None, now: datetime, deadline: datetime | None
     ) -> datetime | None:
         """Double the observed polling interval after consecutive unchanged checks."""
+        missing_checkpoint = (
+            not self.workstreams and self.next_wake_at and self.wake_reason != "owner_timing"
+        )
+        if missing_checkpoint or self.needs_action:
+            wake = now + timedelta(minutes=1)
+            return min(wake, deadline) if deadline else wake
+        checks = [
+            stream.check_at
+            for stream in self.workstreams
+            if stream.state != "done" and stream.check_at
+        ]
+        if checks:
+            wake = max(min(checks), now + timedelta(seconds=1))
+            return min(wake, deadline) if deadline else wake
         if (
             self.status != "checked"
             or self.wake_reason != "poll"
@@ -150,18 +228,35 @@ class JobJournal:
             yield cls(archive.records.store, config.assistant_id)
 
     @contextmanager
-    def capture_actions(self, job: str, run: str) -> Generator[ActionRun]:
+    def capture_actions(
+        self, job: str, run: str, *, current: Callable[[], bool] | None = None
+    ) -> Generator[ActionRun]:
         """Track tool receipts for this objective run."""
-        actions = ActionRun(self.records, job, run)
+        actions = ActionRun(self.records, job, run, current=current)
         with CURRENT_ACTIONS.set(actions):
             yield actions
+
+    async def _state(self, job: CronJob) -> dict[str, object]:
+        state = await self.records.get(_revision_key(job))
+        if state is not None:
+            return state
+        inherited = {}
+        for criterion, revisions in job.evidence_sources.items():
+            for revision in revisions:
+                prior = await self.records.get(_revision_key(job, revision))
+                if prior is not None:
+                    evidence = _progress(job, prior)[1].get(criterion)
+                    if evidence and evidence["verified"]:
+                        inherited[criterion] = evidence
+                    break
+        return {"evidence": inherited}
 
     async def verification(
         self, job: CronJob
     ) -> tuple[tuple[str, ...] | None, dict[str, dict[str, str | bool]]]:
         """Read criteria and evidence for the current objective revision."""
         async with self.records.access():
-            state = await self.records.get(_revision_key(job)) or {}
+            state = await self._state(job)
             return _progress(job, state)
 
     async def finish_check(
@@ -174,7 +269,7 @@ class JobJournal:
                 msg = "Unknown scheduled run"
                 raise ValueError(msg)
             key = _revision_key(job)
-            state = await self.records.get(key) or {}
+            state = await self._state(job)
             if report.completion_criteria is not None:
                 state.setdefault("criteria", report.completion_criteria)
             criteria, evidence = _progress(job, state)
@@ -187,20 +282,19 @@ class JobJournal:
             for action in actions.values():
                 if isinstance(action, dict) and action["run"] != run:
                     call_id = action["call_id"]
-                    notice = (
-                        f"The outcome of {action['tool']} ({call_id}) is uncertain. "
-                        "Can you verify the result at its destination or decide whether to accept "
-                        "the risk of a duplicate?"
-                    )
+                    notice = _action_question(str(action["tool"]), str(call_id))
                     report = report.model_copy(
                         update={
                             "status": "blocked",
                             "notice": report.notice or notice,
                             "blocker_key": f"uncertain-action:{call_id}",
+                            "decision_question": notice,
+                            "decision_unlocks": ACTION_CHOICES,
                         }
                     )
                     break
             report = _update_evidence(evidence, criteria, _check_coverage(job, report, reads))
+            report = report.checkpoint_workstreams(row)
             if report.requires_signoff:
                 state["requires_signoff"] = True
             if report.status == "complete":
@@ -231,7 +325,18 @@ class JobJournal:
         question = (
             f"Do you approve completion of {job.name} (evidence {version})? Reply yes to approve."
         )
-        if state.get("signoff_version") == version and blocker.get("key") == key:
+        decisions = await self._questions(job)
+        decision = decisions.get(question, {})
+        if str(decision.get("answer", "")).strip().casefold().rstrip(".!") in {
+            "yes",
+            "approve",
+            "approved",
+            "i approve",
+        }:
+            return report
+        if state.get("signoff_version") == version and (
+            blocker.get("key") == key or (decision and not decision.get("answer"))
+        ):
             owner_note = next(
                 (note for note in reversed(job.handoffs) if note.startswith("Owner: ")), ""
             )
@@ -266,29 +371,212 @@ class JobJournal:
         key = "blocker:" + job.id
         async with self.records.access():
             row = await self.records.get(key)
-            if report.status != "blocked":
+            risk = report.deadline_risk.strip() if job.target_at or job.until else ""
+            if report.status != "blocked" and not risk:
                 if row and report.status in {"checked", "partial", "complete"}:
                     await self.records.commit([(key, None)])
+                return ""
+            if report.workstreams and not (risk or report.notice.strip()):
                 return ""
             identity = (
                 report.blocker_key.strip() or report.notice.strip() or report.summary
             ).casefold()
+            if risk:
+                identity = "deadline:" + risk.casefold()
             if row and row["key"] == identity:
                 return "" if row.get("delivered") else str(row["notice"])
             notice = (
-                report.notice.strip()
+                risk
+                or report.notice.strip()
                 or f"Job {job.name} is blocked. Ask for its saved check results."
             )
             await self.records.commit([(key, {"key": identity, "notice": notice})])
             return notice
 
-    async def mark_delivered(self, job: str, notice: str) -> None:
-        """Acknowledge the matching pending notice."""
-        key = "blocker:" + job
+    async def _questions(self, job: CronJob) -> dict[str, dict[str, str]]:
+        record = await self.records.get("decisions:" + job.id) or {}
+        return cast("dict[str, dict[str, str]]", record.get(_revision_key(job), {}))
+
+    async def decisions(self, job: CronJob) -> list[tuple[str, str, str | None]]:
+        """List owner decisions for the current revision."""
         async with self.records.access():
-            row = await self.records.get(key)
-            if row and row["notice"] == notice:
-                await self.records.commit([(key, {**row, "delivered": True})])
+            return [
+                (q, item["unlocks"], item.get("answer"))
+                for q, item in (await self._questions(job)).items()
+            ]
+
+    async def open_decision(self, job: CronJob, reply_to: str | None = None) -> str | None:
+        """Restore a delivered question for an owner reply."""
+        async with self.records.access():
+            for question, item in (await self._questions(job)).items():
+                if (
+                    (reply_to or "skipped" not in item)
+                    and "delivered" in item
+                    and "answer" not in item
+                    and (reply_to is None or item.get("message_id") == reply_to)
+                ):
+                    return question
+        return None
+
+    async def focus_question(
+        self, job: CronJob, question: str, *, redisplay: bool = False
+    ) -> str | None:
+        """Show the first pending question before accepting an unaddressed answer."""
+        async with self.records.access():
+            key = "decisions:" + job.id
+            record = await self.records.get(key) or {}
+            items = cast("dict[str, dict[str, str]]", record.get(_revision_key(job), {}))
+            item = items.get(question)
+            if not item or "answer" in item:
+                return "That question has closed."
+            if item.get("focused") and not redisplay:
+                return None
+            item["focused"] = "yes"
+            await self.records.commit([(key, record)])
+            return f"{job.name}\n{_decision_session(question, item).prompt()}"
+
+    async def without_question(self, job: CronJob, notice: str) -> str:
+        """Separate a scheduled notice from its independently queued question."""
+        async with self.records.access():
+            for question, item in (await self._questions(job)).items():
+                original = {k: v for k, v in item.items() if k not in {"answers", "index"}}
+                prompt = f"{job.name}\n{_decision_session(question, original).prompt()}"
+                if notice.endswith(prompt):
+                    return notice.removesuffix(prompt).rstrip()
+        return notice
+
+    async def pending_question(self, job: CronJob) -> str:
+        """Read the current undelivered question."""
+        queued = await self.queued_question(job)
+        return queued[1] if queued else ""
+
+    async def queued_question(self, job: CronJob) -> tuple[str, str] | None:
+        """Return the oldest undelivered question and its enqueue time."""
+        async with self.records.access():
+            for question, item in (await self._questions(job)).items():
+                if "answer" not in item and "delivered" not in item:
+                    return item.get(
+                        "queued_at", ""
+                    ), f"{job.name}\n{_decision_session(question, item).prompt()}"
+        return None
+
+    async def decision_answer(self, job: CronJob, question: str) -> str | None:
+        """Read the exact answer for this revision."""
+        async with self.records.access():
+            return (await self._questions(job)).get(question, {}).get("answer")
+
+    async def decision_notice(self, job: CronJob, report: ObjectiveReport) -> str:
+        """Queue questions until answered, completed, or superseded by a new job revision."""
+        question = report.decision_question.strip() if report.status != "complete" else ""
+        if not question and report.status != "complete":
+            return ""
+        key = "decisions:" + job.id
+        async with self.records.access():
+            record = await self.records.get(key) or {}
+            items = {
+                q: v for q, v in (await self._questions(job)).items() if question or "answer" in v
+            }
+            item = (
+                items.setdefault(
+                    question,
+                    {
+                        "unlocks": report.decision_unlocks,
+                        "queued_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+                if question
+                else {}
+            )
+            if report.owner_questions and report.owner_questions[0].question == question:
+                known = {
+                    form.question
+                    for previous in items.values()
+                    if previous.get("form")
+                    for form in _FORMS.validate_json(previous["form"])
+                }
+                fresh = [form for form in report.owner_questions if form.question not in known]
+                if fresh:
+                    batch = items.setdefault(
+                        fresh[0].question,
+                        {
+                            "unlocks": report.decision_unlocks,
+                            "queued_at": datetime.now(UTC).isoformat(),
+                        },
+                    )
+                    batch.setdefault("form", _FORMS.dump_json(fresh).decode())
+            record[_revision_key(job)] = items
+            await self.records.commit([(key, record)])
+            if question and "answer" not in item and "delivered" not in item:
+                return f"{job.name}\n{_decision_session(question, item).prompt()}"
+            return ""
+
+    async def reply_to_question(
+        self, job: CronJob, question: str, text: str, *, wake: Callable[[], bool]
+    ) -> Step:
+        """Advance the saved question session and wake the job on submission."""
+        key = "decisions:" + job.id
+        async with self.records.access():
+            record = await self.records.get(key) or {}
+            items = await self._questions(job)
+            item = items.get(question)
+            if not item or "answer" in item:
+                return Step("cancelled", "That question has closed.")
+            session = _decision_session(question, item)
+            step = session.reply(text)
+            if step.status != "submitted":
+                item["index"] = str(session.index)
+                item["answers"] = _ANSWERS.dump_json(session.answers).decode()
+                if step.status == "cancelled":
+                    item["skipped"] = "yes"
+                record[_revision_key(job)] = items
+                await self.records.commit([(key, record)])
+                return step
+            answers = [
+                a.other if a.other and not a.selected else a.describe() for a in session.result
+            ]
+            answer = answers[0]
+            intents = await self.records.get("actions:" + job.id) or {}
+            retired = await self.records.get("retired:" + job.id) or {}
+            for call_id, action in list(intents.items()):
+                if isinstance(action, dict) and question == _action_question(
+                    action["tool"], call_id
+                ):
+                    choice = answer.strip().casefold()
+                    if choice not in {"retire action", "retry despite duplicate risk"}:
+                        return Step("asking", ACTION_CHOICES)
+                    if choice == "retire action":
+                        retired[digest(action["tool"], action["arguments"])] = [
+                            action["tool"],
+                            action["arguments"],
+                        ]
+                    del intents[call_id]
+            if not wake():
+                return Step("cancelled", "That question has changed.")
+            for form, value in zip(session.questions, answers, strict=True):
+                items.setdefault(form.question, {"unlocks": ""})["answer"] = value
+            record[_revision_key(job)] = items
+            await self.records.commit(
+                [(key, record), ("actions:" + job.id, intents), ("retired:" + job.id, retired)]
+            )
+            return Step("submitted", f"Answer recorded for {job.name}.")
+
+    async def mark_delivered(self, job: str, notice: str, message_id: str | None = None) -> None:
+        """Acknowledge only notices included in the delivered message."""
+        async with self.records.access():
+            key = "decisions:" + job
+            record = await self.records.get(key) or {}
+            for items in cast("dict[str, dict[str, dict[str, str]]]", record).values():
+                for question, item in items.items():
+                    if "delivered" not in item and notice.endswith(
+                        _decision_session(question, item).prompt()
+                    ):
+                        item["delivered"] = "yes"
+                        if message_id:
+                            item["message_id"] = message_id
+            blocker = await self.records.get("blocker:" + job)
+            if blocker and str(blocker["notice"]) + "\n" in notice + "\n":
+                blocker["delivered"] = True
+            await self.records.commit([(key, record), ("blocker:" + job, blocker)])
 
     async def start(self, job: CronJob, run: str) -> None:
         """Link a new run into the owner's history before executing it."""
@@ -323,6 +611,14 @@ class JobJournal:
             yield
         finally:
             _SAVE_WORK.reset(token)
+
+    async def save_workstreams(self, run: str, report: ObjectiveReport) -> None:
+        """Persist remaining actions before continuing within the same work budget."""
+        async with self.records.access():
+            row = await self.records.get(run)
+            if row and row["status"] == "started":
+                report.checkpoint_workstreams(row)
+                await self.records.commit([(run, row)])
 
     async def append_work(self, run: str, note: str) -> None:
         """Keep a bounded note, preserving the next step at the end of long checkpoints."""
@@ -382,13 +678,44 @@ class JobJournal:
             return result
 
 
+_FORMS = TypeAdapter(list[Question])
+_ANSWERS = TypeAdapter(list[Answer | None])
+
+
+def _decision_session(question: str, item: dict[str, str]) -> QuestionSession:
+    if form := item.get("form"):
+        session = QuestionSession(_FORMS.validate_json(form))
+        if answers := item.get("answers"):
+            session.answers = _ANSWERS.validate_json(answers)
+            session.index = int(item["index"])
+        return session
+    action = item["unlocks"] == ACTION_CHOICES
+    labels = ("retire action", "retry despite duplicate risk") if action else ("Yes", "No")
+    return QuestionSession(
+        [
+            Question(
+                header="Owner decision",
+                question=question,
+                options=[QuestionOption(label=label) for label in labels],
+            )
+        ]
+    )
+
+
 def _owner_key(origin: CronOrigin) -> str:
     return "owner:" + digest(origin.channel or "", origin.conversation_id, origin.sender_id or "")
 
 
-def _revision_key(job: CronJob) -> str:
+def revision_id(job: CronJob) -> str:
+    """Return the persisted instruction revision or derive the legacy revision."""
+    if job.instruction_revision:
+        return job.instruction_revision
     instructions = [job.prompt, job.completion_criteria, job.required_sources, job.read_sources]
-    return "progress:" + digest(job.id, _owner_key(job.origin), json.dumps(instructions))
+    return digest(json.dumps(instructions))
+
+
+def _revision_key(job: CronJob, revision: str | None = None) -> str:
+    return "progress:" + digest(job.id, _owner_key(job.origin), revision or revision_id(job))
 
 
 def _progress(

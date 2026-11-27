@@ -246,6 +246,8 @@ class _DiscordInboundMessage:
     mentioned: bool = False
     parent_id: str | None = None
     from_bot: bool = False
+    reply_to: str | None = None
+    private_dm: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,7 +384,7 @@ class _DiscordGateway(Protocol):
     async def stop(self) -> None:
         """Disconnect from the Gateway and release resources."""
 
-    async def completion_notice_received(self, channel_id: str, job_id: str) -> bool:
+    async def completion_notice_received(self, channel_id: str, job_id: str) -> bool | None:
         """Check for this bot's goal completion marker in a channel."""
 
     async def send_message(self, channel_id: str, text: str) -> str:
@@ -638,10 +640,12 @@ class _DiscordPyGateway:
         self._task = None
         self._watch = None
 
-    async def completion_notice_received(self, channel_id: str, job_id: str) -> bool:
+    async def completion_notice_received(self, channel_id: str, job_id: str) -> bool | None:
         """Look up the completion marker among recent destination messages."""
         channel = await self._resolve_channel(channel_id)
-        async for message in channel.history(limit=100):
+        if not self.bot_id:
+            return None
+        async for message in channel.history(limit=None):
             if str(message.author.id) == self.bot_id and message.content.startswith(
                 (f"Goal {job_id} completed. ", f"Job {job_id} missed its deadline.")
             ):
@@ -842,7 +846,12 @@ class DiscordChannel:
         self._status = ChannelStatus(provider="discord", connected=False, detail="disconnected")
         log_debug_event(logger, "discord.channel.stopped")
 
-    async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool:
+    @property
+    def account_id(self) -> str | None:
+        """Return the authenticated destination account for durable goals."""
+        return self._gateway.bot_id
+
+    async def completion_notice_received(self, conversation_id: str, job_id: str) -> bool | None:
         """Check the goal's channel for an unacknowledged post."""
         return await self._gateway.completion_notice_received(conversation_id, job_id)
 
@@ -1022,6 +1031,8 @@ class DiscordChannel:
             "is_dm": inbound.is_dm,
             "from_self": False,
         }
+        if self._gateway.bot_id:
+            metadata["channel_account_id"] = self._gateway.bot_id
         if inbound.history_chat is not None:
             metadata["history_chat"] = inbound.history_chat
         message = ChannelMessage(
@@ -1086,7 +1097,10 @@ class DiscordChannel:
             text=inbound.text,
             sender_id=inbound.sender_id,
             message_id=inbound.message_id,
-            metadata=_message_metadata(inbound),
+            metadata={
+                **_message_metadata(inbound),
+                **({"channel_account_id": account} if (account := self.account_id) else {}),
+            },
         )
         if not self._admits(message, parent_id=inbound.parent_id):
             log_debug_event(
@@ -1343,7 +1357,10 @@ def _convert_message(message: discord.Message, *, bot_id: str | None) -> _Discor
         mentioned = bool(role_ids) or any(str(user.id) == bot_id for user in message.mentions)
         if mentioned:
             text = _strip_bot_mentions(text, bot_id=bot_id, role_ids=role_ids)
+    reference = getattr(getattr(message, "reference", None), "message_id", None)
     return _DiscordInboundMessage(
+        reply_to=str(reference) if reference else None,
+        private_dm=isinstance(message.channel, discord.DMChannel),
         channel_id=str(message.channel.id),
         message_id=str(message.id),
         sender_id=sender_id,
@@ -1479,6 +1496,10 @@ def _message_metadata(inbound: _DiscordInboundMessage) -> dict[str, object]:
     }
     if inbound.history_chat is not None:
         metadata["history_chat"] = inbound.history_chat
+    if inbound.private_dm:
+        metadata["private_owner_dm"] = True
+    if inbound.reply_to:
+        metadata["reply_to_message_id"] = inbound.reply_to
     if inbound.attachments:
         attachment = next(
             (a for a in inbound.attachments if _attachment_media_type(a) != "document"),

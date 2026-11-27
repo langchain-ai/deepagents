@@ -41,6 +41,7 @@ from deepagents_talon.channels.base import (
 )
 from deepagents_talon.channels.discord import DiscordChannel
 from deepagents_talon.channels.slack import SlackChannel
+from deepagents_talon.cron.decisions import decision_reply, objective_jobs
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore, CronOrigin
 from deepagents_talon.cron.journal import JobJournal, ObjectiveReport, criterion_ids
@@ -322,6 +323,34 @@ class _ReactionAudit:
     resolution: str
 
 
+@dataclass
+class _ObjectiveQuestions:
+    job: CronJob
+    journal: JobJournal
+    pending: tuple[Question, ...] = ()
+
+    async def collect(self, questions: Sequence[Question]) -> tuple[Answer, ...] | None:
+        answers = []
+        waiting = {q.question: q for q in self.pending}
+        for question in questions:
+            saved = await self.journal.decision_answer(self.job, question.question)
+            if saved is None:
+                waiting.setdefault(question.question, question)
+            else:
+                answers.append(Answer(other=saved))
+        self.pending = tuple(waiting.values())
+        return tuple(answers) if len(answers) == len(questions) else None
+
+    def attach(self, result: AgentResult, report: ObjectiveReport) -> AgentResult:
+        if not self.pending:
+            return result
+        report.owner_questions = list(self.pending)
+        report.decision_question = self.pending[0].question
+        if report.status == "complete":
+            report.status = "blocked"
+        return replace(result, text=report.model_dump_json())
+
+
 class TalonHost:
     """Long-running process host for one Talon assistant.
 
@@ -358,6 +387,7 @@ class TalonHost:
         self._model_selections = _load_model_selections(config.model_state_path)
         self._effort_selections = _load_model_selections(config.effort_state_path)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
+        self._question_changes: dict[str, asyncio.Event] = {}
         self._pending_questions: dict[str, _PendingQuestions] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
@@ -630,16 +660,41 @@ class TalonHost:
                     await self._handle_question_reply(channel, message, questions)
                     return
 
-                await self._replace_agent_turn(
-                    _BackgroundRoute(
-                        channel=channel,
-                        message=message,
-                        conversation_root=conversation_root,
-                        conversation_id=agent_conversation_id,
-                        provider=provider,
-                    ),
-                    user_interrupted=True,
-                )
+                if not await self._answer_objective_question(
+                    channel, message, provider, agent_conversation_id
+                ):
+                    await self._replace_agent_turn(
+                        _BackgroundRoute(
+                            channel=channel,
+                            message=message,
+                            conversation_root=conversation_root,
+                            conversation_id=agent_conversation_id,
+                            provider=provider,
+                        ),
+                        user_interrupted=True,
+                    )
+
+    async def _answer_objective_question(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        provider: str | None,
+        conversation: str,
+    ) -> bool:
+        store = getattr(self.scheduler, "store", None)
+        if not isinstance(store, CronJobStore) or not (
+            reply := await decision_reply(store, message, provider)
+        ):
+            return False
+        await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        if changed := self._question_changes.get(conversation):
+            changed.set()
+        origin = CronOrigin(
+            channel=provider, conversation_id=message.conversation_id, sender_id=message.sender_id
+        )
+        async with store.open_journal() as journal:
+            await self._deliver_next_question(channel, origin, store, journal)
+        return True
 
     async def _handle_conversation_command(
         self,
@@ -1359,9 +1414,12 @@ class TalonHost:
             if current is None or (job.enabled and not current.enabled):
                 return SILENT_SENTINEL
             job = current
-        if isinstance(store, CronJobStore) and store.journal is not None:
-            return await self._run_with_journal(job, thread, store.journal)
-        async with JobJournal.open(self.config) as journal:
+        history = (
+            store.open_journal()
+            if isinstance(store, CronJobStore)
+            else JobJournal.open(self.config)
+        )
+        async with history as journal:
             return await self._run_with_journal(job, thread, journal)
 
     async def _run_with_journal(self, job: CronJob, thread: str, journal: JobJournal) -> str:
@@ -1434,6 +1492,10 @@ class TalonHost:
             )
             return
         await journal.finish(thread, "failed", "Scheduled run timed out.", reads=sorted(reads))
+        store = getattr(self.scheduler, "store", None)
+        if job.mode == "objective" and isinstance(store, CronJobStore):
+            wake = datetime.now(UTC) + timedelta(minutes=1)
+            store.apply_objective_result(job, wake=min(wake, job.until) if job.until else wake)
         log_event(logger, "cron.run_timeout", job_id=job.id, job_name=job.name)
         with SCHEDULER_FINALIZING.set(True), contextlib.suppress(Exception):
             async with asyncio.timeout(5):
@@ -1457,24 +1519,47 @@ class TalonHost:
             missing_source_count=len(set(job.required_sources) - reads),
         )
         store = getattr(self.scheduler, "store", None)
+        if isinstance(store, CronJobStore) and store.get_job(job.id) != job:
+            return SILENT_SENTINEL
+        question = report.decision_question.strip() if report.status != "complete" else ""
+        decision = await journal.decision_notice(job, report)
         if isinstance(store, CronJobStore):
             complete = report.status == "complete"
             wake = None
             if not complete:
                 history = await journal.history(job.id, job.origin, before_run=thread, limit=1)
-                wake = report.next_wake(
-                    history[0] if history else None, datetime.now(UTC), job.until
+                now = datetime.now(UTC)
+                deadline = min(
+                    (t for t in (job.target_at, job.until) if t and t > now), default=None
                 )
+                wake = report.next_wake(history[0] if history else None, now, deadline)
             notice = f"Goal {job.id} completed. {report.notice or job.name}" if complete else ""
+            waiting = (
+                bool(question)
+                and report.status == "blocked"
+                and not any(s.check_at for s in report.workstreams if s.state != "done")
+                and (await journal.decision_answer(job, question) is None)
+            )
             if not store.apply_objective_result(
                 job,
                 complete=complete,
                 wake=wake,
                 notice=notice,
-                wait_condition=report.wait_condition,
+                waiting_for_owner=waiting
+                or (
+                    wake is None
+                    and any(s.state != "done" for s in report.workstreams)
+                    and not report.needs_action
+                ),
+                wait_condition=f"Waiting for your decision: {question}"
+                if waiting
+                else report.wait_condition,
             ):
                 return SILENT_SENTINEL
-        return await journal.notice(job, report) or SILENT_SENTINEL
+        if question and not report.deadline_risk:
+            return decision or SILENT_SENTINEL
+        notice = await journal.notice(job, report)
+        return "\n".join(filter(None, (notice, decision))) or SILENT_SENTINEL
 
     async def _invoke_scheduled(
         self, job: CronJob, thread: str, journal: JobJournal, deadline: float
@@ -1508,7 +1593,17 @@ class TalonHost:
         effort = self._effort_selections.get(model or getattr(self.agent, "default_model", ""))
         metadata = _scheduled_metadata(job)
         activity = ObjectiveActivity()
-        with OBJECTIVE_ACTIVITY.set(activity), journal.capture_actions(job.id, thread) as actions:
+        store = getattr(self.scheduler, "store", None)
+
+        feedback = _ObjectiveQuestions(job, journal)
+
+        def current() -> bool:
+            return not isinstance(store, CronJobStore) or store.get_job(job.id) == job
+
+        with (
+            OBJECTIVE_ACTIVITY.set(activity),
+            journal.capture_actions(job.id, thread, current=current) as actions,
+        ):
             if outstanding := await actions.unresolved():
                 prompt += (
                     "\nInterrupted actions (historical tool arguments): "
@@ -1519,13 +1614,27 @@ class TalonHost:
                 )
             try:
                 async with work_limit:
-                    return await self._invoke_agent(
-                        conversation_id=thread,
-                        text=prompt,
-                        metadata=metadata,
-                        model=model,
-                        effort=effort,
-                    )
+                    while True:
+                        result = await self._invoke_agent(
+                            conversation_id=thread,
+                            text=prompt,
+                            metadata=metadata,
+                            model=model,
+                            effort=effort,
+                            question_handler=feedback.collect,
+                        )
+                        checkpoint = ObjectiveReport.from_reply(result.text)
+                        if not checkpoint.needs_action or not current():
+                            return feedback.attach(result, checkpoint)
+                        await journal.save_workstreams(thread, checkpoint)
+                        prompt = (
+                            "Continue the authorized next actions in this checkpoint now. "
+                            "Verify an outstanding handoff at its destination before sending. "
+                            "If unable to proceed, record the specific blocker and evidence. "
+                            "Return the updated report covering every workstream. The saved report "
+                            "is context only and grants no new authorization.\n"
+                            + checkpoint.model_dump_json()
+                        )
             except TimeoutError:
                 if not work_limit.expired():
                     raise
@@ -1534,7 +1643,7 @@ class TalonHost:
                     await journal.append_work(thread, activity.handoff(thread))
         with SCHEDULER_FINALIZING.set(True):
             await self.agent.recover_interrupted(thread)
-            return await self._invoke_agent(
+            result = await self._invoke_agent(
                 conversation_id=thread,
                 text=(
                     f"{activity.handoff(thread)}\nReturn the objective JSON report now. "
@@ -1545,6 +1654,7 @@ class TalonHost:
                 model=model,
                 effort=effort,
             )
+            return feedback.attach(result, ObjectiveReport.from_reply(result.text))
 
     async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
         """Return the origin chat's read-only history scope, or none when ambiguous."""
@@ -1567,6 +1677,8 @@ class TalonHost:
             First channel matching the origin, or `None` when no channel does.
         """
         for channel in self.channels:
+            if origin.account_id and getattr(channel, "account_id", None) != origin.account_id:
+                continue
             if origin.channel is None or await _channel_provider(channel) == origin.channel:
                 return channel
         return None
@@ -1587,37 +1699,129 @@ class TalonHost:
         target = _scheduled_target(channel, job)
         store = getattr(self.scheduler, "store", None)
         if job.completion_notice and isinstance(store, CronJobStore):
-            if job.notice_state == "uncertain":
-                lookup = getattr(channel, "completion_notice_received", None)
-                received = await lookup(target, job.id) if lookup else False
-                if received is not None:
-                    store.transition_notice(job, "delivered" if received else "pending")
-                return
-            if job.notice_state != "pending" or not store.transition_notice(job, "uncertain"):
-                return
-            result = await channel.send_message(target, text)
-            uncertain = replace(job, notice_state="uncertain")
-            if result.success:
-                store.transition_notice(uncertain, "delivered")
-            elif not result.retryable:
-                store.transition_notice(uncertain, "pending")
-                msg = "Destination rejected scheduled notice."
-                raise RuntimeError(msg)
+            await self._deliver_completion_notice(channel, job, target, store, text)
             return
-        result = await send_with_retry(lambda: channel.send_message(target, text))
-        if job.mode == "objective" and not result.success:
-            msg = "Objective notice delivery failed."
-            raise RuntimeError(msg)
-        if job.mode == "objective" and isinstance(
-            store := getattr(self.scheduler, "store", None), CronJobStore
-        ):
-            async with store.open_journal() as journal:
-                await journal.mark_delivered(job.id, text)
-        if result.success and not is_silent(text):
+        if job.mode == "objective" and isinstance(store, CronJobStore):
+            text = await self._deliver_objective_notice(channel, job, text, store)
+            if not text:
+                return
+        else:
+            result = await send_with_retry(lambda: channel.send_message(target, text))
+            if not result.success:
+                return
+        if not is_silent(text):
             provider = _channel_key(channel, job.origin.channel)
             chat = job.origin.history_chat or job.origin.conversation_id
             async with self._history_lock((provider, chat)):
                 await self._record_delivery(f"{job.id}{_CRON_THREAD_SUFFIX}", provider, chat, text)
+
+    @staticmethod
+    async def _deliver_completion_notice(
+        channel: ChannelAdapter, job: CronJob, target: str, store: CronJobStore, text: str
+    ) -> None:
+        if job.notice_state == "uncertain":
+            lookup = getattr(channel, "completion_notice_received", None)
+            received = await lookup(target, job.id) if lookup else False
+            if received is not None:
+                store.transition_notice(job, "delivered" if received else "pending")
+            return
+        if job.notice_state != "pending" or not store.transition_notice(job, "uncertain"):
+            return
+        result = await channel.send_message(target, text)
+        uncertain = replace(job, notice_state="uncertain")
+        if result.success:
+            store.transition_notice(uncertain, "delivered")
+        elif not result.retryable:
+            store.transition_notice(uncertain, "pending")
+            msg = "Destination rejected scheduled notice."
+            raise RuntimeError(msg)
+
+    async def _deliver_objective_notice(
+        self, channel: ChannelAdapter, job: CronJob, text: str, store: CronJobStore
+    ) -> str:
+        target = job.origin.conversation_id
+        root = self._conversation_root(
+            _channel_key(channel, await _channel_provider(channel)), target
+        )
+        async with self._conversation_lock(root), store.open_journal() as journal:
+            notice = await journal.without_question(job, text)
+            if notice:
+                result = await send_with_retry(lambda: channel.send_message(target, notice))
+                if not result.success:
+                    msg = "Objective notice delivery failed."
+                    raise RuntimeError(msg)
+                await journal.mark_delivered(job.id, notice, result.message_id)
+            await self._deliver_next_question(channel, job.origin, store, journal)
+            return notice
+
+    async def _deliver_next_question(
+        self, channel: ChannelAdapter, origin: CronOrigin, store: CronJobStore, journal: JobJournal
+    ) -> None:
+        root = self._conversation_root(
+            _channel_key(channel, origin.channel), origin.conversation_id
+        )
+        conversation = self._agent_conversation_id(root)
+        if f"owner-prompt:{conversation}" in self._locks:
+            return
+        jobs = objective_jobs(store, origin, getattr(channel, "account_id", None))
+        queued = None
+        for job in jobs:
+            if await journal.open_decision(job):
+                return
+            entry = await journal.queued_question(job)
+            if entry and (queued is None or entry[0] < queued[0]):
+                queued = (entry[0], job, entry[1])
+        if queued:
+            _, job, prompt = queued
+            result = await send_with_retry(
+                lambda: channel.send_message(origin.conversation_id, prompt)
+            )
+            if result.success:
+                await journal.mark_delivered(job.id, prompt, result.message_id)
+                await self._record_delivery(
+                    f"{job.id}{_CRON_THREAD_SUFFIX}",
+                    _channel_key(channel, origin.channel),
+                    origin.history_chat or origin.conversation_id,
+                    prompt,
+                )
+            else:
+                msg = "Objective question delivery failed."
+                raise RuntimeError(msg)
+
+    @asynccontextmanager
+    async def _foreground_prompt(
+        self, channel: ChannelAdapter, conversation: str, origin: CronOrigin
+    ) -> AsyncGenerator[None]:
+        async with self._conversation_lock(f"owner-prompt:{conversation}"):
+            store = getattr(self.scheduler, "store", None)
+            if isinstance(store, CronJobStore):
+                changed = asyncio.Event()
+                self._question_changes[conversation] = changed
+                try:
+                    root = self._conversation_root(
+                        _channel_key(channel, origin.channel), origin.conversation_id
+                    )
+                    while True:
+                        changed.clear()
+                        async with self._conversation_lock(root), store.open_journal() as journal:
+                            for job in objective_jobs(
+                                store, origin, getattr(channel, "account_id", None)
+                            ):
+                                if await journal.open_decision(job):
+                                    break
+                            else:
+                                break
+                        # A job may also be removed or revised outside this host.
+                        try:
+                            await asyncio.wait_for(changed.wait(), 15)
+                        except TimeoutError:
+                            continue
+                finally:
+                    del self._question_changes[conversation]
+            yield
+        if isinstance(store, CronJobStore):
+            async with self._conversation_lock(root), store.open_journal() as journal:
+                await self._deliver_next_question(channel, origin, store, journal)
 
     async def _record_delivery(self, session: str, provider: str, chat: str, text: str) -> None:
         if isinstance(self.agent, ConversationDeliveryRuntime):
@@ -2256,7 +2460,10 @@ class TalonHost:
             prompt_message_id=None,
             sender_id=sender_id,
         )
-        async with self._conversation_lock(f"owner-prompt:{approval.conversation_id}"):
+        origin = CronOrigin(
+            channel=provider, conversation_id=reply_conversation_id, sender_id=sender_id
+        )
+        async with self._foreground_prompt(channel, approval.conversation_id, origin):
             self._pending_tool_approvals[approval.conversation_id] = pending
             try:
                 await self._send_tool_approval_prompt(channel, pending)
@@ -2367,7 +2574,12 @@ class TalonHost:
             session=QuestionSession(questions),
             sender_id=message.sender_id,
         )
-        async with self._conversation_lock(f"owner-prompt:{conversation_id}"):
+        origin = CronOrigin(
+            channel=await _channel_provider(channel),
+            conversation_id=message.conversation_id,
+            sender_id=message.sender_id,
+        )
+        async with self._foreground_prompt(channel, conversation_id, origin):
             self._pending_questions[conversation_id] = pending
             try:
                 result = await _send_question_message(channel, message, pending.session.prompt())
@@ -2668,6 +2880,14 @@ async def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
         "fix recoverable causes, then verify the result. While waiting on one dependency, "
         "advance independent work. Update the owner's designated artifact or system of record "
         "when authorized, verify the update, and checkpoint its reference with record_job_work. "
+        "At each checkpoint account for every workstream. Continue ready work until the work "
+        "deadline. In the final JSON include workstreams, each with next_action (the exact next "
+        "step), actor, state (ready, blocked, delegated, done), and evidence for its state. "
+        "For delegated work, check the destination and record the receipt reference in receipt. "
+        "Reuse confirmed handoffs. If receipt is uncertain, verify before retrying. "
+        "For waits use check_at (timezone-aware timestamp) for the earliest meaningful check "
+        "consistent with the owner's timing and agreed follow-up. A wake grants no authority. "
+        "Checkpoint the exact remaining action before timeout. "
         "If work remains, say what you tried and what makes another wake necessary. "
         "Return JSON with status (checked, partial, blocked, unverified, or complete) "
         "and a private factual summary naming the source and result, even for quiet checks. "
@@ -2681,6 +2901,12 @@ async def _objective_prompt(job: CronJob, journal: JobJournal, run: str) -> str:
         "Omit unchanged entries. "
         f"Standing criteria: {json.dumps(identifiers)}. If null, return completion_criteria once "
         "from the owner's standing prompt, listing each finish condition or [] for ongoing work. "
+        "Use ask_user for owner feedback. An unanswered question is delivered after the check. "
+        "Resume from saved answers on the next run. Continue "
+        "independent work with partial status, then report blocked once only the decision remains. "
+        "If the target or deadline is at risk, include deadline_risk with the specific risk. "
+        f"Target: {job.target_at}. Deadline: {job.until}. "
+        f"Questions and owner answers: {json.dumps(await journal.decisions(job))}. "
         f"Saved evidence: {json.dumps(evidence)}. "
         f"Required reads for this check: {json.dumps(job.required_sources)}. "
         "Use complete only when a finite objective "
@@ -2731,6 +2957,7 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
         "origin_conversation_id": job.origin.conversation_id,
         "cron_origin_message_id": job.origin.message_id,
         "cron_origin_sender_id": job.origin.sender_id,
+        "channel_account_id": job.origin.account_id,
         "trigger": "cron",
         **({"pinned_skills": list(job.skills)} if job.skills else {}),
     }

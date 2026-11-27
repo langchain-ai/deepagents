@@ -548,12 +548,14 @@ async def test_inbound_message_from_operator_dm_is_dispatched(tmp_path):
             message_id="m1",
             sender_id="op-1",
             text="hi",
+            reply_to="question",
             is_dm=True,
             from_self=False,
         ),
     )
 
     assert len(received) == 1
+    assert received[0].metadata["reply_to_message_id"] == "question"
     assert received[0].text == "hi"
     assert received[0].conversation_id == "chan-1"
 
@@ -1781,10 +1783,12 @@ def test_convert_message_reports_a_private_thread_parent(monkeypatch):
 
     monkeypatch.setattr(discord_module.discord, "Thread", FakeThread)
     message = _mention_message("hi")
+    message.reference = SimpleNamespace(message_id=234)
     message.channel = FakeThread()
 
     inbound = _convert_message(message, bot_id="7")
 
+    assert inbound.reply_to == "234"
     assert inbound.parent_id == "42"
     assert inbound.history_chat is None
 
@@ -1980,8 +1984,11 @@ async def test_gateway_reconciles_only_own_completion_notice(notice: str) -> Non
     gateway = _DiscordPyGateway(token="t", connect_timeout_seconds=1)  # noqa: S106  # inert
 
     class Destination:
-        async def history(self, *, limit: int):
-            assert limit > 0
+        async def history(self, *, limit: int | None):
+            for _ in range(101 if limit is None else limit):
+                yield SimpleNamespace(author=SimpleNamespace(id=9), content="newer")
+            if limit is not None:
+                return
             yield SimpleNamespace(author=SimpleNamespace(id=9), content="Goal other completed. OK")
             yield SimpleNamespace(author=SimpleNamespace(id=1), content=notice)
 

@@ -1045,7 +1045,7 @@ async def test_dm_does_not_fetch_thread_context(tmp_path: Path) -> None:
     assert messages[0].text == "hi"
 
 
-async def test_thread_context_excludes_trigger_and_is_bounded() -> None:
+async def test_thread_context_excludes_trigger_and_is_bounded(tmp_path: Path) -> None:
     gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
 
     class Web:
@@ -1053,13 +1053,22 @@ async def test_thread_context_excludes_trigger_and_is_bounded() -> None:
             return {
                 "messages": [
                     {"ts": "1.0", "user": "U1", "text": "request"},
+                    {"ts": "1.5", "user": "bot", "text": "Which track?"},
                     {"ts": "2.0", "user": "U2", "text": "current"},
                 ],
                 "has_more": False,
             }
 
     gateway._web = Web()  # type: ignore[assignment]
+    gateway._bot_id = "bot"
     assert await gateway.thread_context("C1", "1.0", "2.0") == [("U1", "request")]
+
+    channel, _, messages, _ = _channel(tmp_path)
+    channel._gateway = gateway
+    await channel._process_message(
+        _SlackInboundMessage("C1", "2.0", "1.0", OPERATOR, "stable", is_dm=False)
+    )
+    assert messages[0].metadata["reply_to_message_id"] == "1.5"
 
 
 @pytest.mark.parametrize("pages", [7, 21])
@@ -1158,3 +1167,15 @@ async def test_reconcile_goal_notice_checks_sender_and_goal_in_thread(notice: st
     gateway._bot_id = "bot"
     assert await gateway.completion_notice_received("C1", "1.0", "release")
     assert not await gateway.completion_notice_received("C1", "1.0", "other")
+
+
+async def test_truncated_notice_search_is_inconclusive() -> None:
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert
+
+    class Web:
+        async def conversations_history(self, **_kwargs: object) -> dict[str, object]:
+            return {"messages": [], "has_more": True, "response_metadata": {"next_cursor": "older"}}
+
+    gateway._web = Web()  # type: ignore[assignment]
+    gateway._bot_id = "bot"
+    assert await gateway.completion_notice_received("C1", None, "release") is None

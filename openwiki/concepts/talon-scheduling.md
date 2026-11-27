@@ -32,10 +32,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
   - id: openwiki-source-cf14bb91e6251d6d6d4a9413
     resource: repo://libs/talon/tests/unit_tests/test_subagent_control.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
+    at: 2026-11-27T08:04:01.405Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-27T08:04:01.405Z" }
 ---
 
 # Talon Scheduling and Background Work
@@ -49,6 +49,8 @@ Talon deliberately distinguishes three forms of deferred or delegated work:
 The CLI installs the persistent scheduler only when at least one channel is configured, wiring `CronJobStore` to `TalonHost.run_scheduled_job` and a delivery callback.
 
 > **Unattended authority boundary:** Talon is experimental. Cron fires and background-result delivery turns have no operator who can approve or complete interactive authorization. Cron approvals are automatically rejected, unattended delivery has neither approval nor authorization handler, and detached workers clear the authorization handler inherited from their launch turn. Do not add an approval or authorization path that can outlive the party able to answer it.
+>
+> Cron execution calls the host without a file handler. Background-delivery execution currently receives the ordinary host file handler while its turn remains active, however, so it can send a file to the chat despite being unattended. Treat that as a boundary gap to remove—not as an extension point or authority to preserve—when changing this path.
 
 ## Durable cron lifecycle
 
@@ -144,7 +146,7 @@ Inline scheduled calls use a separate four-slot semaphore and queue instead of c
 
 During host shutdown, Talon stops the background-delivery loop, cancels in-flight work, stops channels and the scheduler, and finally stops the runtime. A component-stop failure is logged without preventing later shutdown steps. Runtime shutdown cancels background workers before closing graph/checkpoint resources. If workers outlive the cancellation wait, it raises and deliberately leaves those resources open rather than allowing live workers to write through a closed checkpointer.
 
-When changing this area, preserve the durable claim-before-run transition, trusted-origin propagation, unattended cron and delivery authority boundaries, hook snapshot and child-transcript isolation, worker ownership/privacy, fresh-agent approval enforcement, and the distinction between detached attended work and inline scheduled delegation.
+When changing this area, preserve the durable claim-before-run transition, trusted-origin propagation, unattended cron and delivery authority boundaries, hook snapshot and child-transcript isolation, worker ownership/privacy, fresh-agent approval enforcement, and the distinction between detached attended work and inline scheduled delegation. In particular, do not retain or expand the current background-delivery file-handler gap: an unattended follow-up must not gain attended-chat file-delivery access.
 
 ## Focused tests
 

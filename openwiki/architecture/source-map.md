@@ -1,121 +1,54 @@
 ---
 type: architecture source map
 title: Source Map
-description: Behavior-oriented navigation for Deep Agents graph assembly, dcode runtime boundaries, Talon graph replacement and diagnostics, QuickJS integration, and release and evaluation CI.
-tags: [deepagents, dcode, talon, quickjs, ci, evaluations, release, source-map]
+description: Behavior-oriented routing for Talon invocation scope, host-owned channel delivery, model selection, MCP reload, and agent-to-channel file delivery.
+tags: [talon, runtime, host, model-selection, mcp, file-delivery, source-map]
 sources:
-  - id: openwiki-source-d8e4ee8c2eab091950193178
-    resource: repo://.github/scripts/release/check_wheel_dep_freshness.py
-  - id: openwiki-source-c0a8cdd7847afa481defa30b
-    resource: repo://.github/scripts/tests/evals/test_unified_workflow.py
-  - id: openwiki-source-60d75d0ff1b1cedd1f38db0c
-    resource: repo://.github/workflows/_harbor_run.yml
-  - id: openwiki-source-9f9a45e8530875c513dbc901
-    resource: repo://.github/workflows/check_dep_freshness.yml
-  - id: openwiki-source-b6252e3f3473cd89534f2acb
-    resource: repo://.github/workflows/unified_evals.yml
-  - id: openwiki-source-4a7b6def251b42596a410ebc
-    resource: repo://libs/code/deepagents_code/model_config.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-4b1e381713dec742c675816b
-    resource: repo://libs/talon/deepagents_talon/context_doctor.py
+  - id: openwiki-source-fd3cc27f279ed4fb8aaca360
+    resource: repo://libs/talon/deepagents_talon/file_sending.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
+  - id: openwiki-source-cebe4ea270e21dce4de9b074
+    resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
     resource: repo://libs/talon/deepagents_talon/model_selection.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-2d1f686d24d8182f60108ae7
-    resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-4d6726e17c8a0c78539a7d33
     resource: repo://libs/talon/tests/test_runtime.py
   - id: openwiki-source-1e472b2d67bd29dc25c17e85
     resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
+  - id: openwiki-source-412987bb51db9ba8f655d511
+    resource: repo://libs/talon/tests/unit_tests/test_file_sending.py
   - id: openwiki-source-817808ec0e85107297729a56
     resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-27T08:04:01.405Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
+    at: 2026-11-27T08:04:01.405Z
 ---
 
 # Source Map
 
-Use this page to find the state owner and enforcement boundary before changing a public surface. It routes by behavior rather than cataloguing files. For wider context see [Architecture Overview](./overview.md), [Profiles and Models](../concepts/profiles-models.md), [Subagents and Skills](../concepts/subagents-skills.md), [Talon Runtime Integration](../integrations/talon.md), and the [Testing Guide](../testing/testing-guide.md).
+Use this page to find the owner of a Talon state transition or delivery boundary before changing it. It is intentionally organized by observable behavior, rather than as a file inventory. For operating context, see [Talon Runtime Integration](../integrations/talon.md), [Profiles and Models](../concepts/profiles-models.md), [Talon Channel Admission](../concepts/talon-channel-admission.md), [Runtime Behavior](./runtime-behavior.md), and the [Testing Guide](../testing/testing-guide.md).
 
 ## Change routing
 
-| Change affects… | Start here | Owner and safe-change boundary | Focused coverage |
+| Change affects… | Start here | State owner and enforcement boundary | Focused coverage |
 | --- | --- | --- | --- |
-| Agent construction, message state, built-in visibility, caller middleware, profiles, or persistence dependencies | `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | The compiled SDK graph; callers own checkpointer, Store, cache, and custom middleware | `libs/deepagents/tests/unit_tests/test_graph.py`, subagent tests |
-| Persistent filesystem data across threads | `libs/deepagents/deepagents/backends/store.py` — `StoreBackend` | Caller-supplied or execution-context `BaseStore`; the namespace factory is the tenant boundary | `libs/deepagents/tests/unit_tests/backends/test_store_backend.py` |
-| dcode model admission, credentials, provider setup, or managed policy | `libs/code/deepagents_code/model_config.py` — `ModelConfig` | Merged default configuration and `models.allowed`; an explicit configuration path intentionally bypasses managed policy | `libs/code/tests/unit_tests/test_model_config.py` |
-| dcode CLI stack, hooks, headless stream/resume behavior, or status output | `libs/code/deepagents_code/agent.py`, then `hooks/` and `client/non_interactive.py` | Paired main/subagent middleware stacks and one client-owned headless session | `test_agent.py`, `hooks/test_server_lifecycle.py`, `test_non_interactive.py` |
-| JavaScript subagent cost attribution or QuickJS capabilities | `libs/code/deepagents_code/_js_cost.py`, then `libs/partners/quickjs/langchain_quickjs/middleware.py` | Receipt checkpoints and private per-thread interpreter state; direct bridge/PTC paths are capability boundaries | `test_js_cost_tracking.py`, QuickJS persistence/PTC tests |
-| Talon initial graph, tool catalog, approval snapshot, reload, or per-turn context | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime` | Candidate graph construction and atomic publication under `_tools_lock`; an invocation uses its captured graph/policy context | `libs/talon/tests/test_runtime.py`, `unit_tests/test_tool_approval_runtime.py` |
-| Talon local task attachments or fresh child graph policy | `libs/talon/deepagents_talon/subagents.py` — `TaskTools`, `prepare_subagents` | Exact names from the parent catalog; fresh roles are Talon-compiled while compiled/remote roles are opaque | `unit_tests/test_research_subagents.py`, `test_subagent_reload.py` |
-| Talon `/context-doctor`, `/model`, `/mcp-reload`, channel delivery, or host lifecycle | `libs/talon/deepagents_talon/host.py`, then `context_doctor.py` or `model_selection.py` | `TalonHost` owns commands, channel delivery, and persisted selection; optional runtime protocols prevent host coupling | `unit_tests/test_context_doctor.py`, `test_model_selection.py`, `test_host.py` |
-| Talon durable history and semantic search | `libs/talon/deepagents_talon/store_archive.py` | Caller-owned metadata Store plus an optional separate vector Store | `unit_tests/test_store_archive.py`, `store_archive_contract.py` |
-| Release-PR dependency validation or release scope | `.github/workflows/check_dep_freshness.yml`, `.github/scripts/release/check_wheel_dep_freshness.py`, then the scope workflow/script | Workflow owns merge-facing decisions; scripts compute target, metadata, or fan-out facts | Release-script tests and workflow validation |
-| Unified benchmark dispatch, model pool sizing, Harbor leaves, shards, or artifacts | `.github/workflows/unified_evals.yml`, then `.github/workflows/_harbor_run.yml` | Unified preparation owns the expected matrix; Harbor owns validated leaves and aggregation | `.github/scripts/tests/evals/test_unified_workflow.py`, shard/workflow contracts |
+| A turn's graph, approval policy, request-scoped callbacks, hooks, model, or cleanup | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime.invoke` | The runtime captures graph and approvals for one invocation, then binds and resets its context-local capabilities | `libs/talon/tests/test_runtime.py`, `unit_tests/test_tool_approval_runtime.py` |
+| Runtime-tool replacement or manual MCP activation | `runtime.py` — `_refresh_runtime_tools`, `reload_mcp_configuration`, `_replace_runtime_tools` | `_tools_lock` serializes replacement; compile the candidate graph before assigning the tool set and graph | `libs/talon/tests/test_runtime.py`, `unit_tests/test_mcp_config.py`, `unit_tests/test_skill_mcp.py` |
+| `/model` admission, persistence, or selected-model behavior | `host.py` — `_model_command`, then `model_selection.py` and `runtime.py` | The host owns global persisted selection; `ModelSelection` owns discovery/admission/build caching; middleware applies a turn override | `unit_tests/test_model_selection.py` |
+| `/mcp-reload` command presentation | `host.py` — `_reload_mcp_configuration`, plus the optional `MCPReloadableRuntime` protocol in `interfaces.py` | The host exposes only unavailable, success, or generic failure while the runtime owns reload mechanics | `tests/test_host.py`, `tests/test_runtime.py` |
+| Agent-created file delivery to the originating chat | `file_sending.py`, then `host.py` — `_file_handler` | The runtime supplies a turn-scoped handler; the host retains channel ownership, generation eligibility, staging directory, and upload | `unit_tests/test_file_sending.py`, `tests/test_host.py` |
+| Channel adapter contract or a new media-capable channel | `interfaces.py` — `ChannelAdapter`, `ChannelMedia`, `SendResult` | Adapters receive only a locally staged `ChannelMedia`; retry semantics live in the common channel helper | `unit_tests/test_file_sending.py`, channel-specific attachment tests |
+| Context diagnostics command behavior | `host.py` — `_context_doctor`, then `context_doctor.py` | Host command handling is bounded and content-safe; the runtime reads a checkpoint without invoking a model | `unit_tests/test_context_doctor.py` |
 
-## Graph construction: the SDK seam
+## Invocation scope: capture before execution
 
-`create_deep_agent()` is the SDK construction seam. `DeepAgentState.messages` uses a `DeltaChannel`, avoiding quadratic checkpoint growth. The function resolves a model/profile, binds the selected backend to backend-consuming middleware, and passes caller persistence dependencies to the compiled LangGraph graph. It is therefore the right place to change graph-wide defaults, not a post-compilation patch point.
+`DeepAgentRuntime.start()` resolves subagents, ensures an approval snapshot, and creates the initial graph. At the start of every `invoke()`, the runtime refreshes runtime tools, enters `_tools_lock`, reads approvals, recompiles only if the approval snapshot changed, and stores the graph and snapshot in context variables. Graph calls subsequently resolve through that captured invocation graph, so a reload or policy change after capture cannot mutate an active turn.
 
-```mermaid
-flowchart TD
-  Input["Caller configuration"] --> Build["create_deep_agent"]
-  Build --> Core["Filesystem and synchronous delegation core"]
-  Core --> Custom["Caller middleware"]
-  Custom --> Tail["Profile skills cache memory approvals"]
-  Tail --> Guards["Content refusal and final tool exclusion"]
-  Guards --> Graph["Compiled graph"]
-```
-
-*SDK construction protects the core capability boundary, then applies caller and profile customization before the final tool filter.*
-
-Caller middleware with a matching name replaces the default in place; a new name is inserted after the core stack and before the profile/prompt/memory tail. A profile cannot exclude `FilesystemMiddleware` or `SubAgentMiddleware`: removal fails rather than silently removing filesystem enforcement or the synchronous `task` handler. Profile tool exclusion is deliberately final, so a caller middleware cannot restore a profile-excluded tool.
-
-`subagents=` has three paths. Declarative and precompiled specs use the synchronous `task` path; an `AsyncSubAgent` becomes remote task lifecycle tools. Declarative children are assembled with their own profile and inherited-or-overridden permissions; compiled and remote graphs remain their provider's responsibility. When changing state, retain the child boundary's private-field filtering and final exclusion behavior.
-
-`StoreBackend` is the durable cross-thread filesystem adapter. It resolves a caller namespace against an explicit or runtime `BaseStore`, rejects namespace components that could widen Store searches, and preserves text and base64 binary content. Its backend tests are the boundary for pagination, encoding, and literal recursive deletion.
-
-## dcode: policy, hooks, and execution
-
-`ModelConfig.load()` is dcode's model-configuration boundary. Default loading merges managed policy; explicit-path loading does not. A present `DEEPAGENTS_CODE_` variable wins over the canonical counterpart even when empty. `models.allowed` distinguishes unrestricted (`None`), deny-all (empty), and exact or `provider:*` admission; malformed declared policy fails closed. Use the model-policy gate rather than interpreting provider strings separately.
-
-`HooksRuntime` freezes a client-owned workspace snapshot and exposes its ID, transcript projection, and configured server events to the graph. Project-hook execution requires resolved workspace trust. `HookEngine` runs matching handlers concurrently with individual limits but reduces in configuration order. The server middleware is the graph-side bridge: it checkpoints the hook context, only emits configured lifecycle events, resolves pre-tool decisions before normal approval routing, and prevents its private bookkeeping from entering public graph I/O or subagent result merges.
-
-```mermaid
-sequenceDiagram
-  participant Client as dcode client
-  participant Graph as agent graph
-  participant Runtime as HooksRuntime
-  participant Engine as HookEngine
-  Client->>Graph: invoke snapshot and events
-  Graph-->>Client: hook interrupt
-  Client->>Runtime: validate and fulfill once
-  Runtime->>Engine: run matching handlers
-  Engine-->>Runtime: ordered decision
-  Runtime-->>Graph: typed resume value
-  Graph->>Graph: continue turn
-```
-
-*The graph decides where an interrupt belongs; the trusted client snapshot determines whether and how matching handlers run.*
-
-`create_cli_agent()` installs server hook middleware on both main and subagent stacks. The main stack places it after HITL, ensuring a pre-tool decision resolves before approval routing; subagents keep tool hooks but do not emit `Stop`. The fulfillment client rejects a request from another snapshot and de-duplicates repeated `(snapshot_id, invocation_id)` execution.
-
-`run_non_interactive()` owns one headless streaming session. It gates shell execution using the resolved allow-list and explicit project-hook trust, resumes responses in a bounded turn loop, writes agent response text to stdout in quiet mode, and returns 124 after its turn budget. `cli_main()` adds best-effort OSC status publication, which never changes the process exit code. `ProgramStatusReporter` owns validated, bounded, sanitized OSC output while `AgentStatusTracker` owns TUI status precedence and cleanup.
-
-`CostAwareCodeInterpreterMiddleware` only changes asynchronous JavaScript-dispatched subagent accounting. It isolates child checkpoint namespaces, collects idempotent durable receipts once work settles, and returns a parent session-cost transfer; synchronous execution stays on the ordinary middleware path. In the base QuickJS middleware, thread state is private and can be restored only from a bounded optional-HMAC snapshot; invalid snapshots are cleared. `fs=True` and programmatic tool calling bypass normal Deep Agents filesystem permission or per-tool HITL paths, so treat them as explicit capability decisions.
-
-## Talon: graph catalogue, replacement, and per-turn context
-
-`DeepAgentRuntime.start()` resolves subagents, obtains an approval snapshot, and compiles the initial graph. `_create_graph()` constructs its runtime tool list, separates skill-only MCP tools, adds approval-management tools, resolves each local subagent's named attachments against a catalog that includes filesystem tools, prepares child definitions, then calls `create_deep_agent()`.
-
-The Talon middleware list is intentional. It replaces SDK filesystem and summarization slots, installs model selection, progress, approval and server-hook middleware, replaces the SDK synchronous-subagent slot with `TaskTools`, adds background delegation, then conditionally adds context-size tooling, memory, skill handling, caller middleware, MCP filtering, and prompt caching. `get_agent_tools` distinguishes a role's configured attachment inventory from tools selectable for a one-off local `task`; precompiled and remote definitions remain opaque.
+The request boundary then binds the operator-approval flag, pending background results, cron origin, authorization and breakout handlers, loaded hook session, progress handler, question handler, file handler, history context, checkpointer session protection, and selected model/effort. The `finally` block resets those bindings. New callback-like capabilities belong on `AgentRequest` in `interfaces.py`, must be bound around graph execution in `runtime.py`, and should be supplied only by `TalonHost` rather than channel metadata.
 
 ```mermaid
 sequenceDiagram
@@ -139,32 +72,38 @@ sequenceDiagram
 
 *Replacement construction finishes before publication; the active turn resolves graph calls through its captured context rather than a later reload.*
 
-Before each invocation, `invoke()` runs the optional refresh callback. Refresh/reload and approval-change paths hold `_tools_lock`; `_replace_runtime_tools()` and subagent reload compile first, then assign tools/definitions and `_graph`. A failed automatic refresh marks saved MCP changes inactive and retains the current graph; an explicit MCP reload reports failure without publishing a partial replacement. Once the invocation stores graph and approval snapshot context variables, later changes cannot alter that running turn.
+A failed automatic refresh logs the error, marks saved MCP changes inactive, and retains the old graph. Explicit `reload_mcp_configuration()` uses the same lock and replacement path, but re-raises to let the host present a generic failure. Subagent configuration follows the same compile-before-assignment rule, but must be explicitly reloaded; running turns and local tasks retain their original graphs. `get_agent_tools` reports this distinction through `saved_changes_inactive` and `current_turn_uses_previous_graph`.
 
-Request scope is also the authority boundary. The runtime binds the selected model/effort, operator approval eligibility, authorization and breakout handlers, hook session, cron origin, pending background results, progress/question/history context, and checkpointer session protection for the invocation, then resets them in `finally`. A model selected by the host is validated/build-cached before use; `ModelSelectionMiddleware` swaps it into main-agent calls and selected-model summarization uses its own thresholds, without recompiling the graph. If a saved selected model can no longer be built, the turn falls back to the default.
+## Model selection: host authority, runtime enforcement
 
-### Local roles and diagnostics
+Model choice has three owners. `TalonHost` accepts `/model` listing from any caller, but permits a change only from an operator. Before writing the global selection file, it asks the runtime to validate and prepare the requested model; it clears persisted state for `default`. That global selection is passed on later requests as `AgentRequest.model`, not accepted from incoming channel metadata. A model switch that races with a turn already being prepared applies on the following turn.
 
-`TaskTools` deliberately uses the SDK `SubAgentMiddleware` name, replacing rather than duplicating the SDK `task` tool. An optional `tools` argument is accepted only for a named local role; names must be unique and in the non-delegation parent catalog, and augment configured tools for that task. `prepare_subagents()` rejects fork mode. It freshly compiles local roles with explicit tools, applicable approval rules, MCP/control middleware, and a fresh context; under active approval policy it refuses opaque precompiled runnables because Talon cannot enforce policy inside them.
+`ModelSelection` discovers only providers with usable credentials in Talon's environment, includes the startup default, requires an exact `provider:model` match, and lazily caches non-default models after successful construction. Gateway discovery is also constrained to the configured trusted endpoint and usable model credentials. A persisted selection that later becomes unavailable does not fail a conversation: the runtime logs it and uses the default model.
 
-`ContextDoctor` is paired with a successfully compiled graph and is read-only. It reads a named checkpoint, reloads configured memory and skills for estimation, derives initial tool schemas while accounting for deferred and skill-only MCP tools, and estimates conversation tokens after a summarization event. The report exposes counts rather than source contents or paths, bounds row detail, and deliberately excludes middleware additions and provider overhead. `DeepAgentRuntime.context_doctor()` refuses to run before startup.
+`DeepAgentRuntime._turn_models()` resolves the request's model and binds it with `ACTIVE_MODEL` only for that invocation. `ModelSelectionMiddleware` substitutes that model for main-agent calls, while `SelectedModelSummarization` constructs and caches a summarizer whose thresholds follow the selected model. This avoids graph recompilation and prevents a model with a smaller context budget from inheriting the startup model's budget; subagents retain the startup summarizer.
 
-`TalonHost` owns command routing and channel-safe presentation. `/context-doctor` calls the optional diagnostics protocol with a ten-second limit, follows the current reset thread and selected model, does not interrupt active work, and returns a generic failure instead of backend details. `/mcp-reload` similarly invokes the optional reload protocol and exposes only a success/unavailable/generic-failure response. `/model` lists discovered models to callers, but only an operator can validate, persist, and switch the global selection; the persisted selection affects later turns.
+## MCP reload: activation is transactional, command output is not diagnostic
 
-`StoreConversationArchive` is separate from graph checkpointing. It persists scoped, idempotent transcript records in a caller-owned metadata Store, uses a separate vector Store only when indexing is enabled, indexes user text and host-confirmed replies, bounds retrieval scans, and journals vector-first deletion so recovery can continue after interruption.
+MCP configuration may schedule saved changes, but saved and active configuration are distinct. At the next turn, optional refresh can construct a replacement from refreshed tools. `/mcp-reload` invokes the optional `MCPReloadableRuntime` capability for an immediate attempt. Both paths build the candidate graph before publishing `tools` and `_graph`; if construction fails, the previous graph remains usable and saved changes remain inactive.
 
-## CI and evaluation ownership
+`TalonHost` is the channel-facing enforcement boundary. It routes the command while holding the conversation command path, detects runtimes without the optional capability, logs underlying exceptions, and returns only a success, unavailable, or generic failure message. Do not expose MCP config, credentials, or transport errors in this response. Add reload mechanics to the runtime protocol and runtime tests; add only presentation behavior to host tests.
 
-The release dependency-freshness workflow is an artifact gate for release-please PRs: it resolves a release target, reports dependency-minimum freshness, builds one wheel, validates metadata against PyPI and sibling source constraints, and installs that wheel with dependencies resolved only from PyPI. The separate release-scope path reads trusted base-revision configuration, identifies potential multi-component bump fan-out, and lets the workflow make the merge-facing decision, with `ci:allow-lockfile-release` as an explicit acknowledgement.
+## Agent-to-channel file delivery
 
-`unified_evals.yml` owns manual cross-model dispatch. It validates and constructs an expected per-model flat matrix, derives the outer concurrency limit, and invokes the reusable Harbor workflow. LangSmith usage collection is best-effort and isolated from the repository-writing publisher. `_harbor_run.yml` either expands a single dataset or accepts the pre-expanded matrix, caps its runner pool from that matrix, validates credentials and untrusted inputs, partitions matching shard selections, and writes empty-shard markers so aggregation distinguishes intentional no-op work from missing results.
+The main Talon graph always receives a `send_file` tool built over the same backend as its filesystem tools. On a call, the tool refuses subagent execution and turns with no bound handler; otherwise it downloads one backend file, enforces the configured byte ceiling, derives a safe display name, and calls the turn-local `FileSendHandler`. Backend read failures can be shown as tool text, but channel send failures are deliberately reduced to a generic message so transport details do not enter model context.
 
-## Focused test plan
+The host creates that handler for a live chat turn and passes it through `AgentRequest`. Before staging or uploading, the handler verifies that the turn remains eligible to reach its chat: a superseding message, reset, or terminal authorization prevents late delivery. It stages bytes under `outbound_media_dir` in a fresh private directory, writes the file with exclusive no-follow creation and private permissions, derives `ChannelMedia.media_type` from the sanitized path, sends with the shared retry helper, and removes the staging directory whether upload succeeds or fails. The channel adapter therefore owns the actual `send_media` transport, while no agent filesystem path is passed to it.
 
-- **SDK and Store:** begin with `libs/deepagents/tests/unit_tests/test_graph.py`; pair Store changes with `unit_tests/backends/test_store_backend.py` and its async counterpart.
-- **dcode:** use `libs/code/tests/unit_tests/test_model_config.py`, `hooks/test_engine.py`, and `hooks/test_server_lifecycle.py`; pair headless or status changes with `test_non_interactive.py` and `test_program_status.py`.
-- **QuickJS:** use `libs/code/tests/unit_tests/test_js_cost_tracking.py` for durable transfer accounting and `test_js_cost_sync.py` for the unchanged synchronous path. Pair interpreter lifecycle, persistence, or tool exposure changes with the QuickJS middleware, snapshot, and PTC suites.
-- **Talon construction/replacement:** `libs/talon/tests/test_runtime.py` verifies tool refresh and transactional MCP replacement. Pair policy snapshots with `unit_tests/test_tool_approval_runtime.py` and local-role or reload work with `test_research_subagents.py` and `test_subagent_reload.py`.
-- **Talon diagnostics/models:** `libs/talon/tests/unit_tests/test_context_doctor.py` covers content-free, non-mutating estimates, deferred MCP accounting, reload visibility, and safe host command behavior. `test_model_selection.py` covers operator gating, persistence, catalog admission, selected-model use, unavailable fallback, and gateway validation.
-- **Talon host/history:** use `test_host.py` for lifecycle, command routing, delivery, and callback ownership; retain archive contract coverage for persistent history.
-- **Evaluations and release:** use `.github/scripts/tests/evals/test_unified_workflow.py` for dispatcher wiring/matrix validation, pair shard changes with shard/workflow contracts, and retain release-script/workflow tests for target resolution, one-wheel validation, PyPI-only install, and scope fan-out.
+`display_filename()` preserves ordinary Unicode names and extensions where possible, but replaces path separators and control or formatting characters, rejects dot-only names, and bounds the UTF-8 name length. Keep these checks both at tool display-name creation and staging: the handler protocol is an integration boundary and should treat filenames as untrusted even if a future caller bypasses the model tool.
+
+## Protocol boundaries and focused tests
+
+`interfaces.py` makes host/runtime coupling capability-based. `AgentRuntime` is required for lifecycle and invocation; context diagnostics, model switching, MCP reload, delivery recording, history, and inbound-media handling are optional runtime-checkable protocols. `AgentRequest` carries host-installed callbacks with `repr=False` and `compare=False`; its `model` documentation explicitly reserves population for the host. `ChannelAdapter.send_media()` accepts a local `ChannelMedia` and returns `SendResult`, including retryability, rather than exposing a transport exception to the runtime.
+
+Use the narrowest test suite that crosses the boundary being changed:
+
+- **Invocation and replacement:** `libs/talon/tests/test_runtime.py` covers initial construction, refresh, explicit MCP reload, approval-driven graph replacement, and failure retention. Pair new scoped capability bindings with `unit_tests/test_tool_approval_runtime.py` or the specific runtime suite.
+- **Models:** `libs/talon/tests/unit_tests/test_model_selection.py` covers operator gating, persistence across restart, default reset, concurrent-turn timing, credentialed catalog admission, one-time model construction, unavailable fallback, selected-model context limits, gateway catalog validation, and selected-model summarization.
+- **Host commands:** use `libs/talon/tests/test_host.py` for optional-runtime command routing and generic failure presentation. Keep `/context-doctor` coverage in `unit_tests/test_context_doctor.py` because it asserts the ten-second bound, selected-model forwarding, and content-safe diagnostics behavior.
+- **File delivery:** `libs/talon/tests/unit_tests/test_file_sending.py` covers backend reads, byte limits, subagent and no-chat denial, error redaction, filename sanitization, private staging and cleanup after success or failure, media typing, and runtime handler binding. Pair host wiring changes with the host test that verifies the request receives and invokes `file_handler`.
+- **Adapters:** pair a channel-specific upload change with that adapter's attachment suite as well as the shared file-sending tests. Preserve the `ChannelMedia` and `SendResult` contract rather than teaching the runtime a provider-specific upload API.

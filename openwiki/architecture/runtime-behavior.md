@@ -1,93 +1,128 @@
 ---
 type: runtime architecture
 title: Runtime Behavior and Failure Boundaries
-description: How Talon owns detached subagent work, runs scheduled delegation inline, contains worker failures and approvals, and reconciles result processing with channel delivery.
-tags: [talon, runtime, subagents, scheduling, delivery, retries, security]
+description: Request-scoped Talon graph lifecycle, approval and hook context, detached and scheduled subagents, delivery settlement, and scoped file delivery.
+tags: [talon, runtime, subagents, scheduling, delivery, approvals, hooks]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-24T08:04:12.461Z
+    at: 2026-11-27T08:04:01.405Z
 sources:
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-fd3cc27f279ed4fb8aaca360
+    resource: repo://libs/talon/deepagents_talon/file_sending.py
+  - id: openwiki-source-cbf86ab9c145113d54045954
+    resource: repo://libs/talon/deepagents_talon/hooks.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-24T08:04:12.461Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-27T08:04:01.405Z" }
 ---
 
 # Runtime Behavior and Failure Boundaries
 
-Talon distinguishes a completed worker, a main-agent turn that processed its result, and a reply confirmed by a channel. Those are separate lifecycle milestones with different owners. This page covers the delegation and delivery boundary; see [State Persistence](/openwiki/concepts/state-persistence.md), [Subagents and Skills](/openwiki/concepts/subagents-skills.md), [Talon Scheduling](/openwiki/concepts/talon-scheduling.md), [Talon](/openwiki/integrations/talon.md), and [Security](/openwiki/operations/security.md).
+> **Experimental:** Talon is an experimental runtime and can change or be removed. In particular, do not equate a worker finishing, a main-agent turn completing, and a channel delivery succeeding: they are distinct milestones.
 
-## Lifecycle and ownership
+Talon's host owns channel interaction and the final delivery decision; `DeepAgentRuntime` owns graph invocation and the in-memory `BackgroundSubagents` middleware owns local task/result state. This boundary is important for safe retries: runtime acknowledgement means the main graph processed a result, **not** that a user received it. See [Subagents and Skills](/openwiki/concepts/subagents-skills.md), [Talon Channel Admission](/openwiki/concepts/talon-channel-admission.md), [Talon Scheduling](/openwiki/concepts/talon-scheduling.md), [Talon](/openwiki/integrations/talon.md), and [Security](/openwiki/operations/security.md).
 
-`DeepAgentRuntime.start()` resolves subagents, snapshots the approval policy, and builds the graph. Each `invoke()` refreshes runtime tools and, under a tool lock, rebuilds the graph if the approval snapshot changed. The invocation uses the request conversation ID as LangGraph's `thread_id`; a `ConversationSaver` session is protected for the invocation when configured.
+## Turn construction and request context
 
-`BackgroundSubagents` is an in-memory middleware owned by that runtime. Its job table, task handles, final results, and delivery counters are process-local: they are not checkpoint state and are lost on restart. A job has an owning conversation thread. Listing, inspection, messaging, cancellation, and result injection are scoped to that owner, so another conversation cannot control or consume it. The table also holds limited externally supplied results, which follow the same acknowledgement and requeue rules.
+`start()` resolves subagents, ensures and snapshots tool approvals, and constructs the graph. At every `invoke()`, Talon refreshes runtime tools; it serializes tool changes under a lock and rebuilds the graph if the persisted approval snapshot changed. The request conversation ID is the LangGraph `thread_id`. When the checkpointer is a `ConversationSaver`, the invocation holds that conversation's protected session.
+
+The invocation binds context only for its duration: selected model/effort, approval-operator eligibility, authorization and breakout handlers, cron origin, pending-result tracking, progress/questions, file delivery, history scope, and hooks. An operator flag is effective only for an attended, non-cron, non-background-delivery turn. This prevents a synthetic delivery turn from inheriting authority from the person who started the original conversation.
+
+Hooks are also request-scoped. Talon loads the trusted assistant hook snapshot once per turn, explicitly excludes workspace/project hooks, records committed messages before hook fulfilment, validates snapshot/thread/prompt identities on hook interrupts, and leaves remaining tool approvals to Talon. Child subagents receive independent hook identities and transcripts while sharing the turn snapshot.
 
 ```mermaid
 sequenceDiagram
     participant Host as Talon host
     participant Runtime as DeepAgentRuntime
-    participant Worker as Background worker
-    participant Graph as Main graph
+    participant Hooks as Turn hooks
+    participant Graph as LangGraph graph
     participant Channel as Channel adapter
-    Host->>Runtime: attended request
-    Runtime->>Worker: detach task with owner
-    Worker-->>Runtime: pending result
-    Runtime->>Graph: later turn with keyed result
-    Graph-->>Runtime: text and acknowledged IDs
-    Runtime-->>Host: candidate reply
-    Host->>Channel: send reply
-    alt confirmed
-        Host->>Runtime: archive delivery
-    else stale cancelled or failed
-        Host->>Runtime: requeue acknowledged IDs
+    Host->>Runtime: AgentRequest with conversation ID
+    Runtime->>Runtime: refresh tools and approval snapshot
+    Runtime->>Hooks: load turn snapshot
+    Runtime->>Graph: invoke with thread ID
+    Graph-->>Runtime: text and consumed result IDs
+    Runtime-->>Host: AgentResult
+    Host->>Channel: send final reply
+    alt confirmed send
+        Host->>Runtime: record delivered reply
+    else discarded or cancelled
+        Host->>Runtime: requeue consumed result IDs
     end
 ```
 
-*An attended result is only settled after both the graph turn and reply-delivery boundary have been reconciled.*
+*The request flow separates runtime completion from host-confirmed channel delivery.*
 
-## Attended delegation: detached and deliberately bounded
+## Approvals, retries, and history protection
 
-For an ordinary conversation, the middleware intercepts the SDK `task` and `start_async_task` calls and returns a task ID immediately. It creates a worker only when the call has a non-empty conversation `thread_id`; otherwise it returns a tool error. The runtime-wide worker limit is shared by configured middleware copies and all conversations. When either the total job table or active-worker limit is reached, the tool refuses the new launch rather than queueing it. `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS` configures the positive active-worker limit; the default is four.
+The graph contains both hook and human-in-the-loop middleware; hook decisions run before approval resolution. Talon resolves hook interrupts first, then batches remaining approval interrupts, audits the outcome, resumes the graph, and enforces a maximum approval-round limit. Cron runs and requests without an approval handler auto-deny gated calls rather than leaving an interrupt without an operator.
 
-The worker runs with a fresh task ID as its LangGraph `thread_id`, a recursion limit of 500, and a copied state. It retains scoped context needed by supported tools, such as history scope and cron origin, but marks itself as a subagent, prevents nested `task` or `start_async_task` delegation, and clears the authorization handler. That removal is intentional: a detached worker can outlive the originating host turn, so it must not leave an authorization prompt stranded in a conversation. Approval interrupts likewise cannot wait for a human in the background: an interrupted child becomes the safe result text that the protected action needs approval and did not run.
+Graph invocation retries retryable failures up to the configured attempt count with exponential backoff (1, 2, 4 seconds, capped at 10 seconds); cancellation is propagated. If an invocation produces no text, continuation nudges and finally a summary prompt are new graph invocations. Consequently, tool wrappers that can time out after sibling calls have begun must contain those failures rather than letting a whole graph retry relaunch work.
 
-A local worker can be sent guidance only when it is a Talon-built local subagent; messages are queued for its next model step, not an interruption of a running model or tool call. Remote `start_async_task` targets stream to their configured graph with cancellation on disconnect. Task definitions and tool capability are fixed for a running worker: later reloads affect subsequent turns, not that worker.
+Pending background results are injected before the request as keyed synthetic user messages. Only after successful main-turn completion does the runtime acknowledge the consumed IDs and return them in `AgentResult.background_results`. A failed main turn increments an offered result's delivery count and drops it at the configured limit; cancellation does not count as a failure. `record_delivered_reply()` promotes non-empty text to persistent semantic history only after the host reports a confirmed send.
 
-Detached execution has a one-hour timeout. Cancellation marks the job cancelled and produces no result; ordinary exceptions and timeouts become bounded, safe text rather than propagating tool arguments, credentials, or provider payloads into the main conversation. Recognized HTTP status codes produce a generic actionable hint, while unknown failures use a generic message. Result extraction includes answer text only, excludes reasoning blocks, and limits output to 64,000 characters.
+## Attended delegation: detached, owner-scoped work
 
-## Scheduled delegation is inline
+For attended conversations, `task` and `start_async_task` are intercepted and return a task ID immediately. A non-empty calling `thread_id` is required. Jobs, task handles, results, and counters are in-memory/process-local rather than checkpoint state, so they do not survive a restart. The capacity ceiling is shared by configured middleware copies and conversations; when either the active-worker limit or job table limit is full, launch is refused rather than queued.
 
-A request whose metadata has `trigger: "cron"` enters a different mode. It hides the attended-only management tools and tells the model that `task` and `start_async_task` return their completed result in the same turn. The middleware waits inline instead of creating a job record, so scheduled delegation neither consumes the attended-worker capacity nor relies on a future delivery turn. A background-delivery turn is still an attended conversation for this decision and therefore detaches new work.
+Each worker runs on a fresh task ID with recursion limit 500 and copied task state. It marks itself as a subagent, blocks nested delegation, clears operator authority and the authorization handler, and turns approval interrupts into safe result text. A detached worker therefore cannot strand an interactive approval prompt after its originating host turn ends. Timeout and ordinary errors become bounded, sanitized results; cancellation marks the job cancelled without producing a result. Remote asynchronous targets stream with `on_disconnect="cancel"`.
 
-Inline work sets the subagent guard, preserving the no-nested-delegation invariant. A distinct semaphore permits scheduled fan-out while bounding concurrent inline calls; calls beyond the limit wait rather than fail, and their timeout begins only after obtaining a slot. The default inline timeout is ten minutes and can be set with `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` as a positive integer in seconds.
+The management tools enforce the same owner boundary: a conversation may list, inspect, message, or cancel only its jobs. Guidance is supported only for Talon-built local workers and is queued for the next model step; it does not interrupt an active model/tool call. Saved subagent configuration is not automatic: reload changes later turns, while running tasks retain their original graph and capabilities.
 
-Timeouts and ordinary exceptions are caught and returned as error `ToolMessage` values. Nothing escapes the inline wrapper because an escaping retryable timeout could make the runtime rerun the whole graph and relaunch sibling tool calls from the same assistant message. The error text is sanitized just as it is for detached workers.
+## Scheduled delegation runs inline
 
-## Result processing, retry, and delivery settlement
+A turn with `trigger: "cron"` has no interactive audience and uses a separate path. Its `task` and `start_async_task` calls run inline to completion instead of adding a job or waiting for a follow-up delivery turn. Nested delegation remains forbidden. A chat's later `background_delivery` turn is not cron, so it continues to detach work.
 
-On each runtime invocation, pending results for that conversation are injected as keyed synthetic user messages before the current request. A context-local tracker records only results actually exposed to the main-agent turn, including results read through `list_subagents`. The runtime acknowledges those IDs only after the turn completes successfully and returns them in `AgentResult.background_results`. If the graph fails, it increments the offered results' delivery count; after three failed processing turns, the result is marked dropped rather than retried forever. Cancellation does not count as a failed delivery.
+A separate semaphore bounds scheduled inline fan-out. Calls wait for a slot, then start their timeout, so queue time does not consume execution budget. The default inline timeout is ten minutes; `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` accepts a positive integer seconds value. Inline wrappers catch ordinary errors and timeouts and return sanitized error `ToolMessage` values. That containment avoids retrying the graph and launching sibling tool calls again.
 
-The graph invocation itself retries retryable exceptions up to the configured attempt count, with exponential backoff of 1, 2, 4 seconds and a ten-second cap; cancellation propagates. Empty-output continuation nudges are separate graph invocations, not a replay of an individual model call. Inline delegation must therefore convert its own failures before they meet that retry boundary.
+`DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS` sets the positive attended worker limit (default four). Treat capacity refusals, safe timeout/error results, and repeated result-processing failures as operational signals rather than evidence that work was delivered.
 
-The host dispatches a completed background result only when its conversation has no active turn and is not blocked, then starts a follow-up turn marked `background_delivery`. That marker removes operator approval authority for the delivery turn. After a successful graph turn, the host still cannot regard the result as user-visible: the reply may be suppressed, replaced by a newer generation, cancelled during settlement, or fail channel delivery. In the non-deliberate loss paths, it requeues exactly the acknowledged IDs from `AgentResult`; already delivered, cancelled, or pruned IDs are not resurrected. Persistent history promotion likewise happens only after the channel confirms a non-silent send.
+## Background-result settlement and channel delivery
 
-## Operations and shutdown
+The host polls completed result owners and starts a synthetic `background_delivery` turn only when the conversation has no active turn, is not blocked, and has pending results. It removes both approval and authorization handlers for that follow-up. The runtime's keyed messages make re-injection idempotent, while the returned IDs let the host settle only work the graph actually consumed.
 
-The default limits are intentionally different: detached work can run up to 3,600 seconds because it costs an independent worker, whereas a scheduled inline call defaults to 600 seconds because it holds up the scheduled turn. Monitor capacity refusals, worker timeouts, repeated result-processing failures, and generic safe failure text; the latter deliberately omits sensitive exception detail.
+```mermaid
+flowchart TD
+    Ready["Completed result for an owner"] --> Check["Host checks idle and unblocked conversation"]
+    Check -->|not eligible| Wait["Leave result pending for a later tick"]
+    Check -->|eligible| Followup["Run background delivery turn"]
+    Followup -->|runtime error| Count["Increment processing failure count"]
+    Count -->|under limit| Wait
+    Count -->|limit reached| Drop["Mark result dropped"]
+    Followup -->|main turn succeeds| Ack["Runtime acknowledges consumed IDs"]
+    Ack --> Settle["Host validates generation and sends reply"]
+    Settle -->|confirmed send| History["Record non-empty final reply in history"]
+    Settle -->|superseded or cancelled| Requeue["Requeue exactly consumed IDs"]
+```
 
-Shutdown first cancels background workers and waits up to ten seconds. If a worker survives that wait, `DeepAgentRuntime.stop()` raises and leaves the graph/checkpointer resources open rather than allowing a live worker to write against closed resources. The host treats this as a component failure and continues its own shutdown.
+*Acknowledgement follows successful graph processing; delivery confirmation follows host settlement and channel success.*
 
-## Focused regression coverage
+During settlement, a superseded generation, cancellation while waiting to deliver, or a failed/withheld candidate reply must not silently consume background work. The host requeues precisely `AgentResult.background_results` for unintentional loss. Deliberate suppression—for example, terminal authorization or a silent scheduled run—keeps the results acknowledged. Results that were already delivered, pruned, or cancelled are not resurrected.
 
-- `libs/talon/tests/unit_tests/test_background.py` exercises owner isolation, shared capacity and its environment setting, independent worker thread IDs, cancellation, sanitised timeout/failure results, authorization removal, acknowledgement/requeue, delivery-attempt dropping, shutdown, and the separate inline cron path.
-- Its scheduled tests verify no job is created, nested delegation is blocked, fan-out is concurrent but semaphore-bounded, queued work does not spend its execution timeout while waiting, and inline failures cannot escape into graph retry.
-- `libs/talon/tests/unit_tests/test_research_subagents.py` verifies fresh subagent context and explicit tool capability boundaries, including that a background subagent cannot obtain an interactive approval and reports an approval interrupt as its result.
-- Delivery tests should always distinguish graph success from confirmed send: a result acknowledged by the runtime must be requeued if the host discards or cannot deliver that turn's reply.
+## Scoped `send_file` capability
+
+The runtime installs `send_file` over the same filesystem backend used by agent file tools and binds the host-provided file handler only for the current invocation. The tool reads one bounded file, derives a sanitized display filename, and sends it to the chat that started that turn. It does not provide a destination argument, does nothing when the run has no receiving chat, and refuses calls from a subagent; a child must report a path to its main agent instead.
+
+The host handler additionally checks that the turn is still active and still reaches its originating chat. It stages bytes in a fresh private directory below Talon's outbound-media root, writes with exclusive no-follow permissions, asks the channel adapter to send media with retry, and removes the staging directory afterwards. Tool output reports only a generic failure while channel transport detail is logged. File-send success is a separate channel operation; it neither establishes final-text delivery nor changes the background-result settlement boundary.
+
+## Shutdown and focused tests
+
+Runtime shutdown cancels background workers before closing the graph/checkpointer. It waits up to ten seconds; if any worker survives, `stop()` raises and deliberately leaves resources open rather than permit a live worker to write to closed resources. The host treats that as a component failure while continuing shutdown.
+
+Focused regression coverage includes:
+
+- `libs/talon/tests/test_host.py`: a background delivery turn drops interactive authority; superseded and cancelled turns requeue consumed IDs; deliberate suppression does not; and an agent file is sent to the originating chat then removed from outbound staging.
+- `libs/talon/tests/unit_tests/test_background.py`: owner isolation, capacity, task lifecycle, cancellation, safe failures, approval handling, acknowledgement/requeue, shutdown, and the distinct cron-inline path.
+- `libs/talon/tests/unit_tests/test_research_subagents.py`: fresh child context/capabilities and the inability of background subagents to complete interactive approvals.
+
+When changing this area, test the three settlement milestones independently: worker completion, successful main-graph processing, and confirmed channel delivery.

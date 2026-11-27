@@ -1,7 +1,7 @@
 ---
 type: security operations guide
 title: Security and Trust Boundaries
-description: Operational security guidance for Talon's experimental local-host authority, delegation, MCP and session bridges, channel admission, and CI credential scope. It distinguishes convenience controls from authorization and containment boundaries.
+description: Operational security guidance for Talon's request-scoped authority, unattended work, untrusted attachments, sandbox staging, backend-to-channel file transfer, integrations, and CI credentials. It distinguishes input handling and convenience controls from authorization and containment boundaries.
 tags: [security, operations, talon, trust-boundaries, approvals, credentials, mcp]
 sources:
   - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
@@ -12,38 +12,52 @@ sources:
     resource: repo://.github/workflows/release.yml
   - id: openwiki-source-8896ee5af2462c92e51bfb6e
     resource: repo://libs/code/deepagents_code/local_context.py
+  - id: openwiki-source-8a4e357da1dab3192e01eb13
+    resource: repo://libs/talon/deepagents_talon/attachments.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-0ad7ce4799b63dc215741642
+    resource: repo://libs/talon/deepagents_talon/channels/base.py
   - id: openwiki-source-8feffa040b2e9614a8d53cd4
     resource: repo://libs/talon/deepagents_talon/claude_sessions.py
   - id: openwiki-source-41ff73b838d042459b2a69ca
     resource: repo://libs/talon/deepagents_talon/codex_sessions.py
   - id: openwiki-source-2a219768ba2f2599d951e7bb
     resource: repo://libs/talon/deepagents_talon/dcode_sessions.py
+  - id: openwiki-source-fd3cc27f279ed4fb8aaca360
+    resource: repo://libs/talon/deepagents_talon/file_sending.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
+  - id: openwiki-source-ccdb88feadbc25be2fc7b63b
+    resource: repo://libs/talon/deepagents_talon/media.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-2d1f686d24d8182f60108ae7
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
+  - id: openwiki-source-1c86f8e1d9b6cb62f342d9ed
+    resource: repo://libs/talon/tests/channels/test_base.py
   - id: openwiki-source-df8e616d4a20b5878bc1a05e
     resource: repo://libs/talon/tests/test_mcp_auth.py
+  - id: openwiki-source-e0db085f967450f48196d999
+    resource: repo://libs/talon/tests/test_media.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
+  - id: openwiki-source-412987bb51db9ba8f655d511
+    resource: repo://libs/talon/tests/unit_tests/test_file_sending.py
   - id: openwiki-source-a4cc4beb110c42a169caf195
     resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
   - id: openwiki-source-8de0ff38635f214c7268d8e7
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
   - id: openwiki-source-242a21b2da46507f58415265
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-27T08:04:01.405Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-25T08:04:06.996Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-25T08:04:06.996Z" }
+    at: 2026-11-27T08:04:01.405Z
 ---
 
 # Security and Trust Boundaries
@@ -63,6 +77,47 @@ Deep Agents follows a **trust-the-LLM** model: the agent may exercise authority 
 | GitHub environment | Which jobs receive a named secret or OIDC identity at job start | Proof that the environment's external protection rules and provider-side rights are correctly configured |
 
 The default Talon shell and file tools run on the host. `DEEPAGENTS_TALON_SANDBOX` selects an opt-in remote sandbox for them; startup fails rather than falling back to host execution if it cannot start. However, Talon keeps skills and memory on the host, and MCP tools, web tools, and channel media handling still run there. Sandbox selection is therefore valuable execution isolation, but not a multi-tenant or whole-process boundary. Run Talon under an account and on a machine appropriate to the worst authority of enabled integrations; keep assistant state, MCP configuration, and tokens outside an agent-editable workspace.
+
+## Attachments, media roots, and sandbox staging
+
+An attachment arriving from a channel is **untrusted inbound data**, even after an adapter has downloaded it. Admission decides whether a message can trigger a turn; it does not make its filename, MIME type, bytes, path, or embedded instructions trustworthy. Keep inbound-media directories private and separate from assistant state, credential stores, and workspaces that contain trusted operator material.
+
+For documents, Talon deliberately gives the model a path notice rather than inlining bytes. The notice JSON-encodes the absolute path and says to treat both the attachment and path as untrusted data, not instructions. An unavailable attachment becomes the generic `_(Attachment was unavailable.)_` notice, without a provider URL, token, or transport error. Images are the exception: locally available images with an image MIME type at or below the 5 MiB inbound limit become base64 image blocks; oversized, unreadable, or non-image inputs are not made into image blocks. Video and other binary-media notices are still untrusted text and their paths must not be treated as authorization to read arbitrary host files.
+
+When shell/file execution uses a remote sandbox, `DeepAgentRuntime.prepare_inbound_media` copies **documents** into that backend before the host prepares model text. The staging destination is `<sandbox working directory>/.talon/attachments/<UUID><safe suffix>`; the model-facing metadata is replaced with the sandbox path. The copy reads only a regular file under the configured inbound root or the matching provider-specific media-root override, resolves symlinks, uses `O_NOFOLLOW`, enforces `DEEPAGENTS_TALON_MAX_MEDIA_BYTES`, and uploads bytes through the backend. A failed stage logs server-side and only marks the attachment unavailable in the sandbox. Thus there are three distinct locations to reason about:
+
+| Location | Trust and responsibility |
+| --- | --- |
+| Provider download / inbound-media root | Untrusted bytes owned by the channel integration. Its private directory is an intake boundary, not a trusted workspace. |
+| Sandbox `.talon/attachments` path | A backend-readable copy for the current agent backend. It is not a claim that the original sender or document is trusted. |
+| Agent/backend file path used by `send_file` | A file the configured backend can read for delivery to the initiating chat; review it as an exfiltration operation. |
+
+```mermaid
+sequenceDiagram
+    participant Channel
+    participant Host
+    participant Runtime
+    participant Backend
+    Channel->>Host: admitted message and downloaded attachment
+    Host->>Runtime: prepare inbound document
+    Runtime->>Host: bounded read from allowed media root
+    Runtime->>Backend: upload sandbox attachment copy
+    Backend-->>Runtime: backend path
+    Runtime-->>Host: replaced attachment metadata
+    Host->>Host: path notice or bounded image block
+```
+
+*For remote execution, the host verifies an inbound document before the runtime copies it to the backend and exposes the backend path to the model.*
+
+### Sending files back to a channel
+
+`send_file` is request-scoped: the runtime binds a file handler for the current invocation, and the tool reads through the same agent backend used by file tools. It therefore can retrieve a local workspace file or a remote-sandbox file, but a subagent is refused and a run without a receiver does not send anything. The host also refuses delivery if the turn has been superseded, reset, or terminally authorized, so an old turn cannot post its file into a newer chat state.
+
+The model receives the recipient-facing basename after `display_filename` removes path separators and control/format characters, substitutes a dot-only or blank name with `file`, and limits the UTF-8 name to 200 bytes while retaining a reasonable suffix. The host creates a fresh `send-` directory under the trusted outbound staging root with mode `0700`, writes the bytes with exclusive creation, `O_NOFOLLOW`, and mode `0600`, asks the adapter to upload it, and removes that per-send directory in `finally`, including after failure. A staging or channel failure is logged for operators but returns a generic result to the model (`Could not send <name> to the chat.`), rather than transport details.
+
+Adapters that validate outbound `ChannelMedia` with a root resolve the candidate strictly, reject URL/home/traversal paths, symlink escapes, and non-regular files, then check the inferred media category and configured size cap. This protects a trusted staging root from an unsafe path reference; it does not decide whether an otherwise readable backend file should be disclosed to an admitted user.
+
+Focused coverage: `libs/talon/tests/test_media.py` exercises path-only document framing, generic attachment failures, image limits, and root/symlink rejection. `libs/talon/tests/unit_tests/test_file_sending.py` exercises backend reads, subagent/no-chat rejection, filename neutralization, staging permissions and cleanup, and the generic channel-failure response.
 
 ## Channel admission and operator authority
 

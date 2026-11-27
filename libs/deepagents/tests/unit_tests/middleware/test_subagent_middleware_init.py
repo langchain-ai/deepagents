@@ -18,6 +18,7 @@ from langchain_core.outputs import ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
+from langgraph.types import Command
 
 from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
@@ -924,7 +925,9 @@ class TestSubagentMiddlewareInit:
                 del config
                 return self
 
-            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+            def invoke(self, state: dict[str, object] | Command, config: object = None) -> dict[str, object]:
+                if isinstance(state, Command):
+                    state = state.update
                 del config
                 captured.update(state)
                 return {**state, "messages": [AIMessage(content="done")]}

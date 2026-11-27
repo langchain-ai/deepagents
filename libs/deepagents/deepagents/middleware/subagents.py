@@ -26,6 +26,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
 from langchain_core.runnables import Runnable, RunnableBinding, RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph._internal._constants import CONFIG_KEY_RESUMING
 from langgraph.pregel import Pregel
 from langgraph.types import Command, StreamMode
 from langsmith.run_helpers import get_tracing_context, tracing_context
@@ -710,7 +711,20 @@ def _compiled_graph(runnable: Runnable) -> Pregel | None:
 _SUBAGENT_STREAM_MODES: list[StreamMode] = ["values", "checkpoints"]
 
 
-def _run_subagent(runnable: Runnable, state: dict[str, Any], config: RunnableConfig, *, fallback_ns: str | None) -> tuple[Any, str | None]:
+def _subagent_input(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any] | Command:
+    """Return the input for a subagent run.
+
+    A declarative fork's first run gets `Command(update=state)`: `create_agent`
+    drops `PrivateStateAttr` keys from plain input but not from a state update.
+    A resumed fork gets `state` unchanged: LangGraph ignores plain input on
+    resume, while a `Command` would re-apply its update.
+    """
+    if not state.get(_FORKED_CONTEXT_KEY) or (config.get("configurable") or {}).get(CONFIG_KEY_RESUMING):
+        return state
+    return Command(update=state)
+
+
+def _run_subagent(runnable: Runnable, state: dict[str, Any] | Command, config: RunnableConfig, *, fallback_ns: str | None) -> tuple[Any, str | None]:
     """Invoke a subagent, returning its final state and the namespace it checkpointed under."""
     graph = _compiled_graph(runnable)
     if graph is None:
@@ -724,7 +738,9 @@ def _run_subagent(runnable: Runnable, state: dict[str, Any], config: RunnableCon
     return result, checkpoint_ns
 
 
-async def _arun_subagent(runnable: Runnable, state: dict[str, Any], config: RunnableConfig, *, fallback_ns: str | None) -> tuple[Any, str | None]:
+async def _arun_subagent(
+    runnable: Runnable, state: dict[str, Any] | Command, config: RunnableConfig, *, fallback_ns: str | None
+) -> tuple[Any, str | None]:
     """Async version of `_run_subagent`."""
     graph = _compiled_graph(runnable)
     if graph is None:
@@ -969,7 +985,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
         fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         try:
             with _subagent_tracing_context():
-                result, checkpoint_ns = _run_subagent(subagent, subagent_state, subagent_config, fallback_ns=fallback_ns)
+                result, checkpoint_ns = _run_subagent(
+                    subagent, _subagent_input(subagent_state, runtime.config), subagent_config, fallback_ns=fallback_ns
+                )
         except (ModelRefusalError, StructuredOutputValidationError) as error:
             if (notice := _refusal_notice_for(error)) is None:
                 raise
@@ -1010,7 +1028,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
         fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         try:
             with _subagent_tracing_context():
-                result, checkpoint_ns = await _arun_subagent(subagent, subagent_state, subagent_config, fallback_ns=fallback_ns)
+                result, checkpoint_ns = await _arun_subagent(
+                    subagent, _subagent_input(subagent_state, runtime.config), subagent_config, fallback_ns=fallback_ns
+                )
         except (ModelRefusalError, StructuredOutputValidationError) as error:
             if (notice := _refusal_notice_for(error)) is None:
                 raise

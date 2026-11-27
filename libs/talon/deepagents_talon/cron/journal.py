@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
+from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
 from deepagents_talon.store_records import StoreRecords, digest
 
 if TYPE_CHECKING:
@@ -129,6 +130,13 @@ class JobJournal:
         """Share the configured history backend in a separate journal namespace."""
         self.records = StoreRecords(store, ("talon", assistant_id, "job-history"))
 
+    @contextmanager
+    def capture_actions(self, job: str, run: str) -> Generator[ActionRun]:
+        """Track tool receipts for this objective run."""
+        actions = ActionRun(self.records, job, run)
+        with CURRENT_ACTIONS.set(actions):
+            yield actions
+
     async def verification(
         self, job: CronJob
     ) -> tuple[tuple[str, ...] | None, dict[str, dict[str, str | bool]]]:
@@ -156,6 +164,23 @@ class JobJournal:
                 if reads:
                     fallback += f" Read sources: {', '.join(sorted(reads))}."
                 report = report.model_copy(update={"summary": str(row["work"]).strip() or fallback})
+            actions = await self.records.get("actions:" + job.id) or {}
+            for action in actions.values():
+                if isinstance(action, dict) and action["run"] != run:
+                    call_id = action["call_id"]
+                    notice = (
+                        f"The outcome of {action['tool']} ({call_id}) is uncertain. "
+                        "Can you verify the result at its destination or decide whether to accept "
+                        "the risk of a duplicate?"
+                    )
+                    report = report.model_copy(
+                        update={
+                            "status": "blocked",
+                            "notice": report.notice or notice,
+                            "blocker_key": f"uncertain-action:{call_id}",
+                        }
+                    )
+                    break
             report = _update_evidence(evidence, criteria, _check_coverage(job, report, reads))
             if report.status == "complete":
                 verified = {k for k, v in evidence.items() if v["verified"]}

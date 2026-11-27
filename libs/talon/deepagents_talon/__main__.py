@@ -300,7 +300,13 @@ async def _run_host(
     channels: Sequence[ChannelAdapter],
 ) -> None:
     if config.model is None:
-        await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
+        from deepagents_talon.cron.journal import JobJournal  # noqa: PLC0415
+
+        async with JobJournal.open(config) as journal:
+            cron_store.journal = journal
+            await _run_host_with_agent(
+                args, config, cron_store, channels, await _agent_runtime(config)
+            )
         return
     async with open_sandbox(config) as sandbox:
         await _run_model_host(args, config, cron_store, channels, sandbox=sandbox)

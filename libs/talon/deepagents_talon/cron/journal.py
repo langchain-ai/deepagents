@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
@@ -15,10 +15,11 @@ from deepagents_talon.cron.actions import CURRENT_ACTIONS, ActionRun
 from deepagents_talon.store_records import StoreRecords, digest
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Generator, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 
     from langgraph.store.base import BaseStore
 
+    from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob, CronOrigin
 
 
@@ -51,6 +52,7 @@ class ObjectiveReport(BaseModel):
 
     verified: list[str] = Field(default_factory=list, max_length=64)
 
+    wait_condition: str = Field(default="", max_length=2000)
     next_wake_at: datetime | None = None
     wake_reason: Literal["poll", "owner_timing", "expected_event"] = "poll"
     completion_criteria: list[str] | None = None
@@ -68,6 +70,8 @@ class ObjectiveReport(BaseModel):
             or not previous
             or previous["status"] != "checked"
         ):
+            if deadline and self.next_wake_at:
+                return min(deadline, self.next_wake_at)
             return self.next_wake_at
         elapsed = now - datetime.fromisoformat(previous["started"]).replace(tzinfo=UTC)
         delay = min(timedelta(hours=4), max(timedelta(minutes=10), elapsed * 2))
@@ -106,6 +110,8 @@ class ObjectiveReport(BaseModel):
 
 def _normalize_report(data: dict[str, object]) -> None:
     """Keep display and scheduling errors from discarding verified milestone references."""
+    wait = data.get("wait_condition")
+    data["wait_condition"] = wait[:2000] if isinstance(wait, str) else ""
     if data.get("wake_reason") is None:
         data.pop("wake_reason", None)
     if isinstance(summary := data.get("summary"), dict) and summary:
@@ -129,6 +135,18 @@ class JobJournal:
     def __init__(self, store: BaseStore, assistant_id: str) -> None:
         """Share the configured history backend in a separate journal namespace."""
         self.records = StoreRecords(store, ("talon", assistant_id, "job-history"))
+
+    @classmethod
+    @asynccontextmanager
+    async def open(cls, config: TalonConfig) -> AsyncGenerator[JobJournal]:
+        """Open the configured history store for standalone scheduler callers."""
+        from deepagents_talon.history_backends import open_history  # noqa: PLC0415
+
+        if config.history_uri is None:
+            config.checkpoint_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            config.checkpoint_path.touch(mode=0o600, exist_ok=True)
+        async with open_history(config) as archive:
+            yield cls(archive.records.store, config.assistant_id)
 
     @contextmanager
     def capture_actions(self, job: str, run: str) -> Generator[ActionRun]:

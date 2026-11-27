@@ -438,10 +438,11 @@ async def _host(tmp_path: Path, clock: Clock):
 
 
 async def _wait_for_request(agent: BlockingAgent) -> None:
-    for _ in range(100):
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
         if agent.requests:
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.005)
     msg = "agent received no request"
     raise AssertionError(msg)
 

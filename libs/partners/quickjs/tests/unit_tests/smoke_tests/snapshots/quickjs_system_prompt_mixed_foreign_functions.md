@@ -258,7 +258,7 @@ The agent tools listed below are exposed on the global object at `globalThis.too
 
 Invocation pattern: `await tools.<name>({ ... })`.
 
-- Start independent calls together with `Promise.allSettled`, in bounded batches for long lists, so one rejected call doesn't lose the rest. Keep each input next to its outcome, and check fulfilled values for tool-reported errors.
+- Start independent calls together with `Promise.allSettled`, in bounded batches for long lists, so one rejected call doesn't lose the rest. Keep each input next to its outcome. A tool that reports an error rejects with its error text.
 - If the task needs multiple tool calls, prefer one `eval` invocation that performs all of them rather than splitting the work across multiple `eval` calls — each round-trip costs a model turn.
 - Pipeline dependent calls within a single program. If a result from one tool is needed as input to a later tool, chain them in one program instead of returning the intermediate value to the model.
 - If a tool returns an ID or other value that can be passed directly into the next tool, trust it and chain the calls instead of stopping to double-check it.

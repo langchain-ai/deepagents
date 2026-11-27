@@ -447,6 +447,30 @@ async def test_tool_failure_surfaces_as_js_error(repl: _Slot) -> None:
     assert outcome.result == "Host function failed"
 
 
+async def test_error_tool_message_rejects_only_its_own_call(repl: _Slot) -> None:
+    class _In(BaseModel):
+        name: str = Field(description="Which result to return")
+
+    def _fn(name: str) -> ToolMessage | Command:
+        status = "success" if name == "ok" else "error"
+        message = ToolMessage(name, tool_call_id="call", status=status)
+        if name == "command":
+            return Command(update={"messages": [message]})
+        return message
+
+    tool = StructuredTool.from_function(
+        name="lookup", description="Look up a name.", func=_fn, args_schema=_In
+    )
+    install_tools(repl, [tool])
+    outcome = await repl.eval_async(
+        "(await Promise.allSettled(['ok', 'timeout', 'command']"
+        ".map((name) => tools.lookup({ name }))))"
+        ".map((o) => `${o.status}:${o.value ?? o.reason.message}`).join('|')"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "fulfilled:ok|rejected:timeout|rejected:command"
+
+
 async def test_install_tools_skips_invalid_js_identifier_names(
     repl: _Slot,
 ) -> None:

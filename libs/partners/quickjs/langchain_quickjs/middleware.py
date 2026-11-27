@@ -10,12 +10,14 @@ from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.subagents import _FORKED_CONTEXT_KEY
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
     ModelRequest,
     ModelResponse,
+    OmitFromSchema,
     PrivateStateAttr,
     ResponseT,
     TracePolicy,
@@ -78,6 +80,11 @@ class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
     _quickjs_slot_id: NotRequired[Annotated[str, PrivateStateAttr]]
+    # The slot a `mode="fork"` subagent clones. Unlike `_quickjs_slot_id` it
+    # reaches the fork's input; never part of the output.
+    _quickjs_fork_source: NotRequired[
+        Annotated[str, OmitFromSchema(input=False, output=True)]
+    ]
     _quickjs_snapshot_payload: NotRequired[
         Annotated[
             bytes,
@@ -515,7 +522,8 @@ class CodeInterpreterMiddleware(
 
     def _slot_update_for_runtime(self) -> dict[str, str]:
         """Build a private state update with a fresh slot id when needed."""
-        return {"_quickjs_slot_id": _new_slot_id()}
+        slot_id = _new_slot_id()
+        return {"_quickjs_slot_id": slot_id, "_quickjs_fork_source": slot_id}
 
     def _snapshot_authenticated(
         self, payload: bytes, state: Mapping[str, object]
@@ -563,6 +571,11 @@ class CodeInterpreterMiddleware(
             self._registry.close_context(
                 slot_id, self._slot_config, keep_snapshot=self._snapshot_for_eval(state)
             )
+        if self._mode == "thread" and state.get(_FORKED_CONTEXT_KEY):
+            source = state.get("_quickjs_fork_source", "")
+            return self._fork_slot(
+                self._registry.fork_snapshot(source, self._slot_config)
+            )
         return self._prepare_slot(state)
 
     async def abefore_agent(
@@ -577,7 +590,21 @@ class CodeInterpreterMiddleware(
             await self._registry.aclose_context(
                 slot_id, self._slot_config, keep_snapshot=self._snapshot_for_eval(state)
             )
+        if self._mode == "thread" and state.get(_FORKED_CONTEXT_KEY):
+            source = state.get("_quickjs_fork_source", "")
+            return self._fork_slot(
+                await self._registry.afork_snapshot(source, self._slot_config)
+            )
         return self._prepare_slot(state)
+
+    def _fork_slot(self, snapshot: bytes | None) -> dict[str, Any]:
+        """Give a forked subagent a new slot that starts from `snapshot`."""
+        update: dict[str, Any] = self._slot_update_for_runtime()
+        if snapshot:
+            update |= self._snapshot_update(
+                payload=snapshot, prior=b"", slot_id=update["_quickjs_slot_id"]
+            )
+        return update
 
     def _drop_slot_caches(self, slot_id: str) -> None:
         self._ptc_tools_by_slot.pop(slot_id, None)

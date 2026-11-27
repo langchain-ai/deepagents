@@ -117,7 +117,16 @@ class PersistentCronScheduler:
 
     async def _report_expiration(self, job: CronJob) -> None:
         try:
+            history = (
+                await self.store.journal.history(job.id, job.origin, limit=1)
+                if self.store.journal
+                else []
+            )
             text = f"Job {job.id} missed its deadline. Scheduled work stopped."
+            if history:
+                row = history[0]
+                checkpoint = row["work"].strip() if row["status"] == "started" else ""
+                text += f" Last recorded work: {checkpoint or row['summary'] or row['status']}"
             if job.claimed_at:
                 text += " The previous run was interrupted. Its effects need verification."
             await self.deliver_result(job, text)

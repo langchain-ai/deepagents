@@ -1,7 +1,7 @@
 [
   {
     "function": {
-      "description": "Lists all files in a directory.\n\nThis is useful for exploring the filesystem and finding the right file to read or edit.\nYou should almost ALWAYS use this tool before using the read_file or edit_file tools.",
+      "description": "Lists all files in a directory.\n\nThis is useful for exploring the filesystem and finding the right file to read or edit.",
       "name": "ls",
       "parameters": {
         "properties": {
@@ -20,7 +20,7 @@
   },
   {
     "function": {
-      "description": "Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.\n\nUsage:\n- For text files, by default it reads up to 100 lines starting from the beginning of the file. Use `offset`/`limit` to page through large files instead of reading them whole.\n- A status header, `@@ field | field | ... @@`, sits above the file content, and every line after it is verbatim file content. When content is truncated, there may be an explanation before the header. Never include the header when editing.\n- Speculatively batch multiple `read_file` calls in one response when several files may be useful.\n- An empty file returns a system-reminder warning in place of contents.\n- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.\n- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.\n- Always read a file before editing it.",
+      "description": "Reads a file from the filesystem. Assume any path the user provides is valid; reading a missing file returns an error.\n\nUsage:\n- For text files, by default it reads up to 100 lines starting from the beginning of the file. Use `offset`/`limit` to page through large files instead of reading them whole.\n- A status header, `@@ field | field | ... @@`, sits above the file content, and every line after it is verbatim file content. When content is truncated, there may be an explanation before the header. Never include the header when editing.\n- Speculatively batch multiple `read_file` calls in one response when several files may be useful.\n- An empty file returns a system-reminder warning in place of contents.\n- Large tool results may be offloaded to a file; the tool message gives the path. Read that path here, paging with `offset`/`limit`.\n- Images (`.png`, `.jpg`, etc.), audio, video, and PDFs return multimodal content blocks (https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.",
       "name": "read_file",
       "parameters": {
         "properties": {
@@ -73,7 +73,7 @@
   },
   {
     "function": {
-      "description": "Performs exact string replacements in files.\n\nUsage:\n- You must read the file before editing.\n- Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.\n- Prefer editing an existing file over creating a new one.\n- Only use emojis if the user explicitly requests it.",
+      "description": "Performs exact string replacements in files.\n\nUsage:\n- You must read the file before editing.\n- Preserve the exact source indentation from the read output, and never include the read status header in old_string or new_string.\n- Only use emojis if the user explicitly requests it.",
       "name": "edit_file",
       "parameters": {
         "properties": {
@@ -223,7 +223,7 @@
   },
   {
     "function": {
-      "description": "Executes a shell command in an isolated sandbox and returns combined stdout/stderr with the exit code (truncated if very large).\n\nUsage:\n- Quote paths containing spaces (e.g. cd \"/path/with spaces\").\n- Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.\n- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.\n- You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. Use read_file rather than cat/head/tail.\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead",
+      "description": "Executes a shell command and returns combined stdout/stderr with the exit code (truncated if very large).\n\nUsage:\n- Quote paths containing spaces (e.g. ls \"/path/with spaces\").\n- Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.\n- Use absolute paths and avoid `cd` so the working directory stays stable.\n- You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. Use read_file rather than cat/head/tail.\n    - execute(command=\"find . -name '*.py'\")  # Use glob tool instead\n    - execute(command=\"grep -r 'pattern' .\")  # Use grep tool instead",
       "name": "execute",
       "parameters": {
         "properties": {

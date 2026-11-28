@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
 from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
+from deepagents_talon.channels.imessage import IMessageChannel, IMessageChannelConfig
 from deepagents_talon.channels.slack import SlackChannel, SlackChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
@@ -97,6 +98,11 @@ def main() -> None:
         action="store_true",
         help="Attach the Slack channel adapter.",
     )
+    parser.add_argument(
+        "--imessage",
+        action="store_true",
+        help="Attach the native macOS iMessage channel adapter (requires imsg).",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
@@ -125,6 +131,7 @@ def main() -> None:
         telegram=args.telegram,
         discord=args.discord,
         slack=args.slack,
+        imessage=args.imessage,
     )
     try:
         asyncio.run(_run_host(args, config, cron_store, channels))
@@ -409,23 +416,18 @@ async def _run_once(host: TalonHost) -> None:
     await host.stop()
 
 
-def _channels(
-    config: TalonConfig,
-    *,
-    whatsapp: bool = False,
-    telegram: bool = False,
-    discord: bool = False,
-    slack: bool = False,
-) -> tuple[ChannelAdapter, ...]:
+def _channels(config: TalonConfig, **enabled: bool) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
-    if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
+    if enabled.get("whatsapp") or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
-    if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
+    if enabled.get("telegram") or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
-    if discord or _env_enabled(config.env, "DEEPAGENTS_TALON_DISCORD_ENABLED"):
+    if enabled.get("discord") or _env_enabled(config.env, "DEEPAGENTS_TALON_DISCORD_ENABLED"):
         channels.append(DiscordChannel(DiscordChannelConfig.from_talon_config(config)))
-    if slack or _env_enabled(config.env, "DEEPAGENTS_TALON_SLACK_ENABLED"):
+    if enabled.get("slack") or _env_enabled(config.env, "DEEPAGENTS_TALON_SLACK_ENABLED"):
         channels.append(SlackChannel(SlackChannelConfig.from_talon_config(config)))
+    if enabled.get("imessage") or _env_enabled(config.env, "DEEPAGENTS_TALON_IMESSAGE_ENABLED"):
+        channels.append(IMessageChannel(IMessageChannelConfig.from_talon_config(config)))
     return tuple(channels)
 
 

@@ -2033,6 +2033,28 @@ def test_glob_path_not_found_sets_error() -> None:
     assert result.error == "Path '/missing': path_not_found"
 
 
+def test_glob_domain_errors_do_not_log_at_error_level(caplog: pytest.LogCaptureFixture) -> None:
+    """Domain errors are part of the result contract and must not log at ERROR."""
+    for code in ("path_not_found", "not_a_directory", "permission_denied", "invalid_pattern"):
+        resp = ExecuteResponse(output=json.dumps({"error": code}), exit_code=0)
+        with caplog.at_level(logging.DEBUG):
+            caplog.clear()
+            result = _parse_glob_output(resp, "/missing")
+
+        assert result.error == f"Path '/missing': {code}"
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_glob_internal_error_still_logs_at_error_level(caplog: pytest.LogCaptureFixture) -> None:
+    """An internal_error means the helper itself broke and stays an ERROR log."""
+    resp = ExecuteResponse(output=json.dumps({"error": "internal_error: KeyError: 'x'"}), exit_code=0)
+    with caplog.at_level(logging.DEBUG):
+        result = _parse_glob_output(resp, "/missing")
+
+    assert result.error is not None
+    assert any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
 def test_glob_empty_returns_empty_matches() -> None:
     """Empty stdout still means a successful, empty search."""
     sandbox = MockSandbox()

@@ -1204,6 +1204,20 @@ def _glob_warning_reason(
     return current
 
 
+def _log_glob_error(error: str, search_path: str) -> None:
+    """Log a structured glob error at the level matching its meaning.
+
+    An `internal_error` means the helper itself broke and stays an ERROR. Every
+    other code is a domain outcome the caller receives in `GlobResult.error` and
+    can act on, so it must not page error monitoring for an expected, recoverable
+    miss -- the same way `read` returns `file_not_found` without logging.
+    """
+    if error.startswith("internal_error"):
+        logger.error("Sandbox glob helper failed internally for path %r: %s", search_path, error)
+    else:
+        logger.debug("Sandbox glob returned error %r for path %r", error, search_path)
+
+
 def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
     """Parse the remote glob script's JSON-lines output into a `GlobResult`.
 
@@ -1263,7 +1277,7 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
                 payload[:200],
             )
     if error is not None:
-        logger.error("Sandbox glob returned error %r for path %r", error, search_path)
+        _log_glob_error(error, search_path)
         return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
     if unparsed:
         logger.error(

@@ -488,6 +488,10 @@ def render_ptc_prompt(
         "native value: strings as strings, numbers as numbers, lists as "
         "arrays, dicts as objects, and `None` as `null`. You do NOT need to "
         "`JSON.parse` results — they are already typed.\n\n"
+        "If the final value is a media content block, or an array of content "
+        'blocks and strings (e.g. `await tools.readFile({file_path: "/a.png"})`), '
+        "you see the media itself; wrap it in `JSON.stringify` to see the raw "
+        "object instead.\n\n"
         "Invocation pattern: `await tools.<name>({ ... })`.\n\n"
         "- Start independent calls together with `Promise.allSettled`, in "
         "bounded batches for long lists, so one rejected call doesn't lose the "

@@ -1,12 +1,6 @@
 """Test command type allowlist functionality for execute tool."""
 
-from deepagents import create_deep_agent
-from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
-
-from deepagents_acp.server import AgentServerACP
 from deepagents_acp.utils import extract_command_types
-from tests.chat_model import GenericFakeChatModel
 
 
 class TestExtractCommandTypes:
@@ -133,73 +127,12 @@ class TestExtractCommandTypes:
 
 
 class TestCommandTypeAllowlist:
-    """Test command type allowlist tracking."""
-
-    def test_allowed_command_types_initialized(self):
-        """Test that allowed command types dict is initialized."""
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello!")]))
-        graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-        server = AgentServerACP(agent=graph)
-        assert hasattr(server, "_allowed_command_types")
-        assert isinstance(server._allowed_command_types, dict)
-        assert len(server._allowed_command_types) == 0
-
-    def test_can_add_allowed_command_type(self):
-        """Test that command types can be added to allowlist."""
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello!")]))
-        graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-        server = AgentServerACP(agent=graph)
-        session_id = "test_session"
-
-        # Initialize the set for this session
-        server._allowed_command_types[session_id] = set()
-
-        # Add some command types (with their full signatures for sensitive commands)
-        server._allowed_command_types[session_id].add(("execute", "npm install"))
-        server._allowed_command_types[session_id].add(("execute", "python -m pytest"))
-
-        # Verify they're in the set
-        assert ("execute", "npm install") in server._allowed_command_types[session_id]
-        assert ("execute", "python -m pytest") in server._allowed_command_types[session_id]
-        assert ("execute", "ls") not in server._allowed_command_types[session_id]
-        # Verify that approving "npm install" doesn't approve "npm test"
-        assert ("execute", "npm test") not in server._allowed_command_types[session_id]
-        # Verify that approving "python -m pytest" doesn't approve "python -m pip"
-        assert ("execute", "python -m pip") not in server._allowed_command_types[session_id]
-
-    def test_command_types_are_session_specific(self):
-        """Test that allowed command types are tracked per session."""
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello!")]))
-        graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-        server = AgentServerACP(agent=graph)
-
-        # Add command types for session 1
-        session1_id = "session_1"
-        server._allowed_command_types[session1_id] = {
-            ("execute", "npm install"),
-            ("execute", "python -m pytest"),
-        }
-
-        # Add different command types for session 2
-        session2_id = "session_2"
-        server._allowed_command_types[session2_id] = {("execute", "ls"), ("execute", "cat")}
-
-        # Verify each session has its own set
-        assert ("execute", "npm install") in server._allowed_command_types[session1_id]
-        assert ("execute", "npm install") not in server._allowed_command_types[session2_id]
-        assert ("execute", "ls") in server._allowed_command_types[session2_id]
-        assert ("execute", "ls") not in server._allowed_command_types[session1_id]
+    """Test that an allowlist of command types does not over-approve."""
 
     def test_multiple_command_types_in_single_command(self):
         """Test that commands with && require all command types to be allowed."""
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello!")]))
-        graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-        server = AgentServerACP(agent=graph)
-
-        session_id = "test_session"
-
         # Only allow 'cd' commands
-        server._allowed_command_types[session_id] = {("execute", "cd")}
+        allowed = {"cd"}
 
         # Verify that a command with both 'cd' and 'python' requires both to be allowed
         cmd1 = "cd /path && python script.py"
@@ -207,46 +140,29 @@ class TestCommandTypeAllowlist:
         assert types1 == ["cd", "python"]
 
         # Only 'cd' is allowed, so not all command types are allowed
-        all_allowed = all(
-            ("execute", cmd_type) in server._allowed_command_types[session_id]
-            for cmd_type in types1
-        )
-        assert not all_allowed
+        assert not all(cmd_type in allowed for cmd_type in types1)
 
         # Now allow 'python' as well
-        server._allowed_command_types[session_id].add(("execute", "python"))
+        allowed.add("python")
 
         # Now all command types should be allowed
-        all_allowed = all(
-            ("execute", cmd_type) in server._allowed_command_types[session_id]
-            for cmd_type in types1
-        )
-        assert all_allowed
+        assert all(cmd_type in allowed for cmd_type in types1)
 
     def test_security_python_pytest_vs_pip(self):
         """Test that approving 'python -m pytest' doesn't auto-approve 'python -m pip'."""
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello!")]))
-        graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-        server = AgentServerACP(agent=graph)
-
-        session_id = "test_session"
-        server._allowed_command_types[session_id] = {("execute", "python -m pytest")}
+        allowed = {"python -m pytest"}
 
         # Commands with python -m pytest should be allowed
         cmd_pytest = "python -m pytest tests/"
         types_pytest = extract_command_types(cmd_pytest)
         assert types_pytest == ["python -m pytest"]
-        assert all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_pytest
-        )
+        assert all(ct in allowed for ct in types_pytest)
 
         # Commands with python -m pip should NOT be allowed
         cmd_pip = "python -m pip install malicious-package"
         types_pip = extract_command_types(cmd_pip)
         assert types_pip == ["python -m pip"]
-        assert not all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_pip
-        )
+        assert not all(ct in allowed for ct in types_pip)
 
         # Commands with python -c should NOT be allowed.
         # Note: the semicolon inside the quoted argument causes the regex
@@ -255,64 +171,42 @@ class TestCommandTypeAllowlist:
         cmd_code_simple = "python -c 'print(1)'"
         types_code = extract_command_types(cmd_code_simple)
         assert types_code == ["python -c"]
-        assert not all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_code
-        )
+        assert not all(ct in allowed for ct in types_code)
 
     def test_security_npm_install_vs_run(self):
         """Test that approving 'npm install' doesn't auto-approve 'npm run'."""
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello!")]))
-        graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-        server = AgentServerACP(agent=graph)
-
-        session_id = "test_session"
-        server._allowed_command_types[session_id] = {("execute", "npm install")}
+        allowed = {"npm install"}
 
         # npm install should be allowed
         cmd_install = "npm install"
         types_install = extract_command_types(cmd_install)
         assert types_install == ["npm install"]
-        assert all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_install
-        )
+        assert all(ct in allowed for ct in types_install)
 
         # npm run should NOT be allowed
         cmd_run = "npm run arbitrary-script"
         types_run = extract_command_types(cmd_run)
         assert types_run == ["npm run arbitrary-script"]
-        assert not all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_run
-        )
+        assert not all(ct in allowed for ct in types_run)
 
     def test_security_uv_run_pytest_vs_python(self):
         """Test that approving 'uv run pytest' doesn't auto-approve 'uv run python'."""
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello!")]))
-        graph = create_deep_agent(model=model, checkpointer=MemorySaver())
-        server = AgentServerACP(agent=graph)
-
-        session_id = "test_session"
-        server._allowed_command_types[session_id] = {("execute", "uv run pytest")}
+        allowed = {"uv run pytest"}
 
         # uv run pytest should be allowed
         cmd_pytest = "uv run pytest tests/"
         types_pytest = extract_command_types(cmd_pytest)
         assert types_pytest == ["uv run pytest"]
-        assert all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_pytest
-        )
+        assert all(ct in allowed for ct in types_pytest)
 
         # uv run python should NOT be allowed
         cmd_python = "uv run python script.py"
         types_python = extract_command_types(cmd_python)
         assert types_python == ["uv run python"]
-        assert not all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_python
-        )
+        assert not all(ct in allowed for ct in types_python)
 
         # uv pip should NOT be allowed
         cmd_pip = "uv pip install package"
         types_pip = extract_command_types(cmd_pip)
         assert types_pip == ["uv pip"]
-        assert not all(
-            ("execute", ct) in server._allowed_command_types[session_id] for ct in types_pip
-        )
+        assert not all(ct in allowed for ct in types_pip)

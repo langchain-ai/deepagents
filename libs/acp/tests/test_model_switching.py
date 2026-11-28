@@ -17,18 +17,9 @@ from deepagents_acp.server import AgentServerACP, AgentSessionContext
 
 
 def _select(opt: Any) -> SessionConfigOptionSelect:
-    """Normalize cross-version config-option shape.
-
-    agent-client-protocol v0.8.x wraps config options in SessionConfigOption
-    with a .root attribute; v0.9.0+ emits the Select instance directly.
-    Fails loudly if the unwrapped value isn't a SessionConfigOptionSelect so
-    a future wrapper shape can't silently pass through.
-    """
-    inner = getattr(opt, "root", opt)
-    assert isinstance(inner, SessionConfigOptionSelect), (
-        f"expected SessionConfigOptionSelect, got {type(inner).__name__}"
-    )
-    return inner
+    """Narrow a config option to the select type these tests use."""
+    assert isinstance(opt, SessionConfigOptionSelect), type(opt).__name__
+    return opt
 
 
 class MockClient:
@@ -130,9 +121,6 @@ async def test_set_config_option_switches_model(agent_factory, models):
     assert len(response.config_options) == 1
     assert _select(response.config_options[0]).current_value == "anthropic:claude-sonnet-4"
 
-    # Verify the model was updated in session state
-    assert server._session_models[session_id] == "anthropic:claude-sonnet-4"
-
 
 @pytest.mark.asyncio
 async def test_set_config_option_invalid_model_raises_error(agent_factory, models):
@@ -217,13 +205,18 @@ async def test_switching_mode_via_config_option(agent_factory, models):
     )
 
     assert _select(response.config_options[0]).current_value == "manual"
-    assert server._session_modes[session_id] == "manual"
 
 
 @pytest.mark.asyncio
 async def test_model_passed_to_agent_context(agent_factory, models):
     """Test that the selected model is passed to the agent factory via context."""
-    server = AgentServerACP(agent=agent_factory, models=models)
+    built: list[str | None] = []
+
+    def build_agent(context: AgentSessionContext):
+        built.append(context.model)
+        return agent_factory(context)
+
+    server = AgentServerACP(agent=build_agent, models=models)
     server.on_connect(MockClient())
 
     # Create a session
@@ -237,13 +230,9 @@ async def test_model_passed_to_agent_context(agent_factory, models):
         value="anthropic:claude-haiku-4",
     )
 
-    # Reset agent (simulating what happens during model switch)
-    server._reset_agent(session_id)
+    await server._reset_agent(session_id)
 
-    # The agent should have been created with the new model
-    # We can't directly check the model inside the agent, but we verified
-    # the session state is updated correctly
-    assert server._session_models[session_id] == "anthropic:claude-haiku-4"
+    assert built[-1] == "anthropic:claude-haiku-4"
 
 
 @pytest.mark.asyncio

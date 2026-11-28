@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard
+import logging
+from collections.abc import Awaitable, Callable, Coroutine
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, TypeGuard, TypeVar, cast
 from uuid import uuid4
 
 from acp import (
+    PROTOCOL_VERSION,
     Agent as ACPAgent,
+    AuthenticateResponse,
+    DeleteSessionResponse,
     InitializeResponse,
     LoadSessionResponse,
     NewSessionResponse,
@@ -16,107 +23,133 @@ from acp import (
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
     run_agent as run_acp_agent,
-    schema as _acp_schema,
 )
 from acp.exceptions import RequestError
 from acp.schema import (
     AcpMcpServer,
     AgentCapabilities,
     AgentMessageChunk,
-    AgentPlanUpdate,
-    AgentThoughtChunk,
     AudioContentBlock,
+    AuthMethodAgent,
+    AvailableCommand,
+    AvailableCommandsUpdate,
     ClientCapabilities,
-    ContentToolCallContent,
+    CloseSessionResponse,
+    ConfigOptionUpdate,
+    Cost,
+    CurrentModeUpdate,
     EmbeddedResourceContentBlock,
-    FileEditToolCallContent,
     HttpMcpServer,
     ImageContentBlock,
     Implementation,
+    ListSessionsResponse,
+    McpCapabilities,
     McpServerStdio,
-    PermissionOption,
-    PlanEntry,
     PromptCapabilities,
     ResourceContentBlock,
+    ResumeSessionResponse,
+    SessionCapabilities,
+    SessionCloseCapabilities,
     SessionConfigOptionBoolean,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
+    SessionDeleteCapabilities,
+    SessionInfo,
+    SessionInfoUpdate,
+    SessionListCapabilities,
     SessionModeState,
+    SessionResumeCapabilities,
     SseMcpServer,
+    TerminalAuthMethod,
     TextContentBlock,
-    ToolCallLocation,
-    ToolCallProgress,
     ToolCallStart,
     ToolCallUpdate,
-    ToolKind,
-    UserMessageChunk,
+    UsageUpdate,
 )
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from langchain_core.exceptions import ModelRefusalError
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command, StateSnapshot
+from langgraph.types import Command
 
-from deepagents_acp.utils import (
-    convert_audio_block_to_content_blocks,
-    convert_embedded_resource_block_to_content_blocks,
-    convert_image_block_to_content_blocks,
-    convert_resource_block_to_content_blocks,
-    convert_text_block_to_content_blocks,
-    format_execute_result,
+from deepagents_acp._messages import _content_updates, _prompt_content, _stop_reason
+from deepagents_acp._permissions import (
+    _PLAN_REJECTED,
+    _all_tasks_completed,
+    _execute_arguments,
+    _permission_options,
+    _permission_request,
+    _permission_tool_call_id,
+    _plan_text,
 )
+from deepagents_acp._replay import _history_messages, _replay_updates
+from deepagents_acp._session import AgentSessionContext, McpServer, _Session, _Turn
+from deepagents_acp._tool_calls import (
+    ToolCallDisplay,
+    _fail_open_calls,
+    _finish_tool_call,
+    _plan_update,
+    _start_message_tool_calls,
+    _start_streamed_tool_calls,
+)
+from deepagents_acp._version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from acp.interfaces import Client
     from deepagents.graph import Checkpointer
     from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.types import Interrupt
 
-# agent-client-protocol v0.9.0+ removed the SessionConfigOption wrapper; config
-# options are now bare SessionConfigOptionSelect instances. Resolve dynamically
-# so the module imports cleanly under both v0.8.x and v0.9+.
-SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
-"""Compatibility alias for the optional ACP `SessionConfigOption` wrapper."""
+    from deepagents_acp._permissions import _ExecuteKey
 
-McpServer: TypeAlias = HttpMcpServer | SseMcpServer | AcpMcpServer | McpServerStdio
-"""Type alias for ACP MCP server configuration variants."""
+__all__ = [
+    "AgentFactory",
+    "AgentServerACP",
+    "AgentSessionContext",
+    "AuthMethod",
+    "McpServer",
+    "ToolCallDisplay",
+]
+
+_ShownToolCall = TypeVar("_ShownToolCall", ToolCallStart, ToolCallUpdate)
+
+AuthMethod: TypeAlias = TerminalAuthMethod | AuthMethodAgent
+"""Type alias for the sign-in methods an agent advertises in `initialize`."""
+
+_DEFAULT_AGENT_INFO = Implementation(
+    name="deepagents-acp", title="Deep Agents", version=__version__
+)
 
 _MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, AcpMcpServer, McpServerStdio)
 """Runtime MCP server classes used to detect legacy positional `new_session` calls."""
 
+logger = logging.getLogger(__name__)
+
 _ACP_MODE_METADATA_KEY = "acp_mode"
 _ACP_MODEL_METADATA_KEY = "acp_model"
 _ACP_SESSION_METADATA_KEY = "acp_session"
+_ACP_OPTIONS_METADATA_KEY = "acp_options"
+_ACP_TITLE_METADATA_KEY = "acp_title"
+_SESSION_PAGE_SIZE = 50
+_CLOSE_DEADLINE_SECONDS = 5
+_ANNOUNCE_DELAY_SECONDS = 0.05
+"""Lets the response that creates a session reach the client before its commands do."""
 
 
-def _normalize_new_session_args(
+def _session_mcp_servers(
     additional_directories: list[str] | list[McpServer] | None,
     mcp_servers: list[McpServer] | None,
-) -> tuple[list[str] | None, list[McpServer]]:
-    """Normalize `new_session` arguments while preserving old positional calls."""
+) -> list[McpServer]:
+    """Return `new_session`'s MCP servers, also accepting them in the old second positional slot."""
     if mcp_servers is not None:
-        return (
-            additional_directories if _is_additional_directories(additional_directories) else None,
-            mcp_servers,
-        )
-    if additional_directories is None:
-        return None, []
-    if _is_additional_directories(additional_directories):
-        return additional_directories, []
-    if _is_mcp_servers(additional_directories):
-        return None, additional_directories
-    return None, []
-
-
-def _is_additional_directories(
-    additional_directories: list[str] | list[McpServer] | None,
-) -> TypeGuard[list[str]]:
-    """Return whether a value is the ACP `additional_directories` argument."""
-    return additional_directories is not None and all(
-        isinstance(directory, str) for directory in additional_directories
-    )
+        return mcp_servers
+    if additional_directories and _is_mcp_servers(additional_directories):
+        return additional_directories
+    return []
 
 
 def _is_mcp_servers(
@@ -126,94 +159,37 @@ def _is_mcp_servers(
     return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
-def _content_block(
-    block: Mapping[str, Any],
-) -> TextContentBlock | ImageContentBlock | AudioContentBlock | None:
-    """Convert one normalized LangChain content block into an ACP block.
+_UNSUPPORTED_INTERRUPT = (
+    "ACP limitation: this agent raised a free-form LangGraph interrupt(), which ACP "
+    "cannot display.\n\n"
+    "ACP only supports human-in-the-loop permission prompts with a fixed set of "
+    "decisions (approve/reject/edit).\n"
+    "Spec: https://agentclientprotocol.com/protocol/overview\n\n"
+    "Fix: use LangChain HumanInTheLoopMiddleware-style interrupts "
+    "(action_requests/review_configs), or override `handle_interrupt`.\n"
+    "Docs: https://docs.langchain.com/oss/python/langchain/human-in-the-loop\n\n"
+    "This is a protocol limitation, not a bug in the agent."
+)
 
-    Returns `None` when the block has no ACP equivalent, so callers skip it.
-    Empty text is dropped because it renders nothing.
+
+def _check_saved_session(session_id: str, cwd: str, metadata: Mapping[str, Any]) -> None:
+    """Refuse to load a thread that isn't an ACP session or belongs to another cwd.
+
+    Raises:
+        RequestError: `resource_not_found` or `invalid_params`.
     """
-    block_type = block.get("type")
-    if block_type == "text":
-        text = block.get("text")
-        return TextContentBlock(type="text", text=text) if isinstance(text, str) and text else None
-    data = block.get("base64")
-    mime_type = block.get("mime_type")
-    if not (isinstance(data, str) and isinstance(mime_type, str)):
-        return None
-    if block_type == "image":
-        return ImageContentBlock(type="image", data=data, mime_type=mime_type, uri=block.get("url"))
-    if block_type == "audio":
-        return AudioContentBlock(type="audio", data=data, mime_type=mime_type)
-    return None
+    if metadata.get(_ACP_SESSION_METADATA_KEY) is not True:
+        raise RequestError.resource_not_found(session_id)
+    if metadata.get("cwd") != cwd:
+        raise RequestError.invalid_params(
+            {"cwd": "must match the working directory used to create the session"}
+        )
 
 
-def _content_blocks(
-    message: Any,
-) -> list[TextContentBlock | ImageContentBlock | AudioContentBlock]:
-    """Convert normalized user-message content into ACP blocks.
-
-    Reasoning blocks are not expected on user messages. They have no ACP
-    equivalent here and are dropped.
-    """
-    return [block for item in message.content_blocks if (block := _content_block(item))]
-
-
-def _visible_reasoning(block: Mapping[str, Any]) -> str | None:
-    """Return reasoning text a provider exposed in plaintext, or `None`.
-
-    Redacted or encrypted reasoning arrives as a `non_standard` block with no
-    `reasoning` string, so it never returns here. Whitespace is kept: reasoning
-    streams one delta at a time, and a delta that holds only a space or a line
-    break carries the word and paragraph breaks of the finished thought.
-    """
-    reasoning = block.get("reasoning")
-    if block.get("type") != "reasoning" or not isinstance(reasoning, str):
-        return None
-    return reasoning or None
-
-
-def _content_updates(
-    message: Any,
-    message_id: str | None = None,
-) -> list[AgentMessageChunk | AgentThoughtChunk]:
-    """Convert normalized assistant content into ordered ACP updates.
-
-    Both the live stream and session replay project through this function, so
-    block ordering and block-type support cannot drift between them. Live
-    chunks carry no message ID; replay passes the persisted one.
-    """
-    if message.additional_kwargs.get("lc_source") == "local_context":
-        return []
-    updates: list[AgentMessageChunk | AgentThoughtChunk] = []
-    for block in message.content_blocks:
-        if reasoning := _visible_reasoning(block):
-            updates.append(
-                AgentThoughtChunk(
-                    session_update="agent_thought_chunk",
-                    content=TextContentBlock(type="text", text=reasoning),
-                    message_id=message_id,
-                )
-            )
-        elif content := _content_block(block):
-            updates.append(
-                AgentMessageChunk(
-                    session_update="agent_message_chunk",
-                    content=content,
-                    message_id=message_id,
-                )
-            )
-    return updates
-
-
-@dataclass(frozen=True, slots=True)
-class AgentSessionContext:
-    """Context for an agent session, including working directory, mode, and model."""
-
-    cwd: str
-    mode: str
-    model: str | None = None
+AgentFactory: TypeAlias = Callable[
+    [AgentSessionContext], CompiledStateGraph | Awaitable[CompiledStateGraph]
+]
+"""Builds a session's agent; may be async, for example to connect client MCP servers."""
 
 
 class AgentServerACP(ACPAgent):
@@ -221,29 +197,43 @@ class AgentServerACP(ACPAgent):
 
     _conn: Client
 
-    def __init__(
+    internal_model_sources: ClassVar[frozenset[str]] = frozenset({"summarization"})
+    """`lc_source` values that mark model calls the harness makes for itself.
+
+    Their streamed output is not the agent speaking, so it is not shown.
+    """
+
+    def __init__(  # noqa: PLR0913  # optional settings are keyword-only
         self,
-        agent: CompiledStateGraph | Callable[[AgentSessionContext], CompiledStateGraph],
+        agent: CompiledStateGraph | AgentFactory,
         *,
         modes: SessionModeState | None = None,
         models: list[dict[str, str]] | None = None,
         load_sessions: bool = False,
+        agent_info: Implementation | None = None,
+        checkpointer: BaseCheckpointSaver | None = None,
     ) -> None:
         """Initialize the ACP agent server with the given agent factory or compiled graph.
 
         Args:
             agent: Either a compiled state graph or a factory function that creates one
-            modes: Optional mode configuration (deprecated, use config_options instead)
+            modes: Optional approval modes, offered as the `mode` config option and the
+              legacy `modes` field
             models: Optional list of available models with 'value', 'name', and optionally
               'description'
             load_sessions: Advertise and implement durable `session/load`. The agent graph
               must use a checkpointer that survives server restarts.
+            agent_info: Name, title, and version reported to clients in `initialize`.
+            checkpointer: The checkpointer the agent graphs share, if any. Lets the
+              server read saved sessions without building an agent first.
         """
         super().__init__()
-        self._cwd = ""
+        self._agent_info = agent_info or _DEFAULT_AGENT_INFO
+        self._checkpointer = checkpointer
+        self._lists_sessions = load_sessions and checkpointer is not None
+        self._client_capabilities = ClientCapabilities()
         self._agent_factory = agent
-        self._agent: CompiledStateGraph | None = None
-        self._agent_session_id: str | None = None
+        self._sessions: dict[str, _Session] = {}
         self._load_sessions = load_sessions
 
         if isinstance(agent, CompiledStateGraph):
@@ -259,17 +249,19 @@ class AgentServerACP(ACPAgent):
             self._modes = modes
             self._models = models
 
-        self._session_modes: dict[str, str] = {}
-        self._session_mode_states: dict[str, SessionModeState] = {}
-        self._session_models: dict[str, str] = {}  # Track current model per session
-        self._cancelled_sessions: set[str] = set()  # Session ids with a pending cancel
-        self._session_plans: dict[str, list[dict[str, Any]]] = {}
-        self._session_cwds: dict[str, str] = {}
-        self._session_mcp_servers: dict[str, list[McpServer]] = {}
-        self._allowed_command_types: dict[
-            str, set[tuple[str, str | None]]
-        ] = {}  # Track allowed command types per session
-        self._allowed_execute_commands: dict[str, set[tuple[AgentSessionContext, str]]] = {}
+    @property
+    def client(self) -> Client:
+        """The connected client, for overrides that send their own requests."""
+        return self._conn
+
+    @property
+    def client_capabilities(self) -> ClientCapabilities:
+        """What the client advertised in `initialize`."""
+        return self._client_capabilities
+
+    def set_models(self, models: list[dict[str, str]]) -> None:
+        """Replace the model catalog, for agents that learn their models after startup."""
+        self._models = models
 
     def on_connect(self, conn: Client) -> None:
         """Store the client connection for sending session updates."""
@@ -286,10 +278,11 @@ class AgentServerACP(ACPAgent):
         Models are exposed as config options with category='model'.
         """
         config_options: list[SessionConfigOptionSelect | SessionConfigOptionBoolean] = []
+        session = self._peek(session_id)
 
         # Add mode selector if modes are configured
         if self._modes is not None:
-            current_mode = self._session_modes.get(session_id, self._modes.current_mode_id)
+            current_mode = self._modes.current_mode_id if session.mode is None else session.mode
             mode_options = [
                 SessionConfigSelectOption(
                     value=mode.id,
@@ -308,13 +301,11 @@ class AgentServerACP(ACPAgent):
                 current_value=current_mode,
                 options=mode_options,
             )
-            config_options.append(
-                SessionConfigOption(root=mode_select) if SessionConfigOption else mode_select,
-            )
+            config_options.append(mode_select)
 
         # Add model selector if models are configured
-        if self._models is not None and len(self._models) > 0:
-            current_model = self._session_models.get(session_id, self._models[0]["value"])
+        current_model = session.model or self.default_model()
+        if self._models and current_model is not None:
             model_options = [
                 SessionConfigSelectOption(
                     value=model["value"],
@@ -333,29 +324,85 @@ class AgentServerACP(ACPAgent):
                 current_value=current_model,
                 options=model_options,
             )
-            config_options.append(
-                SessionConfigOption(root=model_select) if SessionConfigOption else model_select,
-            )
+            config_options.append(model_select)
 
+        config_options.extend(self.extra_config_options(self._session_context(session_id)))
         return config_options
 
     async def initialize(
         self,
-        protocol_version: int,
-        client_capabilities: ClientCapabilities | None = None,  # noqa: ARG002  # ACP protocol interface parameter
+        protocol_version: int,  # noqa: ARG002  # the server always answers with the version it speaks
+        client_capabilities: ClientCapabilities | None = None,
         client_info: Implementation | None = None,  # noqa: ARG002  # ACP protocol interface parameter
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> InitializeResponse:
-        """Return server capabilities to the ACP client."""
+        """Return server capabilities and sign-in methods to the ACP client."""
+        self._client_capabilities = client_capabilities or ClientCapabilities()
         return InitializeResponse(
-            protocol_version=protocol_version,
+            protocol_version=PROTOCOL_VERSION,
+            agent_info=self._agent_info,
             agent_capabilities=AgentCapabilities(
                 load_session=self._load_sessions,
                 prompt_capabilities=PromptCapabilities(
                     image=True,
                 ),
+                mcp_capabilities=self.mcp_capabilities(),
+                session_capabilities=SessionCapabilities(
+                    close=SessionCloseCapabilities(),
+                    resume=SessionResumeCapabilities() if self._load_sessions else None,
+                    list=SessionListCapabilities() if self._lists_sessions else None,
+                    delete=SessionDeleteCapabilities() if self._lists_sessions else None,
+                ),
             ),
+            auth_methods=list(self.auth_methods(self._client_capabilities)),
         )
+
+    def mcp_capabilities(self) -> McpCapabilities:
+        """Return the MCP transports the agent connects for client-supplied servers.
+
+        Every session gets the client's servers in `AgentSessionContext.mcp_servers`,
+        but only an agent factory that connects them should advertise transports.
+        """
+        return McpCapabilities()
+
+    def auth_methods(self, client_capabilities: ClientCapabilities) -> Sequence[AuthMethod]:
+        """Return the sign-in methods to advertise in `initialize`.
+
+        Override to offer sign-in. Only advertise `terminal` methods when the
+        client supports them (`client_capabilities.auth.terminal` or the legacy
+        `_meta["terminal-auth"]` flag).
+        """
+        del client_capabilities
+        return []
+
+    async def check_ready(self, context: AgentSessionContext) -> None:
+        """Refuse to start a session the agent cannot run.
+
+        Called by `session/new` and `session/load` before any session state is
+        created. Override to raise `RequestError.auth_required(...)` when sign-in
+        is missing, or another `RequestError` for configuration problems.
+        """
+        del context
+
+    async def authenticate(
+        self,
+        method_id: str,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> AuthenticateResponse | None:
+        """Reject `authenticate` for methods the client must run itself.
+
+        Terminal methods run in the client's terminal, so an `authenticate`
+        call for one comes from a client that ignored the method type.
+        """
+        methods = {method.id: method for method in self.auth_methods(self._client_capabilities)}
+        method = methods.get(method_id)
+        if method is None:
+            raise RequestError.invalid_params({"methodId": f"unknown auth method {method_id!r}"})
+        if not isinstance(method, TerminalAuthMethod):
+            name = "authenticate"
+            raise RequestError.method_not_found(name)
+        msg = f"Auth method {method_id!r} runs in a terminal; launch it instead"
+        raise RequestError.invalid_request({"methodId": method_id, "message": msg})
 
     async def new_session(
         self,
@@ -365,27 +412,33 @@ class AgentServerACP(ACPAgent):
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> NewSessionResponse:
         """Create a new agent session with the given working directory."""
-        _, mcp_servers = _normalize_new_session_args(additional_directories, mcp_servers)
+        mcp_servers = _session_mcp_servers(additional_directories, mcp_servers)
+        await self.check_ready(self._default_context(cwd))
         session_id = uuid4().hex
-        self._session_cwds[session_id] = cwd
-        self._session_mcp_servers[session_id] = mcp_servers
+        session = self._begin_session(session_id, cwd)
+        try:
+            session.mcp_servers = mcp_servers
 
-        self._initialize_session_options(session_id)
+            self._initialize_session_options(session)
 
-        if self._load_sessions:
-            await self._persist_session(session_id)
-
-        # Build config options if we have modes or models
-        config_options = None
-        if self._modes is not None or self._models is not None:
-            config_options = self._build_config_options(session_id)
-
-        # Return response with both modes (for backward compatibility) and config_options
-        return NewSessionResponse(
-            session_id=session_id,
-            modes=self._modes if self._modes is not None else None,
-            config_options=config_options,
-        )
+            config_options = self._build_config_options(session_id) or None
+            # Return response with both modes (for backward compatibility) and config_options
+            response = NewSessionResponse(
+                session_id=session_id,
+                modes=self._modes if self._modes is not None else None,
+                config_options=config_options,
+            )
+            # Last, so a session that fails to set up leaves nothing in history.
+            if self._load_sessions:
+                await self._persist_session(session_id)
+        except BaseException:
+            try:
+                await self._release_session(session_id)
+            finally:
+                self._forget_session(session_id)
+            raise
+        self._spawn(session_id, self._announce_commands(session_id))
+        return response
 
     async def load_session(  # ty: ignore[invalid-method-override]  # Keep our public positional order; the ACP router calls by keyword
         self,
@@ -396,32 +449,224 @@ class AgentServerACP(ACPAgent):
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> LoadSessionResponse:
         """Restore and replay a persisted ACP session."""
-        if not self._load_sessions:
-            method = "session/load"
-            raise RequestError.method_not_found(method)
-
-        self._session_cwds[session_id] = cwd
-        agent = self._checkpointed_agent(session_id)
-        metadata = (await agent.aget_state(self._session_config(session_id))).metadata or {}
-        if metadata.get(_ACP_SESSION_METADATA_KEY) is not True:
-            self._forget_session(session_id)
-            raise RequestError.resource_not_found(session_id)
-        if metadata.get("cwd") != cwd:
-            self._forget_session(session_id)
-            raise RequestError.invalid_params(
-                {"cwd": "must match the working directory used to create the session"}
-            )
-
-        self._session_mcp_servers[session_id] = list(mcp_servers or [])
-        self._initialize_session_options(session_id)
-        if self._restore_session_options(session_id, metadata):
-            self._reset_agent(session_id)
-
-        await self._replay_session(session_id, agent)
+        await self._open_saved_session("session/load", cwd, session_id, mcp_servers, replay=True)
+        self._spawn(session_id, self._announce_commands(session_id))
         return LoadSessionResponse(
-            modes=self._session_mode_states.get(session_id),
+            modes=self._peek(session_id).mode_state,
             config_options=self._build_config_options(session_id) or None,
         )
+
+    async def resume_session(
+        self,
+        session_id: str,
+        cwd: str,
+        additional_directories: list[str] | None = None,  # noqa: ARG002  # capability is not advertised
+        mcp_servers: list[McpServer] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> ResumeSessionResponse:
+        """Reopen a persisted ACP session without replaying its history."""
+        await self._open_saved_session("session/resume", cwd, session_id, mcp_servers)
+        self._spawn(session_id, self._announce_commands(session_id))
+        return ResumeSessionResponse(
+            modes=self._peek(session_id).mode_state,
+            config_options=self._build_config_options(session_id) or None,
+        )
+
+    async def _open_saved_session(
+        self,
+        method: str,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[McpServer] | None,
+        *,
+        replay: bool = False,
+    ) -> None:
+        """Restore a saved session's options, check readiness, build its agent, and replay it.
+
+        Raises:
+            RequestError: `method_not_found` without durable sessions, `invalid_request`
+                for a session that is already open, or the saved-session and readiness
+                errors.
+        """
+        if not self._load_sessions:
+            raise RequestError.method_not_found(method)
+        session = self._begin_session(session_id, cwd)
+        # A close meanwhile cancels this task, which releases the session below.
+        session.opening = asyncio.current_task()
+        try:
+            metadata = await self._session_metadata(session_id)
+            _check_saved_session(session_id, cwd, metadata)
+            session.mcp_servers = list(mcp_servers or [])
+            self._initialize_session_options(session)
+            self._restore_session_options(session, metadata)
+            # Check the restored options, which can name another model than the launch default.
+            await self.check_ready(self._session_context(session_id))
+            # Claim the thread now (an ownership override takes its lease here), so a
+            # session another process holds fails to open instead of on first prompt.
+            self._session_config(session_id)
+            agent = await self._reset_agent(session_id)
+            if replay:
+                await self._replay_session(session_id, agent)
+        except BaseException:
+            try:
+                await self._release_session(session_id)
+            finally:
+                self._forget_session(session_id)
+            raise
+        session.opening = None
+
+    async def _release_session(self, session_id: str) -> None:
+        """Let an override release what it acquired for a session; never raises."""
+        try:
+            await self.session_closed(session_id)
+        except Exception:  # noqa: BLE001  # cleanup must not mask the error being handled
+            logger.warning("Releasing session %s failed", session_id, exc_info=True)
+
+    def _begin_session(self, session_id: str, cwd: str) -> _Session:
+        """Add a record for a session that is not open.
+
+        Raises:
+            RequestError: `invalid_request` when the session is already open here.
+        """
+        if session_id in self._sessions:
+            raise RequestError.invalid_request(
+                {"message": "The session is already open; close it first"}
+            )
+        session = self._sessions[session_id] = _Session(cwd=cwd)
+        return session
+
+    def _peek(self, session_id: str) -> _Session:
+        """Return the session's record, or a blank one when the session isn't open.
+
+        Changes to a blank record are not kept.
+        """
+        return self._sessions.get(session_id) or _Session(cwd="")
+
+    async def list_sessions(
+        self,
+        cwd: str | None = None,
+        cursor: str | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> ListSessionsResponse:
+        """List saved ACP sessions, newest first, a page at a time."""
+        if not self._lists_sessions:
+            method = "session/list"
+            raise RequestError.method_not_found(method)
+        sessions = await self.saved_sessions(cwd)
+        start = int(cursor) if cursor and cursor.isdigit() else 0
+        end = start + _SESSION_PAGE_SIZE
+        return ListSessionsResponse(
+            sessions=sessions[start:end],
+            next_cursor=str(end) if end < len(sessions) else None,
+        )
+
+    async def saved_sessions(self, cwd: str | None) -> list[SessionInfo]:
+        """Return the sessions created over ACP, newest first, optionally for one cwd.
+
+        Only threads this server marked as ACP sessions are listed, so every
+        listed session can be loaded. Override to read a faster index.
+        """
+        if self._checkpointer is None:
+            return []
+        latest: dict[str, Any] = {}
+        async for saved in self._checkpointer.alist(None, filter={_ACP_SESSION_METADATA_KEY: True}):
+            configurable = saved.config["configurable"]
+            thread_id = configurable["thread_id"]
+            if configurable.get("checkpoint_ns") or thread_id in latest:
+                continue
+            latest[thread_id] = saved
+        sessions = [
+            SessionInfo(
+                session_id=thread_id,
+                cwd=saved.metadata["cwd"],
+                title=saved.metadata.get(_ACP_TITLE_METADATA_KEY) or None,
+                updated_at=saved.checkpoint.get("ts"),
+            )
+            for thread_id, saved in latest.items()
+            if isinstance(saved.metadata.get("cwd"), str)
+            and (cwd is None or saved.metadata["cwd"] == cwd)
+        ]
+        return sorted(sessions, key=lambda info: info.updated_at or "", reverse=True)
+
+    async def close_session(
+        self,
+        session_id: str,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> CloseSessionResponse:
+        """Cancel the session's running turn and release everything it holds.
+
+        Waits for the turn and background work to end, so nothing from this
+        session runs after the close returns. A session still opening is
+        closed by cancelling its load or resume, which then fails.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return CloseSessionResponse()
+        if session.closing:
+            raise RequestError.invalid_request({"message": "The session is closing"})
+        if session.opening is not None:
+            session.opening.cancel()
+            await asyncio.wait({session.opening})
+            return CloseSessionResponse()
+        session.closing = True
+        try:
+            work = {task for task in (session.turn, *session.tasks) if task is not None}
+            for task in work:
+                task.cancel()
+            if work:
+                await asyncio.wait(work)
+            await self._save_before_close(session_id)
+        finally:
+            # A cancelled release must still forget the session, or it stays "closing".
+            try:
+                await self._release_session(session_id)
+            finally:
+                self._forget_session(session_id)
+        return CloseSessionResponse()
+
+    async def _save_before_close(self, session_id: str) -> None:
+        """Save option changes a closing session hasn't written yet, within the deadline."""
+        session = self._peek(session_id)
+        if not session.unsaved_options or session.last_agent is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self._persist_session(session_id), timeout=_CLOSE_DEADLINE_SECONDS
+            )
+        except Exception:  # noqa: BLE001  # a failed save must not stop the close
+            logger.warning("Could not save options for closing session", exc_info=True)
+
+    async def delete_session(
+        self,
+        session_id: str,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> DeleteSessionResponse:
+        """Close a saved ACP session and delete its history."""
+        if not self._lists_sessions or self._checkpointer is None:
+            method = "session/delete"
+            raise RequestError.method_not_found(method)
+        metadata = await self._session_metadata(session_id)
+        if metadata.get(_ACP_SESSION_METADATA_KEY) is not True:
+            raise RequestError.resource_not_found(session_id)
+        await self.close_session(session_id)
+        session = self._begin_session(session_id, str(metadata.get("cwd", "")))
+        session.closing = True
+        try:
+            # Claim the thread as an open does, so one another process holds is not deleted.
+            self._session_config(session_id)
+            await self.delete_saved_session(session_id)
+        finally:
+            self._forget_session(session_id)
+        return DeleteSessionResponse()
+
+    async def delete_saved_session(self, session_id: str) -> None:
+        """Delete a saved session's history. Override to clean up related records too."""
+        if self._checkpointer is not None:
+            await self._checkpointer.adelete_thread(session_id)
+
+    async def session_closed(self, session_id: str) -> None:
+        """Release resources an override holds for a session that is closing."""
+        del session_id
 
     async def set_session_mode(  # ty: ignore[invalid-method-override]  # Keep our public positional order; the ACP router calls by keyword
         self,
@@ -429,17 +674,8 @@ class AgentServerACP(ACPAgent):
         session_id: str,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionModeResponse:
-        """Switch the session to a different mode, resetting the agent."""
-        if self._modes is not None and session_id in self._session_mode_states:
-            state = self._session_mode_states[session_id]
-            self._session_modes[session_id] = mode_id
-            self._session_mode_states[session_id] = SessionModeState(
-                available_modes=state.available_modes,
-                current_mode_id=mode_id,
-            )
-            self._reset_agent(session_id)
-            if self._load_sessions:
-                await self._persist_session(session_id)
+        """Switch the session's mode from the next turn on."""
+        await self._change_option(session_id, "mode", mode_id)
         return SetSessionModeResponse()
 
     async def set_config_option(
@@ -449,82 +685,128 @@ class AgentServerACP(ACPAgent):
         value: str | bool,  # noqa: FBT001  # signature fixed by ACP protocol interface
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionConfigOptionResponse:
-        """Update a configuration option for the session.
-
-        Handles both mode and model switching. When switching models,
-        the agent is reset to use the new model.
-        """
-        # Only select-type options (mode, model) are supported; reject boolean values.
+        """Change a config option from the next turn on and return all options."""
+        # Only select-type options are supported; reject boolean values.
         if not isinstance(value, str):
             msg = f"Config option {config_id!r} expects a string value, got {type(value).__name__}"
             raise RequestError(-32602, msg)
-
-        if config_id == "mode":
-            # Handle mode switching
-            if self._modes is not None and session_id in self._session_mode_states:
-                # Validate the mode exists
-                valid_mode = any(mode.id == value for mode in self._modes.available_modes)
-                if not valid_mode:
-                    msg = f"Invalid mode: {value}"
-                    raise RequestError(-32602, msg)
-
-                state = self._session_mode_states[session_id]
-                self._session_modes[session_id] = value
-                self._session_mode_states[session_id] = SessionModeState(
-                    available_modes=state.available_modes,
-                    current_mode_id=value,
-                )
-                self._reset_agent(session_id)
-                if self._load_sessions:
-                    await self._persist_session(session_id)
-
-        elif config_id == "model":
-            # Handle model switching
-            if self._models is not None:
-                # Validate the model exists
-                valid_model = any(model["value"] == value for model in self._models)
-                if not valid_model:
-                    msg = f"Invalid model: {value}"
-                    raise RequestError(-32602, msg)
-
-                # Update the session's model
-                self._session_models[session_id] = value
-                # Reset the agent to use the new model
-                self._reset_agent(session_id)
-                if self._load_sessions:
-                    await self._persist_session(session_id)
-        else:
-            msg = f"Unknown config option: {config_id}"
-            raise RequestError(-32602, msg)
-
-        # Return the updated config options
-        config_options = self._build_config_options(session_id)
+        config_options = await self._change_option(session_id, config_id, value)
         return SetSessionConfigOptionResponse(config_options=config_options)
 
+    async def _change_option(
+        self, session_id: str, config_id: str, value: str
+    ) -> list[SessionConfigOptionSelect | SessionConfigOptionBoolean]:
+        """Validate and apply one option, then save it and tell the client.
+
+        Raises:
+            RequestError: `invalid_params` for an unknown option or a value the
+                session doesn't offer, `resource_not_found` for a session that is
+                not open, `invalid_request` while it opens or closes.
+        """
+        session = self._require_open(session_id)
+        if config_id == "mode" and self._modes is not None:
+            state = session.mode_state or self._modes
+            if not any(mode.id == value for mode in state.available_modes):
+                msg = f"Invalid mode: {value}"
+                raise RequestError(-32602, msg)
+            session.mode = value
+            session.mode_state = SessionModeState(
+                available_modes=state.available_modes, current_mode_id=value
+            )
+        elif config_id == "model" and self._models is not None:
+            if not any(model["value"] == value for model in self._models):
+                msg = f"Invalid model: {value}"
+                raise RequestError(-32602, msg)
+            session.model = value
+        else:
+            self._check_extra_option(session_id, config_id, value)
+            session.options[config_id] = value
+        # The next use rebuilds the agent; a turn already running keeps its own.
+        session.agent = None
+        await self._persist_options(session_id)
+        config_options = self._build_config_options(session_id)
+        with contextlib.suppress(ConnectionError):
+            await self._send(
+                session_id,
+                ConfigOptionUpdate(
+                    session_update="config_option_update", config_options=config_options
+                ),
+            )
+            if config_id == "mode":
+                await self._send(
+                    session_id,
+                    CurrentModeUpdate(session_update="current_mode_update", current_mode_id=value),
+                )
+        return config_options
+
+    def _require_open(self, session_id: str) -> _Session:
+        """Return an open session's record, refusing one that is closing or still being restored.
+
+        Raises:
+            RequestError: `resource_not_found` for a session that is not open,
+                `invalid_request` while it closes or opens.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise RequestError.resource_not_found(session_id)
+        if session.closing:
+            raise RequestError.invalid_request({"message": "The session is closing"})
+        if session.opening is not None:
+            raise RequestError.invalid_request({"message": "The session is still opening"})
+        return session
+
+    def extra_config_options(
+        self,
+        context: AgentSessionContext,  # noqa: ARG002  # used by overrides
+    ) -> list[SessionConfigOptionSelect]:
+        """Return config options beyond mode and model, such as reasoning effort.
+
+        Override to add options. Each option's `current_value` is what the
+        session uses now. A value the user picks reaches the agent factory as
+        `AgentSessionContext.options`, and options are rebuilt after every
+        change, so they can depend on the session's model.
+        """
+        return []
+
+    def _check_extra_option(self, session_id: str, config_id: str, value: str) -> None:
+        """Reject an unknown extra option or a value it doesn't offer.
+
+        Raises:
+            RequestError: `invalid_params` for an unknown option or value.
+        """
+        options = self.extra_config_options(self._session_context(session_id))
+        option = next((option for option in options if option.id == config_id), None)
+        if option is None:
+            msg = f"Unknown config option: {config_id}"
+            raise RequestError(-32602, msg)
+        values = {
+            choice.value
+            for choice in option.options
+            if isinstance(choice, SessionConfigSelectOption)
+        }
+        if value not in values:
+            msg = f"Invalid value for {config_id}: {value}"
+            raise RequestError(-32602, msg)
+
     async def cancel(self, session_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # ACP protocol interface parameters
-        """Cancel the current execution for the given session."""
-        self._cancelled_sessions.add(session_id)
+        """Cancel the session's running turn; its `session/prompt` returns `cancelled`."""
+        turn = self._peek(session_id).turn
+        if turn is not None and not turn.done():
+            turn.cancel()
+
+    async def _send(self, session_id: str, update: Any) -> None:  # any ACP session update
+        """Send one session update to the client."""
+        if isinstance(update, ToolCallStart):
+            # Applied here, where live turns and replay both send, so they cannot differ.
+            update = self._displayed(session_id, update.name or "", update)
+        await self._conn.session_update(session_id=session_id, update=update, source="DeepAgent")
 
     async def _log_text(self, session_id: str, text: str) -> None:
         """Send a text message update to the client."""
         update = AgentMessageChunk(
             session_update="agent_message_chunk", content=TextContentBlock(type="text", text=text)
         )
-        await self._conn.session_update(session_id=session_id, update=update, source="DeepAgent")
-
-    def _all_tasks_completed(self, plan: list[dict[str, Any]]) -> bool:
-        """Check if all tasks in a plan are completed.
-
-        Args:
-            plan: List of todo dictionaries
-
-        Returns:
-            True if all tasks have status 'completed', False otherwise
-        """
-        if not plan:
-            return True
-
-        return all(todo.get("status") == "completed" for todo in plan)
+        await self._send(session_id, update)
 
     async def _clear_plan(self, session_id: str) -> None:
         """Clear the plan by sending an empty plan update.
@@ -532,258 +814,70 @@ class AgentServerACP(ACPAgent):
         Args:
             session_id: The session ID
         """
-        update = AgentPlanUpdate(
-            session_update="plan",
-            entries=[],
-        )
-        await self._conn.session_update(
-            session_id=session_id,
-            update=update,
-            source="DeepAgent",
-        )
+        await self._send(session_id, _plan_update([]))
         # Clear the stored plan for this session
-        self._session_plans[session_id] = []
+        self._peek(session_id).plan = []
 
-    async def _handle_todo_update(
-        self,
-        session_id: str,
-        todos: list[dict[str, Any]],
-        *,
-        log_plan: bool = True,
-    ) -> None:
-        """Handle todo list updates from write_todos tool.
-
-        Args:
-            session_id: The session ID
-            todos: List of todo dictionaries with 'content' and 'status' fields
-            log_plan: Whether to log the plan as a visible text message
-        """
-        # Convert todos to PlanEntry objects
-        entries = []
-        for todo in todos:
-            # Extract fields from todo dict
-            content = todo.get("content", "")
-            status = todo.get("status", "pending")
-
-            # Validate and cast status to PlanEntryStatus
-            if status not in ("pending", "in_progress", "completed"):
-                status = "pending"
-
-            # Create PlanEntry with default priority of "medium"
-            entry = PlanEntry(
-                content=content,
-                status=status,
-                priority="medium",
-            )
-            entries.append(entry)
-
-        # Send plan update notification
-        update = AgentPlanUpdate(
-            session_update="plan",
-            entries=entries,
-        )
-        await self._conn.session_update(
-            session_id=session_id,
-            update=update,
-            source="DeepAgent",
-        )
-
-        # Optionally send a visible text message showing the plan
-        if log_plan:
-            plan_text = "## Plan\n\n"
-            for i, todo in enumerate(todos, 1):
-                content = todo.get("content", "")
-                plan_text += f"{i}. {content}\n"
-
-            await self._log_text(session_id=session_id, text=plan_text)
+    async def _send_all(self, session_id: str, updates: Iterable[Any]) -> None:
+        """Send session updates one at a time, taking each only once the last is sent."""
+        for update in updates:
+            await self._send(session_id, update)
 
     async def _process_tool_call_chunks(
         self,
         session_id: str,
         message_chunk: Any,
-        active_tool_calls: dict,
-        tool_call_accumulator: dict,
+        turn: _Turn,
+        namespace: tuple[str, ...] = (),
     ) -> None:
-        """Process tool call chunks and start tool calls when complete."""
-        if (
-            not isinstance(message_chunk, str)
-            and hasattr(message_chunk, "tool_call_chunks")
-            and message_chunk.tool_call_chunks
-        ):
-            for chunk in message_chunk.tool_call_chunks:
-                chunk_id = chunk.get("id")
-                chunk_name = chunk.get("name")
-                chunk_args = chunk.get("args", "")
-                chunk_index = chunk.get("index", 0)
+        """Start streamed tool calls as soon as their arguments parse."""
+        started = _start_streamed_tool_calls(turn.chunks, turn.calls, message_chunk, namespace)
+        await self._send_all(session_id, started)
 
-                # Initialize accumulator for this index if we have id and name
-                is_new_tool_call = (
-                    chunk_index not in tool_call_accumulator
-                    or chunk_id != tool_call_accumulator[chunk_index].get("id")
-                )
-                if chunk_id and chunk_name and is_new_tool_call:
-                    tool_call_accumulator[chunk_index] = {
-                        "id": chunk_id,
-                        "name": chunk_name,
-                        "args_str": "",
-                    }
+    async def _fail_open_tool_calls(self, session_id: str, turn: _Turn) -> None:
+        """Close every tool call left open by a cancelled or failed turn."""
+        for update in _fail_open_calls(turn.calls):
+            with contextlib.suppress(Exception):
+                await self._send(session_id, update)
 
-                # Accumulate args string chunks using index
-                if chunk_args and chunk_index in tool_call_accumulator:
-                    tool_call_accumulator[chunk_index]["args_str"] += chunk_args
-
-            # After processing chunks, try to start any tool calls with complete args
-            for _index, acc in list(tool_call_accumulator.items()):
-                tool_id = acc.get("id")
-                tool_name = acc.get("name")
-                args_str = acc.get("args_str", "")
-
-                # Only start if we haven't started yet and have parseable args
-                if tool_id and tool_id not in active_tool_calls and args_str:
-                    try:
-                        tool_args = json.loads(args_str)
-
-                        # Mark as started and store args for later reference
-                        active_tool_calls[tool_id] = {
-                            "name": tool_name,
-                            "args": tool_args,
-                        }
-
-                        # Create the appropriate tool call start
-                        update = self._create_tool_call_start(tool_id, tool_name, tool_args)
-
-                        await self._conn.session_update(
-                            session_id=session_id,
-                            update=update,
-                            source="DeepAgent",
-                        )
-
-                        # If this is write_todos, send the plan update immediately
-                        if tool_name == "write_todos" and isinstance(tool_args, dict):
-                            todos = tool_args.get("todos", [])
-                            await self._handle_todo_update(session_id, todos, log_plan=False)
-                    except json.JSONDecodeError:
-                        pass
-
-    def _create_tool_call_start(
-        self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
-    ) -> ToolCallStart:
-        """Create a tool call update based on tool type and arguments."""
-        kind_map: dict[str, ToolKind] = {
-            "read_file": "read",
-            "edit_file": "edit",
-            "write_file": "edit",
-            "ls": "search",
-            "glob": "search",
-            "grep": "search",
-            "execute": "execute",
-        }
-        tool_kind = kind_map.get(tool_name, "other")
-
-        # Determine title and create appropriate update based on tool type
-        if tool_name == "read_file" and isinstance(tool_args, dict):
-            path = tool_args.get("file_path")
-            title = f"Read `{path}`" if path else tool_name
-            return ToolCallStart(
-                session_update="tool_call",
-                tool_call_id=tool_id,
-                title=title,
-                kind=tool_kind,
-                status="pending",
-                raw_input=tool_args,
-            )
-        if tool_name == "edit_file" and isinstance(tool_args, dict):
-            path = tool_args.get("file_path", "")
-            old_string = tool_args.get("old_string", "")
-            new_string = tool_args.get("new_string", "")
-            title = f"Edit `{path}`" if path else tool_name
-
-            # Only create diff if we have both old and new strings
-            if path and old_string and new_string:
-                diff_content = FileEditToolCallContent(
-                    type="diff",
-                    path=path,
-                    new_text=new_string,
-                    old_text=old_string,
-                )
-                return ToolCallStart(
-                    session_update="tool_call",
-                    tool_call_id=tool_id,
-                    title=title,
-                    kind="edit",
-                    status="pending",
-                    content=[diff_content],
-                    locations=[ToolCallLocation(path=path)],
-                    raw_input={"path": path, "content": diff_content},
-                )
-            # Fallback to generic tool call if data incomplete
-            return ToolCallStart(
-                session_update="tool_call",
-                tool_call_id=tool_id,
-                title=title,
-                kind=tool_kind,
-                status="pending",
-                raw_input=tool_args,
-            )
-        if tool_name == "write_file" and isinstance(tool_args, dict):
-            path = tool_args.get("file_path")
-            title = f"Write `{path}`" if path else tool_name
-            return ToolCallStart(
-                session_update="tool_call",
-                tool_call_id=tool_id,
-                title=title,
-                kind=tool_kind,
-                status="pending",
-                raw_input=tool_args,
-            )
-        if tool_name == "execute" and isinstance(tool_args, dict):
-            command = tool_args.get("command", "")
-            return ToolCallStart(
-                session_update="tool_call",
-                tool_call_id=tool_id,
-                title=command or "Execute command",
-                kind=tool_kind,
-                status="pending",
-                raw_input=tool_args,
-            )
-        title = tool_name
-        return ToolCallStart(
-            session_update="tool_call",
-            tool_call_id=tool_id,
-            title=title,
-            kind=tool_kind,
-            status="pending",
-            raw_input=tool_args,
+    def _default_context(self, cwd: str) -> AgentSessionContext:
+        """Build the context a new session starts with before any option changes."""
+        return AgentSessionContext(
+            cwd=cwd,
+            mode=self._modes.current_mode_id if self._modes is not None else "auto",
+            model=self.default_model(),
         )
 
-    def _initialize_session_options(self, session_id: str) -> None:
+    def default_model(self) -> str | None:
+        """Return the model new sessions start with: the first `models` entry.
+
+        Override when the catalog has no usable default yet, so `check_ready`
+        sees `model=None` and loaded sessions can still restore a saved model.
+        """
+        return self._models[0]["value"] if self._models else None
+
+    def _initialize_session_options(self, session: _Session) -> None:
         """Initialize mode and model state for a new or loaded session."""
         if self._modes is not None:
-            self._session_modes[session_id] = self._modes.current_mode_id
-            self._session_mode_states[session_id] = self._modes
-        if self._models:
-            self._session_models[session_id] = self._models[0]["value"]
+            session.mode = self._modes.current_mode_id
+            session.mode_state = self._modes
+        if (default := self.default_model()) is not None:
+            session.model = default
+        session.options = {}
 
-    def _restore_session_options(self, session_id: str, metadata: Mapping[str, Any]) -> bool:
-        """Restore persisted mode and model selections.
-
-        Returns:
-            Whether restoring the selections requires rebuilding a factory agent.
-        """
-        changed = False
+    def _restore_session_options(self, session: _Session, metadata: Mapping[str, Any]) -> None:
+        """Restore persisted mode and model selections."""
         saved_mode = metadata.get(_ACP_MODE_METADATA_KEY)
-        if (
-            self._modes is not None
-            and isinstance(saved_mode, str)
-            and any(mode.id == saved_mode for mode in self._modes.available_modes)
-        ):
-            state = self._session_mode_states[session_id]
-            self._session_modes[session_id] = saved_mode
-            self._session_mode_states[session_id] = SessionModeState(
-                available_modes=state.available_modes,
+        if self._modes is not None and isinstance(saved_mode, str):
+            offered = [mode.id for mode in self._modes.available_modes]
+            # A mode no longer offered (YOLO without acknowledgement) falls back to
+            # the first mode, the most restrictive by convention, not the launch default.
+            saved_mode = saved_mode if saved_mode in offered else offered[0]
+            session.mode = saved_mode
+            session.mode_state = SessionModeState(
+                available_modes=self._modes.available_modes,
                 current_mode_id=saved_mode,
             )
-            changed = saved_mode != self._modes.current_mode_id
 
         saved_model = metadata.get(_ACP_MODEL_METADATA_KEY)
         if (
@@ -791,34 +885,79 @@ class AgentServerACP(ACPAgent):
             and isinstance(saved_model, str)
             and any(model["value"] == saved_model for model in self._models)
         ):
-            self._session_models[session_id] = saved_model
-            changed = changed or saved_model != self._models[0]["value"]
-        return changed
+            session.model = saved_model
+        saved_title = metadata.get(_ACP_TITLE_METADATA_KEY)
+        if isinstance(saved_title, str) and saved_title:
+            session.title = saved_title
+        try:
+            saved_options = json.loads(metadata.get(_ACP_OPTIONS_METADATA_KEY) or "{}")
+        except (TypeError, ValueError):
+            saved_options = None
+        if isinstance(saved_options, dict):
+            session.options = {
+                key: value
+                for key, value in saved_options.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
 
     def _session_config(self, session_id: str) -> RunnableConfig:
         """Build the LangGraph config and durable metadata for an ACP session."""
-        metadata = {
-            _ACP_SESSION_METADATA_KEY: True,
-            "cwd": self._session_cwds[session_id],
-        }
-        if session_id in self._session_modes:
-            metadata[_ACP_MODE_METADATA_KEY] = self._session_modes[session_id]
-        if session_id in self._session_models:
-            metadata[_ACP_MODEL_METADATA_KEY] = self._session_models[session_id]
+        session = self._sessions[session_id]
+        metadata = {_ACP_SESSION_METADATA_KEY: True, "cwd": session.cwd}
+        if session.mode is not None:
+            metadata[_ACP_MODE_METADATA_KEY] = session.mode
+        if session.model is not None:
+            metadata[_ACP_MODEL_METADATA_KEY] = session.model
+        if session.title:
+            metadata[_ACP_TITLE_METADATA_KEY] = session.title
+        if session.options:
+            # Checkpoint metadata keeps only primitive values, so store JSON.
+            metadata[_ACP_OPTIONS_METADATA_KEY] = json.dumps(session.options)
         return {"configurable": {"thread_id": session_id}, "metadata": metadata}
 
-    def _checkpointed_agent(self, session_id: str) -> CompiledStateGraph:
+    async def _checkpointed_agent(self, session_id: str) -> CompiledStateGraph:
         """Return the session agent, requiring a configured checkpointer."""
-        if self._agent is None or self._agent_session_id != session_id:
-            self._reset_agent(session_id)
-        if self._agent is None or getattr(self._agent, "checkpointer", None) is None:
-            msg = "session/load requires an agent compiled with a checkpointer"
+        agent = await self._agent_for(session_id)
+        if getattr(agent, "checkpointer", None) is None:
+            msg = "Durable sessions require an agent compiled with a checkpointer"
             raise RuntimeError(msg)
-        return self._agent
+        return agent
+
+    async def _session_metadata(self, session_id: str) -> Mapping[str, Any]:
+        """Read a session's saved ACP metadata.
+
+        With a shared `checkpointer`, this reads the checkpoint directly, so no
+        agent is built for options that may not be usable yet.
+        """
+        if self._checkpointer is not None:
+            saved = await self._checkpointer.aget_tuple(
+                {"configurable": {"thread_id": session_id, "checkpoint_ns": ""}}
+            )
+            return saved.metadata if saved is not None else {}
+        agent = await self._checkpointed_agent(session_id)
+        return (await agent.aget_state(self._session_config(session_id))).metadata or {}
+
+    async def _persist_options(self, session_id: str) -> None:
+        """Save option changes now, or when the session's running turn ends.
+
+        Writing a checkpoint while a turn waits on an interrupt would move the
+        thread past the interrupt that turn is about to resume.
+        """
+        if not self._load_sessions:
+            return
+        session = self._peek(session_id)
+        if session.turn is not None or session.closing:
+            session.unsaved_options = True
+        else:
+            await self._persist_session(session_id)
 
     async def _persist_session(self, session_id: str) -> None:
-        """Write the current ACP session metadata to its checkpoint thread."""
-        agent = self._checkpointed_agent(session_id)
+        """Write the current ACP session metadata to its checkpoint thread.
+
+        Any agent the session built can write it, so the last one is reused
+        rather than building a new one for options that just changed.
+        """
+        agent = self._peek(session_id).last_agent or await self._checkpointed_agent(session_id)
         await agent.aupdate_state(self._session_config(session_id), {}, as_node="__start__")
 
     async def _replay_session(
@@ -827,136 +966,54 @@ class AgentServerACP(ACPAgent):
         agent: CompiledStateGraph,
     ) -> None:
         """Replay persisted conversation entries before `session/load` returns."""
-        snapshots = [
-            snapshot
-            async for snapshot in agent.aget_state_history(self._session_config(session_id))
-        ]
-        messages: dict[str, Any] = {}
-        for snapshot in reversed(snapshots):
-            for message in snapshot.values.get("messages", []):
-                messages[message.id] = message
-
-        active_tool_calls: dict[str, dict[str, Any]] = {}
-        for message in messages.values():
-            if message.type == "human":
-                await self._replay_human_message(session_id, message.id, message)
-            elif message.type == "ai":
-                await self._replay_ai_message(session_id, message.id, message, active_tool_calls)
-            elif message.type == "tool":
-                await self._replay_tool_message(session_id, message, active_tool_calls)
-
-    async def _replay_human_message(
-        self,
-        session_id: str,
-        message_id: str,
-        message: Any,
-    ) -> None:
-        """Replay one persisted user message."""
-        if message.additional_kwargs.get("lc_source") == "local_context":
-            return
-        for block in _content_blocks(message):
-            await self._conn.session_update(
-                session_id=session_id,
-                update=UserMessageChunk(
-                    session_update="user_message_chunk",
-                    content=block,
-                    message_id=message_id,
-                ),
-                source="DeepAgent",
-            )
-
-    async def _replay_ai_message(
-        self,
-        session_id: str,
-        message_id: str,
-        message: Any,
-        active_tool_calls: dict[str, dict[str, Any]],
-    ) -> None:
-        """Replay one persisted assistant message and its tool calls."""
-        for update in _content_updates(message, message_id):
-            await self._conn.session_update(
-                session_id=session_id,
-                update=update,
-                source="DeepAgent",
-            )
-        for tool_call in message.tool_calls:
-            tool_id = tool_call.get("id")
-            if tool_id is None:
-                continue
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-            active_tool_calls[tool_id] = {"name": tool_name, "args": tool_args}
-            await self._conn.session_update(
-                session_id=session_id,
-                update=self._create_tool_call_start(tool_id, tool_name, tool_args),
-                source="DeepAgent",
-            )
-            if tool_name == "write_todos":
-                await self._handle_todo_update(
-                    session_id,
-                    tool_args.get("todos", []),
-                    log_plan=False,
-                )
-
-    async def _replay_tool_message(
-        self,
-        session_id: str,
-        message: Any,
-        active_tool_calls: dict[str, dict[str, Any]],
-    ) -> None:
-        """Replay one persisted tool result."""
-        tool_info = active_tool_calls.get(message.tool_call_id)
-        if tool_info is None or tool_info["name"] == "edit_file":
-            return
-        content = "".join(
-            block["text"] for block in message.content_blocks if block.get("type") == "text"
-        )
-        if tool_info["name"] == "execute":
-            content = format_execute_result(
-                command=str(tool_info["args"].get("command", "")),
-                result=content,
-            )
-        await self._conn.session_update(
-            session_id=session_id,
-            update=ToolCallProgress(
-                session_update="tool_call_update",
-                tool_call_id=message.tool_call_id,
-                status="failed" if message.status == "error" else "completed",
-                content=[
-                    ContentToolCallContent(
-                        type="content", content=TextContentBlock(type="text", text=content)
-                    )
-                ],
-            ),
-            source="DeepAgent",
-        )
+        history = agent.aget_state_history(self._session_config(session_id))
+        await self._send_all(session_id, _replay_updates(await _history_messages(history)))
 
     def _forget_session(self, session_id: str) -> None:
-        """Discard state created while validating a session."""
-        self._session_cwds.pop(session_id, None)
-        self._allowed_execute_commands.pop(session_id, None)
-        if self._agent_session_id == session_id:
-            self._agent = None
-            self._agent_session_id = None
+        """Discard everything the server holds for a session."""
+        self._sessions.pop(session_id, None)
 
-    def _reset_agent(self, session_id: str) -> None:
-        """Reset the agent instance, re-creating it from the factory if applicable."""
-        cwd = self._session_cwds.get(session_id)
-        if cwd is not None:
-            self._cwd = cwd
+    def _session_context(self, session_id: str) -> AgentSessionContext:
+        """Return the context a session's agent is built from."""
+        session = self._peek(session_id)
+        default_mode = self._modes.current_mode_id if self._modes is not None else "auto"
+        return AgentSessionContext(
+            cwd=session.cwd,
+            mode=default_mode if session.mode is None else session.mode,
+            model=session.model if self._models is not None else None,
+            options=tuple(sorted(session.options.items())),
+            session_id=session_id,
+            mcp_servers=tuple(session.mcp_servers),
+        )
+
+    async def _agent_for(self, session_id: str) -> CompiledStateGraph:
+        """Return the session's cached agent, building it on first use."""
+        agent = self._peek(session_id).agent
+        return agent if agent is not None else await self._reset_agent(session_id)
+
+    async def _reset_agent(self, session_id: str) -> CompiledStateGraph:
+        """Build the session's agent from its current options and cache it.
+
+        A build that an option change overtook still serves the caller that
+        asked for it, but is not cached, so the next use builds the new choice.
+        """
+        session = self._sessions[session_id]
+        context = self._session_context(session_id)
+        agent = await self._build_agent(context)
+        session.last_agent = agent
+        if self._session_context(session_id) == context:
+            session.agent = agent
+        return agent
+
+    async def _build_agent(self, context: AgentSessionContext) -> CompiledStateGraph:
+        """Run the agent factory with the session's context."""
         if isinstance(self._agent_factory, CompiledStateGraph):
-            self._agent = self._agent_factory
-        else:
-            mode = self._session_modes.get(
-                session_id,
-                self._modes.current_mode_id if self._modes is not None else "auto",
-            )
-            model = self._session_models.get(session_id) if self._models is not None else None
-            context = AgentSessionContext(cwd=self._cwd, mode=mode, model=model)
-            self._agent = self._agent_factory(context)
-        self._agent_session_id = session_id
+            return self._agent_factory
+        built = self._agent_factory(context)
+        # A narrowed `Awaitable[CompiledStateGraph]` loses its type argument under ty.
+        return cast("CompiledStateGraph", await built if isinstance(built, Awaitable) else built)
 
-    async def prompt(  # noqa: C901, PLR0912, PLR0915  # ty: ignore[invalid-method-override]  # Complex streaming handler; keeps public positional order, ACP calls by keyword
+    async def prompt(  # ty: ignore[invalid-method-override]  # keeps public positional order; ACP calls by keyword
         self,
         prompt: list[
             TextContentBlock
@@ -969,373 +1026,493 @@ class AgentServerACP(ACPAgent):
         message_id: str | None = None,  # noqa: ARG002  # ACP protocol interface parameter
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> PromptResponse:
-        """Process a user prompt and stream the agent response."""
-        if self._agent is None or (
-            self._agent_session_id is not None and self._agent_session_id != session_id
-        ):
-            self._reset_agent(session_id)
+        """Run one turn and stream it to the client.
 
-        if self._agent is None:
-            msg = "Agent initialization failed"
-            raise RuntimeError(msg)
-
-        if getattr(self._agent, "checkpointer", None) is None:
-            self._agent.checkpointer = MemorySaver()  # Guarded by getattr check above
-        agent = self._agent
-
-        # Reset cancellation flag for new prompt
-        self._cancelled_sessions.discard(session_id)
-
-        # Convert ACP content blocks to LangChain multimodal content format
-        content_blocks = []
-
-        for block in prompt:
-            if isinstance(block, TextContentBlock):
-                content_blocks.extend(convert_text_block_to_content_blocks(block))
-            elif isinstance(block, ImageContentBlock):
-                content_blocks.extend(convert_image_block_to_content_blocks(block))
-            elif isinstance(block, AudioContentBlock):
-                content_blocks.extend(convert_audio_block_to_content_blocks(block))
-            elif isinstance(block, ResourceContentBlock):
-                content_blocks.extend(
-                    convert_resource_block_to_content_blocks(block, root_dir=self._cwd)
-                )
-            elif isinstance(block, EmbeddedResourceContentBlock):
-                content_blocks.extend(convert_embedded_resource_block_to_content_blocks(block))
-        # Stream the deep agent response with multimodal content
-        config = self._session_config(session_id)
-
-        # Track active tool calls and accumulate chunks by index
-        active_tool_calls = {}
-        tool_call_accumulator = {}  # index -> {id, name, args_str}
-
-        current_state = None
-        user_decisions = []
-
-        while current_state is None or current_state.interrupts:
-            # Check for cancellation
-            if session_id in self._cancelled_sessions:
-                self._cancelled_sessions.discard(session_id)  # Reset for next prompt
+        The turn runs as its own task so `session/cancel` can stop it at any
+        await, including inside a long tool call.
+        """
+        session = self._require_open(session_id)
+        if session.turn is not None:
+            raise RequestError.invalid_request(
+                {"message": "A prompt is already running in this session"}
+            )
+        turn = session.turn = asyncio.create_task(self._run_turn(prompt, session_id))
+        try:
+            return await turn
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if turn.cancelled() and (current is None or not current.cancelling()):
                 return PromptResponse(stop_reason="cancelled")
+            raise
 
-            pending_interrupts: Sequence[Interrupt] = ()
-            async for stream_chunk in agent.astream(
-                Command(resume={"decisions": user_decisions})
-                if user_decisions
-                else {"messages": [{"role": "user", "content": content_blocks}]},
-                config=config,
-                stream_mode=["messages", "updates"],
-                subgraphs=True,
-            ):
-                _expected_len = 3  # (namespace, stream_mode, data)
-                if not isinstance(stream_chunk, tuple) or len(stream_chunk) != _expected_len:
+    async def _run_turn(self, prompt: Sequence[Any], session_id: str) -> PromptResponse:
+        """Run one turn, then save option changes it held back.
+
+        The save runs inside the turn's task, so a close that waits for the
+        turn also waits for it.
+        """
+        try:
+            return await self._stream_turn(prompt, session_id)
+        finally:
+            session = self._peek(session_id)
+            session.turn = None
+            # A closing session saves its own options before it is forgotten.
+            if session.unsaved_options and not session.closing:
+                await self._save_held_options(session_id)
+
+    async def _save_held_options(self, session_id: str) -> None:
+        """Save option changes held back during a turn; a failure keeps them for the next try."""
+        try:
+            await self._persist_session(session_id)
+        except Exception:  # noqa: BLE001  # the turn's own outcome must not be replaced
+            logger.warning("Could not save options for session %s", session_id, exc_info=True)
+        else:
+            self._peek(session_id).unsaved_options = False
+
+    async def _stream_turn(self, prompt: Sequence[Any], session_id: str) -> PromptResponse:
+        """Stream the agent until it finishes, resolving interrupts along the way."""
+        agent = await self._agent_for(session_id)
+        if getattr(agent, "checkpointer", None) is None:
+            agent.checkpointer = MemorySaver()  # Guarded by getattr check above
+        context = self._session_context(session_id)
+        turn = _Turn(cwd=context.cwd, context=context)
+        config = self._session_config(session_id)
+        graph_input: Any = await self._command_input(session_id, prompt) or {
+            "messages": [{"role": "user", "content": _prompt_content(prompt, turn.cwd)}]
+        }
+        try:
+            while True:
+                interrupts = await self._stream(session_id, agent, graph_input, config, turn)
+                if not interrupts:
+                    # The checkpoint backing an interrupt may only become visible after
+                    # the stream closes, so look again before ending the turn.
+                    state = await agent.aget_state(config)
+                    interrupts = [
+                        interrupt
+                        for interrupt in getattr(state, "interrupts", ())
+                        if not any(
+                            interrupt.id == done.id and interrupt.value == done.value
+                            for done in turn.resumed
+                        )
+                    ]
+                if not interrupts:
+                    await self._after_turn(session_id, turn, state)
+                    return PromptResponse(stop_reason=turn.stop_reason)
+                resume = {
+                    interrupt.id: await self._resolve_interrupt(session_id, interrupt, turn)
+                    for interrupt in interrupts
+                }
+                turn.resumed = interrupts
+                graph_input = Command(resume=resume)
+        except ModelRefusalError:
+            # Deep Agents raises on a refusal block; its text has already streamed.
+            await self._fail_open_tool_calls(session_id, turn)
+            return PromptResponse(stop_reason="refusal")
+        except BaseException:
+            await self._fail_open_tool_calls(session_id, turn)
+            raise
+
+    async def _stream(
+        self,
+        session_id: str,
+        agent: CompiledStateGraph,
+        graph_input: Any,  # graph input or resume `Command`
+        config: RunnableConfig,
+        turn: _Turn,
+    ) -> list[Interrupt]:
+        """Stream one graph run to the client and return the interrupts it raised."""
+        interrupts: dict[str, Interrupt] = {}
+        async for chunk in agent.astream(
+            graph_input,
+            config=config,
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+        ):
+            if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
+                continue
+            namespace, stream_mode, data = chunk
+            if stream_mode == "updates":
+                await self._handle_updates(session_id, turn, tuple(namespace), data, interrupts)
+            else:
+                await self._handle_message(session_id, turn, tuple(namespace), data)
+        return list(interrupts.values())
+
+    async def _handle_updates(
+        self,
+        session_id: str,
+        turn: _Turn,
+        namespace: tuple[str, ...],
+        updates: Any,  # LangGraph node updates
+        interrupts: dict[str, Interrupt],
+    ) -> None:
+        """Collect interrupts, plans, and the tool calls of finished model messages."""
+        if not isinstance(updates, dict):
+            return
+        for interrupt in updates.get("__interrupt__") or ():
+            interrupts.setdefault(interrupt.id, interrupt)
+            turn.interrupt_scopes.setdefault(interrupt.id, namespace[:1])
+        for node_name, update in updates.items():
+            if node_name == "__interrupt__" or not isinstance(update, dict):
+                continue
+            if node_name == "tools" and update.get("todos"):
+                await self._send(session_id, _plan_update(update["todos"]))
+            messages = update.get("messages") if node_name == "model" else None
+            for message in messages if isinstance(messages, list) else ():
+                if getattr(message, "type", None) != "ai":
                     continue
+                started = _start_message_tool_calls(turn.calls, message, namespace[:1])
+                await self._send_all(session_id, started)
+                if not namespace:
+                    turn.stop_reason = _stop_reason(message) or "end_turn"
+                    usage = getattr(message, "usage_metadata", None)
+                    if usage:
+                        turn.context_tokens = usage["input_tokens"] + usage["output_tokens"]
 
-                _namespace, stream_mode, data = stream_chunk
-                # Check for cancellation during streaming
-                if session_id in self._cancelled_sessions:
-                    self._cancelled_sessions.discard(session_id)  # Reset for next prompt
-                    return PromptResponse(stop_reason="cancelled")
+    async def _handle_message(
+        self,
+        session_id: str,
+        turn: _Turn,
+        namespace: tuple[str, ...],
+        data: Any,  # (message chunk, metadata) from the messages stream
+    ) -> None:
+        """Forward a streamed message chunk or tool result to the client."""
+        message_chunk, metadata = data
+        source = metadata.get("lc_source") if isinstance(metadata, dict) else None
+        # Metadata is caller-supplied, so `lc_source` can be unhashable; only a string matches.
+        if isinstance(source, str) and source in self.internal_model_sources:
+            return
+        if isinstance(message_chunk, str):
+            if not namespace:
+                await self._log_text(text=message_chunk, session_id=session_id)
+            return
+        if getattr(message_chunk, "type", None) == "tool":
+            if message_chunk.tool_call_id in turn.calls:
+                await self._send_all(session_id, _finish_tool_call(turn.calls, message_chunk))
+            return
+        # Only the top-level graph's AI messages report text to the client. Messages a
+        # node inserts (pinned skills, local context) are not the agent speaking, and
+        # subagent text and reasoning stay internal; their tool calls are still shown.
+        if not namespace and getattr(message_chunk, "type", None) in {"ai", "AIMessageChunk"}:
+            await self._send_all(session_id, _content_updates(message_chunk))
+        # Emitted after the content above so a chunk that carries both keeps
+        # the block order that session replay uses.
+        await self._process_tool_call_chunks(session_id, message_chunk, turn, namespace)
 
-                if stream_mode == "updates":
-                    updates = data
-                    if isinstance(updates, dict) and "__interrupt__" in updates:
-                        interrupt_objs = updates.get("__interrupt__")
-                        if interrupt_objs:
-                            for interrupt_obj in interrupt_objs:
-                                interrupt_value = interrupt_obj.value
-                                if not isinstance(interrupt_value, dict):
-                                    raise RequestError(
-                                        -32600,
-                                        (
-                                            "ACP limitation: this agent raised a free-form "
-                                            "LangGraph interrupt(), which ACP cannot display.\n\n"
-                                            "ACP only supports human-in-the-loop permission "
-                                            "prompts with a fixed set of decisions "
-                                            "(approve/reject/edit).\n"
-                                            "Spec: https://agentclientprotocol.com/protocol/overview\n\n"
-                                            "Fix: use LangChain HumanInTheLoopMiddleware-style "
-                                            "interrupts (action_requests/review_configs).\n"
-                                            "Docs: https://docs.langchain.com/oss/python/langchain/"
-                                            "human-in-the-loop\n\n"
-                                            "This is a protocol limitation, not a bug in the agent."
-                                        ),
-                                        {"interrupt_value": interrupt_value},
-                                    )
+    async def _resolve_interrupt(
+        self, session_id: str, interrupt: Interrupt, turn: _Turn
+    ) -> Any:  # resume value for this interrupt
+        """Return the resume value for one interrupt."""
+        value = interrupt.value
+        if isinstance(value, dict) and "action_requests" in value:
+            scope = turn.interrupt_scopes.get(interrupt.id)
+            return {"decisions": await self._hitl_decisions(session_id, value, turn, scope)}
+        return await self.handle_interrupt(session_id, interrupt)
 
-                            # The checkpoint backing this update may not be visible until
-                            # the stream iterator has closed. Defer reading state until
-                            # after leaving the async iterator so persistent checkpointers
-                            # do not return a stale, pre-interrupt snapshot.
-                            pending_interrupts = interrupt_objs
-                            continue
+    async def handle_interrupt(
+        self, session_id: str, interrupt: Interrupt
+    ) -> Any:  # resume value for this interrupt
+        """Answer an interrupt that is not a human-in-the-loop permission request.
 
-                    for node_name, update in updates.items():
-                        if node_name == "tools" and isinstance(update, dict) and "todos" in update:
-                            todos = update.get("todos", [])
-                            if todos:
-                                await self._handle_todo_update(session_id, todos, log_plan=False)
+        Override to support custom interrupts, for example by asking the user
+        through `elicitation/create`. The return value resumes the interrupt.
 
-                    continue
-
-                message_chunk, _metadata = data
-
-                if isinstance(message_chunk, str):
-                    if not _namespace:
-                        await self._log_text(text=message_chunk, session_id=session_id)
-                # Check for tool results (ToolMessage responses)
-                elif hasattr(message_chunk, "type") and message_chunk.type == "tool":
-                    # This is a tool result message
-                    tool_call_id = getattr(message_chunk, "tool_call_id", None)
-                    if (
-                        tool_call_id
-                        and tool_call_id in active_tool_calls
-                        and active_tool_calls[tool_call_id].get("name") != "edit_file"
-                    ):
-                        # Update the tool call with completion status and result
-                        content = getattr(message_chunk, "content", "")
-                        tool_info = active_tool_calls[tool_call_id]
-                        tool_name = tool_info.get("name")
-
-                        # Format execute tool results specially
-                        if tool_name == "execute":
-                            tool_args = tool_info.get("args", {})
-                            command = tool_args.get("command", "")
-                            formatted_content = format_execute_result(
-                                command=command, result=str(content)
-                            )
-                        else:
-                            formatted_content = str(content)
-                        update = ToolCallProgress(
-                            session_update="tool_call_update",
-                            tool_call_id=tool_call_id,
-                            status="completed",
-                            content=[
-                                ContentToolCallContent(
-                                    type="content",
-                                    content=TextContentBlock(type="text", text=formatted_content),
-                                )
-                            ],
-                        )
-                        await self._conn.session_update(
-                            session_id=session_id, update=update, source="DeepAgent"
-                        )
-
-                # Only the top-level graph reports to the client. Subagent text
-                # and reasoning stay internal.
-                elif not _namespace:
-                    for update in _content_updates(message_chunk):
-                        await self._conn.session_update(
-                            session_id=session_id,
-                            update=update,
-                            source="DeepAgent",
-                        )
-
-                # Emitted after the content above so a chunk that carries both
-                # keeps the block order that session replay uses.
-                await self._process_tool_call_chunks(
-                    session_id,
-                    message_chunk,
-                    active_tool_calls,
-                    tool_call_accumulator,
-                )
-
-            # After streaming completes, check if we need to exit the loop
-            # The loop continues while there are interrupts
-            # We get the current state to check the loop condition
-            current_state = await agent.aget_state(config)
-            if pending_interrupts:
-                user_decisions = await self._handle_interrupts(
-                    current_state=current_state,
-                    session_id=session_id,
-                    pending_interrupts=pending_interrupts,
-                )
-                if user_decisions:
-                    # A stale snapshot has no interrupts and would otherwise end
-                    # the loop before the selected decisions can resume the graph.
-                    current_state = None
-
-        return PromptResponse(stop_reason="end_turn")
+        Raises:
+            RequestError: By default, since ACP has no generic way to show it.
+        """
+        del session_id
+        del interrupt  # its value can carry private data a tool put in it
+        raise RequestError(-32600, _UNSUPPORTED_INTERRUPT)
 
     def _execute_permission_key(
-        self, session_id: str, tool_args: object
-    ) -> tuple[AgentSessionContext, str] | None:
-        """Identify an exact execute request in its current ACP session context."""
-        if not isinstance(tool_args, dict) or session_id not in self._session_cwds:
+        self, session_id: str, tool_args: object, turn: _Turn
+    ) -> _ExecuteKey | None:
+        """Identify an exact execute request in the options it runs under.
+
+        Uses the turn's options, so an "always" answer is keyed to the mode and
+        model that actually ran the command.
+        """
+        arguments = _execute_arguments(tool_args)
+        if session_id not in self._sessions or arguments is None:
             return None
-        command = tool_args.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return None
-        context = AgentSessionContext(
-            cwd=self._session_cwds[session_id],
-            mode=self._session_modes.get(session_id, "auto"),
-            model=self._session_models.get(session_id),
+        context = turn.context
+        key = AgentSessionContext(
+            cwd=turn.cwd, mode=context.mode, model=context.model, options=context.options
         )
-        try:
-            arguments = json.dumps(tool_args, sort_keys=True, allow_nan=False)
-            if json.loads(arguments) != tool_args:
-                return None
-        except (TypeError, ValueError):
-            return None
-        return context, arguments
+        return key, arguments
 
-    async def _handle_interrupts(  # noqa: C901, PLR0912, PLR0915  # Complex HITL permission handling with many branches
+    async def _after_turn(
+        self, session_id: str, turn: _Turn, state: Any
+    ) -> None:  # LangGraph StateSnapshot
+        """Report context usage and cost, and name the session after its first turn."""
+        values = getattr(state, "values", None) or {}
+        context = turn.context
+        size = self.context_window(context)
+        if size is not None and turn.context_tokens is not None:
+            cost = self.session_cost(values)
+            await self._send(
+                session_id,
+                UsageUpdate(
+                    session_update="usage_update",
+                    used=turn.context_tokens,
+                    size=size,
+                    cost=Cost(amount=cost, currency="USD") if cost is not None else None,
+                ),
+            )
+        session = self._sessions.get(session_id)
+        if session is not None and session.title is None:
+            session.title = ""
+            messages = values.get("messages") or []
+            self._spawn(session_id, self._name_session(session_id, context, messages))
+
+    def _spawn(self, session_id: str, work: Coroutine[Any, Any, None]) -> None:
+        """Run session work after the current request; closing the session cancels it."""
+        task = asyncio.create_task(work)
+        tasks = self._sessions[session_id].tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _announce_commands(self, session_id: str) -> None:
+        """Send the session's slash commands once its `session/new` or `load` reply is out."""
+        # Yield first so the response that creates the session reaches the client first.
+        await asyncio.sleep(_ANNOUNCE_DELAY_SECONDS)
+        commands = self.available_commands(self._session_context(session_id))
+        if not commands or session_id not in self._sessions:
+            return
+        with contextlib.suppress(ConnectionError):
+            await self._send(
+                session_id,
+                AvailableCommandsUpdate(
+                    session_update="available_commands_update", available_commands=commands
+                ),
+            )
+
+    def available_commands(
         self,
+        context: AgentSessionContext,  # noqa: ARG002  # used by overrides
+    ) -> list[AvailableCommand]:
+        """Return the slash commands clients list for the session."""
+        return []
+
+    async def command_input(
+        self,
+        context: AgentSessionContext,  # noqa: ARG002  # used by overrides
+        name: str,  # noqa: ARG002  # used by overrides
+        args: str,  # noqa: ARG002  # used by overrides
+    ) -> dict[str, Any] | None:
+        """Return the graph input that runs `/name args`, or `None` to send it as text.
+
+        The input replaces the usual `{"messages": [user message]}` for the turn,
+        so it can carry extra state keys alongside the message.
+        """
+        return None
+
+    async def _command_input(self, session_id: str, prompt: Sequence[Any]) -> dict[str, Any] | None:
+        """Turn a prompt that is exactly one advertised `/command` into its graph input."""
+        if len(prompt) != 1 or not isinstance(prompt[0], TextContentBlock):
+            return None
+        text = prompt[0].text.strip()
+        if not text.startswith("/"):
+            return None
+        parts = text[1:].split(maxsplit=1)
+        if not parts:
+            return None
+        name, args = parts[0], parts[1] if len(parts) > 1 else ""
+        context = self._session_context(session_id)
+        if name not in {command.name for command in self.available_commands(context)}:
+            return None
+        return await self.command_input(context, name, args)
+
+    async def _name_session(
+        self, session_id: str, context: AgentSessionContext, messages: Sequence[Any]
+    ) -> None:
+        """Generate a title in the background and tell the client."""
+        try:
+            title = await self.session_title(context, messages)
+        except Exception:  # noqa: BLE001  # a title is cosmetic; any override failure must not surface
+            logger.warning("Session title generation failed", exc_info=True)
+            title = None
+        session = self._sessions.get(session_id)
+        if not title or session is None:
+            return
+        session.title = title
+        await self._persist_options(session_id)
+        update = SessionInfoUpdate(
+            session_update="session_info_update",
+            title=title,
+            updated_at=datetime.now(UTC).isoformat(),
+        )
+        # The client may have disconnected while the title was generated.
+        with contextlib.suppress(ConnectionError):
+            await self._send(session_id, update)
+
+    def tool_call_display(
+        self,
+        context: AgentSessionContext,  # noqa: ARG002  # used by overrides
         *,
-        current_state: StateSnapshot,
+        name: str,  # noqa: ARG002  # used by overrides
+        args: Mapping[str, Any],  # noqa: ARG002  # used by overrides
+    ) -> ToolCallDisplay | None:
+        """Return how to show a call to the tool `name`, or `None` for the default.
+
+        Override to give a tool with an unreadable name a title, or to attach
+        ACP `_meta` that tells the client more about the call, such as where
+        the tool comes from. The result applies to the call, its permission
+        request, and its replay when the session is loaded, so it must not
+        depend on state a reloaded session lacks.
+        """
+        return None
+
+    def _displayed(self, session_id: str, name: str, update: _ShownToolCall) -> _ShownToolCall:
+        """Apply `tool_call_display` to a tool call the client is about to be shown."""
+        args = update.raw_input if isinstance(update.raw_input, dict) else {}
+        display = self.tool_call_display(self._session_context(session_id), name=name, args=args)
+        if display is None:
+            return update
+        meta = update.field_meta if display.meta is None else dict(display.meta)
+        return update.model_copy(
+            update={"title": display.title or update.title, "field_meta": meta}
+        )
+
+    def context_window(self, context: AgentSessionContext) -> int | None:  # noqa: ARG002  # used by overrides
+        """Return the session model's context window in tokens, if known.
+
+        Without it the server sends no `usage_update`, since `size` is required.
+        """
+        return None
+
+    def session_cost(self, values: Mapping[str, Any]) -> float | None:  # noqa: ARG002  # used by overrides
+        """Return the session's cumulative cost in USD from its graph state, if known."""
+        return None
+
+    async def session_title(
+        self,
+        context: AgentSessionContext,  # noqa: ARG002  # used by overrides
+        messages: Sequence[Any],
+    ) -> str | None:
+        """Return a title for a session after its first turn.
+
+        Defaults to the first line of the first user message. Override to
+        generate a better one; it runs in the background.
+        """
+        for message in messages:
+            if getattr(message, "type", None) == "human":
+                text = " ".join(
+                    block["text"] for block in message.content_blocks if block.get("type") == "text"
+                )
+                first_line = text.strip().splitlines()[0] if text.strip() else ""
+                return first_line[:80] or None
+        return None
+
+    def _remember_decision(
+        self,
         session_id: str,
-        pending_interrupts: Sequence[Interrupt] | None = None,
+        tool_name: str,
+        execute_key: _ExecuteKey | None,
+        *,
+        allow: bool,
+    ) -> None:
+        """Record an "always" answer for the rest of this opening of the session."""
+        self._peek(session_id).permissions.remember(tool_name, execute_key, allow=allow)
+
+    async def _hitl_decisions(
+        self,
+        session_id: str,
+        interrupt_value: Mapping[str, Any],
+        turn: _Turn,
+        scope: tuple[str, ...] | None,
     ) -> list[dict[str, Any]]:
-        """Handle agent interrupts by requesting permission from the client."""
-        user_decisions: list[dict[str, Any]] = []
-        interrupts = pending_interrupts or current_state.interrupts
-        if (pending_interrupts or current_state.next) and interrupts:
-            # Agent is interrupted, request permission from user
-            for interrupt in interrupts:
-                # Get the tool call info from the interrupt
-                tool_call_id = interrupt.id
-                interrupt_value = interrupt.value
+        """Ask the client about each action in a human-in-the-loop interrupt."""
+        return [
+            await self._hitl_decision(session_id, action, turn, scope)
+            for action in interrupt_value.get("action_requests", [])
+        ]
 
-                # Extract action requests from interrupt_value
-                action_requests = []
-                if isinstance(interrupt_value, dict):
-                    # Deep Agents wraps tool calls in action_requests
-                    action_requests = interrupt_value.get("action_requests", [])
+    async def _hitl_decision(
+        self,
+        session_id: str,
+        action: Mapping[str, Any],
+        turn: _Turn,
+        scope: tuple[str, ...] | None,
+    ) -> dict[str, Any]:
+        """Decide one action from an earlier answer, or by asking the client."""
+        tool_name = action.get("name", "tool")
+        tool_args = action.get("args", {})
+        if tool_name == "write_todos" and self._continue_plan(session_id, tool_args):
+            return {"type": "approve"}
+        execute_key = (
+            self._execute_permission_key(session_id, tool_args, turn)
+            if tool_name == "execute"
+            else None
+        )
+        remembered = self._peek(session_id).permissions.remembered(tool_name, execute_key)
+        if remembered is not None:
+            return remembered
+        choice = await self._ask_permission(session_id, action, execute_key, turn, scope)
+        if choice in {"approve_always", "reject_always"}:
+            allow = choice == "approve_always"
+            self._remember_decision(session_id, tool_name, execute_key, allow=allow)
+            choice = "approve" if allow else "reject"
+        if tool_name == "write_todos":
+            return await self._plan_decision(session_id, tool_args, approved=choice == "approve")
+        return {"type": choice}
 
-                # Process each action request
-                for action in action_requests:
-                    tool_name = action.get("name", "tool")
-                    tool_args = action.get("args", {})
+    def _continue_plan(
+        self,
+        session_id: str,
+        tool_args: Any,  # whatever the middleware put in the action
+    ) -> bool:
+        """Accept an update to a plan the user already approved and that is in progress."""
+        session = self._peek(session_id)
+        if (
+            not isinstance(tool_args, dict)
+            or session.plan is None
+            or _all_tasks_completed(session.plan)
+        ):
+            return False
+        session.plan = tool_args.get("todos", [])
+        return True
 
-                    # Check if this is write_todos - auto-approve updates to existing plan
-                    if tool_name == "write_todos" and isinstance(tool_args, dict):
-                        new_todos = tool_args.get("todos", [])
+    async def _ask_permission(
+        self,
+        session_id: str,
+        action: Mapping[str, Any],
+        execute_key: _ExecuteKey | None,
+        turn: _Turn,
+        scope: tuple[str, ...] | None,
+    ) -> str:
+        """Show the client one action and return the option it picked, `reject` if none."""
+        tool_name = action.get("name", "tool")
+        tool_args = action.get("args", {})
+        if tool_name == "write_todos":
+            await self._log_text(session_id=session_id, text=_plan_text(tool_args.get("todos", [])))
+        options = _permission_options(tool_name, execute_key)
+        tool_call_id = _permission_tool_call_id(turn.calls, action, scope)
+        response = await self._conn.request_permission(
+            session_id=session_id,
+            tool_call=self._displayed(
+                session_id, tool_name, _permission_request(tool_call_id, tool_name, tool_args)
+            ),
+            options=options,
+        )
+        outcome = response.outcome
+        offered = {option.option_id for option in options}
+        if outcome.outcome == "selected" and outcome.option_id in offered:
+            return outcome.option_id
+        return "reject"
 
-                        # Auto-approve if there's an existing plan that's not fully completed
-                        if session_id in self._session_plans:
-                            existing_plan = self._session_plans[session_id]
-                            all_completed = self._all_tasks_completed(existing_plan)
-
-                            if not all_completed:
-                                # Plan is in progress, auto-approve updates
-                                # Store the updated plan (status and content may have changed)
-                                self._session_plans[session_id] = new_todos
-                                user_decisions.append({"type": "approve"})
-                                continue
-
-                    execute_key = (
-                        self._execute_permission_key(session_id, tool_args)
-                        if tool_name == "execute"
-                        else None
-                    )
-                    allowed = (
-                        execute_key in self._allowed_execute_commands.get(session_id, set())
-                        if tool_name == "execute"
-                        else (tool_name, None) in self._allowed_command_types.get(session_id, set())
-                    )
-                    if allowed:
-                        user_decisions.append({"type": "approve"})
-                        continue
-
-                    # Create a title for the permission request
-                    if tool_name == "write_todos":
-                        title = "Review Plan"
-                        # Log the plan text when requesting approval
-                        todos = tool_args.get("todos", [])
-                        plan_text = "## Plan\n\n"
-                        for i, todo in enumerate(todos, 1):
-                            content = todo.get("content", "")
-                            plan_text += f"{i}. {content}\n"
-                        await self._log_text(session_id=session_id, text=plan_text)
-                    elif tool_name == "edit_file" and isinstance(tool_args, dict):
-                        file_path = tool_args.get("file_path", "file")
-                        title = f"Edit `{file_path}`"
-                    elif tool_name == "write_file" and isinstance(tool_args, dict):
-                        file_path = tool_args.get("file_path", "file")
-                        title = f"Write `{file_path}`"
-                    elif tool_name == "execute" and isinstance(tool_args, dict):
-                        command = tool_args.get("command", "")
-                        title = f"Execute: `{command}`" if command else "Execute command"
-                    else:
-                        title = tool_name
-
-                    # Create permission options
-                    options = [
-                        PermissionOption(
-                            option_id="approve",
-                            name="Approve",
-                            kind="allow_once",
-                        ),
-                        PermissionOption(
-                            option_id="reject",
-                            name="Reject",
-                            kind="reject_once",
-                        ),
-                    ]
-                    if tool_name != "execute" or execute_key is not None:
-                        options.append(
-                            PermissionOption(
-                                option_id="approve_always",
-                                name=(
-                                    "Always allow this exact command in this session"
-                                    if tool_name == "execute"
-                                    else f"Always allow {tool_name} commands"
-                                ),
-                                kind="allow_always",
-                            )
-                        )
-
-                    # Request permission from the client
-                    tool_call_update = ToolCallUpdate(
-                        tool_call_id=tool_call_id, title=title, raw_input=tool_args
-                    )
-                    response = await self._conn.request_permission(
-                        session_id=session_id,
-                        tool_call=tool_call_update,
-                        options=options,
-                    )
-                    # Handle the user's decision
-                    if response.outcome.outcome == "selected":
-                        decision_type = response.outcome.option_id
-
-                        if decision_type not in {option.option_id for option in options}:
-                            decision_type = "reject"
-                        if decision_type == "approve_always":
-                            if tool_name == "execute" and execute_key is not None:
-                                self._allowed_execute_commands.setdefault(session_id, set()).add(
-                                    execute_key
-                                )
-                            elif tool_name != "execute":
-                                self._allowed_command_types.setdefault(session_id, set()).add(
-                                    (tool_name, None)
-                                )
-                            user_decisions.append({"type": "approve"})
-                        elif tool_name == "write_todos" and decision_type == "reject":
-                            await self._clear_plan(session_id)
-                            user_decisions.append(
-                                {
-                                    "type": decision_type,
-                                    "feedback": (
-                                        "The user rejected the plan. Please ask them for feedback "
-                                        "on how the plan can be improved, then create a new "
-                                        "and improved plan using this same write_todos tool."
-                                    ),
-                                }
-                            )
-                        elif tool_name == "write_todos" and decision_type == "approve":
-                            # Store the approved plan for future comparisons
-                            self._session_plans[session_id] = tool_args.get("todos", [])
-                            user_decisions.append({"type": decision_type})
-                        else:
-                            user_decisions.append({"type": decision_type})
-                    else:
-                        # User cancelled, treat as rejection
-                        user_decisions.append({"type": "reject"})
-
-                        # If cancelling a plan, clear it
-                        if tool_name == "write_todos":
-                            await self._clear_plan(session_id)
-        return user_decisions
+    async def _plan_decision(
+        self,
+        session_id: str,
+        tool_args: Any,  # `write_todos` arguments
+        *,
+        approved: bool,
+    ) -> dict[str, Any]:
+        """Keep an approved plan, or clear a rejected one and ask the agent for another."""
+        if approved:
+            self._peek(session_id).plan = tool_args.get("todos", [])
+            return {"type": "approve"}
+        await self._clear_plan(session_id)
+        return {"type": "reject", "message": _PLAN_REJECTED}
 
 
 async def _serve_test_agent() -> None:

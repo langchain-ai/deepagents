@@ -12,6 +12,7 @@ WORKFLOW = ROOT / ".github/workflows/release-please.yml"
 CONFIG = ROOT / "release-please-config.json"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 COMMENT_UPDATE_WORKFLOW = ROOT / ".github/workflows/release_comment_update.yml"
+PENDING_SCRIPT = ROOT / ".github/scripts/release/list_pending_releases.sh"
 
 
 def _load_workflow() -> dict:
@@ -423,14 +424,35 @@ def test_guard_defers_instead_of_polling() -> None:
     assert 'echo "skip=true" >> "$GITHUB_OUTPUT"' in defer
 
 
-def test_guard_confirms_pending_labels_directly() -> None:
-    """Search-index lag must not make the post-publish refresh defer itself."""
-    script = _step(_load_workflow()["jobs"]["guard-pending-release"], "check")["run"]
-    body = script[script.index("list_pending_json() {") : script.index("format_pending() {")]
-    # Candidates come from `gh pr list --label` (search index), then each is
+def test_pending_check_reads_labels_directly() -> None:
+    """Search-index lag must neither hide a fresh merge nor a cleared label."""
+    script = PENDING_SCRIPT.read_text()
+    # Candidates come from `gh pr list --label` (search index); each is then
     # re-read with `gh pr view`, which reflects a just-flipped label.
-    assert "gh pr list" in body
-    assert "gh pr view" in body
+    assert "gh pr list" in script
+    assert "gh pr view" in script
+    # A release commit's own PR is resolved from the commit, not the index.
+    assert "/commits/${INCLUDE_SHA}/pulls" in script
+
+    guard = _load_workflow()["jobs"]["guard-pending-release"]
+    step = _step(guard, "check")
+    assert step["env"]["HEAD_SHA"] == "${{ github.sha }}"
+    body = step["run"][step["run"].index("list_pending_json() {") :]
+    assert 'INCLUDE_SHA="$HEAD_SHA" bash .github/scripts/release/list_pending_releases.sh' in body
+
+
+def test_release_please_rechecks_inside_concurrency_group() -> None:
+    """The guard's answer can go stale while this job waits in the queue."""
+    job = _load_workflow()["jobs"]["release-please"]
+    steps = job["steps"]
+    recheck_index = next(i for i, step in enumerate(steps) if step.get("id") == "recheck")
+    recheck = steps[recheck_index]
+    assert "list_pending_releases.sh" in recheck["run"]
+    assert 'echo "skip=true" >> "$GITHUB_OUTPUT"' in recheck["run"]
+    # Nothing that touches release branches may run before or without it.
+    assert all("uses" in step for step in steps[:recheck_index])
+    for step in steps[recheck_index + 1 :]:
+        assert step.get("if") == "steps.recheck.outputs.skip == 'false'", step.get("name")
 
 
 def test_dispatched_runs_are_maintenance_only() -> None:

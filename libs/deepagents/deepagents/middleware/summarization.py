@@ -81,6 +81,7 @@ from langchain.agents.middleware.summarization import (
     ContextSize,
     SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
+    _extract_configuration,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
 from langchain.tools import (
@@ -905,7 +906,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """
         return [msg for msg in messages if not self._is_summary_message(msg)]
 
-    def _build_new_messages_with_path(self, summary: str, file_path: str | None) -> list[AnyMessage]:
+    def _build_new_messages_with_path(
+        self,
+        summary: str,
+        file_path: str | None,
+        *,
+        configuration: dict[str, Any] | None = None,
+    ) -> list[AnyMessage]:
         """Build the summary message with optional file path reference.
 
         Args:
@@ -913,6 +920,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             file_path: Path where conversation history was stored, or `None`.
 
                 Optional since offloading may fail.
+            configuration: A `configuration_update` block restating settings
+                from the summarized messages.
+
+                The summary message carries it so the settings stay in effect
+                for every later request that starts from this summary.
 
         Returns:
             List containing the summary `HumanMessage`.
@@ -931,7 +943,10 @@ A condensed summary follows:
         else:
             content = f"Here is a summary of the conversation to date:\n\n{summary}"
 
-        return [add_notification_metadata(HumanMessage(content=content), source="summarization")]
+        if configuration is None:
+            return [add_notification_metadata(HumanMessage(content=content), source="summarization")]
+        blocks: list[str | dict] = [configuration, {"type": "text", "text": content}]
+        return [add_notification_metadata(HumanMessage(content=blocks), source="summarization")]
 
     def _get_effective_messages(self, request: ModelRequest) -> list[AnyMessage]:
         """Generate effective messages for model call based on summarization event.
@@ -1700,6 +1715,7 @@ A condensed summary follows:
             return self._with_replacements(response, replacements)
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
+        messages_to_summarize, configuration = _extract_configuration(messages_to_summarize, preserved_messages)
 
         backend = self._backend
         # Upload inline media once so both offload and summary see path references.
@@ -1731,7 +1747,7 @@ A condensed summary follows:
         summary = self._create_summary(offloaded_media_messages)
 
         # Build summary message with file path reference
-        new_messages = self._build_new_messages_with_path(summary, file_path)
+        new_messages = self._build_new_messages_with_path(summary, file_path, configuration=configuration)
 
         previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
         state_messages = request.state.get("messages", [])
@@ -1841,6 +1857,7 @@ A condensed summary follows:
             return self._with_replacements(response, replacements)
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
+        messages_to_summarize, configuration = _extract_configuration(messages_to_summarize, preserved_messages)
 
         backend = self._backend
         # Upload inline media once so both offload and summary see path references.
@@ -1873,7 +1890,7 @@ A condensed summary follows:
             warnings.warn(msg, stacklevel=2)
 
         # Build summary message with file path reference
-        new_messages = self._build_new_messages_with_path(summary, file_path)
+        new_messages = self._build_new_messages_with_path(summary, file_path, configuration=configuration)
 
         previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
         state_messages = request.state.get("messages", [])
@@ -2210,6 +2227,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
         event: SummarizationEvent | None,
         cutoff: int,
         session_id: str,
+        *,
+        configuration: dict[str, Any] | None = None,
     ) -> Command:
         """Build the `Command` result for a successful compact operation.
 
@@ -2225,13 +2244,15 @@ class SummarizationToolMiddleware(AgentMiddleware):
             cutoff: The cutoff index within the effective message list.
             session_id: Id that named the history file, persisted so later
                 turns reuse it.
+            configuration: A `configuration_update` block for the summary
+                message to restate.
 
         Returns:
             A `Command` with `_summarization_event` state update and a
             confirmation `ToolMessage`.
         """
         s = self._summarization
-        summary_msg = s._build_new_messages_with_path(summary, file_path)[0]
+        summary_msg = s._build_new_messages_with_path(summary, file_path, configuration=configuration)[0]
         state_messages = runtime.state.get("messages", [])
         state_cutoff = s._compute_state_cutoff(event, cutoff, state_messages)
 
@@ -2382,14 +2403,15 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         session_id = s._get_session_id(runtime.state)
         try:
-            to_summarize, _ = s._partition_messages(effective, cutoff)
+            to_summarize, kept = s._partition_messages(effective, cutoff)
+            to_summarize, configuration = _extract_configuration(to_summarize, kept)
             summary = s._create_summary(to_summarize)
             file_path = s._offload_to_backend(s._backend, to_summarize, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id, configuration=configuration)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
@@ -2416,14 +2438,15 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         session_id = s._get_session_id(runtime.state)
         try:
-            to_summarize, _ = s._partition_messages(effective, cutoff)
+            to_summarize, kept = s._partition_messages(effective, cutoff)
+            to_summarize, configuration = _extract_configuration(to_summarize, kept)
             summary = await s._acreate_summary(to_summarize)
             file_path = await s._aoffload_to_backend(s._backend, to_summarize, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id, configuration=configuration)
 
     def wrap_model_call(
         self,

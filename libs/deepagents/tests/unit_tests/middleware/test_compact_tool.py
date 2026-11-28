@@ -350,6 +350,30 @@ class TestCompactSuccess:
         event = result.update["_summarization_event"]
         assert "saved to" not in event["summary_message"].content
 
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_summary_message_restates_configuration(self, use_async: bool) -> None:  # noqa: FBT001
+        """Settings changed by compacted messages stay in effect, unseen by the summary."""
+        update = {"type": "configuration_update", "reasoning": {"effort": "high"}}
+        mw = _make_middleware()
+        messages = _make_messages(10)
+        messages[0] = HumanMessage(content=[update, "Message 0"], id="msg-0")
+        runtime = _make_runtime(messages)
+
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:])),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value=None),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary.") as create,
+            patch.object(mw._summarization, "_acreate_summary", return_value="Summary.") as acreate,
+        ):
+            result = await mw._arun_compact(runtime) if use_async else mw._run_compact(runtime)
+
+        assert result.update is not None
+        assert result.update["_summarization_event"]["summary_message"].content[0] == update
+        summarized = (acreate if use_async else create).call_args.args[0]
+        assert summarized[0].content == ["Message 0"]
+
 
 class TestOffloadFailure:
     """Test that compaction still succeeds even if backend offload fails."""

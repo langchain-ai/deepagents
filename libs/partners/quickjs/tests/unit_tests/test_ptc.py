@@ -1147,3 +1147,23 @@ def test_dict_schema_boolean_subschemas_render_unknown() -> None:
     assert "  value?: unknown;" in body
     assert "  either?: unknown | string;" in body
     assert "  nested?: { a?: unknown };" in body
+
+
+@pytest.mark.parametrize("budget", [None, 4])
+async def test_ptc_error_note_reports_consumed_budget(make_repl, budget) -> None:
+    repl = make_repl(max_ptc_calls=budget)
+    calls = []
+    install_tools(repl, [_greet_tool(calls)])
+    outcome = await repl.eval_async(
+        "const greeting = await tools.greet({name: 'reviewer'}); results = greeting;"
+    )
+    assert outcome.error_type == "ReferenceError"
+    if budget is None:
+        assert "Recovery note" not in outcome.error_message
+    else:
+        assert "PTC call budget consumed: 1" in outcome.error_message
+        assert "work may already have completed" in outcome.error_message
+        assert "Inspect those bindings" in outcome.error_message
+    recovered = await repl.eval_async("greeting")
+    assert recovered.result == "hi reviewer x1"
+    assert len(calls) == 1

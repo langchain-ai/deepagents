@@ -1646,3 +1646,44 @@ async def test_close_context_after_closes_on_interrupt(repl: _Slot) -> None:
         )
     assert repl._context is None
     assert (await repl.eval_async("typeof seen")).result == "undefined"
+
+
+@pytest.mark.parametrize("budget", [None, 4])
+@pytest.mark.parametrize("close_context", [False, True])
+async def test_task_error_recovery_reuses_saved_binding(
+    make_repl: Callable[..., _Slot], budget: int | None, close_context: bool
+) -> None:
+    repl = make_repl(max_ptc_calls=budget)
+    dispatches = []
+
+    async def reviewer(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        dispatches.append(state)
+        return {"messages": [AIMessage(content="saved review")]}
+
+    runtime = _subagent_runtime(RunnableLambda(reviewer))
+    outcome = await repl.eval_async(
+        "const saved = await task({description: 'review', subagentType: 'worker'});"
+        "results = saved;",
+        outer_runtime=runtime,
+        close_context_after=close_context,
+    )
+    assert outcome.error_type == "ReferenceError"
+    assert "task() dispatches attempted: 1" in outcome.error_message
+    assert "work may already have completed" in outcome.error_message
+    assert "PTC call budget consumed" not in outcome.error_message
+    if close_context:
+        assert "bindings cannot be reused" in outcome.error_message
+        assert "remain accessible" not in outcome.error_message
+        recovered = await repl.eval_async("typeof saved")
+        assert recovered.result == "undefined"
+    else:
+        assert "Inspect those bindings" in outcome.error_message
+        recovered = await repl.eval_async("saved")
+        assert recovered.result == "saved review"
+    assert len(dispatches) == 1
+
+
+async def test_error_without_dispatch_has_no_recovery_note(repl: _Slot) -> None:
+    outcome = await repl.eval_async("results = 1")
+    assert outcome.error_type == "ReferenceError"
+    assert "Recovery note" not in outcome.error_message

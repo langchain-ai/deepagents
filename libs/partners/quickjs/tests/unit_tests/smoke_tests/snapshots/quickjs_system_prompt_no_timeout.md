@@ -211,12 +211,12 @@ have a subagent write it, or write it with your own file tool outside the
 
 #### Reuse what earlier evals left in scope
 
-The REPL is persistent within a turn: every top-level variable, function, and
-class you declare is kept and is available in your next `eval` call
-(each is hoisted to global scope). So if a later step needs something an
-earlier eval produced or bound, **reference that variable by name** — do not
-write a new literal that re-types data a previous eval already returned or
-computed.
+Declare variable names with `const`, `let`, or `var`; assigning to an
+undeclared name throws `ReferenceError`. Within the configured persistence
+scope, initialized top-level bindings remain accessible even if an eval fails.
+If a later step needs something an earlier eval produced or bound, **inspect
+and reference that variable by name** before dispatching work again — do not
+re-type data a previous eval already returned or computed.
 
 If you catch yourself pasting a big array or object of values you produced in
 an earlier call, that is the tell: the variable is still in scope, so use it.

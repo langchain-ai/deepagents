@@ -448,10 +448,14 @@ def test_fs_calls_count_toward_the_call_budget() -> None:
       await fs.readFile(p);
     }"""
 
-    assert run(code, max_ptc_calls=2) == [
+    out = run(code, max_ptc_calls=2)
+    assert len(out) == 1
+    assert out[0].startswith(
         '<error type="PTCCallBudgetExceeded">PTC call budget exceeded '
-        "(limit=2, attempted=3, function=fs.readFile)</error>"
-    ]
+        "(limit=2, attempted=3, function=fs.readFile)"
+    )
+    assert "PTC call budget consumed: 2" in out[0]
+    assert "do not blindly repeat these calls" in out[0]
 
 
 class _Runs(BaseCallbackHandler):

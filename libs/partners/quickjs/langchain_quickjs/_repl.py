@@ -670,12 +670,45 @@ class _Slot:
             outcome.error_message = e.error_message
             _clear_exception_references(e)
         finally:
+            self._add_recovery_note(outcome, close_context_after=close_context_after)
             self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
             if close_context_after:
                 self._dispose_context()
             self._eval_running = False
         return outcome
+
+    def _add_recovery_note(
+        self, outcome: EvalOutcome, *, close_context_after: bool
+    ) -> None:
+        """Explain recovery after an error following attempted host work."""
+        state = self._ptc_state
+        if outcome.error_type is None or state is None:
+            return
+        calls = []
+        if state.task_dispatch_count:
+            calls.append(f"task() dispatches attempted: {state.task_dispatch_count}")
+        limit = self._config.max_ptc_calls
+        if limit is not None and state.remaining_calls is not None:
+            consumed = limit - state.remaining_calls
+            if consumed:
+                calls.append(f"PTC call budget consumed: {consumed}")
+        if not calls:
+            return
+        outcome.error_message += (
+            "\nRecovery note (" + "; ".join(calls) + "): work may already have "
+            "completed; do not blindly repeat these calls. "
+        )
+        if close_context_after:
+            outcome.error_message += (
+                "This context is closed; its bindings cannot be reused."
+            )
+        else:
+            outcome.error_message += (
+                "Top-level bindings initialized before the error remain accessible "
+                "within the configured persistence scope. Inspect those bindings in "
+                "the next evaluation before dispatching again."
+            )
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
         outcome.error_type = e.name

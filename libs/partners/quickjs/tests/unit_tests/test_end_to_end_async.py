@@ -458,3 +458,56 @@ async def test_quickjs_mode_call_overlapping_eval_fails_loudly() -> None:
     assert len(failed) == 1
     assert sum("done" in c for c in contents.values()) == 1
     assert result["messages"][-1].content == "finished"
+
+
+async def test_code_mode_retry_reads_saved_result_without_dispatch() -> None:
+    calls = []
+
+    @tool
+    async def review() -> str:
+        """Return a reviewer result."""
+        calls.append("review")
+        return "saved reviewer result"
+
+    messages = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "eval",
+                        "id": "first",
+                        "type": "tool_call",
+                        "args": {
+                            "code": (
+                                "const saved = await tools.review({});results = saved;"
+                            )
+                        },
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "eval",
+                        "id": "retry",
+                        "type": "tool_call",
+                        "args": {"code": "saved"},
+                    }
+                ],
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    agent = create_agent(
+        model=FakeChatModel(messages=messages),
+        tools=[review],
+        middleware=[CodeInterpreterMiddleware(ptc=["review"])],
+    )
+    result = await agent.ainvoke({"messages": [HumanMessage(content="review")]})
+    outputs = [m.content for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert "ReferenceError" in outputs[0]
+    assert "Inspect those bindings" in outputs[0]
+    assert "saved reviewer result" in outputs[1]
+    assert calls == ["review"]

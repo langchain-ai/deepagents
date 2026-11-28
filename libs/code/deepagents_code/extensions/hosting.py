@@ -2,85 +2,156 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from deepagents.backends.filesystem import FilesystemBackend
-from langchain.agents.middleware.types import AgentMiddleware
+
+# Private SDK module: `deepagents-code` pins an exact `deepagents` version.
+from deepagents.middleware._tool_disclosure import (  # noqa: PLC2701
+    ToolDisclosure,
+    disclose_tools,
+    tool_name,
+)
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ExtendedModelResponse,
+    PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
+)
+from langgraph.types import Command
 
 from deepagents_code.extensions.registry import ExtensionError
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from langchain.agents.middleware.types import (
-        ExtendedModelResponse,
         ModelRequest,
         ModelResponse,
         ToolCallRequest,
     )
-    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
     from langchain_core.tools import BaseTool
-    from langgraph.types import Command
 
     from deepagents_code.extensions.registry import ExtensionRegistry, RegisteredUnit
 
+_ANCHORS_KEY = "_extension_tool_anchors"
+"""Private state key mapping each runtime extension tool to where it is disclosed."""
 
-def _tool_name(tool: object) -> str | None:
-    if isinstance(tool, dict):
-        function = tool.get("function")
-        if isinstance(function, dict):
-            name = function.get("name")
-            return name if isinstance(name, str) else None
-    name = getattr(tool, "name", None)
-    return name if isinstance(name, str) else None
+_Anchors = dict[str, str | None]
+"""Tool name to the ID of the message it is disclosed after, or `None` if in `tools`."""
+
+
+class ExtensionToolsState(AgentState):
+    """Where each extension tool missing from the built graph reaches the model."""
+
+    _extension_tool_anchors: Annotated[NotRequired[_Anchors], PrivateStateAttr]
+    """Tools registered by the thread's first model call map to `None` and stay
+    in `tools`; later ones map to the message they were first disclosed after,
+    so their inline disclosure keeps its position and the prompt cache."""
+
+
+def _stored_anchors(state: Mapping[str, object]) -> _Anchors | None:
+    """Return the recorded anchors, or `None` before the thread's first model call.
+
+    A malformed record reads as missing, so every live tool is bound in `tools`.
+    """
+    record = state.get(_ANCHORS_KEY)
+    if not isinstance(record, dict):
+        return None
+    anchors: _Anchors = {}
+    for name, anchor in record.items():
+        if not isinstance(name, str) or not (anchor is None or isinstance(anchor, str)):
+            return None
+        anchors[name] = anchor
+    return anchors
+
+
+def _next_anchors(
+    stored: _Anchors | None, names: Sequence[str], messages: Sequence[AnyMessage]
+) -> _Anchors:
+    """Anchor each of `names`, keeping a recorded anchor while its message is visible.
+
+    A tool new to the record, or whose anchor message was compacted away, is
+    anchored at the latest message. Unregistered tools drop out of the record,
+    so one registered again is disclosed where it reappears.
+
+    Returns:
+        The anchors for `names`.
+    """
+    if stored is None:
+        return dict.fromkeys(names)
+    visible = {message.id for message in messages if message.id}
+    tail = next((message.id for message in reversed(messages) if message.id), None)
+    anchors: _Anchors = {}
+    for name in names:
+        kept = name in stored and (stored[name] is None or stored[name] in visible)
+        anchors[name] = stored[name] if kept else tail
+    return anchors
 
 
 class ExtensionRuntimeMiddleware(AgentMiddleware):
-    """Expose tools registered after the agent graph was built."""
+    """Expose tools registered after the agent graph was built.
+
+    Tools registered by a thread's first model call are bound in `tools`. Later
+    ones are disclosed inline after the message they first appeared at, when the
+    model supports it, so the request's tool list and cached prefix stay stable.
+    """
 
     name = "__deepagents_extension_runtime__"
+
+    state_schema = ExtensionToolsState
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(self, registry: ExtensionRegistry) -> None:
         """Bind dynamic model and tool dispatch to `registry`."""
         self._registry = registry
 
-    def _tools(
-        self, existing: Sequence[BaseTool | dict[str, Any]]
-    ) -> list[BaseTool | dict[str, Any]]:
-        tools = list(existing)
-        indexes = {_tool_name(tool): index for index, tool in enumerate(tools)}
-        for registered in self._registry.tool_units():
-            index = indexes.get(registered.name)
-            if index is None:
-                indexes[registered.name] = len(tools)
-                tools.append(registered.unit)
-            else:
-                tools[index] = registered.unit
-        return tools
+    def _prepare(
+        self, request: ModelRequest[Any]
+    ) -> tuple[ModelRequest[Any], _Anchors | None]:
+        """Expose the live extension tools to `request`.
+
+        Returns:
+            The request to send, and the anchors to record if they changed.
+        """
+        live = self._registry.tool_units()
+        bound = {tool_name(tool) for tool in request.tools}
+        stored = _stored_anchors(request.state)
+        unbound = [item.name for item in live if item.name not in bound]
+        anchors = _next_anchors(stored, unbound, request.messages)
+        request = _expose(request, live, anchors)
+        return request, None if anchors == stored else anchors
 
     def wrap_model_call(
         self,
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any] | AIMessage | ExtendedModelResponse[Any]:
-        """Inject the latest extension-tool snapshot into a sync model call.
+        """Expose the latest extension-tool snapshot to a sync model call.
 
         Returns:
-            The wrapped model response.
+            The wrapped model response, recording any new tool anchors.
         """
-        return handler(request.override(tools=self._tools(request.tools)))
+        request, anchors = self._prepare(request)
+        return _respond(handler(request), anchors)
 
     async def awrap_model_call(
         self,
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any] | AIMessage | ExtendedModelResponse[Any]:
-        """Inject the latest extension-tool snapshot into an async model call.
+        """Expose the latest extension-tool snapshot to an async model call.
 
         Returns:
-            The wrapped model response.
+            The wrapped model response, recording any new tool anchors.
         """
-        return await handler(request.override(tools=self._tools(request.tools)))
+        request, anchors = self._prepare(request)
+        return _respond(await handler(request), anchors)
 
     def _tool_request(self, request: ToolCallRequest) -> ToolCallRequest:
         registered = self._registry.find_tool(request.tool_call["name"])
@@ -109,6 +180,46 @@ class ExtensionRuntimeMiddleware(AgentMiddleware):
             The wrapped tool result.
         """
         return await handler(self._tool_request(request))
+
+
+def _expose(
+    request: ModelRequest[Any],
+    live: Sequence[RegisteredUnit[BaseTool]],
+    anchors: _Anchors,
+) -> ModelRequest[Any]:
+    """Bind the graph's and initial extension tools, and disclose the later ones.
+
+    A registered tool replaces a bound tool of the same name in place, so its
+    current schema reaches the model.
+
+    Returns:
+        The request with the live extension tools exposed.
+    """
+    tools = list(request.tools)
+    indexes = {tool_name(tool): index for index, tool in enumerate(tools)}
+    positions = {message.id: i for i, message in enumerate(request.messages)}
+    disclosure = ToolDisclosure()
+    for item in live:
+        anchor = anchors.get(item.name)
+        if item.name in indexes:
+            tools[indexes[item.name]] = item.unit
+        elif anchor is None:
+            tools.append(item.unit)
+        else:
+            disclosure.added[item.name] = item.unit
+            disclosure.anchors[item.name] = positions[anchor]
+    return disclose_tools(request.override(tools=tools), disclosure)
+
+
+def _respond(
+    response: ModelResponse[Any], anchors: _Anchors | None
+) -> ModelResponse[Any] | ExtendedModelResponse[Any]:
+    """Return `response`, recording `anchors` in state when they changed."""
+    if anchors is None:
+        return response
+    return ExtendedModelResponse(
+        model_response=response, command=Command(update={_ANCHORS_KEY: anchors})
+    )
 
 
 def validate_backend_route(

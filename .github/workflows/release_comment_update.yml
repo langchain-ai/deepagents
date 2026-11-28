@@ -10,22 +10,19 @@
 #   without opening the run.
 #
 # Trigger — `workflow_run` of release-please.yml, completed, any conclusion:
-#   release-please.yml's run is normally the last thing to finish in the
-#   release pipeline. Its `update-lockfiles` and `dispatch-release-notes-check`
-#   jobs are gated on `guard-pending-release`, which waits out the in-flight
-#   release.yml publish — so when the run concludes, publishing is normally
-#   done and the post-publish housekeeping (lockfile updates on release-please
-#   branches, curated-notes re-check dispatch) has been kicked off. Listening
-#   to release.yml directly would report "published" while those follow-ups
-#   were still running.
+#   Only runs started by a push to main are handled. The release-commit run
+#   is the one that dispatched the publish and posted the "has started"
+#   comment, so it is the one whose outcome gets reported. release.yml also
+#   dispatches release-please.yml after tagging (`refresh-release-prs`); those
+#   maintenance runs have no release PR of their own and are ignored, or a
+#   dispatched run whose head is still the release commit would report the
+#   same release twice.
 #
-#   "Normally" is load-bearing. `guard-pending-release` waits on the
-#   `auto:release-pending` label, which release.yml flips in `mark-release`,
-#   not on the release run concluding — sibling jobs (`bump-code-sdk-pin`)
-#   can still be running after the label clears. The guard also gives up
-#   after its own MAX_WAIT and defers on release commits, both of which end
-#   the release-please run green with a publish still in flight. Hence the
-#   poll in "Waiting" below.
+#   The release-commit run finishes within a minute or two: its
+#   `guard-pending-release` sees its own PR still `auto:release-pending` and
+#   defers to the post-publish refresh instead of waiting out the publish. So
+#   the dispatched release.yml run is normally still in progress when this
+#   workflow starts. Hence the poll in "Waiting" below.
 #
 #   Every conclusion is reported, not just success: failure and cancellation
 #   are exactly when a reader of the release PR needs a nudge, and the
@@ -68,7 +65,7 @@
 #   Per the trigger note above, a dispatched release run can still be in
 #   progress when this workflow starts. Rather than render a null conclusion
 #   as "failed", the job polls until every matched run has concluded, bounded
-#   by the 420s deadline in the poll loop — deliberately kept well under this
+#   by the 3000s deadline in the poll loop — deliberately kept well under this
 #   job's `timeout-minutes` so the graceful skip wins the race against a hard
 #   job cancellation, which produces no annotation at all. On timeout it skips
 #   with a notice so the outcome can be backfilled later.
@@ -117,8 +114,14 @@ concurrency:
 jobs:
   comment:
     name: "comment release outcome on the release PR"
+    # Push-triggered runs only; see the "Trigger" header note. Manual backfill
+    # via workflow_dispatch is always allowed.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Must stay above the poll deadline below; see "Waiting" in the header.
+    timeout-minutes: 55
     steps:
       - name: "Resolve release-please run"
         id: run
@@ -263,11 +266,15 @@ jobs:
           # renders as an empty field above). See the "Waiting" header note
           # for why a run can still be in flight here.
           #
-          # 420s leaves headroom under this job's `timeout-minutes: 10`: the
-          # deadline is checked before the sleep, so the loop can run ~450s,
-          # and the graceful skip must win over a hard job cancellation, which
-          # produces no annotation. Raise both together or not at all.
-          deadline=$((SECONDS + 420))
+          # The publish usually takes 3-8 min from here (pre-release unit tests
+          # dominate), but `pre-release-checks` alone may run 20 min, and
+          # runner contention adds more. 3000s matches the coverage the old
+          # 45-min guard wait gave this job. It leaves headroom under this
+          # job's `timeout-minutes: 55`: the deadline is checked before the
+          # sleep, so the loop can run ~3030s, and the graceful skip must win
+          # over a hard job cancellation, which produces no annotation. Raise
+          # both together or not at all.
+          deadline=$((SECONDS + 3000))
           while printf '%s\n' "$runs" | awk -F '\t' 'NF > 0 && $2 == "" { found=1 } END { exit !found }'; do
             if [ "$SECONDS" -ge "$deadline" ]; then
               echo "::notice::Some release.yml runs are still in progress; skipping so the outcome can be backfilled once they conclude."

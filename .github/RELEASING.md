@@ -53,7 +53,7 @@ To release a package:
 
 After merging changes into `main`, including an SDK-pin bump, let release-please update the release PR. Do not manually rebase it, merge `main` into it, or edit its branch while the automation is queued or running. Release-please can replace those changes, invalidate reviewed notes, or move the branch while `@release-bot apply` is starting.
 
-Check the `release-please.yml` workflow run for the `main` commit you need included. Wait for its release-please job and the release PR's `Update lockfiles` job to finish. A new commit on the release branch alone does not mean the refresh is complete. Confirm the expected changes are present and no further refresh of that PR is queued or running before marking it ready for review or running `@release-bot draft` / `@release-bot apply`.
+Check the `release-please.yml` workflow run for the `main` commit you need included. If that run's step summary says release-please was deferred to a post-publish refresh, a publish was in flight: watch the next `workflow_dispatch` run of `release-please.yml` instead, which the publish starts once it has tagged its release. Wait for its release-please job and the release PR's `Update lockfiles` job to finish. A new commit on the release branch alone does not mean the refresh is complete. Confirm the expected changes are present and no further refresh of that PR is queued or running before marking it ready for review or running `@release-bot draft` / `@release-bot apply`.
 
 If automation fails, skips the update, or leaves the branch stale, inspect the run and diagnose why before making a manual update. Once the refresh finishes, follow the [curated release-notes process](#curated-release-notes), including any instructions to re-draft or re-apply existing notes.
 
@@ -265,22 +265,24 @@ Both must be true. release-please always satisfies both when merging a release P
 
 ### What Happens When You Merge a Release PR
 
-Publishing starts immediately. Housekeeping on the *other* open release PRs happens afterwards, in the same workflow run:
+Publishing starts immediately. Housekeeping on the *other* open release PRs happens after the publish tags its release:
 
 1. **Your package publishes first.** `trigger-releases` fires as soon as the release commit is detected and never waits on anything else. It comments on the merged PR with a direct link to each package's release run — that link is where you watch the actual publish.
-2. **The run waits for publishing to settle.** `guard-pending-release` polls until no merged release PR is still labeled `auto:release-pending`.
-3. **Then the remaining release PRs are refreshed.** release-please updates shared files (notably `.release-please-manifest.json`) on the still-open release PRs, and `update-lockfiles` regenerates their lockfiles.
+2. **The run defers while publishing is in flight.** `guard-pending-release` sees your PR (or any other merged release PR) still labeled `auto:release-pending` and skips release-please for this run instead of waiting. Any ordinary push that lands mid-publish defers the same way.
+3. **The publish then refreshes the remaining release PRs.** Once `release.yml` has tagged the release and flipped the label to `auto:release-tagged`, its `refresh-release-prs` job dispatches `release-please.yml`. That run updates shared files (notably `.release-please-manifest.json`) on the still-open release PRs, and `update-lockfiles` regenerates their lockfiles. It also picks up every push that deferred while the publish ran.
 
 In the normal case you do not need to think about any of this. Step 3 is the only part that can be quietly skipped — if the other release PRs look stale afterwards, expand *If the other release PRs were not refreshed* below.
 
 <details>
-<summary><b>Why publishing never waits, and why the wait covers the whole repo</b></summary>
+<summary><b>Why publishing never waits, and why the deferral covers the whole repo</b></summary>
 
 **Publishing goes first** so that a publish is never blocked behind housekeeping for some *other* package. Only step 3 is serialized (release-please mutates shared release branches, so two copies must not run at once); steps 1 and 2 are deliberately outside that serialization.
 
 **Step 3 requires an explicit all-clear.** The guard has to positively report "nothing in flight" (`skip=false`) for release-please to run. If the guard crashes, times out, or is skipped, release-please does *not* run — an unknown state is treated as unsafe rather than assumed fine.
 
-**The wait covers every pending release PR in the repo, not just the one you merged.** This looks over-broad but is required: release-please recomputes *all* components on every run, so any single component sitting between "version bumped" and "tag created" is enough to trigger a bootstrap downgrade — it sees no tag, concludes the package was never released, and proposes resetting it to `0.1.0` with the full history. Scoping the wait to your own PR would not be safe.
+**Deferring never strands commits.** Completing a publish does not push to `main`, so without step 3's dispatch nothing would re-run release-please after the tag appears. The dispatch happens only after the label flips, so every pending label a deferring run sees is followed by a refresh run.
+
+**The deferral covers every pending release PR in the repo, not just the one you merged.** This looks over-broad but is required: release-please recomputes *all* components on every run, so any single component sitting between "version bumped" and "tag created" is enough to trigger a bootstrap downgrade — it sees no tag, concludes the package was never released, and proposes resetting it to `0.1.0` with the full history. Scoping the check to your own PR would not be safe. Each pending publish dispatches its own refresh, so deferring on a sibling's publish loses nothing.
 
 </details>
 
@@ -291,8 +293,9 @@ Step 3 can be skipped in the situations below. Skipping it holds up only the ref
 
 | Situation | What you will see | What to do | When the refresh happens |
 | --- | --- | --- | --- |
-| A publish is still in flight after 45 min | `release-please.yml` green, with a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "auto:release-pending"](#release-pr-stuck-with-autorelease-pending-label) | Next push to `main` |
-| A publish failed (yours, or a package left stuck earlier) | `release.yml` red; `release-please.yml` green, with a `deferred (release commit)` summary naming the failed run | Fix and re-dispatch the failed package release — this package has **not** published | Next push to `main`, once the failed release is recovered |
+| A publish is in flight | `release-please.yml` green, with a `deferred to post-publish refresh` step summary | Nothing, unless the publish is genuinely stuck (no `release.yml` run in progress for it) — then clear the label per [Release PR Stuck with "auto:release-pending"](#release-pr-stuck-with-autorelease-pending-label) and dispatch `release-please.yml` | When that publish's `refresh-release-prs` job dispatches `release-please.yml` |
+| The post-publish dispatch failed | `release.yml` red at `refresh-release-prs` only; the package **did** publish and tag | Run `gh workflow run release-please.yml --ref main` | When you dispatch it, or the next push to `main` |
+| A publish failed (yours, or a package left stuck earlier) | `release.yml` red; `release-please.yml` green, with a `deferred (release commit)` or `deferred (post-publish refresh)` summary naming the failed run | Fix and re-dispatch the failed package release — this package has **not** published | When the re-dispatched `release.yml` tags the release and its `refresh-release-prs` job dispatches `release-please.yml` |
 | GitHub's release state is unreadable | `release-please.yml` **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state | When the re-run succeeds |
 | You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Nothing — this is expected. Only one job may queue per concurrency group | Already done: the surviving (newest) run recomputes every component, covering the cancelled jobs' work |
 
@@ -908,6 +911,12 @@ gh pr edit <PR_NUMBER> --remove-label "auto:release-pending" --add-label "auto:r
 On the normal mainline publish path, a failed label swap fails `mark-release`
 after the tag and GitHub release already exist. Treat the package release as
 done and fix only the stuck label so later release-please maintenance can run.
+A failed `mark-release` also skips `refresh-release-prs`, so after fixing the
+label, refresh the open release PRs yourself:
+
+```bash
+gh workflow run release-please.yml --ref main
+```
 
 ### Release Notes Job Failed or GitHub Release Body Is Empty
 

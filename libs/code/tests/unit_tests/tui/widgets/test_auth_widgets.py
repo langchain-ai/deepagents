@@ -3102,6 +3102,52 @@ enabled = false
                     break
         assert results == [False]
 
+    async def test_codex_success_posts_credential_saved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ChatGPT sign-in counts as a saved credential, like an API key."""
+        from datetime import datetime, timedelta
+
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+
+        async def _signed_in(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(
+                logged_in=True,
+                store_path=tmp_path / "missing.json",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _signed_in)
+        monkeypatch.setattr(
+            codex_integration, "default_store_path", lambda: tmp_path / "missing.json"
+        )
+        clear_caches()
+        closed: list[bool | None] = []
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager(initial_provider="openai_codex")
+            await pilot.pause()
+            manager = cast("AuthManagerScreen", app.screen)
+            on_closed = manager._on_codex_closed
+
+            def _record(result: bool | None) -> None:
+                closed.append(result)
+                on_closed(result)
+
+            monkeypatch.setattr(manager, "_on_codex_closed", _record)
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if closed:
+                    break
+            await pilot.pause()
+
+        assert closed == [True]
+        assert app.credential_saved_count == 1
+
     async def test_codex_selection_when_signed_in_shows_signout_overlay(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3382,3 +3428,26 @@ class TestRegionEndpointMapping:
     def test_self_hosted_endpoint_is_custom(self) -> None:
         """Any endpoint outside the SaaS set classifies as Custom."""
         assert _region_for_endpoint("https://self.example.com") == Region.CUSTOM
+
+
+async def test_key_input_never_copies_or_cuts_its_value() -> None:
+    """Textual's copy sends the selection to the terminal as OSC 52."""
+    from textual.app import App, ComposeResult
+
+    from deepagents_code.tui.widgets.auth import _SecretInput
+
+    class _Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield _SecretInput(value="sk-secret", password=True)
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        field = app.query_one(_SecretInput)
+        field.focus()
+        field.action_select_all()
+        await pilot.press("ctrl+c")
+        await pilot.press("ctrl+x")
+        value = field.value
+
+    assert app.clipboard == ""
+    assert value == "sk-secret"

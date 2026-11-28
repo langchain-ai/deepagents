@@ -5,7 +5,6 @@ import argparse
 import asyncio
 import contextlib
 import importlib.util
-import json
 import logging
 import os
 import shutil
@@ -5797,21 +5796,15 @@ def cli_main() -> None:
 
             sys.exit(run_auth_command(args))
 
-        model_params: dict[str, Any] | None = None
-        raw_kwargs = getattr(args, "model_params", None)
-        if raw_kwargs:
-            try:
-                model_params = json.loads(raw_kwargs)
-            except json.JSONDecodeError as e:
-                console.print(
-                    f"[bold red]Error:[/bold red] --model-params is not valid JSON: {e}"
-                )
-                sys.exit(1)
-            if not isinstance(model_params, dict):
-                console.print(
-                    "[bold red]Error:[/bold red] --model-params must be a JSON object"
-                )
-                sys.exit(1)
+        from deepagents_code.config import parse_json_object_flag
+
+        try:
+            model_params = parse_json_object_flag(
+                getattr(args, "model_params", None), "--model-params"
+            )
+        except ValueError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
 
         from deepagents_code.config import collect_retry_config_startup
 
@@ -5861,23 +5854,13 @@ def cli_main() -> None:
             getattr(args, "summarization_model", None)
         )
 
-        profile_override: dict[str, Any] | None = None
-        raw_profile = getattr(args, "profile_override", None)
-        if raw_profile:
-            try:
-                profile_override = json.loads(raw_profile)
-            except json.JSONDecodeError as e:
-                console.print(
-                    "[bold red]Error:[/bold red] "
-                    f"--profile-override is not valid JSON: {e}"
-                )
-                sys.exit(1)
-            if not isinstance(profile_override, dict):
-                console.print(
-                    "[bold red]Error:[/bold red] "
-                    "--profile-override must be a JSON object"
-                )
-                sys.exit(1)
+        try:
+            profile_override = parse_json_object_flag(
+                getattr(args, "profile_override", None), "--profile-override"
+            )
+        except ValueError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
 
         if getattr(args, "acp", False):
             # Raw flags are not authoritative here: an explicit `--yolo` or

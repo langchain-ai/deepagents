@@ -6968,6 +6968,32 @@ def _apply_profile_overrides(
         )
 
 
+def parse_json_object_flag(raw: str | None, flag: str) -> dict[str, Any] | None:
+    """Parse a JSON-object CLI flag such as `--model-params`.
+
+    Args:
+        raw: The flag's value, if given.
+        flag: The flag name, for the error message.
+
+    Returns:
+        The object, or `None` when the flag is absent or empty.
+
+    Raises:
+        ValueError: When `raw` is not JSON or not a JSON object.
+    """
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        msg = f"{flag} is not valid JSON: {exc}"
+        raise ValueError(msg) from exc
+    if not isinstance(value, dict):
+        msg = f"{flag} must be a JSON object"
+        raise ValueError(msg)  # noqa: TRY004  # callers report one invalid-flag error
+    return value
+
+
 def create_model(
     model_spec: str | None = None,
     *,

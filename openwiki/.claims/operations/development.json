@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ab1ad54aa32607a475ac033d710c46224b81a603a6ce0017ebea39903ecdba4b",
+  "pageVersion": "sha256:488fbae725fca87077a7bab59a8bb512d11be5f409c3423cf9119531ee5aae1e",
   "claims": [
     {
       "id": "claim_7bfb4b9ffb164308a8b79f8100309931",
@@ -54,7 +54,7 @@
     },
     {
       "id": "claim_335d976e95f6466880778263d51ad7ea",
-      "statement": "Talon publishes Python 3.14-only compatibility and declares `deepagents>=0.7.41` plus `deepagents-code>=0.2.14,<1.0.0`; local source mappings remain development wiring rather than published dependency metadata.",
+      "statement": "Talon publishes Python 3.14-only compatibility and declares `deepagents>=0.7.42` plus `deepagents-code>=0.2.15,<1.0.0`; local source mappings remain development wiring rather than published dependency metadata.",
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml#L146-L153",
@@ -62,7 +62,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L5-L29",
-          "version": "repo-lines-v1:sha256:03c22c33ec65eaa8f48dd2b130caf4b917ba26109ce389f60d0dbe480c5f9a0e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhMTZkMjczNzUxYmY1NTBlMzZlNDlkMTUwZGNhZjZkMzBiNTU0YzllMmNlYjY1ZmQ2MTZmYWQyMWU3Y2MxZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3M2Q3MmY1NTkxNzNjODk4ZTNlMzU2ZDI1YzE2MWJhMTcyMzVmNDM5YjhiOTA5ODcxMDg0ZWEwZjExODU4ODMifQ"
+          "version": "repo-lines-v1:sha256:6dedb8d3ca2d9280c277ea4cb4f0a594740603b625e372e2d7d9f30eda9e2b71:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhMTZkMjczNzUxYmY1NTBlMzZlNDlkMTUwZGNhZjZkMzBiNTU0YzllMmNlYjY1ZmQ2MTZmYWQyMWU3Y2MxZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3M2Q3MmY1NTkxNzNjODk4ZTNlMzU2ZDI1YzE2MWJhMTcyMzVmNDM5YjhiOTA5ODcxMDg0ZWEwZjExODU4ODMifQ"
         }
       ]
     },
@@ -375,6 +375,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-26T08:03:59.911Z"
+    "at": "2026-11-28T08:03:41.605Z"
   }
 }

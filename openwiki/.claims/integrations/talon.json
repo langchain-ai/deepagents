@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:0400d2781c9f901bd66b350b13e2c8112d856e4fda742518162fa6ff1680f05b",
+  "pageVersion": "sha256:a0de148a137432de2f5e195465367c2fc7056fcafdd31cc372af501cfab5fb06",
   "claims": [
     {
       "id": "claim_bf710b8903124ffd80f52c1960c39151",
@@ -121,10 +121,80 @@
           "version": "repo-lines-v1:sha256:f76d867310abc1c437b6c648a357f683d56913628209377bd8620888dedb6779:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhOTczNzc4ZWY2ZmJjZGY1M2JkMTM5ZDM0YWNhYmRhYjMyMWU3MmU4ODNkYWUzYjY2ZWZiYWM0NGYxZTU2OWMwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiNjEzYWVlM2IxZmIyNzJkYTUwMDc2NzczMDQxY2FhZTRiNzQ2YzM1NDI3YjhlZjFlZDRmYTY3MjVkZmM1YzM2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1NDBjMTEwOTY4NTA0ZDkzMTJiYzVmODI3MTM0ZjczOWZhNTNjMTg0YjM3MjVkYmZiZWJlMzVkNTUyMTk1ZTM3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0OTViOGQ2ZDM2YTVkZTY2MmIwY2Y0MjI0ZWI3YTlkMzZjYTI0ZGU3NjlhMmZiMmViNGI3NGUwNzgwMzAxNTZiIn0"
         }
       ]
+    },
+    {
+      "id": "claim_53a8730c7bce48289c0c65c3ca9e085f",
+      "statement": "Talon publishes `deepagents>=0.7.42` and `deepagents-code>=0.2.15,<1.0.0`; its `openshell`, `media`, and `media-cpu` extras use the same `deepagents-code` compatibility floor.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L22-L29",
+          "version": "repo-lines-v1:sha256:4289b9f402ab52299644f2ebd985c11c395d2b98f4f896dcbcb508261f317614:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWExNmQyNzM3NTFiZjU1MGUzNmU0OWQxNTBkY2FmNmQzMGI1NTRjOWUyY2ViNjVmZDYxNmZhZDIxZTdjYzFlYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkzZWJmM2FlYTczODE3Y2ZlNDM2ZjhhNWE5YjE0ZWEwMjg2YTYyZWE0NGExZjJlOThmNTE4MGFlNTI4M2JjYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTczZDcyZjU1OTE3M2M4OThlM2UzNTZkMjVjMTYxYmExNzIzNWY0MzliOGI5MDk4NzEwODRlYTBmMTE4NTg4MyJ9"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L63-L100",
+          "version": "repo-lines-v1:sha256:51b56319cd142cbfd3f91151298738173bb6d78d96e4098af58ddeeccde24c9d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllYTRlOTEwODExNGVhMTVmOTY4ZTA2MzFkY2M2NzY1ZGRmNzA4OWYwOGE4YTQyYjVkMTUyOWM2ZDY3NzRmNDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkNTE3MGJkN2M4YzZjYjRmMGI4YTc3Y2YyZjlmZmUyZWFkOWEwN2QzZGM0MTE4ZDBiOWVkZmMzZDhkMWUxYWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiZjU5Mjc5NTFkYmNkOTBkZjNjYWIyNzcyMTllYWM5M2I0MzZiZDI3NjViZDRmZGJhMTAwMDE5MjgzY2MzOTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0ODE2NDUxMjdlNDExYWFkNjg5MTM2ZjBhMzgyZjM2MDgwMTEzNmY5ZmY3MzcyYjZjMzYxZGE5OTZiNDgzNzMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/uv.lock#L701-L704",
+          "version": "repo-lines-v1:sha256:80fa9ebf211de4f3f69c689c1c20844065d2cbef13ed879f3548de9b7c3ca355:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjE1M2E1MGIxMzFjOGMzMzc2NmY5YTY2NTg2MTBlNjhhZjU1Mzk5ZjhjNmI2OTgxOGYxYjYyY2NkMGE3ZDgwZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTdjZjJhNDRhODFhMTMyMzNhMDUwM2Y4M2MyZDI5OWZhNzAxY2EyZTZlNDhmODI4ZTA1MzI5Y2E5ODgzODYwZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWM0YjY1NDVjZjZjNDBlMmUwMTZjZGIyNTRlNzlkOWE4Mzk1MGE2ZmIxZjRhM2MyMGQ5ODVjOGE0ZjE0N2MxYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODliZWYyYzEzMGYxNmRkNDY1OWVhYzZkOTY1YTQ4YTlmODUwMWNlNjNjNjQ3ZmMzZmE0OGE0NTRmZTNhZjk3YyJ9"
+        },
+        {
+          "resource": "repo://libs/talon/uv.lock#L789-L792",
+          "version": "repo-lines-v1:sha256:59a0947e15e980db3f55bfd2ac7c615cc0667190d5fec02ddbeedc0a1052ac6d:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjE1M2E1MGIxMzFjOGMzMzc2NmY5YTY2NTg2MTBlNjhhZjU1Mzk5ZjhjNmI2OTgxOGYxYjYyY2NkMGE3ZDgwZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTE5YWUxM2NlN2JmZmU2ZjI4NzUzNTViNTYxODllZTgxYmJiMTg0YTI1ODE1MTI4ZGE3ZmU1Y2VmYWJmNzcwOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzk4MGQ3MGMwMjg4YjNkODc5NWZkZGU4Y2FkMmFjMDMwMDcwYjgwYjhiY2MwNzE4MzVhMzM0OWQzYmFlMzlhNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzc0NGJmNTAxZDExYjVlNzgxZWNjYTBkMjQ1ZWFlN2RlM2Y2ZGIwNjdkYjYyYjMzZGQxNTJiYjdmMjZkZmIxNiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a58abc4a7ddc4834ade1760d71e13a6a",
+      "statement": "The WhatsApp Python adapter uses an authenticated HTTP loopback bridge: it validates loopback URLs, supplies a bearer token, can launch and health-check the Node process, while the bridge rejects unauthenticated calls and rejects send operations until its WhatsApp client is connected.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp.py#L533-L572",
+          "version": "repo-lines-v1:sha256:f31ca7c76d36d782a6a51ae34ba9b46ea04c29c0eac88c83c5962089ade29402:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5ZmZkMGI3NWRjMzExODY0OTBjMWZmOTdmODEyYTBhNzVkYmVlMTE5M2I1MDI3ODQ2YzlhNTBlYzhkNzM3NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3OWJiYTg5ZGNiY2FiOWVmMTZhNTRjNmViOWY3NGYxNzE4ZTRiZTY3ODdiZTRlNDZlYmU1NDg1YzNmMWM5YjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJmODk2OWUzY2E5MDBkYTE0YmNiMGQxY2YwMjhmYzQ2NDNkNGNiZmRlZDZjNWY2MWRhMmNhYWFmNGEwYzI1ZTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkZjYxN2ZhMTk4MDQ5ZGUxMTkwODdiODBlNjUyNWMyMmE1YjdiNmVlMTk1MWU1Mzk1MWZjNTA0ZTNiMWRmYjkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp.py#L698-L722",
+          "version": "repo-lines-v1:sha256:48a62568bed0c5c54aa35fad46d8d9d6ab3cf868e5cd7dc13ed321753643563c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkOWNiZDRlZGRlNjc4ODY3ZDdlYzBmZWMxMjU3ODg2ZGY2ZTZhZGM0MWQ0MWI2MDlhZTU2NjI1NjVmMDgxYjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWI1NmFjMGE4NjliZjgwOWVlZTFiZGRjZTM4OGFmMDc3YzlmYjM2NzI1MjFkYzdmYzk1ZTIwOWExMTc3Y2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3OWU1ODJjMzk1YWRjOTJiMTIyYTk1Zjc3OWM1ZjQ4NjI1Y2M1NjkxZDJiMDYwODllMDk1NmExOTBiODI1ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzNTM1NzU5ZDIyYjFmMTU5MTUxNzllYTJmMWI4NGQ2ZDAyOGQ3NzNkNTJmZTVlZDkwZmNlZmQ4MmI4YjgwZWEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp.py#L817-L822",
+          "version": "repo-lines-v1:sha256:e9bc7553d57538de0e266ce541ab183c9050fb1e3b39bfce8638ab219f6efc39:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGVkY2UyZjk1OGU1NWJkNDc4YmMwNzNkYmUxZjdmNjdhZTE2NDAzZTZhZmJmM2Y5OTdjOTgwMmUzZDY1ZWQwZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTkzYTEzMDYyZjEwZWU0ZjEyMThkOTNlMzdhNmY4MWQzNDZmZjExZWM3ZTU1ZGQ1NDJlMmQyZDJlZjA3MTFmMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWYxNTc2NWMwMzZhM2MzOTRkMDExMTZhNTIyOWJmNzNlYjUyMWE0YjZjN2I5NzA4YzYzOWEzNGE3OTFmOWUzZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2U5Y2ExMTA5NWFkM2Y0MDZjY2ZhMWI4NWY0ZjI2NTI1Y2IxYWQ4YzRmMzRjNTRiNGNmYzg1MTUwNTgxNGY1OSJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/bridge.js#L563-L599",
+          "version": "repo-lines-v1:sha256:0526198cfe55169bac84a0bb1c2747e9f9a8730347733a4d1ada0194aea899a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiNjJhYmUwOTZlZmM2YjFlNzdmNThlZmI0OGE4MTk1ZmIzYWJhMzFmZmY1ZTk1OTU4YzU0N2EzNTY5MTRhNmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5ZDExN2E4MGQwYjMwNmYxNDRmMTExNDMwYmRiMDUwNTczZWJjNjFhYjBiNjlmNzcwYzgxZGNhMmE4ZTczM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3YmUxNGFkM2FkMmQyZDViNWE2OGNkMTdkYWE4MzE4MWEyNjVjMjhkNWJjZTg1MmY5Y2U2MWU5ZmQ1MjIwYWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9bb1a71209fe46e7b51a2dcd4093f93e",
+      "statement": "The packaged WhatsApp bridge requires Node `>=22.12.0`, locks `whatsapp-web.js` and `qrcode-terminal` dependencies, and ships the bridge sources plus its manifest and lockfile as wheel artifacts; bridge media sends accept only paths contained by the bridge media directory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/bridge.js#L567-L577",
+          "version": "repo-lines-v1:sha256:546eeb5227d1c0a0b7b06fccc6e34c9c8f717178d7b47b9e7bd9a6f4da8a1737:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3OGM3YmJmMTlkNjQ5YTNlMjY3OWMxOTRkOWI5ZGFiN2U4YmQ4N2NiMGM1ZmYwODUwYjRhZjljZmQ3ZDNiZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjMmE2ZGQ3ZWQzMDBjY2UxNWM4YzZhODdlNjc1YWQ2MWVmY2ZhNDA4NTQ3OTU2MmU2NjY1MDJjZWE2NTJiZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3YTkwZGE4Y2UwNTc3ZjA4OGY1NTk1YWVhZGExNmRiNmIxNGUwODJjYWRmNmZkOTlkYzBmOTYzMTE4YTVmMTgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/bridge.js#L627-L650",
+          "version": "repo-lines-v1:sha256:5218692b85c7416b28c82e826fc5a726a2cb35ab29022dad7d2c0e033a47df28:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhMTk2ODI0YjE0NzA0MjM1MTFlZTQ5YjZmMmJlNTJiNmU5NzAxOGQ0NGJlNGNiZTVjMDg4NzE4ZDlmNWYyZTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMzdlM2MwOTQxZDE1NzdjMDM5OGUzYjY3ODRlZjNiM2YwMTI4OGJjZGVjOWE0YmJhMWFiZmFhNzQwYWI2ZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhNDFkNzNjNDUyMmJlYTM5ZmY4MTVlMjRiY2YxMzExODUzMWQ2NzFlYjNjZjUzMTIxODg1ZTExYTFjNDcyNGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwZjM5ZTFhY2QxMDE0OGQ1YjdiOGE5OWUwMmUwN2Y4MWY0OTU5NzE2MWM2MGVhNjUzZjhmNDM3ZmM3MzJlYTEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/package-lock.json#L1-L15",
+          "version": "repo-lines-v1:sha256:7754da39ee2972f2db7ac09f9c10d3c2a4534e73dee9102e152b8b1a201b9d23:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMGNkYjk3MmE3YmZiN2VkMjQ2ZjlmZjY3MjM4NWU1NWY0OTY4ZmMxMTA0M2RjNWI2ODRkNTFkZmEzMWRiY2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1Yjc4MjIwN2I2MGYwZDQwMGRmMGQwMjc1MWEwY2M1YjE0OTU4ODI0M2QwMWE5MTFkNmE0NTczMjgyMGQ0Y2IifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/package.json#L1-L20",
+          "version": "repo-lines-v1:sha256:28e812a1d1042fbbd75243d21027ced66e4a1e6df995634c82858a7dc483a795:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L136-L144",
+          "version": "repo-lines-v1:sha256:f0fea348c0012528662cd0875cfe2c8b82185b737367f684ca1309c3968603ac:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDNjMGU3MjM4ZjBiMThjYmU2YTQ2NjY0MWZkY2Q1OTQ4NTI0NDhkZGY3ZmY4OGQwYTlmNDk1MGVhZGVjMzkzZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjFlOTM4OGQ3MGY5MGY0OWIxOWEzNmNlNjk5MzIxOTM2ZDMyNzVjYzllMGM1MDg3MTI4ZGYwNjVjMTRhZTJmMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzM2NjU3ZGVmODJkYWY0ODE4YTUwYjY1OTY5YWFhNjlkZTlmYjYwMWFjZjY2MjYyYWNkNjFhZDA2MzVhNDg2NSJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-27T08:04:01.405Z"
+    "at": "2026-11-28T08:03:41.605Z"
   }
 }

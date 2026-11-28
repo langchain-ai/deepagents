@@ -34,10 +34,10 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_uninstall_command.py
   - id: openwiki-source-1315dc43c5577f5948632387
     resource: repo://libs/code/uv.lock
+generated: { by: "openwiki/0.4.2", at: "2026-11-28T08:03:41.605Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-26T08:03:59.911Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
+    at: 2026-11-28T08:03:41.605Z
 ---
 
 # dcode Installation and Update Operations
@@ -54,7 +54,7 @@ The core contract pins the Deep Agents SDK exactly to `deepagents==0.7.42`, whil
 
 ### Optional capabilities
 
-Optional extras are installation-time selections, not runtime feature flags:
+Optional extras are installation-time selections, not runtime feature flags. Their published names and ranges come from `[project.optional-dependencies]` in `pyproject.toml`; the workspace lockfile is useful for reviewing the resolved graph but does not define the distributable contract:
 
 - **Model providers:** `anthropic`, `baseten`, `bedrock`, `cohere`, `deepseek`, `fireworks`, `google-genai`, `groq`, `huggingface`, `ibm`, `litellm`, `meta`, `mistralai`, `nvidia`, `ollama`, `openai`, `openrouter`, `perplexity`, `together`, `vertex`, and `xai`. `all-providers` expands to that set. Several base providers are already core dependencies; selecting their matching extra is still a valid published contract.
 - **Sandboxes:** `agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`; `all-sandboxes` expands to all six. The base distribution also includes `langsmith[sandbox]`.

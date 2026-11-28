@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:572897d3910a801f9b711ef937446c9556bbb066499a3341baf95e848d7aacbf",
+  "pageVersion": "sha256:56abf4dae8deef88ca61c22120ae1a1a87e0c57fa42c75d456a8a86749c6611d",
   "claims": [
     {
       "id": "claim_5ef39897fd084ab1ab8be36de0d9b51e",
@@ -16,7 +16,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c198c111cd4b8bcfc5df5fca97befbb71899722ce8f10000cab92959b2070f3e"
+          "version": "repo-file-v1:sha256:6a833ec39a72349a21e9f9b7a01da30daef7637d852a1367a9798b0d0fa8ef32"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
@@ -28,7 +28,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -68,7 +68,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -110,7 +110,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -126,27 +126,27 @@
     },
     {
       "id": "claim_e0fb494d53cb488b92502cbb34dd77b6",
-      "statement": "The five partner distributions support Python >=3.11,<4.0, depend on deepagents >=0.7.41,<0.8.0, and use editable SDK sibling mappings during checkout development.",
+      "statement": "The five partner distributions support Python >=3.11,<4.0, depend on deepagents >=0.7.42,<0.8.0, and use editable SDK sibling mappings during checkout development.",
       "evidence": [
         {
           "resource": "repo://libs/partners/daytona/pyproject.toml",
-          "version": "repo-file-v1:sha256:2a852ea3387a12fb6fb64e208339abec237fc2fff33557670f4dc5382b662d1b"
+          "version": "repo-file-v1:sha256:18eebd3a45ec9c911f4531eabeb69c453ffd7c37a2fd1dd0673aa25099ca09ce"
         },
         {
           "resource": "repo://libs/partners/modal/pyproject.toml",
-          "version": "repo-file-v1:sha256:14a1f8a2f8917975fe332b40550b4b07be2bf99ac06f4e4ac877f3cbd6ef7aca"
+          "version": "repo-file-v1:sha256:dd13c1bc87892d55a70368f77b3d5687626dc519973d2f32902bc5343187bdb1"
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:9df7ee09096429f91e2660c67db18e80536aadf70dd74a2b0b3a6fc6ec33ebc1"
+          "version": "repo-file-v1:sha256:58ede89023ee6d43e8582bebf6c365b0e8dac9a339174ed4767eac03d041139f"
         },
         {
           "resource": "repo://libs/partners/runloop/pyproject.toml",
-          "version": "repo-file-v1:sha256:dc68d995f483b61d2083fb4ac27d2bdb5ae98b6eaa0b613a08fa3599bd71b316"
+          "version": "repo-file-v1:sha256:af2e2d8b66e541e93346e9d6cc9e91b6fdb89dbc710ed6e979beabd8ca6f8e75"
         },
         {
           "resource": "repo://libs/partners/vercel/pyproject.toml",
-          "version": "repo-file-v1:sha256:954e131cb07fa1ea92e4d0d170a45f1d023ae5352bee31aa595325b208bb093b"
+          "version": "repo-file-v1:sha256:354f237a3afe35ccc36115074ef3cde53bdec4faf45c942b6546e5b4e9760337"
         }
       ]
     },
@@ -160,7 +160,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c198c111cd4b8bcfc5df5fca97befbb71899722ce8f10000cab92959b2070f3e"
+          "version": "repo-file-v1:sha256:6a833ec39a72349a21e9f9b7a01da30daef7637d852a1367a9798b0d0fa8ef32"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
@@ -172,21 +172,21 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
     {
       "id": "claim_54b8fd1c3306453da98f7935943445f9",
-      "statement": "Dcode publishes an exact deepagents==0.7.42 compatibility pin alongside ACP >=0.1.0,<1.0.0 and QuickJS >=0.4.0,<0.5.0; Talon instead publishes lower-bound SDK and dcode requirements of >=0.7.41 and >=0.2.14,<1.0.0 while resolving both sibling packages editable in a checkout.",
+      "statement": "Dcode publishes an exact deepagents==0.7.42 compatibility pin alongside ACP >=0.1.0,<1.0.0 and QuickJS >=0.4.0,<0.5.0; Talon publishes lower-bound SDK and dcode requirements of >=0.7.42 and >=0.2.15,<1.0.0 while resolving both sibling packages editable in a checkout.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c198c111cd4b8bcfc5df5fca97befbb71899722ce8f10000cab92959b2070f3e"
+          "version": "repo-file-v1:sha256:6a833ec39a72349a21e9f9b7a01da30daef7637d852a1367a9798b0d0fa8ef32"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -214,7 +214,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -232,7 +232,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c198c111cd4b8bcfc5df5fca97befbb71899722ce8f10000cab92959b2070f3e"
+          "version": "repo-file-v1:sha256:6a833ec39a72349a21e9f9b7a01da30daef7637d852a1367a9798b0d0fa8ef32"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
@@ -240,27 +240,27 @@
         },
         {
           "resource": "repo://libs/partners/daytona/pyproject.toml",
-          "version": "repo-file-v1:sha256:2a852ea3387a12fb6fb64e208339abec237fc2fff33557670f4dc5382b662d1b"
+          "version": "repo-file-v1:sha256:18eebd3a45ec9c911f4531eabeb69c453ffd7c37a2fd1dd0673aa25099ca09ce"
         },
         {
           "resource": "repo://libs/partners/modal/pyproject.toml",
-          "version": "repo-file-v1:sha256:14a1f8a2f8917975fe332b40550b4b07be2bf99ac06f4e4ac877f3cbd6ef7aca"
+          "version": "repo-file-v1:sha256:dd13c1bc87892d55a70368f77b3d5687626dc519973d2f32902bc5343187bdb1"
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:9df7ee09096429f91e2660c67db18e80536aadf70dd74a2b0b3a6fc6ec33ebc1"
+          "version": "repo-file-v1:sha256:58ede89023ee6d43e8582bebf6c365b0e8dac9a339174ed4767eac03d041139f"
         },
         {
           "resource": "repo://libs/partners/runloop/pyproject.toml",
-          "version": "repo-file-v1:sha256:dc68d995f483b61d2083fb4ac27d2bdb5ae98b6eaa0b613a08fa3599bd71b316"
+          "version": "repo-file-v1:sha256:af2e2d8b66e541e93346e9d6cc9e91b6fdb89dbc710ed6e979beabd8ca6f8e75"
         },
         {
           "resource": "repo://libs/partners/vercel/pyproject.toml",
-          "version": "repo-file-v1:sha256:954e131cb07fa1ea92e4d0d170a45f1d023ae5352bee31aa595325b208bb093b"
+          "version": "repo-file-v1:sha256:354f237a3afe35ccc36115074ef3cde53bdec4faf45c942b6546e5b4e9760337"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -285,6 +285,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-26T08:03:59.911Z"
+    "at": "2026-11-28T08:03:41.605Z"
   }
 }

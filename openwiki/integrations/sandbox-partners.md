@@ -48,10 +48,10 @@ sources:
     resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-c64591d362571e75b3dc3c64
     resource: repo://libs/partners/vercel/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-28T08:03:41.605Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-26T08:03:59.911Z
+    at: 2026-11-28T08:03:41.605Z
 ---
 
 # Sandbox and Partner Integrations
@@ -77,11 +77,11 @@ uv add langchain-quickjs
 
 | Distribution | Current version | Python / Deep Agents contract | Provider SDK contract |
 | --- | --- | --- | --- |
-| `langchain-daytona` | `0.0.9` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `daytona>=0.197.0,<1` |
-| `langchain-modal` | `0.0.8` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `modal>=1.5.3` |
-| `langchain-runloop` | `0.0.7` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `runloop-api-client` (unbounded) |
-| `langchain-vercel-sandbox` | `0.0.2` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `vercel>=0.5.9` |
-| `langchain-quickjs` | `0.4.0` | Python `>=3.11,<4.0`; `deepagents>=0.7.41,<0.8.0` | `quickjs-rs>=0.3.0,<0.4.0`; also bounded LangChain and LangGraph dependencies plus `bsdiff4` |
+| `langchain-daytona` | `0.0.9` | Python `>=3.11,<4.0`; `deepagents>=0.7.42,<0.8.0` | `daytona>=0.197.0,<1` |
+| `langchain-modal` | `0.0.8` | Python `>=3.11,<4.0`; `deepagents>=0.7.42,<0.8.0` | `modal>=1.5.3` |
+| `langchain-runloop` | `0.0.7` | Python `>=3.11,<4.0`; `deepagents>=0.7.42,<0.8.0` | `runloop-api-client` (unbounded) |
+| `langchain-vercel-sandbox` | `0.0.2` | Python `>=3.11,<4.0`; `deepagents>=0.7.42,<0.8.0` | `vercel>=0.5.9` |
+| `langchain-quickjs` | `0.4.0` | Python `>=3.11,<4.0`; `deepagents>=0.7.42,<0.8.0` | `quickjs-rs>=0.3.0,<0.4.0`; also bounded LangChain and LangGraph dependencies plus `bsdiff4` |
 
 `deepagents-code` pins `langchain-quickjs>=0.4.0,<0.5.0` in its base install. Its optional `daytona`, `modal`, `runloop`, and `vercel` extras name the corresponding partner distributions; `all-sandboxes` combines those remote-provider extras. Pin the SDK and integration versions together in deployments and re-test when widening an unbounded provider SDK range.
 

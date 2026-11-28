@@ -16,6 +16,13 @@
 * **talon:** stop treating markdown image references as attachments ([#8018](https://github.com/langchain-ai/deepagents/issues/8018)) ([5254e27](https://github.com/langchain-ai/deepagents/commit/5254e271a82c146d43f156c9ab9e85ab029adb25))
 * **talon:** swap retiring Baseten DeepSeek models for V4.1 Flash 1017 in `/effort` ([#8010](https://github.com/langchain-ai/deepagents/issues/8010)) ([42caf16](https://github.com/langchain-ai/deepagents/commit/42caf164f805e2aea5264987f62fffd7f11738ba))
 
+### Dependencies
+
+- `deepagents`: `>=0.7.41` → `>=0.7.42`
+- `deepagents-code`: `>=0.2.14,<1.0.0` → `>=0.2.15,<1.0.0`
+- `langchain-core`: `>=1.8.4,<2.0.0` → `>=1.8.5,<2.0.0`
+- `langsmith`: `>=0.16.1` → `>=0.16.2`
+
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.1...deepagents-talon==0.1.2) (2026-11-24)
 
 ### Features

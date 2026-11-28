@@ -415,6 +415,7 @@ jobs:
           REPO: ${{ github.repository }}
           RELEASE_COMMIT: ${{ needs.detect-release-commit.outputs.release-commit }}
           EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           # No `-e`: the retry loop handles transient `gh` failures itself
           # rather than aborting the job on the first one.
@@ -439,42 +440,17 @@ jobs:
             IS_REFRESH=true
           fi
 
-          # Either pending label means a publish has not finished. Read both
-          # names during migration; the publisher clears both after tagging.
-          #
-          # --limit is explicit and generous: the default (30) could drop a
-          # genuinely stuck pending PR past the window precisely in the backlog
-          # scenario this guard exists to catch, silently reporting "none".
+          # Shared with the re-check inside the `release-please` job; see the
+          # script header for the label-search lag it works around. Release
+          # commits also check their own PR directly (INCLUDE_SHA): the search
+          # index can lag the merge, and this run's own PR is the one most
+          # certainly in the half-updated state.
           list_pending_json() {
-            local current legacy
-            current=$(gh pr list --repo "$REPO" --state merged \
-              --label "auto:release-pending" --limit 100 --json number,title) || return 1
-            legacy=$(gh pr list --repo "$REPO" --state merged \
-              --label "autorelease: pending" --limit 100 --json number,title) || return 1
-            # Separate queries implement OR; multiple --label flags mean AND.
-            local candidates
-            candidates=$(printf '%s\n%s\n' "$current" "$legacy" | jq -sce '
-              if length != 2 or any(.[]; type != "array")
-              then error("expected two arrays of PRs")
-              else add | unique_by(.number) end
-            ') || return 1
-
-            # `gh pr list --label` goes through the search index, which can lag
-            # a label change by seconds. The refresh release.yml dispatches
-            # starts right after `mark-release` flips the label, so a stale
-            # hit here would defer that refresh to a dispatch that never comes.
-            # Re-read each candidate's labels directly, which is consistent.
-            local confirmed='[]' number labels
-            for number in $(jq -r '.[].number' <<< "$candidates"); do
-              labels=$(gh pr view "$number" --repo "$REPO" --json labels \
-                --jq '[.labels[].name]') || return 1
-              if jq -e 'any(.[]; . == "auto:release-pending" or . == "autorelease: pending")' \
-                <<< "$labels" > /dev/null; then
-                confirmed=$(jq -c --argjson n "$number" --argjson all "$candidates" \
-                  '. + [$all[] | select(.number == $n)]' <<< "$confirmed") || return 1
-              fi
-            done
-            printf '%s\n' "$confirmed"
+            if [ "$IS_RELEASE_COMMIT" = true ]; then
+              INCLUDE_SHA="$HEAD_SHA" bash .github/scripts/release/list_pending_releases.sh
+            else
+              bash .github/scripts/release/list_pending_releases.sh
+            fi
           }
 
           # Exits non-zero on anything that is not the expected array of PRs, so
@@ -750,10 +726,34 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      # The guard ran outside this job's concurrency group, so its "nothing
+      # pending" can be stale by the time this job leaves the queue: a release
+      # PR merged meanwhile is between version bump and tag. Re-check here,
+      # inside the group, and defer the same way the guard does. That
+      # release's publish dispatches its own refresh once it tags.
+      - name: Re-check for in-flight releases
+        id: recheck
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Read errors fail the job (set -e): proceeding on unverified state
+          # is what this step exists to prevent.
+          pending=$(bash .github/scripts/release/list_pending_releases.sh)
+          if [ "$(jq 'length' <<< "$pending")" -eq 0 ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          summary=$(jq -r '[.[] | "#\(.number) \(.title)"] | join("; ")' <<< "$pending")
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Release publish in progress::A release PR merged after the guard ran; deferring to the refresh its publish dispatches after tagging. Pending publish: $summary"
+
       # Release-please only discovers PRs with the canonical pending label.
       # Normalization must succeed before it runs, or it can update an existing
       # release branch without refreshing that PR's title and release notes.
       - name: Normalize legacy release PR labels
+        if: steps.recheck.outputs.skip == 'false'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -763,6 +763,7 @@ jobs:
       # Runs release-please from a pinned, patched npm package instead of
       # googleapis/release-please-action. See .github/release-please/README.md.
       - name: "🟢 Setup Node"
+        if: steps.recheck.outputs.skip == 'false'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: "24"
@@ -771,6 +772,7 @@ jobs:
       # replaces pnpm/action-setup, which spent ~9 s on every run bootstrapping
       # its bundled pnpm and then downloading the pinned one.
       - name: "📦 Setup pnpm"
+        if: steps.recheck.outputs.skip == 'false'
         run: |
           PNPM_SPEC=$(node -p "require('./.github/release-please/package.json').packageManager")
           npm install --global --ignore-scripts --no-audit --no-fund "$PNPM_SPEC"
@@ -779,9 +781,11 @@ jobs:
       # install and fails if a patch no longer applies. `--ignore-scripts`
       # keeps dependency install scripts out of a job with a write token.
       - name: Install release-please
+        if: steps.recheck.outputs.skip == 'false'
         run: pnpm install --dir .github/release-please --frozen-lockfile --ignore-scripts
 
       - name: Run release-please
+        if: steps.recheck.outputs.skip == 'false'
         id: release
         env:
           GITHUB_TOKEN: ${{ github.token }}

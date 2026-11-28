@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.3](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.2...deepagents-talon==0.1.3) (2026-11-28)
+
+
+### Features
+
+* **talon:** add a `send_file` tool for channel attachments ([#8019](https://github.com/langchain-ai/deepagents/issues/8019)) ([9db4ce1](https://github.com/langchain-ai/deepagents/commit/9db4ce12c4e3026f83f0292813e71df9c81fcca9))
+
+
+### Bug Fixes
+
+* **talon:** download Discord attachments like other channels ([#8017](https://github.com/langchain-ai/deepagents/issues/8017)) ([94c0cb0](https://github.com/langchain-ai/deepagents/commit/94c0cb00f7630cb00ddc970532be738c76fbaf40))
+* **talon:** keep MCP status tool schema stable across reloads ([#8022](https://github.com/langchain-ai/deepagents/issues/8022)) ([87f6080](https://github.com/langchain-ai/deepagents/commit/87f6080d9f3375e0b41aa07a71ce0a8f1027dd9a))
+* **talon:** parse chat commands from their first line only ([#8020](https://github.com/langchain-ai/deepagents/issues/8020)) ([374597a](https://github.com/langchain-ai/deepagents/commit/374597adebcc87b7c73b5a0ac85fb710dd650f81))
+* **talon:** stop treating markdown image references as attachments ([#8018](https://github.com/langchain-ai/deepagents/issues/8018)) ([5254e27](https://github.com/langchain-ai/deepagents/commit/5254e271a82c146d43f156c9ab9e85ab029adb25))
+* **talon:** swap retiring Baseten DeepSeek models for V4.1 Flash 1017 in `/effort` ([#8010](https://github.com/langchain-ai/deepagents/issues/8010)) ([42caf16](https://github.com/langchain-ai/deepagents/commit/42caf164f805e2aea5264987f62fffd7f11738ba))
+
+### Dependencies
+
+- `deepagents`: `>=0.7.41` → `>=0.7.42`
+- `deepagents-code`: `>=0.2.14,<1.0.0` → `>=0.2.15,<1.0.0`
+- `langchain-core`: `>=1.8.4,<2.0.0` → `>=1.8.5,<2.0.0`
+- `langsmith`: `>=0.16.1` → `>=0.16.2`
+
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.1...deepagents-talon==0.1.2) (2026-11-24)
 
 ### Features

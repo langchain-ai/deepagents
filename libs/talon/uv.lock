@@ -609,7 +609,7 @@ name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "cuda-pathfinder", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b1/81/bff68ce829999c1e4209c761bbf903b1c06ec570416ddb25020864ad5907/cuda_bindings-13.3.1-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1ab2f74ed65bfef4163ba07a8db16f1085e0729291db12a2423aff84ee8278b8", size = 6013639, upload-time = "2026-05-29T23:12:03.509Z" },
@@ -935,7 +935,7 @@ test = [
 
 [[package]]
 name = "deepagents-talon"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -2629,7 +2629,7 @@ name = "nvidia-cublas"
 version = "13.4.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-nvrtc", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d0/a0/5cd9d4b08a8320f7ca150ee0d66c97e98092922e338336cb4b62da7500c3/nvidia_cublas-13.4.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:4eb1472bf92b741e7cf24da7978dde251b58ddec2092d9f6a04f3623eb4e9a15", size = 513048232, upload-time = "2026-07-16T09:45:07.751Z" },
@@ -2683,7 +2683,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.26.0.51"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cublas", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c5/1c/01e1dd3dec6ffe0baaff7e722b8946d867353d05a01301f128f1730fde0b/nvidia_cudnn_cu13-9.26.0.51-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:8e5b4f5eccff721416f70ecf4353172fc4d5cdd8ca869fe6f983a4a5b0147b20", size = 595329497, upload-time = "2026-09-10T16:45:39.945Z" },
@@ -2696,7 +2696,7 @@ name = "nvidia-cufft"
 version = "12.2.0.57"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/8d/f650e6d527f9d22b5ded906c000eaebb037721c06d4ecd906df62f300979/nvidia_cufft-12.2.0.57-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1ed438568ae1088ba2c25789d10205d4104b8b140b7bd942e39a787947a0fb74", size = 218244742, upload-time = "2026-07-16T09:47:08.76Z" },
@@ -2718,9 +2718,9 @@ name = "nvidia-cusolver"
 version = "12.2.0.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-cusparse", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
-    { name = "nvidia-nvjitlink", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cublas", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cusparse", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/df/9e6b603f1d64040ce3e076e9bce1b78e2d588d0aabc9783f351cecd861ab/nvidia_cusolver-12.2.0.11-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:8be097fca28de6be0990ab216ee9b804dd51077e1d1d83acf6c9850650bdc64d", size = 250383075, upload-time = "2026-07-16T09:50:16.355Z" },
@@ -2733,7 +2733,7 @@ name = "nvidia-cusparse"
 version = "12.7.10.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/35/abbd278fb6d039fcfb5175efa10a21007a11878bec59920d84854b47d766/nvidia_cusparse-12.7.10.12-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:597eff2cd83e3ab1d1e3a0dce9c9c879d77cf64ec2659bfdb5af6a5d02e7aaa9", size = 169043093, upload-time = "2026-07-16T09:51:37.058Z" },
@@ -2775,7 +2775,7 @@ name = "nvidia-nvshmem-cu13"
 version = "3.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-cccl", marker = "extra == 'extra-16-deepagents-talon-media' or extra != 'extra-16-deepagents-talon-media-cpu'" },
+    { name = "nvidia-cuda-cccl", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra != 'extra-16-deepagents-talon-media-cpu' or extra == 'extra-16-deepagents-talon-media' and extra == 'extra-16-deepagents-talon-media-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/11/1767ef120299972822a43aceffbc81ac813aad2089d817e36e4e12aa4c9c/nvidia_nvshmem_cu13-3.7.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0e748308b9e0a8a8d81859353f3e6c98fbe85a85f652a915a2ba60149a0bd124", size = 135174619, upload-time = "2026-07-17T19:24:15.404Z" },

@@ -4,18 +4,42 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from deepagents.backends.filesystem import FilesystemBackend
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
 from deepagents_code.config import ASCII_GLYPHS
 from deepagents_code.context_doctor import (
     _bounded,
     build_context_doctor_report,
     format_memory_prompt,
+    format_skills_prompt,
     render_context_doctor_report,
 )
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.tool_catalog import ToolEntry
 
 if TYPE_CHECKING:
     import pytest
+
+
+def test_skill_source_explanation_in_agent_and_context_doctor() -> None:
+    middleware = PluginSkillsMiddleware(backend=FilesystemBackend(), sources=[])
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),
+        messages=[],
+        state={"messages": []},
+    )
+    result = middleware.modify_request(request)
+    assert result.system_message is not None
+    for prompt in (result.system_message.text, format_skills_prompt([])):
+        assert (
+            prompt.count('Sources labeled "Deepagents" are specific to this agent tool')
+            == 1
+        )
+        assert '"Agents" are shared across all agent tools on this machine' in prompt
+        assert "{skill_script_usage}" not in prompt
 
 
 def test_format_memory_prompt_strips_html_comments() -> None:

@@ -467,10 +467,15 @@ class CodeInterpreterMiddleware(
         return names
 
     def _tools_for_eval(self, slot_id: str) -> tuple[BaseTool, ...] | None:
-        """Return current bindings without allocating an interpreter."""
-        return (
-            self._ptc_tools_by_slot.get(slot_id, ()) if self._ptc is not None else None
-        )
+        """Return this turn's bindings, or `None` to keep what the slot installed.
+
+        Only a model call records bindings. A resume reaches the eval first,
+        possibly through a rebuilt middleware, so the slot keeps the tools the
+        paused turn's model call bound.
+        """
+        if self._ptc is None:
+            return None
+        return self._ptc_tools_by_slot.get(slot_id)
 
     def _eval(
         self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any

@@ -10,6 +10,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[4]
 WORKFLOW = ROOT / ".github/workflows/release-please.yml"
 CONFIG = ROOT / "release-please-config.json"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
+COMMENT_UPDATE_WORKFLOW = ROOT / ".github/workflows/release_comment_update.yml"
 
 
 def _load_workflow() -> dict:
@@ -390,7 +392,7 @@ def test_guard_condition_fails_closed() -> None:
     # Malformed/unset detector output must not pass as a normal push.
     assert not runs("", "skipped")
     assert not runs("garbage", "success")
-    # A cancelled workflow must not start a poll that runs for up to MAX_WAIT.
+    # A cancelled workflow must not start the check.
     assert not runs("false", "skipped", cancelled=True)
     # `!cancelled()` disables implicit needs-gating, so upstream failures have to
     # be rejected explicitly or a red dependency would be silently tolerated.
@@ -398,20 +400,116 @@ def test_guard_condition_fails_closed() -> None:
     assert not runs("true", "success", detect="failure")
 
 
-def test_guard_wait_is_not_serialized_and_outlives_its_poll() -> None:
-    """Two invariants the guard's comments call deliberate."""
+def test_guard_defers_instead_of_polling() -> None:
+    """The guard defers to release.yml's post-publish refresh; it never polls."""
     guard = _load_workflow()["jobs"]["guard-pending-release"]
 
-    # A poll of up to MAX_WAIT must not hold the `release-please` slot that every
-    # other push queues on.
+    # A slow `gh` read must not hold the `release-please` slot that every other
+    # push queues on.
     assert "concurrency" not in guard
 
-    # The job timeout has to sit well above MAX_WAIT so the graceful skip=true
-    # fallback wins the race. A hard timeout leaves `skip` unset, which blocks
-    # maintenance until the next push instead of deferring cleanly.
     script = _step(guard, "check")["run"]
-    max_wait = int(re.search(r"^\s*MAX_WAIT=(\d+)", script, re.MULTILINE).group(1))
-    assert guard["timeout-minutes"] * 60 - max_wait >= 600
+    # The old 45-minute label poll is gone; only GitHub read errors retry.
+    assert "MAX_WAIT" not in script
+    assert "POLL_INTERVAL" not in script
+    retry = int(re.search(r"^\s*RETRY_INTERVAL=(\d+)", script, re.MULTILINE).group(1))
+    fails = int(re.search(r"^\s*MAX_QUERY_FAILS=(\d+)", script, re.MULTILINE).group(1))
+    # A hard timeout leaves `skip` unset, which blocks maintenance; the retry
+    # budget has to finish well inside the job timeout.
+    assert guard["timeout-minutes"] * 60 - retry * fails >= 300
+
+    # A pending release PR defers this run (skip=true) to the refresh dispatch.
+    defer = script[script.index('if [ -z "$PENDING" ]; then') :]
+    assert 'echo "skip=true" >> "$GITHUB_OUTPUT"' in defer
+
+
+def test_guard_confirms_pending_labels_directly() -> None:
+    """Search-index lag must not make the post-publish refresh defer itself."""
+    script = _step(_load_workflow()["jobs"]["guard-pending-release"], "check")["run"]
+    body = script[script.index("list_pending_json() {") : script.index("format_pending() {")]
+    # Candidates come from `gh pr list --label` (search index), then each is
+    # re-read with `gh pr view`, which reflects a just-flipped label.
+    assert "gh pr list" in body
+    assert "gh pr view" in body
+
+
+def test_dispatched_runs_are_maintenance_only() -> None:
+    """A dispatched refresh must never re-detect a release commit."""
+    workflow = _load_workflow()
+    # PyYAML parses the bare `on` key as boolean True.
+    triggers = workflow[True]
+    assert "workflow_dispatch" in triggers
+    assert triggers["push"] == {"branches": ["main"]}
+
+    detect = workflow["jobs"]["detect-release-commit"]
+    step = _step(detect, "check-releases")
+    assert step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
+    script = step["run"]
+    # Up to the branch's `exit 0`; its body has a nested `if ... fi`.
+    dispatch_branch = re.search(
+        r'if \[ "\$EVENT_NAME" = "workflow_dispatch" \]; then(.*?\n\s*exit 0\n)',
+        script,
+        re.DOTALL,
+    )
+    assert dispatch_branch, "missing the workflow_dispatch short-circuit"
+    assert 'echo "release-commit=false" >> "$GITHUB_OUTPUT"' in dispatch_branch.group(1)
+    assert "exit 0" in dispatch_branch.group(1)
+    # Only main's scripts may run maintenance with write access.
+    assert step["env"]["GIT_REF"] == "${{ github.ref }}"
+    assert '"$GIT_REF" != "refs/heads/main"' in dispatch_branch.group(1)
+    assert "exit 1" in dispatch_branch.group(1)
+    # It must come before any release detection writes an output.
+    assert script.index("workflow_dispatch") < script.index("release-commit=true")
+
+    # The empty-commit guard still runs first on dispatch, so a dispatch cannot
+    # route release-please around a blocked empty commit.
+    reject = next(s for s in detect["steps"] if s.get("name") == "Reject empty commits")
+    assert "if" not in reject
+
+
+def test_dispatched_refresh_defers_on_sibling_failure() -> None:
+    """A refresh after a good publish must not go red over a sibling's failure."""
+    guard = _load_workflow()["jobs"]["guard-pending-release"]
+    step = _step(guard, "check")
+    assert step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
+    script = step["run"]
+    body = script[script.index("fail_failed_releases() {") :]
+    # The refresh branch comes before the HEAD-subject hotfix branch.
+    assert body.index('"$IS_REFRESH" = true') < body.index('"$IS_HOTFIX" = true')
+    assert 'defer_reason="post-publish refresh"' in body
+
+
+def test_release_workflow_dispatches_refresh_after_tagging() -> None:
+    """release.yml closes the loop the guard's deferral relies on."""
+    release = yaml.safe_load(RELEASE_WORKFLOW.read_text())
+    job = release["jobs"]["refresh-release-prs"]
+
+    # After the label flip, never before: see guard-pending-release.
+    assert _needs(job) == {"mark-release"}
+    condition = _condition(job)
+    assert "needs.mark-release.result == 'success'" in condition
+    assert "github.ref == 'refs/heads/main'" in condition
+    assert job["permissions"] == {"actions": "write"}
+
+    script = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "gh workflow run release-please.yml" in script
+    assert "--ref main" in script
+
+
+def test_release_comment_update_ignores_dispatched_refreshes() -> None:
+    """Only the push-triggered release-commit run reports the outcome."""
+    workflow = yaml.safe_load(COMMENT_UPDATE_WORKFLOW.read_text())
+    job = workflow["jobs"]["comment"]
+    condition = _condition(job)
+    assert "github.event.workflow_run.event == 'push'" in condition
+    assert "github.event_name == 'workflow_dispatch'" in condition
+
+    # The release-commit run now finishes before its publish does, so the poll
+    # has to cover a full publish and still end before the job timeout.
+    script = "\n".join(step.get("run", "") for step in job["steps"])
+    deadline = int(re.search(r"deadline=\$\(\(SECONDS \+ (\d+)\)\)", script).group(1))
+    assert deadline >= 900
+    assert job["timeout-minutes"] * 60 - deadline >= 120
 
 
 def test_release_please_maintenance_stays_serialized() -> None:

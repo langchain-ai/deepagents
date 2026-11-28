@@ -12,6 +12,7 @@
 # https://docs.pypi.org/trusted-publishers/troubleshooting/#reusable-workflows-on-github
 #
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
+#   -> refresh-release-prs (dispatches release-please.yml)
 
 name: "🚀 Package Release"
 run-name: "release(${{ inputs.package-override || inputs.package }}):${{
@@ -1218,6 +1219,53 @@ jobs:
               fi
             fi
           fi
+
+  # Refresh the open release PRs now that this publish has tagged its release.
+  #
+  # release-please.yml's `guard-pending-release` defers any push that lands
+  # while a release PR is still `auto:release-pending`, instead of polling
+  # until the publish finishes. Completing a publish does not push to main, so
+  # this dispatch is what runs release-please for those deferred commits. It
+  # must come after `mark-release` flips the label: the guard treats any label
+  # it sees as covered by a later dispatch, and that only holds if the
+  # dispatch follows the flip. The dispatched run is maintenance only; it
+  # never re-detects a release commit or dispatches a publish.
+  #
+  # Redundant dispatches (several packages finishing together, a re-run of
+  # this job) are harmless: release-please's job-level concurrency group keeps
+  # one pending run, and every run recomputes all components.
+  #
+  # Only for `main`: maintenance-branch releases do not feed release-please.
+  refresh-release-prs:
+    name: 🔄 Refresh open release PRs
+    needs:
+      - mark-release
+    if: always() && needs.mark-release.result == 'success' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # required for `gh workflow run`
+    steps:
+      # The package is already published and tagged by now. A failure here
+      # only means the other release PRs are not refreshed until the next push
+      # to main, but it is still red so the stranded refresh gets noticed.
+      - name: Dispatch release-please.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # `--repo` is required: this job has no checkout for `gh` to read.
+          for attempt in 1 2 3; do
+            if gh workflow run release-please.yml --repo "${GITHUB_REPOSITORY}" --ref main; then
+              echo "::notice::Dispatched release-please.yml to refresh the open release PRs."
+              exit 0
+            fi
+            echo "::warning::Dispatching release-please.yml failed (attempt $attempt of 3)."
+            sleep 10
+          done
+          echo "::error::This package published and was tagged, but release-please.yml could not be dispatched, so the open release PRs were not refreshed. Recover with: gh workflow run release-please.yml --repo ${GITHUB_REPOSITORY} --ref main"
+          exit 1
 
   # Kick the Code SDK pin auto-bump once the SDK is live on PyPI. Only the
   # `deepagents` package release triggers this: the pin-bump workflow itself

@@ -6,7 +6,7 @@ import json
 import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NotRequired, cast
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -38,7 +38,7 @@ from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, Sandb
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
-from deepagents.graph import create_deep_agent
+from deepagents.graph import FullCopyDeepAgentState, create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent, create_sub_agent
@@ -4378,6 +4378,54 @@ class TestDeltaChannels:
         state = agent.get_state(config)
         files = state.values.get("files", {})
         assert any("hello.txt" in k for k in files)
+
+
+class _FullCopyStateWithExtraField(FullCopyDeepAgentState):
+    """`FullCopyDeepAgentState` with one caller-defined field."""
+
+    page_url: NotRequired[str]
+
+
+class TestFullCopyStateSchema:
+    """`FullCopyDeepAgentState` and its subclasses store full copies of `messages` and `files`."""
+
+    @pytest.mark.parametrize("state_schema", [FullCopyDeepAgentState, _FullCopyStateWithExtraField])
+    def test_every_checkpoint_holds_full_messages_and_files(self, state_schema: type[FullCopyDeepAgentState]) -> None:
+        """Each checkpoint holds the whole state, so loading it needs no earlier checkpoint."""
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call_1", "name": "write_file", "args": {"file_path": "/a.txt", "content": "alpha"}}],
+                    ),
+                    AIMessage(content="Wrote a."),
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call_2", "name": "write_file", "args": {"file_path": "/b.txt", "content": "beta"}}],
+                    ),
+                    AIMessage(content="Wrote b."),
+                ]
+            )
+        )
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, state_schema=state_schema, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "full-copy"}}
+        agent.invoke({"messages": [HumanMessage(content="Write a")]}, config)
+        agent.invoke({"messages": [HumanMessage(content="Write b")]}, config)
+
+        checkpoints = list(checkpointer.list(config))
+        # A checkpoint omits a channel that has no value yet, hence the defaults.
+        newest = checkpoints[0].checkpoint["channel_values"]
+        assert [m.type for m in newest.get("messages", [])] == ["human", "ai", "tool", "ai", "human", "ai", "tool", "ai"]
+        assert {path: data["content"] for path, data in newest.get("files", {}).items()} == {"/a.txt": "alpha", "/b.txt": "beta"}
+
+        for saved in checkpoints:
+            stored = saved.checkpoint["channel_values"]
+            loaded = agent.get_state(saved.config).values
+            assert stored.get("messages", []) == loaded["messages"]
+            assert stored.get("files", {}) == loaded.get("files", {})
 
 
 def test_tool_command_parent_handoff_preserved() -> None:

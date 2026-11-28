@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Annotated, Any, Required, cast
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, ModelRefusalMiddleware
@@ -40,14 +40,14 @@ from deepagents._models import resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import _lc_version
 from deepagents.backends import StateBackend
-from deepagents.backends.protocol import BackendConsumer, BackendProtocol
+from deepagents.backends.protocol import BackendConsumer, BackendProtocol, FileData
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, _file_data_reducer
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -75,9 +75,36 @@ logger = logging.getLogger(__name__)
 
 
 class DeepAgentState(AgentState):
-    """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
+    """`AgentState` that stores `messages` in a `DeltaChannel`.
+
+    Each checkpoint holds only the messages written in that step, which reduces
+    checkpoint growth from O(N²) to O(N). Loading a thread rebuilds `messages`
+    from the thread's earlier checkpoints, so the checkpointer must keep a
+    thread's history. With a checkpointer that deletes, expires or overwrites
+    earlier checkpoints, the thread loads with messages missing.
+
+    To store full copies instead, use
+    [`FullCopyDeepAgentState`][deepagents.graph.FullCopyDeepAgentState].
+    """
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
+
+class FullCopyDeepAgentState(AgentState):
+    """`AgentState` that stores full copies of `messages` and `files`.
+
+    Every checkpoint holds the full `messages` and `files`, so loading a thread
+    reads a single checkpoint. Use it when the checkpointer deletes, expires or
+    overwrites a thread's earlier checkpoints, for example a shallow saver or a
+    saver with a TTL. Every checkpoint is then as large as the whole thread
+    state.
+
+    Pass it, or a subclass that adds fields, as the `state_schema` of
+    [`create_deep_agent`][deepagents.graph.create_deep_agent].
+    """
+
+    files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
+    """Files in the filesystem. A `None` value in an update deletes that file."""
 
 
 _LEGACY_BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
@@ -306,7 +333,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
-    state_schema: type[DeepAgentState] | None = None,
+    state_schema: type[AgentState[Any]] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
@@ -562,9 +589,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             every edit.
         response_format: A structured output response format to use for the agent.
         state_schema: Custom state schema for the agent graph. Must be a
-            `TypedDict` subclass of
-            [`DeepAgentState`][deepagents.graph.DeepAgentState] so the
-            built-in `DeltaChannel` reducer on `messages` is preserved.
+            `TypedDict` subclass of `AgentState`. Extend
+            [`DeepAgentState`][deepagents.graph.DeepAgentState] to keep the
+            default storage of `messages` and `files`, in which each
+            checkpoint holds only that step's writes and a load rebuilds the
+            values from the thread's earlier checkpoints.
 
             Generally, prefer defining state extensions with middleware so
             the extra fields stay scoped to the hooks and tools that use
@@ -600,6 +629,28 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             agent = create_deep_agent(model=..., state_schema=MyState)
             ```
+
+            To store a full copy of `messages` and `files` in every
+            checkpoint, pass
+            [`FullCopyDeepAgentState`][deepagents.graph.FullCopyDeepAgentState],
+            or a subclass of it that adds fields. A load then reads a single
+            checkpoint. Do this when the checkpointer deletes, expires or
+            overwrites a thread's earlier checkpoints, for example a shallow
+            saver or a saver with a TTL. With the default storage, such a
+            thread loads with messages and files missing. Full copies make
+            every checkpoint as large as the whole thread state.
+
+            ```python
+            from deepagents import FullCopyDeepAgentState, create_deep_agent
+
+            agent = create_deep_agent(
+                model="anthropic:claude-sonnet-5-5",
+                state_schema=FullCopyDeepAgentState,
+            )
+            ```
+
+            A schema that extends plain `AgentState` and does not declare
+            `files` stores full copies of `messages` only.
         context_schema: Schema class that defines immutable run-scoped context.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -637,7 +688,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             distinct middleware classes, or matches no entry in the assembled
             stack.
     """
-    # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
+    # `AgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
     # subclass constraint on `state_schema` is enforced by typing alone and not
     # validated at runtime.
 

@@ -31,10 +31,10 @@ from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._repl import (
     _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+    SlotConfig,
     _clear_exception_references,
     _Registry,
     _Slot,
-    _SlotConfig,
 )
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
@@ -318,10 +318,10 @@ def test_threads_are_isolated(make_repl: Callable[..., _Slot]) -> None:
     assert outcome.result == "undefined"
 
 
-_CONFIG = _SlotConfig()
+_CONFIG = SlotConfig()
 
 
-def _get(registry: _Registry, thread_id: str, config: _SlotConfig = _CONFIG) -> Any:
+def _get(registry: _Registry, thread_id: str, config: SlotConfig = _CONFIG) -> Any:
     slot = registry.acquire(thread_id, config)
     registry.release(slot)
     return slot
@@ -373,7 +373,7 @@ async def test_registry_keeps_slot_of_cancelled_eval_until_js_stops(
     registry: _Registry,
 ) -> None:
     registry._max_slots = 1
-    config = _SlotConfig(timeout=1.0)
+    config = SlotConfig(timeout=1.0)
     runaway = _get(registry, "thread-a", config)
     runaway.eval_sync("1")  # build the Runtime before timing anything
 
@@ -639,7 +639,7 @@ def test_registry_reuses_slot_per_thread_and_config(registry: _Registry) -> None
     a = _get(registry, "thread-a")
     assert _get(registry, "thread-a") is a
     assert _get(registry, "thread-b") is not a
-    assert _get(registry, "thread-a", _SlotConfig(timeout=1.0)) is not a
+    assert _get(registry, "thread-a", SlotConfig(timeout=1.0)) is not a
 
 
 def test_registry_lease_if_exists_does_not_create_slot(registry: _Registry) -> None:

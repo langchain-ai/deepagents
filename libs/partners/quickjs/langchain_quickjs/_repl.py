@@ -12,7 +12,7 @@ import threading
 import uuid
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from langchain_core.runnables import RunnableLambda
 from langgraph.errors import GraphInterrupt
@@ -172,7 +172,7 @@ async def _on_outer_loop(
 
 
 @dataclass(frozen=True)
-class _SlotConfig:
+class SlotConfig:
     """Settings for the interpreters one middleware creates."""
 
     memory_limit: int | None = 64 * 1024 * 1024
@@ -182,6 +182,85 @@ class _SlotConfig:
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
+    # Builds each thread's slot; `None` means the in-process `_Slot`. Part of
+    # the registry key, so middlewares with different factories never share.
+    slot_factory: Callable[[str, SlotConfig], Slot] | None = None
+
+
+class Slot(Protocol):
+    """One thread's interpreter, as `CodeInterpreterMiddleware` drives it.
+
+    The default runs QuickJS in this process. Pass a factory for another
+    implementation (for example one that runs QuickJS in a worker process) as
+    `CodeInterpreterMiddleware(slot_factory=...)`. Persistence modes are the
+    middleware's business: a slot only evals, snapshots, restores and closes.
+    """
+
+    @property
+    def eval_running(self) -> bool:
+        """Whether an eval is running, even one whose caller was cancelled."""
+        ...
+
+    def eval_sync(self, code: str, **kwargs: Any) -> EvalOutcome:
+        """Run `code` in the live Context, building one if needed.
+
+        Keyword arguments are those of `eval_async`, without `outer_loop`.
+        """
+        ...
+
+    async def eval_async(
+        self,
+        code: str,
+        *,
+        outer_runtime: ToolRuntime | None = None,
+        tools: Sequence[BaseTool] | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
+        fs: BackendProtocol | None = None,
+        close_context_after: bool = False,
+    ) -> EvalOutcome:
+        """Run `code`, exposing `tools` as `tools.<camelCaseName>`.
+
+        Args:
+            code: JavaScript from the model.
+            outer_runtime: The eval tool call's runtime; PTC tools run with its config.
+            tools: PTC tools to expose, or `None` to leave the current set.
+            outer_loop: The caller's event loop, where PTC tools should run.
+            fs: Backend behind the guest's `fs`, when enabled.
+            close_context_after: Close the Context before returning (`mode="call"`).
+        """
+        ...
+
+    def restore_snapshot(self, payload: bytes) -> None:
+        """Restore `payload` into the Context, at most once per Context."""
+        ...
+
+    async def arestore_snapshot(self, payload: bytes) -> None:
+        """Async variant of `restore_snapshot`."""
+        ...
+
+    def create_snapshot(self) -> bytes | None:
+        """Return the Context's state, or `None` if it has none or is unchanged."""
+        ...
+
+    async def acreate_snapshot(self) -> bytes | None:
+        """Async variant of `create_snapshot`."""
+        ...
+
+    def close_context(self, *, keep_snapshot: bytes | None = None) -> None:
+        """Close the Context unless it still matches `keep_snapshot`."""
+        ...
+
+    async def aclose_context(self, *, keep_snapshot: bytes | None = None) -> None:
+        """Async variant of `close_context`."""
+        ...
+
+    def close(self) -> None:
+        """Release everything the slot holds."""
+        ...
+
+    async def aclose(self) -> None:
+        """Async variant of `close`."""
+        ...
 
 
 class _Slot:
@@ -196,7 +275,7 @@ class _Slot:
     modes are the middleware's business.
     """
 
-    def __init__(self, name: str, config: _SlotConfig) -> None:
+    def __init__(self, name: str, config: SlotConfig) -> None:
         self._worker = ThreadWorker(name=name)  # starts its thread on first use
         self._config = config
         self._runtime: QjsRuntime | None = None
@@ -803,13 +882,13 @@ class _Registry:
 
     def __init__(self, max_slots: int = _MAX_SLOTS) -> None:
         self._max_slots = max_slots
-        self._slots: OrderedDict[tuple[str, _SlotConfig], _Slot] = OrderedDict()
+        self._slots: OrderedDict[tuple[str, SlotConfig], Slot] = OrderedDict()
         # Evals (or snapshots) running on each slot. A leased slot is never
         # evicted.
-        self._leases: Counter[_Slot] = Counter()
+        self._leases: Counter[Slot] = Counter()
         self._lock = threading.Lock()
 
-    def acquire(self, slot_id: str, config: _SlotConfig) -> _Slot:
+    def acquire(self, slot_id: str, config: SlotConfig) -> Slot:
         """Lease the slot for `slot_id`, creating it if needed.
 
         A leased slot is never evicted. Pair with `release`.
@@ -819,7 +898,7 @@ class _Registry:
             old.close()
         return slot
 
-    async def aacquire(self, slot_id: str, config: _SlotConfig) -> _Slot:
+    async def aacquire(self, slot_id: str, config: SlotConfig) -> Slot:
         """Async variant of `acquire`."""
         slot, stale = self._acquire_locked(slot_id, config)
         for old in stale:
@@ -827,13 +906,14 @@ class _Registry:
         return slot
 
     def _acquire_locked(
-        self, slot_id: str, config: _SlotConfig
-    ) -> tuple[_Slot, list[_Slot]]:
+        self, slot_id: str, config: SlotConfig
+    ) -> tuple[Slot, list[Slot]]:
         key = (slot_id, config)
         with self._lock:
             slot = self._slots.get(key)
             if slot is None:
-                slot = _Slot(f"quickjs-worker-{slot_id[:8]}", config)
+                factory = config.slot_factory or _Slot
+                slot = factory(f"quickjs-worker-{slot_id[:8]}", config)
                 self._slots[key] = slot
             self._slots.move_to_end(key)
             self._leases[slot] += 1
@@ -851,7 +931,7 @@ class _Registry:
                 excess -= 1
             return slot, stale
 
-    def lease_if_exists(self, slot_id: str, config: _SlotConfig) -> _Slot | None:
+    def lease_if_exists(self, slot_id: str, config: SlotConfig) -> Slot | None:
         """Lease the slot for `slot_id` without creating one."""
         with self._lock:
             slot = self._slots.get((slot_id, config))
@@ -859,7 +939,7 @@ class _Registry:
                 self._leases[slot] += 1
             return slot
 
-    def release(self, slot: _Slot) -> None:
+    def release(self, slot: Slot) -> None:
         """Return a lease taken by `acquire` or `lease_if_exists`."""
         with self._lock:
             self._leases[slot] -= 1
@@ -867,7 +947,7 @@ class _Registry:
                 del self._leases[slot]
 
     def close_context(
-        self, slot_id: str, config: _SlotConfig, *, keep_snapshot: bytes | None = None
+        self, slot_id: str, config: SlotConfig, *, keep_snapshot: bytes | None = None
     ) -> None:
         """Close `slot_id`'s Context, keeping the slot warm (see `_Slot`)."""
         if (slot := self.lease_if_exists(slot_id, config)) is not None:
@@ -877,7 +957,7 @@ class _Registry:
                 self.release(slot)
 
     async def aclose_context(
-        self, slot_id: str, config: _SlotConfig, *, keep_snapshot: bytes | None = None
+        self, slot_id: str, config: SlotConfig, *, keep_snapshot: bytes | None = None
     ) -> None:
         """Async variant of `close_context`."""
         if (slot := self.lease_if_exists(slot_id, config)) is not None:

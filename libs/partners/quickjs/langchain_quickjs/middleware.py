@@ -52,8 +52,8 @@ from langchain_quickjs._repl import (
     _REGISTRY,
     EvalOutcome,
     PersistenceMode,
-    _Slot,
-    _SlotConfig,
+    Slot,
+    SlotConfig,
     _SnapshotRestoreError,
 )
 from langchain_quickjs._snapshot import (
@@ -267,6 +267,13 @@ class CodeInterpreterMiddleware(
                 where the checkpointer is not fully trusted. Use the same key across
                 all processes that share a thread, and rotate it by starting fresh
                 threads.
+        slot_factory: Builds the `Slot` that runs each thread's code, as
+            `slot_factory(name, config)`. `None` (default) runs QuickJS in this
+            process. Pass one to run code elsewhere, such as in a sandboxed
+            worker process.
+
+            !!! warning "Experimental"
+                The `Slot` interface may change in a minor release.
 
     Example:
         ```python
@@ -300,6 +307,7 @@ class CodeInterpreterMiddleware(
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
+        slot_factory: Callable[[str, SlotConfig], Slot] | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -335,7 +343,7 @@ class CodeInterpreterMiddleware(
             if snapshot_signing_key is not None
             else None
         )
-        self._slot_config = _SlotConfig(
+        self._slot_config = SlotConfig(
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
@@ -343,6 +351,7 @@ class CodeInterpreterMiddleware(
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
+            slot_factory=slot_factory,
         )
         self._registry = _REGISTRY
         self._memory_limit_mb = memory_limit // (1024 * 1024)
@@ -473,7 +482,7 @@ class CodeInterpreterMiddleware(
         )
 
     def _eval(
-        self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
+        self, slot: Slot, state: Mapping[str, object], code: str, **kwargs: Any
     ) -> EvalOutcome:
         """Run one eval on `slot`, applying the persistence mode around it."""
         if snapshot := self._snapshot_for_eval(state):
@@ -481,7 +490,7 @@ class CodeInterpreterMiddleware(
         return slot.eval_sync(code, close_context_after=self._mode == "call", **kwargs)
 
     async def _aeval(
-        self, slot: _Slot, state: Mapping[str, object], code: str, **kwargs: Any
+        self, slot: Slot, state: Mapping[str, object], code: str, **kwargs: Any
     ) -> EvalOutcome:
         """Async variant of `_eval`."""
         if snapshot := self._snapshot_for_eval(state):

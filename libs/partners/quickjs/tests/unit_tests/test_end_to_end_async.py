@@ -26,8 +26,10 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
 
-from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware, Slot, SlotConfig
+from langchain_quickjs._repl import _Slot
 from tests._common import FakeChatModel
+from tests.unit_tests._slots import drop_slots, slots_of
 
 
 @tool
@@ -121,6 +123,25 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
     tool_message = _eval_tool_message(result)
     _assert_result_contains(tool_message.content, "42")
     assert result["messages"][-1].content == "The answer is 42."
+
+
+async def test_slot_factory_builds_the_slot_that_runs_evals() -> None:
+    """`slot_factory` replaces the in-process slot for the middleware's threads."""
+    made: list[_Slot] = []
+
+    def factory(name: str, config: SlotConfig) -> Slot:
+        made.append(_Slot(name, config))
+        return made[-1]
+
+    mw = CodeInterpreterMiddleware(slot_factory=factory)
+    result = await _make_agent("6 * 7", mw).ainvoke(
+        {"messages": [HumanMessage(content="Calculate 6 * 7")]}
+    )
+
+    _assert_result_contains(_eval_tool_message(result).content, "42")
+    assert slots_of(mw) == made
+    assert len(made) == 1
+    drop_slots(mw)
 
 
 async def test_deepagent_with_quickjs_list_returning_foreign_function() -> None:

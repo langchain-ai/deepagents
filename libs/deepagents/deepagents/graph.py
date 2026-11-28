@@ -570,12 +570,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             the extra fields stay scoped to the hooks and tools that use
             them.
 
-            When provided, this schema is used as the base graph schema and
-            is merged with state schemas contributed by middleware. It is
-            also forwarded when compiling declarative
+            This schema, or `DeepAgentState` when unset, is used as the base
+            graph schema and is merged with state schemas contributed by
+            middleware. It is also forwarded when compiling declarative
             [`SubAgent`][deepagents.middleware.subagents.SubAgent] specs for
             the `task` tool, so subagents see the same custom fields as the
-            parent.
+            parent and also checkpoint `messages` as deltas.
 
             Those subagents can also write the fields back to the parent. If
             parallel `task` calls may change the same field, give it a
@@ -640,6 +640,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
     # subclass constraint on `state_schema` is enforced by typing alone and not
     # validated at runtime.
+    if state_schema is None:
+        state_schema = DeepAgentState
 
     _model_spec: str | None = model if isinstance(model, str) else None
 
@@ -1005,7 +1007,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # stripped last and cannot be restored by a custom wrap_model_call.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    state_schemas = [state_schema] if state_schema is not None else []
+    state_schemas = [state_schema]
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)
     # Apply the keys after caller middleware has replaced the task middleware.
@@ -1036,7 +1038,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
-        state_schema=state_schema if state_schema is not None else DeepAgentState,
+        state_schema=state_schema,
     ).with_config(
         {
             "recursion_limit": 9_999,

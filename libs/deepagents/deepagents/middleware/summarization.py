@@ -67,6 +67,7 @@ import hashlib
 import inspect
 import logging
 import mimetypes
+import posixpath
 import urllib.parse
 import uuid
 import warnings
@@ -330,6 +331,12 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
         },
     }
 
+
+_HISTORY_READ_PLACEHOLDER = "[Output omitted: this read of the conversation history is already saved in the history file.]"
+"""Offloaded in place of a `read_file` or `grep` result that targets the history file."""
+
+_HISTORY_READ_PATH_ARGS: dict[str, str] = {"read_file": "file_path", "grep": "path"}
+"""Filesystem tools whose results can copy the history file, mapped to their path argument."""
 
 _OFFLOAD_FAILED_PLACEHOLDER = '<image error="failed_to_offload" />'
 """Text placeholder written when a media block cannot be offloaded.
@@ -891,19 +898,48 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         return msg.additional_kwargs.get("lc_source") == "summarization"
 
     def _filter_summary_messages(self, messages: list[AnyMessage]) -> list[AnyMessage]:
-        """Filter out previous summary messages from a message list.
+        """Drop content that the history file already holds before offloading.
 
-        When chained summarization occurs, we don't want to re-offload the previous
-        summary `HumanMessage` since the original messages are already stored in the
-        backend.
+        Removes previous summary `HumanMessage` objects and replaces results of
+        `read_file` or `grep` calls on the history file with a placeholder.
 
         Args:
             messages: List of messages to filter.
 
         Returns:
-            Messages without previous summary `HumanMessage` objects.
+            Messages without previous summaries or copies of history-file reads.
         """
-        return [msg for msg in messages if not self._is_summary_message(msg)]
+        history_call_ids = self._history_read_call_ids(messages)
+        filtered: list[AnyMessage] = []
+        for msg in messages:
+            if self._is_summary_message(msg):
+                continue
+            if isinstance(msg, ToolMessage) and msg.tool_call_id in history_call_ids:
+                filtered.append(msg.model_copy(update={"content": _HISTORY_READ_PLACEHOLDER}))
+            else:
+                filtered.append(msg)
+        return filtered
+
+    def _history_read_call_ids(self, messages: list[AnyMessage]) -> set[str]:
+        """Return ids of `read_file` and `grep` calls that target the history file."""
+        return {
+            call["id"]
+            for msg in messages
+            if isinstance(msg, AIMessage)
+            for call in msg.tool_calls
+            if call["id"] is not None and self._targets_history(call)
+        }
+
+    def _targets_history(self, call: ToolCall) -> bool:
+        """Check whether a tool call reads or searches the conversation history."""
+        arg = _HISTORY_READ_PATH_ARGS.get(call["name"])
+        path = call["args"].get(arg) if arg else None
+        if not isinstance(path, str) or not path.startswith("/"):
+            return False
+        normalized = posixpath.normpath(path)
+        if normalized == self._media_prefix or normalized.startswith(f"{self._media_prefix}/"):
+            return False
+        return normalized == self._history_path_prefix or normalized.startswith(f"{self._history_path_prefix}/")
 
     def _build_new_messages_with_path(self, summary: str, file_path: str | None) -> list[AnyMessage]:
         """Build the summary message with optional file path reference.
@@ -921,7 +957,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             content = f"""\
 You are in the middle of a conversation that has been summarized.
 
-The full conversation history has been saved to {file_path} should you need to refer back to it for details.
+The full conversation history has been saved to {file_path}.
+To look up specific details, search the file (for example with `grep`) rather than reading all of it.
 
 A condensed summary follows:
 

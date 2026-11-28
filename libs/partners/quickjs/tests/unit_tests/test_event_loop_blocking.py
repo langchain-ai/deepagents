@@ -121,6 +121,7 @@ async def test_fresh_context_does_not_block_loop(
     assert outcome.result == "2"
 
 
+@pytest.mark.worker_only
 @pytest.mark.parametrize("mode", ["thread", "turn"])
 async def test_after_agent_does_not_block_loop(
     mode: str, monkeypatch: pytest.MonkeyPatch

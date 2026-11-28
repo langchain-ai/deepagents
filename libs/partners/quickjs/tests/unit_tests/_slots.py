@@ -43,3 +43,8 @@ def drop_slots(mw: CodeInterpreterMiddleware) -> None:
 def install_tools(slot: _Slot, tools: Sequence[BaseTool]) -> None:
     """Bind `tools` on the slot's turn Context, as an eval with them would."""
     slot.eval_sync("undefined", tools=tools)
+
+
+async def ainstall_tools(slot: _Slot, tools: Sequence[BaseTool]) -> None:
+    """Async variant of `install_tools`."""
+    await slot.eval_async("undefined", tools=tools)

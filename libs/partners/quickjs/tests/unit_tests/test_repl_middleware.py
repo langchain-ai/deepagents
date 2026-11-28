@@ -42,8 +42,8 @@ from langchain_quickjs._subagent import (
     call_subagent_task_tool,
 )
 from tests.unit_tests._slots import (
+    ainstall_tools,
     drop_slots,
-    install_tools,
     slot_of,
     slots_of,
     warm_slot,
@@ -713,7 +713,7 @@ async def test_aafter_agent_snapshots_and_keeps_context_warm() -> None:
         state = _new_slot_state(mw)
         slot_id = state["_quickjs_slot_id"]
         repl = warm_slot(mw, slot_id)
-        repl.eval_sync("globalThis.counter = 10")
+        await repl.eval_async("globalThis.counter = 10")
         assert slot_of(mw, slot_id) is not None
         update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
@@ -953,7 +953,6 @@ class _QueuedFanout:
             tool_call_id="outer_eval_call",
             store=None,
         )
-        install_tools(repl, [release_tool])
         extra = "await tools.releaseTasks({});" if extra_ptc_call else ""
         return await repl.eval_async(
             "(async () => {"
@@ -964,6 +963,7 @@ class _QueuedFanout:
             f"{extra} return results.length;"
             "})()",
             outer_runtime=runtime,
+            tools=[release_tool],
         )
 
 
@@ -1566,7 +1566,7 @@ async def test_async_concurrent_calls_surface_error(repl: _Slot) -> None:
         coroutine=_slow,
         args_schema=_NoArgs,
     )
-    install_tools(repl, [slow_tool])
+    await ainstall_tools(repl, [slow_tool])
 
     a, b = await asyncio.gather(
         repl.eval_async("await tools.slow({})"),
@@ -1611,15 +1611,17 @@ async def test_unbounded_timeout_outlives_a_short_deadline(
     bounded = CodeInterpreterMiddleware(timeout=0.1, subagents=False)
     unbounded = CodeInterpreterMiddleware(timeout=timeout, subagents=False)
     try:
-        outcome = warm_slot(bounded, "t").eval_sync(_SPIN_300_MS)
+        slot = warm_slot(bounded, "t")
+        outcome = await asyncio.to_thread(slot.eval_sync, _SPIN_300_MS)
         assert outcome.error_type == "Timeout"
         slot = warm_slot(unbounded, "t")
-        assert slot.eval_sync(_SPIN_300_MS).result == "42"
+        assert (await asyncio.to_thread(slot.eval_sync, _SPIN_300_MS)).result == "42"
         assert (await slot.eval_async(_SPIN_300_MS)).result == "42"
         call_mode = CodeInterpreterMiddleware(
             timeout=timeout, subagents=False, mode="call"
         )
-        assert warm_slot(call_mode, "t").eval_sync(_SPIN_300_MS).result == "42"
+        slot = warm_slot(call_mode, "t")
+        assert (await asyncio.to_thread(slot.eval_sync, _SPIN_300_MS)).result == "42"
         drop_slots(call_mode)
     finally:
         drop_slots(bounded)

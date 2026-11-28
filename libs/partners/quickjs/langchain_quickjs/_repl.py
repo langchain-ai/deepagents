@@ -56,6 +56,7 @@ from langchain_quickjs._subagent import (
     call_subagent_task_tool,
     find_subagent_task_tool,
 )
+from langchain_quickjs._worker import InlineWorker, _loop_running_here
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Sequence
@@ -63,6 +64,8 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
+
+    from langchain_quickjs._worker import ExecutionMode, ReplWorker
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +185,7 @@ class _SlotConfig:
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
+    execution: ExecutionMode = "worker"
 
 
 class _Slot:
@@ -189,15 +193,19 @@ class _Slot:
 
     Builds nothing until the first eval. `quickjs_rs` objects are `!Send`, so
     all QuickJS work runs on the slot's own worker thread; callers on any
-    thread or loop only wait on it. Evals run one at a time: one that starts
-    while another is running fails with `ConcurrentEval`. The worker and
+    thread or loop only wait on it (with `execution="inline"`, the caller's
+    own thread and loop are the worker). Evals run one at a time: one that
+    starts while another is running fails with `ConcurrentEval`. The worker and
     Runtime outlive turns; the Context lives until `close_context`, and stays
     warm across turns while it matches the thread's last snapshot. Persistence
     modes are the middleware's business.
     """
 
     def __init__(self, name: str, config: _SlotConfig) -> None:
-        self._worker = ThreadWorker(name=name)  # starts its thread on first use
+        # A `ThreadWorker` starts its thread on first use.
+        self._worker: ReplWorker = (
+            InlineWorker() if config.execution == "inline" else ThreadWorker(name=name)
+        )
         self._config = config
         self._runtime: QjsRuntime | None = None
         self._context: QjsContext | None = None
@@ -209,6 +217,8 @@ class _Slot:
             float("inf") if config.timeout is None else config.timeout
         )
         self._task_calls = asyncio.Semaphore(config.max_subagent_concurrency)
+        # The loop that drives the Context. Only an inline slot can change it.
+        self._loop: asyncio.AbstractEventLoop | None = None
         # Whether an eval is running. Evals run one at a time.
         self._eval_running = False
         # The snapshot the live Context still matches: set when one is taken,
@@ -240,6 +250,15 @@ class _Slot:
         Runs on the worker and never awaits, so concurrent first evals on its
         single-threaded loop can't both build.
         """
+        loop = asyncio.get_running_loop()
+        if loop is not self._loop:
+            # An inline slot can come back on another loop (a later
+            # `asyncio.run`, or sync and async turns). Its semaphore and the
+            # Context's asyncio state are bound to the old loop, so replace
+            # both; the middleware restores the thread's snapshot next.
+            self._loop = loop
+            self._task_calls = asyncio.Semaphore(self._config.max_subagent_concurrency)
+            self._dispose_context()
         if self._context is not None:
             return self._context
         self._context = self._ensure_runtime().new_context(
@@ -693,6 +712,14 @@ class _Slot:
         # the worker loop. Sync ctx.eval can't dispatch async host functions
         # (PTC bridges are is_async=True), so routing sync callers through
         # the async path is required for PTC to work under sync invocation.
+        if isinstance(self._worker, InlineWorker) and _loop_running_here():
+            # An eval suspends; refuse before any JS runs rather than orphan
+            # host tasks on the caller's loop.
+            msg = (
+                "eval_sync cannot run inline from a thread with a running "
+                'event loop; use eval_async, or execution="worker"'
+            )
+            raise RuntimeError(msg)
         return self._worker.run_sync(self._aeval_async(code, **kwargs))
 
     async def eval_async(self, code: str, **kwargs: Any) -> EvalOutcome:

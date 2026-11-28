@@ -1606,6 +1606,44 @@ class TestFilesystemMiddleware:
         assert result.content == "@@ lines 1-3 of 3 @@\none\ntwo\nthree"
         assert "next offset" not in result.content
 
+    def test_read_file_uses_configured_default_read_limit(self):
+        """`default_read_limit` applies when the model omits `limit` and is advertised to it."""
+        files = {"/notes.txt": FileData(content="one\ntwo\nthree\nfour\nfive", encoding="utf-8")}
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend, default_read_limit=2)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt"})
+
+        assert result.content == "@@ lines 1-2 of 5 | next offset 2 @@\none\ntwo"
+        assert read_file_tool.args["limit"]["default"] == 2
+        assert "reads up to 2 lines" in read_file_tool.description
+
+    def test_read_file_schema_reused_for_same_default_read_limit(self):
+        backend, _ = _make_backend()
+        schemas = [
+            next(tool for tool in FilesystemMiddleware(backend=backend, default_read_limit=7).tools if tool.name == "read_file").args_schema
+            for _ in range(2)
+        ]
+
+        assert schemas[0] is schemas[1]
+
+    def test_read_file_explicit_limit_overrides_default_read_limit(self):
+        files = {"/notes.txt": FileData(content="one\ntwo\nthree", encoding="utf-8")}
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend, default_read_limit=1)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "limit": 3})
+
+        assert result.content == "@@ lines 1-3 of 3 @@\none\ntwo\nthree"
+
+    @pytest.mark.parametrize("default_read_limit", [0, -1])
+    def test_invalid_default_read_limit_raises(self, default_read_limit: int):
+        backend, _ = _make_backend()
+        with pytest.raises(ValueError, match="default_read_limit must be positive"):
+            FilesystemMiddleware(backend=backend, default_read_limit=default_read_limit)
+
     def test_read_file_offset_window_reports_source_line_range(self):
         files = {
             "/notes.txt": FileData(

@@ -3,9 +3,6 @@ type: operations guide
 title: Development and Release Operations
 description: Package-local development, lockfile propagation, and release operations for independently versioned libraries. Covers the patched release-please runner, safe dry runs and upgrades, and publication recovery.
 tags: [development, uv, python, dependencies, lockfiles, releases]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-26T08:03:59.911Z
 sources:
   - id: openwiki-source-c902cb95854c98734bef1bde
     resource: repo://.github/release-please/history.mjs
@@ -55,7 +52,10 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-26T08:03:59.911Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-28T08:03:41.605Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-28T08:03:41.605Z
 ---
 
 # Development and Release Operations
@@ -90,7 +90,7 @@ Run `make help` in the owning package for its supported targets; use `uv run ...
 
 `deepagents-code` publishes the exact requirement `deepagents==0.7.42`, while its workspace maps `deepagents` to editable `../deepagents`. Thus a passing Code workspace can use unreleased sibling code and is not evidence of the PyPI installation users receive. Raise the exact Code SDK pin in the PR that first requires new SDK behavior rather than deferring it to a release PR. The `ci:dcode-skip-sdk-pin` label is the explicit acknowledgement for an intentionally older pin.
 
-Talon is Python `>=3.14,<3.15`; it publishes `deepagents>=0.7.41` and `deepagents-code>=0.2.14,<1.0.0`, while its local source mappings are development-only wiring. A Talon change that relies on its Code floor must therefore follow a published Code release satisfying that floor.
+Talon is Python `>=3.14,<3.15`; it publishes `deepagents>=0.7.42` and `deepagents-code>=0.2.15,<1.0.0`, while its local source mappings are development-only wiring. A Talon change that relies on its Code floor must therefore follow a published Code release satisfying that floor.
 
 ## Lockfile propagation
 

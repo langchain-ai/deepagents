@@ -5,8 +5,16 @@ description: Talon is an experimental local host that composes channel adapters,
 tags: [talon, runtime, host, subagents, hooks, mcp, scheduling, file-delivery]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-27T08:04:01.405Z
+    at: 2026-11-28T08:03:41.605Z
 sources:
+  - id: openwiki-source-2e73fb99e1d9ba2b68646e83
+    resource: repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/bridge.js
+  - id: openwiki-source-effb906ade4efbc4dcee12c9
+    resource: repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/package-lock.json
+  - id: openwiki-source-d4d7551c16a10652b8470897
+    resource: repo://libs/talon/deepagents_talon/channels/whatsapp_bridge/package.json
+  - id: openwiki-source-3d157a5857f325aceaade7f1
+    resource: repo://libs/talon/deepagents_talon/channels/whatsapp.py
   - id: openwiki-source-fd3cc27f279ed4fb8aaca360
     resource: repo://libs/talon/deepagents_talon/file_sending.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
@@ -21,11 +29,15 @@ sources:
     resource: repo://libs/talon/deepagents_talon/model_selection.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
+    resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-e0db085f967450f48196d999
     resource: repo://libs/talon/tests/test_media.py
   - id: openwiki-source-412987bb51db9ba8f655d511
     resource: repo://libs/talon/tests/unit_tests/test_file_sending.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-27T08:04:01.405Z" }
+  - id: openwiki-source-966f1489233b6fc6ee5f2e4c
+    resource: repo://libs/talon/uv.lock
+generated: { by: "openwiki/0.4.2", at: "2026-11-28T08:03:41.605Z" }
 ---
 
 # Talon Runtime Integration
@@ -174,9 +186,46 @@ For attended turns, `BackgroundSubagents` creates in-memory, conversation-owned 
 
 The host dispatches eligible completed results using an unattended `background_delivery` request, which has no approval or authorization handler. It avoids active, blocked, mismatched, or history-locked conversations and applies exponential retry backoff. Results are acknowledged only after a successful runtime turn; retry exhaustion marks the job dropped. If the host cannot deliver the reply after acknowledgement, it requeues the IDs for a later turn. For cron requests, delegation runs inline under a separate semaphore and timeout; nested delegation remains refused and failure becomes a safe tool error rather than an escaping graph retry.
 
+## WhatsApp Node bridge boundary
+
+WhatsApp is an optional channel selected with `--whatsapp` or `DEEPAGENTS_TALON_WHATSAPP_ENABLED`. The Python adapter is the host-side channel implementation: it launches the packaged `bridge.js` only when `DEEPAGENTS_TALON_WHATSAPP_START_BRIDGE` is truthy (or uses `DEEPAGENTS_TALON_WHATSAPP_BRIDGE_COMMAND`), waits for its health endpoint before polling, and owns polling, admission, host dispatch, and process shutdown. Without either start setting, it expects an externally run bridge.
+
+```mermaid
+sequenceDiagram
+    participant CLI as Talon CLI
+    participant Adapter as WhatsApp adapter
+    participant Bridge as Node bridge
+    participant WA as WhatsApp Web
+    participant Host as Talon host
+
+    CLI->>Adapter: enable channel
+    Adapter->>Bridge: start with private paths and token
+    Adapter->>Bridge: GET health
+    Bridge->>WA: initialize client
+    WA-->>Bridge: events
+    Bridge->>Bridge: queue normalized messages
+    Adapter->>Bridge: GET messages
+    Adapter->>Host: dispatch admitted message
+    Host->>Adapter: reply or media
+    Adapter->>Bridge: authenticated POST send
+    Bridge->>WA: send message
+```
+
+*The Python adapter mediates the host-to-bridge lifecycle and HTTP calls; the Node process handles WhatsApp Web events and transport.*
+
+The adapter accepts only an HTTP loopback bridge URL (`127.0.0.1`, `localhost`, or `::1`) and sends the configured per-process bearer token on every request. The bridge refuses requests without that token, exposes health and queue-drain endpoints, and accepts text, media, typing, and edit operations only after its WhatsApp client is connected. This authenticated loopback protocol is an integration boundary, not a claim of a production security boundary.
+
+For media, the adapter validates outbound content against Talon's outbound root, copies it into the bridge media directory when necessary, and removes its copy after the send attempt. The Node bridge independently resolves the supplied path and rejects anything outside its media directory; inbound downloads are written there with private file mode and are capped at WhatsApp's 64 MiB maximum. The Python adapter also applies the configured cap while polling, so a late or oversized local path is not forwarded as an attachment.
+
+### Packaged bridge and Node dependencies
+
+The wheel explicitly packages `bridge.js`, its compatibility and media helpers, and both `package.json` and `package-lock.json`; it does **not** bundle a `node_modules` tree. Install the bridge dependencies from `deepagents_talon/channels/whatsapp_bridge` with `npm install` before starting the packaged bridge. The manifest requires Node `>=22.12.0`, declares `whatsapp-web.js` `^1.34.7` and `qrcode-terminal` `^0.12.0`, and constrains selected transitive packages through npm overrides. The committed lockfile is the resolved installation input and repeats the same Node engine and direct dependency declarations.
+
+The bridge uses `whatsapp-web.js` with a local Chromium profile and prints a QR code during pairing. It installs an ID-compatibility wrapper before upstream event listeners, resolves paired-account phone and LID aliases, and only treats outbound messages addressed to the paired account as self-chat. These compatibility behaviors make provider events usable by the Python adapter; they do not expand channel admission or alter Talon's experimental single-operator posture.
+
 ## Compatibility and operations
 
-Talon is an alpha package named `deepagents-talon` (version `0.1.2`), requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. It depends on the Deep Agents SDK (`deepagents>=0.7.41`), `deepagents-code>=0.2.14,<1.0.0`, LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. dcode remains outside Talon's channel and worker lifecycle; when enabled, the dcode session bridge is a narrowly scoped local Unix-socket messaging integration.
+Talon is an alpha package named `deepagents-talon` (version `0.1.2`), requires Python `>=3.14,<3.15`, and exposes `deepagents-talon`. Its published SDK floors are `deepagents>=0.7.42` and `deepagents-code>=0.2.15,<1.0.0`; the same `deepagents-code` floor applies to the `openshell`, `media`, and `media-cpu` extras. It also depends on LangChain/LangGraph 1.x-compatible packages, MCP, and a SQLite checkpointer by default. In this repository the `deepagents` and `deepagents-code` dependencies are editable sibling sources, so Talon intentionally integrates against their current APIs rather than a bundled copy. dcode remains outside Talon's channel and worker lifecycle; when enabled, the dcode session bridge is a narrowly scoped local Unix-socket messaging integration.
 
 Relevant configuration includes the assistant ID/home (`DEEPAGENTS_TALON_ASSISTANT_ID` or `AGENT_ASSISTANT_ID`, `DEEPAGENTS_TALON_HOME`), model (`DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL`), model/context settings, optional sandbox, checkpoint/history URIs, MCP configuration (`DEEPAGENTS_TALON_MCP_CONFIG` or `~/.deepagents/.mcp.json`), `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS`, `DEEPAGENTS_TALON_VERBOSITY`, and channel media roots and caps. The per-turn `send_file` limit uses the configured media-byte cap; its temporary upload staging root is the assistant home's `media/outbound/`. The `media` and `media-cpu` extras provide optional local media dependencies; on Linux `media-cpu` uses the PyTorch CPU index and conflicts with `media`.
 
@@ -200,6 +249,14 @@ When changing this integration:
 `tests/test_media.py` verifies that documents are path notices rather than inlined instruction text, image content is bounded and MIME-gated, unavailable attachments do not disclose their error detail, and unsafe or symlink-escaping paths are rejected. `tests/unit_tests/test_file_sending.py` verifies backend reads, per-turn binding, subagent refusal, byte limits, safe recipient names, generic transport errors, private staging, and cleanup after both successful and failed uploads. `tests/test_host.py` verifies host-side photo blocks, video path notices, lifecycle unwind, replacement/cancellation, and delivery behavior. `tests/unit_tests/test_model_selection.py` covers operator-only model switching, persistent next-turn selection, unavailable-model fallback, credentialed model discovery, and selected-model context budgets. `tests/unit_tests/test_effort.py` covers operator and allowlist enforcement, secure per-model persistence, next-turn capture, failed-write preservation, provider wire settings, nested model-setting merge, and concurrent context-variable cleanup.
 
 `tests/test_mcp.py` covers server status contracts, standard or overridden configuration paths, schema loading and server-prefixed tool names, OAuth capability exposure, deferred refresh, serialized concurrent refresh, cancellation retry, failed-refresh behavior, and redacted connection/authentication failures.
+
+`tests/channels/test_whatsapp.py` covers loopback-token transport, start readiness, polling and exposure filtering, self-chat restrictions, media limits and staging cleanup, health restart, and the presence of the packaged bridge resources. The bridge's Node suites cover WhatsApp identifier compatibility, self-chat and reaction normalization, acknowledgement tracking, quoted-context handling, and media download resolution and failures. Run them after installing the bridge dependencies:
+
+```bash
+cd libs/talon/deepagents_talon/channels/whatsapp_bridge
+npm install
+npm test
+```
 
 The focused session-bridge suites are security and routing regression tests. `test_claude_sessions.py` covers private socket discovery, peer/frame correlation, escape framing, idle notifications, owner routing, operator/approval gates, and shutdown. `test_codex_sessions.py` covers app-server handshake and turn correlation, outbound bounds, escaping, cancellation races, and approval-policy behavior. `test_dcode_sessions.py` covers private live-socket discovery, correlation acknowledgements, and the same operator, subagent, and approval-policy boundaries.
 

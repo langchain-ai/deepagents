@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:0ea3ef2939a0825cda24838f25dc74ab8293bfcba3400cd690a7f34389f69b15",
+  "pageVersion": "sha256:8c107ca82a3f4851ea1bb57cd8140159462b0ae43bbae029c114c1c49bd1aea5",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -66,11 +66,11 @@
     },
     {
       "id": "claim_877ddb2adf2b4013aa3baed0790b81d2",
-      "statement": "Talon publishes direct requirements on `deepagents>=0.7.41` and `deepagents-code>=0.2.14,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
+      "statement": "Talon publishes direct requirements on `deepagents>=0.7.42` and `deepagents-code>=0.2.15,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -118,7 +118,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c198c111cd4b8bcfc5df5fca97befbb71899722ce8f10000cab92959b2070f3e"
+          "version": "repo-file-v1:sha256:6a833ec39a72349a21e9f9b7a01da30daef7637d852a1367a9798b0d0fa8ef32"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
@@ -162,11 +162,11 @@
     },
     {
       "id": "claim_eed40dbb3aec4c5b9ca8675175b7187e",
-      "statement": "QuickJS supports Python `>=3.11,<4.0`, publishes `deepagents>=0.7.41,<0.8.0`, and uses an editable local SDK source mapping during checkout development.",
+      "statement": "QuickJS supports Python `>=3.11,<4.0`, publishes `deepagents>=0.7.42,<0.8.0`, and uses an editable local SDK source mapping during checkout development.",
       "evidence": [
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:9df7ee09096429f91e2660c67db18e80536aadf70dd74a2b0b3a6fc6ec33ebc1"
+          "version": "repo-file-v1:sha256:58ede89023ee6d43e8582bebf6c365b0e8dac9a339174ed4767eac03d041139f"
         }
       ]
     },
@@ -176,7 +176,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
         }
       ]
     },
@@ -274,7 +274,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c198c111cd4b8bcfc5df5fca97befbb71899722ce8f10000cab92959b2070f3e"
+          "version": "repo-file-v1:sha256:6a833ec39a72349a21e9f9b7a01da30daef7637d852a1367a9798b0d0fa8ef32"
         }
       ]
     },
@@ -288,13 +288,35 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:03adb6776cf42751439fd839fde3f58e8d44a97f624697163276328eea2eec30"
+          "version": "repo-file-v1:sha256:e8938910cd4c0bdb9d2a7b716b4b7e23571d6b16dcce160b4c8bc9848890176e"
+        }
+      ]
+    },
+    {
+      "id": "claim_4da738739dc94f86a784ef67656495f2",
+      "statement": "Daytona, Modal, Runloop, and Vercel partner distributions all support Python `>=3.11,<4.0` and publish `deepagents>=0.7.42,<0.8.0`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/daytona/pyproject.toml",
+          "version": "repo-file-v1:sha256:18eebd3a45ec9c911f4531eabeb69c453ffd7c37a2fd1dd0673aa25099ca09ce"
+        },
+        {
+          "resource": "repo://libs/partners/modal/pyproject.toml",
+          "version": "repo-file-v1:sha256:dd13c1bc87892d55a70368f77b3d5687626dc519973d2f32902bc5343187bdb1"
+        },
+        {
+          "resource": "repo://libs/partners/runloop/pyproject.toml",
+          "version": "repo-file-v1:sha256:af2e2d8b66e541e93346e9d6cc9e91b6fdb89dbc710ed6e979beabd8ca6f8e75"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/pyproject.toml",
+          "version": "repo-file-v1:sha256:354f237a3afe35ccc36115074ef3cde53bdec4faf45c942b6546e5b4e9760337"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-26T08:03:59.911Z"
+    "at": "2026-11-28T08:03:41.605Z"
   }
 }
